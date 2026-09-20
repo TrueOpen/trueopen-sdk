@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.idea/
+.claude/
+.codex/
+.omc/
+.DS_Store
+examples/_poll.mjs

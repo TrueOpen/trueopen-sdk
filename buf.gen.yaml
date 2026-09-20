@@ -1,0 +1,46 @@
+version: v2
+plugins:
+  - local: protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=js
+inputs:
+  # The wire contract (submodule, v0.1.1). Only the transitive closure the SDK needs is generated,
+  # not all of wire's files. These 13 are the import closure computed from two roots (ingress /
+  # msg_assignment): drop one and an internal src/gen import dangles, add one and it is generated
+  # for nothing. Recompute the closure before changing this list.
+  #   Roots:
+  #     - ingress.proto         the nexus IngressAPI (every SDK RPC)
+  #     - msg_assignment.proto  TaskOrderV2 / SignedOrderV2, the only message that goes on chain
+  - directory: third_party/wire/proto
+    paths:
+      - third_party/wire/proto/nexus/v1/ingress.proto
+      - third_party/wire/proto/task/v1/msg_assignment.proto
+      - third_party/wire/proto/task/v1/assignment.proto
+      - third_party/wire/proto/task/v1/open_verify.proto
+      - third_party/wire/proto/task/v1/commit.proto
+      - third_party/wire/proto/task/v1/evidence.proto
+      - third_party/wire/proto/task/v1/infer_receipt.proto
+      - third_party/wire/proto/task/v1/result.proto
+      - third_party/wire/proto/shared/v1/amount.proto
+      - third_party/wire/proto/shared/v1/common.proto
+      - third_party/wire/proto/shared/v1/evidence.proto
+      - third_party/wire/proto/shared/v1/model_profile.proto
+      - third_party/wire/proto/shared/v1/rest_encoding.proto
+  # wire's on-chain protos carry cosmos / gogo annotations, and protoc-gen-es also generates an
+  # import for the annotation files themselves, so these must be generated too or the internal
+  # src/gen imports dangle. Taken file by file rather than pulling in the whole cosmos-sdk /
+  # gogo-proto modules. coin.proto is a real type dependency: model_profile.proto has a
+  # cosmos.base.v1beta1.Coin field.
+  - module: buf.build/cosmos/cosmos-sdk
+    paths:
+      - cosmos/base/v1beta1/coin.proto
+      - cosmos/msg/v1/msg.proto
+      - amino/amino.proto
+  - module: buf.build/cosmos/cosmos-proto
+    paths:
+      - cosmos_proto/cosmos.proto
+  - module: buf.build/cosmos/gogo-proto
+    paths:
+      - gogoproto/gogo.proto

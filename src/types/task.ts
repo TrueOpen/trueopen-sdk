@@ -1,0 +1,21 @@
+export type TaskState = 'PENDING' | 'ASSIGNED' | 'VERIFYING' | 'SETTLED' | 'CLOSED' | 'FAILED';
+
+export type TaskPhase =
+  | 'ASSIGN_RANDOMNESS_PENDING'
+  | 'ASSIGNMENT_FINALIZED'
+  | 'OPEN_VERIFY'
+  | 'SAMPLE_READY'
+  | 'COMMIT'
+  | 'WORKER_REVEAL'
+  | 'FULL_RESULT_REVEAL'
+  | 'SETTLE'
+  | 'SWEEP_OBSERVED';
+
+export type TaskVerdict =
+  | 'PASS'
+  | 'FAIL'
+  | 'NO_CONSENSUS'
+  | 'FAIL_REVEAL_TIMEOUT'
+  | 'WORKER_TIMEOUT'
+  | 'VERIFY_UNAVAILABLE'
+  | 'ASSIGN_TIMEOUT';

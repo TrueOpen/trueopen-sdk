@@ -1,0 +1,3 @@
+[submodule "third_party/wire"]
+	path = third_party/wire
+	url = https://github.com/TrueOpen/wire.git

@@ -129,6 +129,53 @@ describe('RestChainReader', () => {
     expect(s.status).toBe('IDLE');
   });
 
+  // A Task that has been admitted but not yet assigned carries no winner_worker:
+  // protojson omits a string still at its default. Treating that as malformed made
+  // every client polling for assignment fail on its first read.
+  it('queryTask returns a pending snapshot when winner_worker is absent', async () => {
+    const { fetch } = stubFetch(okJson({
+      task: {
+        active: {
+          core: {
+            accepted_task_hash: '22'.repeat(32),
+            accepted_input_hash: '44'.repeat(32),
+            receipt_status: 'RECEIPT_STATUS_NONE',
+            assignment_status: 'ASSIGNMENT_STATUS_PENDING',
+            model_id: 'model_1',
+            profile_version: '1',
+            order_sequence: '0',
+          },
+          assignment: { task_id: '11'.repeat(32) },
+        },
+      },
+    }));
+    const snap = await new RestChainReader({ baseUrl: 'http://rest.example:1317', fetch }).queryTask('11'.repeat(32));
+    expect(snap.winnerWorker).toBe('');
+    expect(snap.assignmentStatus).toBe('PENDING');
+    expect(snap.taskId).toBe('11'.repeat(32));
+  });
+
+  it('queryTask still rejects a present winner_worker of the wrong type', async () => {
+    const { fetch } = stubFetch(okJson({
+      task: {
+        active: {
+          core: {
+            accepted_task_hash: '22'.repeat(32),
+            accepted_input_hash: '44'.repeat(32),
+            receipt_status: 'RECEIPT_STATUS_NONE',
+            assignment_status: 'ASSIGNMENT_STATUS_PENDING',
+            model_id: 'model_1',
+            profile_version: '1',
+            order_sequence: '0',
+          },
+          assignment: { task_id: '11'.repeat(32), winner_worker: 42 },
+        },
+      },
+    }));
+    await expect(new RestChainReader({ baseUrl: 'http://rest.example:1317', fetch }).queryTask('11'.repeat(32)))
+      .rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+  });
+
   it('querySessionNonce', async () => {
     const { fetch, lastUrl } = stubFetch(okJson({ address: 'trueopen1o', next_session_nonce: '5' }));
     const r = new RestChainReader({ baseUrl: 'http://n', fetch });

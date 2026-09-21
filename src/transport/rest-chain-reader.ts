@@ -79,6 +79,10 @@ export class RestChainReader implements ChainReader {
    * accepted_task_hash and winner_worker -- the former is the first field of
    * TaskDataObjectRefV1, and the latter determines whose signature the
    * streamed frames should be verified against.
+   *
+   * winnerWorker is "" while the assignment is still pending. That is a state
+   * to poll on, not a malformed response, so callers wait for it rather than
+   * failing on the first read.
    */
   async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
     const body = await this.getJson(`/TrueOpen/task/v1/task/${encodeURIComponent(taskId)}`);
@@ -89,7 +93,9 @@ export class RestChainReader implements ChainReader {
       taskId: field(assignment, 'task_id'),
       acceptedTaskHash: field(core, 'accepted_task_hash'),
       acceptedInputHash: field(core, 'accepted_input_hash'),
-      winnerWorker: field(assignment, 'winner_worker'),
+      // Absent until a Worker is assigned: protojson omits a string still at
+      // its default, so a pending Task carries no winner_worker at all.
+      winnerWorker: pendingField(assignment, 'winner_worker'),
       receiptStatus: enumField(core, 'receipt_status', 'RECEIPT_STATUS_'),
       assignmentStatus: enumField(core, 'assignment_status', 'ASSIGNMENT_STATUS_'),
       modelId: field(core, 'model_id'),
@@ -181,6 +187,20 @@ function obj(o: Record<string, unknown>, snakeKey: string): Record<string, unkno
 /** Reads a string field, preferring snake_case and falling back to camelCase. */
 function field(o: Record<string, unknown>, snakeKey: string): string {
   const v = raw(o, snakeKey);
+  if (typeof v !== 'string') {
+    throw malformed(`field ${snakeKey}`);
+  }
+  return v;
+}
+
+/**
+ * Reads a string field that is legitimately absent while it still holds its
+ * default value. Absent reads as ""; a present value of the wrong type is
+ * still malformed, because that is a broken response rather than an unset one.
+ */
+function pendingField(o: Record<string, unknown>, snakeKey: string): string {
+  const v = raw(o, snakeKey);
+  if (v === undefined || v === null) return '';
   if (typeof v !== 'string') {
     throw malformed(`field ${snakeKey}`);
   }

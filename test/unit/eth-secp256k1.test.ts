@@ -15,6 +15,7 @@ import {
 } from '../../src/signer/eth-secp256k1';
 import { secp256k1Address } from '../../src/signer/secp256k1';
 import { toHex, fromHex } from '../../src/util/bytes';
+import { bech32 } from '@scure/base';
 
 /** Same anchor as eip712.test.ts: wire v0.4.1's account_signing_v1.json, read directly from the submodule. */
 const v = JSON.parse(readFileSync('third_party/wire/testdata/v1/shared/account_signing_v1.json', 'utf8'));
@@ -50,7 +51,11 @@ describe('EVM-style address derivation', () => {
   });
 
   it('operator bech32 is the same bytes with a different prefix', () => {
+    // wire v0.2.0 (TrueOpen/wire#7) re-encoded the vector from the authoritative
+    // address_bytes, fixing the broken checksum that v0.1.1 carried (wire#8).
     expect(ethSecp256k1Address(fromHex(a.pub_compressed), 'trueopenvaloper')).toBe(a.operator_bech32);
+    // The operator form and the account form carry the same 20 payload bytes.
+    expect(bech32.encode('trueopenvaloper', bech32.toWords(fromHex(a.address_bytes)))).toBe(a.operator_bech32);
   });
 
   it('all three public key forms derive the same address', () => {

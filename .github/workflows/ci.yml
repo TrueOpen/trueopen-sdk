@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref makes the older run's verdict irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # engines declares node >=18, so 18 is part of the contract and not just the
+  # version that happens to work locally. 20 is what development runs on.
+  check:
+    name: check (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required, not optional: the unit tests read the cross-language
+          # vectors straight out of third_party/wire at runtime, so without the
+          # submodule the suite fails on a missing file rather than on a real
+          # defect. wire has no submodules of its own, so no recursion needed.
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Catches what tsc does not: bundling and the emitted .d.ts.
+      - name: Build
+        run: npm run build
+
+  # Separate from the matrix: this checks the generator against the submodule,
+  # which has nothing to do with the Node version, and it reaches buf.build for
+  # the cosmos modules -- keeping it apart means a registry outage reads as a
+  # registry outage rather than as a broken build.
+  codegen:
+    name: generated bindings match the wire submodule
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # src/gen is committed, so it can drift from the submodule it was
+      # generated from: bumping third_party/wire without re-running the
+      # generator leaves bindings that describe the previous contract, and
+      # nothing else in the build notices.
+      - name: Regenerate and diff
+        run: |
+          npm run generate
+          if ! git diff --quiet -- src/gen; then
+            echo "::error::src/gen does not match third_party/wire. Run 'npm run generate' and commit the result."
+            git diff --stat -- src/gen
+            git diff -- src/gen
+            exit 1
+          fi

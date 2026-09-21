@@ -80,22 +80,35 @@ export class RestChainReader implements ChainReader {
    * TaskDataObjectRefV1, and the latter determines whose signature the
    * streamed frames should be verified against.
    *
-   * winnerWorker is "" while the assignment is still pending. That is a state
-   * to poll on, not a malformed response, so callers wait for it rather than
-   * failing on the first read.
+   * winnerWorker is "" for both pending shapes below. That is a state to poll
+   * on, not a malformed response, so callers wait for it rather than failing on
+   * the first read.
+   *
+   * A Task is pending in two distinct shapes, and both reach this method:
+   *   - before it entered assignment, the whole `assignment` view is absent;
+   *   - once assigned but before a winner is drawn, `assignment` is present
+   *     and `winner_worker` is absent.
    */
   async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
     const body = await this.getJson(`/TrueOpen/task/v1/task/${encodeURIComponent(taskId)}`);
     const active = obj(obj(body, 'task'), 'active');
     const core = obj(active, 'core');
-    const assignment = obj(active, 'assignment');
+    // TaskActiveBundleV1 marks core `(gogoproto.nullable) = false` but leaves
+    // assignment nullable: "assignment appears once the Task entered
+    // assignment" (wire task/v1/query_task.proto). Before that the gateway
+    // sends JSON null, which is the first state every poll after submitOrder
+    // observes.
+    const assignment = optObj(active, 'assignment');
     return {
-      taskId: field(assignment, 'task_id'),
+      // task_id is carried by the assignment view, so it is unavailable until
+      // assignment exists. The caller already knows which id it asked for.
+      taskId: assignment === undefined ? taskId : field(assignment, 'task_id'),
       acceptedTaskHash: field(core, 'accepted_task_hash'),
       acceptedInputHash: field(core, 'accepted_input_hash'),
-      // Absent until a Worker is assigned: protojson omits a string still at
-      // its default, so a pending Task carries no winner_worker at all.
-      winnerWorker: pendingField(assignment, 'winner_worker'),
+      // winner_worker is declared `optional` (explicit presence) and the three
+      // winner fields are present together or absent together, so a pending
+      // assignment never reports a default winner.
+      winnerWorker: assignment === undefined ? '' : pendingField(assignment, 'winner_worker'),
       receiptStatus: enumField(core, 'receipt_status', 'RECEIPT_STATUS_'),
       assignmentStatus: enumField(core, 'assignment_status', 'ASSIGNMENT_STATUS_'),
       modelId: field(core, 'model_id'),
@@ -184,6 +197,22 @@ function obj(o: Record<string, unknown>, snakeKey: string): Record<string, unkno
   return v as Record<string, unknown>;
 }
 
+/**
+ * Reads a sub-message the contract declares nullable, where absent is a state
+ * the caller polls on rather than a broken response. Absent reads as undefined;
+ * a present value of the wrong type is still malformed.
+ *
+ * Only for fields that are actually nullable in the proto -- a sub-message
+ * marked `(gogoproto.nullable) = false` is always sent, so reading it through
+ * here would hide a genuinely broken response.
+ */
+function optObj(o: Record<string, unknown>, snakeKey: string): Record<string, unknown> | undefined {
+  const v = raw(o, snakeKey);
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'object' || Array.isArray(v)) throw malformed(`object ${snakeKey}`);
+  return v as Record<string, unknown>;
+}
+
 /** Reads a string field, preferring snake_case and falling back to camelCase. */
 function field(o: Record<string, unknown>, snakeKey: string): string {
   const v = raw(o, snakeKey);
@@ -194,9 +223,16 @@ function field(o: Record<string, unknown>, snakeKey: string): string {
 }
 
 /**
- * Reads a string field that is legitimately absent while it still holds its
- * default value. Absent reads as ""; a present value of the wrong type is
- * still malformed, because that is a broken response rather than an unset one.
+ * Reads a string field the contract declares with explicit presence (proto3
+ * `optional`). Absent reads as ""; a present value of the wrong type is still
+ * malformed, because that is a broken response rather than an unset one.
+ *
+ * Note what does *not* make a field absent: the REST gateway runs with
+ * EmitDefaults (cosmos-sdk server/api), so an implicit-presence field sitting
+ * at its zero value is still sent as "" / "0" / 0. Only explicit presence
+ * produces a missing key, so only `optional` fields belong here -- reading an
+ * implicit-presence field through this helper would turn a broken response
+ * into a silent default.
  */
 function pendingField(o: Record<string, unknown>, snakeKey: string): string {
   const v = raw(o, snakeKey);

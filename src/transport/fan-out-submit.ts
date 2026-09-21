@@ -45,11 +45,16 @@ export class TaskBuilderAllEndpointsFailedError<
       'NEXUS_INGRESS',
       'TASK_BUILDER_ALL_ENDPOINTS_FAILED',
       `TASK_BUILDER_ALL_ENDPOINTS_FAILED: no selected Task Builder accepted the order (${results.length} tried)`,
-      // The first thrown error is the cause, so the standard Error chain keeps
-      // working; every endpoint's outcome is on results.
+      // The cause is the first endpoint that threw in **endpoint order** --
+      // results mirrors the endpoint list, not completion order -- so the
+      // standard Error chain keeps working; every endpoint's outcome is on
+      // results.
       { retriable: true, cause: results.find((r) => r.error !== undefined)?.error },
     );
     this.results = results;
+    // TrueOpenError's constructor sets name to its own; without this the
+    // subclass is invisible in stacks and in anything that reads err.name.
+    this.name = 'TaskBuilderAllEndpointsFailedError';
     Object.setPrototypeOf(this, TaskBuilderAllEndpointsFailedError.prototype);
   }
 }

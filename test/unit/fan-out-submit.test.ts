@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from '../../src/transport/fan-out-submit';
+import { TrueOpenError } from '../../src/errors/errors';
 import type { SubmitOrderAck } from '../../src/transport/ingress-client';
 
 // fan-out is transparent to the request body (generic), so a minimal placeholder is enough.
@@ -41,6 +42,11 @@ describe('fanOutToEndpoints', () => {
     const failure = err as TaskBuilderAllEndpointsFailedError<(typeof endpoints)[number], SubmitOrderAck>;
     expect(failure.code).toBe('TASK_BUILDER_ALL_ENDPOINTS_FAILED');
     expect(failure.retriable).toBe(true);
+    // The base constructor sets name to TrueOpenError, so the subclass has to
+    // restate it or it is invisible in stacks and to anything reading err.name.
+    expect(failure.name).toBe('TaskBuilderAllEndpointsFailedError');
+    // Subclassing must not break the family check callers switch on.
+    expect(failure).toBeInstanceOf(TrueOpenError);
 
     // Every endpoint is inspectable, in the order they were tried.
     expect(failure.results).toHaveLength(3);

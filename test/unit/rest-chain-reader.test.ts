@@ -129,50 +129,67 @@ describe('RestChainReader', () => {
     expect(s.status).toBe('IDLE');
   });
 
-  // A Task that has been admitted but not yet assigned carries no winner_worker:
-  // protojson omits a string still at its default. Treating that as malformed made
-  // every client polling for assignment fail on its first read.
-  it('queryTask returns a pending snapshot when winner_worker is absent', async () => {
-    const { fetch } = stubFetch(okJson({
-      task: {
-        active: {
-          core: {
-            accepted_task_hash: '22'.repeat(32),
-            accepted_input_hash: '44'.repeat(32),
-            receipt_status: 'RECEIPT_STATUS_NONE',
-            assignment_status: 'ASSIGNMENT_STATUS_PENDING',
-            model_id: 'model_1',
-            profile_version: '1',
-            order_sequence: '0',
-          },
-          assignment: { task_id: '11'.repeat(32) },
+  /**
+   * A pending Task in the shape the gateway actually sends. `core` is
+   * `(gogoproto.nullable) = false` so it is always present; `assignment` is
+   * nullable and appears only once the Task entered assignment, so the caller
+   * picks which pending shape to build.
+   *
+   * Note every implicit-presence field is spelled out even at its zero value:
+   * the REST gateway runs with EmitDefaults, so those are sent, and a fixture
+   * that omitted them would be testing a response the chain never produces.
+   */
+  const TASK_ID = '11'.repeat(32);
+  const pendingTask = (assignment: unknown) => ({
+    task: {
+      active: {
+        core: {
+          accepted_task_hash: '22'.repeat(32),
+          accepted_input_hash: '44'.repeat(32),
+          receipt_status: 'RECEIPT_STATUS_NONE',
+          assignment_status: 'ASSIGNMENT_STATUS_PENDING',
+          model_id: 'model_1',
+          profile_version: '1',
+          order_sequence: '0',
         },
+        assignment,
       },
-    }));
-    const snap = await new RestChainReader({ baseUrl: 'http://rest.example:1317', fetch }).queryTask('11'.repeat(32));
+    },
+  });
+  const readTask = (body: unknown) =>
+    new RestChainReader({ baseUrl: 'http://rest.example:1317', fetch: stubFetch(okJson(body)).fetch }).queryTask(TASK_ID);
+
+  // Pending shape 1: the Task has not entered assignment, so the whole view is
+  // null. This is the state every poll right after submitOrder observes, and
+  // treating it as malformed failed the first read of every task.
+  it('queryTask returns a pending snapshot before the Task entered assignment', async () => {
+    const snap = await readTask(pendingTask(null));
     expect(snap.winnerWorker).toBe('');
     expect(snap.assignmentStatus).toBe('PENDING');
-    expect(snap.taskId).toBe('11'.repeat(32));
+    // task_id lives on the absent assignment view; it falls back to the queried id.
+    expect(snap.taskId).toBe(TASK_ID);
+    expect(snap.orderSequence).toBe(0n);
+  });
+
+  // Pending shape 2: assignment exists, but no winner has been drawn.
+  // winner_worker is `optional` in the contract, so explicit presence -- not
+  // the zero value -- is what keeps it out of the response.
+  it('queryTask returns a pending snapshot when winner_worker is absent', async () => {
+    const snap = await readTask(pendingTask({ task_id: TASK_ID }));
+    expect(snap.winnerWorker).toBe('');
+    expect(snap.assignmentStatus).toBe('PENDING');
+    expect(snap.taskId).toBe(TASK_ID);
   });
 
   it('queryTask still rejects a present winner_worker of the wrong type', async () => {
-    const { fetch } = stubFetch(okJson({
-      task: {
-        active: {
-          core: {
-            accepted_task_hash: '22'.repeat(32),
-            accepted_input_hash: '44'.repeat(32),
-            receipt_status: 'RECEIPT_STATUS_NONE',
-            assignment_status: 'ASSIGNMENT_STATUS_PENDING',
-            model_id: 'model_1',
-            profile_version: '1',
-            order_sequence: '0',
-          },
-          assignment: { task_id: '11'.repeat(32), winner_worker: 42 },
-        },
-      },
-    }));
-    await expect(new RestChainReader({ baseUrl: 'http://rest.example:1317', fetch }).queryTask('11'.repeat(32)))
+    await expect(readTask(pendingTask({ task_id: TASK_ID, winner_worker: 42 })))
+      .rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+  });
+
+  // Absent is pending; a present assignment of the wrong type is a broken
+  // response and must not be softened into one.
+  it('queryTask still rejects an assignment of the wrong type', async () => {
+    await expect(readTask(pendingTask('not-an-object')))
       .rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
   });
 

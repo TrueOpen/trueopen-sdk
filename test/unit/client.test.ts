@@ -108,9 +108,10 @@ function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: un
       async *subscribeOutput(req: SubscribeOutputRequest) {
         cap.subscribe = req;
         const frames = signedFrames('trueopen-devnet-1');
-        const after = req.resumeAfterSeq;
         // resume_after_seq semantics: only replay frames whose seq is strictly greater than it.
-        const replay = after > 0n || frames.length === 0 ? frames.filter((f) => f.seq > after) : frames;
+        // v0.2.0 makes the field explicitly optional; absent means replay from the beginning.
+        const cursor = req.resumeAfterSeq ?? 0n;
+        const replay = cursor > 0n || frames.length === 0 ? frames.filter((f) => f.seq > cursor) : frames;
         for (const f of replay) yield { frame: { case: 'chunk' as const, value: f } };
         const last = frames[frames.length - 1]!;
         yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };

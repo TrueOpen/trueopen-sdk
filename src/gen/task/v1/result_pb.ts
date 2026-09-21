@@ -17,7 +17,7 @@ export const file_task_v1_result: GenFile = /*@__PURE__*/
 
 /**
  * MetricSummaryV1 is the typed canonical verification summary. Field numbers and
- * order are frozen by keeper_api_contract.md §9.7 because they are part of both
+ * order are frozen because they are part of both
  * metric_summary_hash = H_FIELDS_V1("TRUEOPEN_METRIC_SUMMARY_V1", canonical
  * MetricSummaryV1) and result_receipt_signing_digest. Maps, free JSON, floats and
  * implementation-defined extensions are forbidden; whether fields 7 and 8 are
@@ -88,7 +88,7 @@ export const MetricSummaryV1Schema: GenMessage<MetricSummaryV1> = /*@__PURE__*/
 /**
  * ResultReceiptV2 is the verifier-signed result credential carried by
  * MsgSubmitVerifyResult and MsgBatchSubmitVerifyResult. Field numbers, types and
- * order are frozen by keeper_api_contract.md §5.14 and are the length-framed preimage
+ * order are frozen and are the length-framed preimage
  * of
  *
  *   result_receipt_signing_digest = H_FIELDS_V1("TRUEOPEN_RESULT_V2",
@@ -128,7 +128,7 @@ export type ResultReceiptV2 = Message<"task.v1.ResultReceiptV2"> & {
   taskId: Uint8Array;
 
   /**
-   * Every verify_round in this file uses ADR-0014 v1.1 numbering: 1 is the
+   * Every verify_round in this file uses the frozen numbering: 1 is the
    * initial verification, values >= 2 are challenge rounds, and 0 is invalid.
    *
    * @generated from field: uint32 verify_round = 4;
@@ -200,7 +200,7 @@ export const ResultReceiptV2Schema: GenMessage<ResultReceiptV2> = /*@__PURE__*/
 
 /**
  * ResultReceiptState is the first accepted verifier result credential keyed by
- * commit_key (keeper_data_structure_contract.md §6.6). It retains enough authoritative scope
+ * commit_key. It retains enough authoritative scope
  * and commitments to reconstruct result_payload_hash and verify the accepted
  * TRUEOPEN_RESULT_COMMITMENT_V2 without storing a full-result body on chain.
  * ResultReceiptState defines the ResultReceiptState wire type.
@@ -304,7 +304,7 @@ export const ResultReceiptStateSchema: GenMessage<ResultReceiptState> = /*@__PUR
 /**
  * MetricSampleVerdictV1 is the per-sample judgment produced by JudgeMetricSample
  * from the task-snapshot verification thresholds. Frozen values:
- * keeper_api_contract.md §9.6b. Verifiers never submit a verdict field, and
+ * the API contract. Verifiers never submit a verdict field, and
  * METRIC_SAMPLE_VERDICT_V1_INCONCLUSIVE can never become a final task verdict.
  * MetricSampleVerdictV1 defines the MetricSampleVerdictV1 wire type.
  *

@@ -50,7 +50,7 @@ export { selectTaskBuilders, taskBuilderSeed, taskBuilderRank, BUILDERS_PER_TASK
 export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } from './hub/builder-selection';
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
-export { fanOutToEndpoints } from './transport/fan-out-submit';
+export { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from './transport/fan-out-submit';
 export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, PlaintextFallbackAgent, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, isPlaintextServerError, tlsPubkeyHashRequiredByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
 export type { NexusTransportPolicy } from './transport/nexus-tls';
 export type { NexusTransportOptions } from './transport/nexus-tls';

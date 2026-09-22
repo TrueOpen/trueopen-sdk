@@ -12,10 +12,68 @@ export interface FetchResponse {
 }
 export type FetchLike = (url: string) => Promise<FetchResponse>;
 
+/**
+ * How often a read is retried before it gives up.
+ *
+ * These are GETs on a chain's REST gateway, so a repeat is free of side effects
+ * and the only question is whether the failure can plausibly differ next time.
+ * Both readers already answer that on every error they raise -- see
+ * `withQueryRetry`, which honours that existing classification instead of
+ * inventing a second one.
+ */
+export interface QueryRetryPolicy {
+  /** Total attempts, first one included. 1 disables retrying. */
+  readonly attempts: number;
+  /** Delay before the second attempt; doubles for each one after. */
+  readonly baseDelayMs: number;
+  /** Injectable so tests do not spend real time asleep. */
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Three attempts, 200ms then 400ms.
+ *
+ * Sized for a dropped keep-alive connection, which is what actually happens: a
+ * pooled socket the server has already closed fails instantly, and the retry
+ * opens a fresh one. Anything that needs longer than ~600ms to recover is a
+ * real outage, and reporting that promptly beats hiding it behind a long
+ * internal wait -- the caller is usually a poll loop that will be back shortly.
+ */
+export const DEFAULT_QUERY_RETRY: QueryRetryPolicy = { attempts: 3, baseDelayMs: 200 };
+
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Runs a read, retrying only the failures the reader itself marked retriable --
+ * a dropped connection or a 5xx. A 404, a malformed body or any other 4xx is
+ * final: repeating those only turns one clear error into three identical ones.
+ *
+ * The last failure is rethrown untouched, so the caller still sees the original
+ * error and its `cause` chain rather than a wrapper describing the retrying.
+ */
+export async function withQueryRetry<T>(
+  policy: QueryRetryPolicy,
+  run: () => Promise<T>,
+): Promise<T> {
+  const attempts = Math.max(1, policy.attempts);
+  const sleep = policy.sleep ?? realSleep;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (e) {
+      const retriable = e instanceof TrueOpenError && e.retriable;
+      if (!retriable || attempt >= attempts - 1) throw e;
+      await sleep(policy.baseDelayMs * 2 ** attempt);
+    }
+  }
+}
+
 export interface RestChainReaderOptions {
   /** gRPC-gateway REST root, e.g. http://localhost:1317 */
   readonly baseUrl: string;
   readonly fetch: FetchLike;
+  /** Overrides DEFAULT_QUERY_RETRY; pass `{ attempts: 1 }` to opt out. */
+  readonly retry?: Partial<QueryRetryPolicy>;
 }
 
 const SESSION_STATUS = new Set(['ACTIVE', 'IDLE', 'CLOSED']);
@@ -39,10 +97,12 @@ const FINALITY_STATUS = new Set(['PENDING', 'CHALLENGED', 'FINAL', 'OVERTURNED']
 export class RestChainReader implements ChainReader {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
+  private readonly retry: QueryRetryPolicy;
 
   constructor(opts: RestChainReaderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.fetch = opts.fetch;
+    this.retry = { ...DEFAULT_QUERY_RETRY, ...opts.retry };
   }
 
   async querySession(sessionId: string): Promise<StreamStateView> {
@@ -143,6 +203,10 @@ export class RestChainReader implements ChainReader {
   }
 
   private async getJson(path: string): Promise<Record<string, unknown>> {
+    return withQueryRetry(this.retry, () => this.getJsonOnce(path));
+  }
+
+  private async getJsonOnce(path: string): Promise<Record<string, unknown>> {
     const url = `${this.baseUrl}${path}`;
     let res: FetchResponse;
     try {
@@ -162,7 +226,18 @@ export class RestChainReader implements ChainReader {
         { retriable: res.status >= 500 },
       );
     }
-    const body = await res.json();
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch (e) {
+      // The headers arrived and the body did not. A connection dropped mid-body
+      // fails here rather than at fetch(), so it is the same transient fault one
+      // step later and is classified the same way.
+      throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_UNAVAILABLE', `chain query body failed: ${url}`, {
+        retriable: true,
+        cause: e,
+      });
+    }
     if (typeof body !== 'object' || body === null) {
       throw malformed('response object');
     }

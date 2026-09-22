@@ -1,7 +1,8 @@
 import { stringToU64, base64ToBytes } from '../codec/wire';
 import { toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
-import type { FetchLike, FetchResponse } from './rest-chain-reader';
+import type { FetchLike, FetchResponse, QueryRetryPolicy } from './rest-chain-reader';
+import { DEFAULT_QUERY_RETRY, withQueryRetry } from './rest-chain-reader';
 import type {
   BuilderInfo,
   BuilderSetSnapshot,
@@ -45,6 +46,8 @@ export interface HubReaderOptions {
   /** gRPC gateway REST root, e.g. http://localhost:1317 */
   readonly baseUrl: string;
   readonly fetch: FetchLike;
+  /** Overrides DEFAULT_QUERY_RETRY; pass `{ attempts: 1 }` to opt out. */
+  readonly retry?: Partial<QueryRetryPolicy>;
 }
 
 /**
@@ -55,10 +58,12 @@ export interface HubReaderOptions {
 export class HubReader {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
+  private readonly retry: QueryRetryPolicy;
 
   constructor(opts: HubReaderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.fetch = opts.fetch;
+    this.retry = { ...DEFAULT_QUERY_RETRY, ...opts.retry };
   }
 
   /** Lists all registered builders (QueryBuilders). */
@@ -253,6 +258,10 @@ export class HubReader {
   }
 
   private async getJson(path: string): Promise<Record<string, unknown>> {
+    return withQueryRetry(this.retry, () => this.getJsonOnce(path));
+  }
+
+  private async getJsonOnce(path: string): Promise<Record<string, unknown>> {
     const url = `${this.baseUrl}${path}`;
     let res: FetchResponse;
     try {
@@ -272,7 +281,18 @@ export class HubReader {
         { retriable: res.status >= 500 },
       );
     }
-    const body = await res.json();
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch (e) {
+      // The headers arrived and the body did not: a connection dropped mid-body
+      // fails here rather than at fetch(), so it is the same transient fault one
+      // step later and is classified the same way.
+      throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_UNAVAILABLE', `hub query body failed: ${url}`, {
+        retriable: true,
+        cause: e,
+      });
+    }
     if (typeof body !== 'object' || body === null) throw malformed('response object');
     return body as Record<string, unknown>;
   }

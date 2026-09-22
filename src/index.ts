@@ -30,8 +30,8 @@ export type {
   UserChallengeInput,
   UserChallengeResult,
 } from './transport/chain-client';
-export { RestChainReader } from './transport/rest-chain-reader';
-export type { FetchLike, FetchResponse, RestChainReaderOptions } from './transport/rest-chain-reader';
+export { RestChainReader, withQueryRetry, DEFAULT_QUERY_RETRY } from './transport/rest-chain-reader';
+export type { FetchLike, FetchResponse, RestChainReaderOptions, QueryRetryPolicy } from './transport/rest-chain-reader';
 
 export { HubReader } from './transport/hub-reader';
 export type { HubReaderOptions } from './transport/hub-reader';

@@ -164,6 +164,38 @@ const jsonSafe = (v) => {
 const log = (...a) => { if (!JSON_ONLY) console.error(...a); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * A REST read that keeps "the chain answered: absent" apart from "the chain did not
+ * answer", and retries the second.
+ *
+ * Collapsing the two is how a dropped socket gets reported as a fact about chain state.
+ * This script used to do exactly that: `fetch(...).catch(() => ({}))` turned one
+ * transient UND_ERR_SOCKET into "Model does not exist", and the same shape in
+ * queryChainTask turned it into "(not on chain)" -- which is the acceptance criterion
+ * this whole script exists to measure. A wrong answer is worse than an error, because
+ * it does not look like one.
+ *
+ * Absent is unambiguous here: the gRPC gateway answers a missing resource with HTTP 404
+ * (grpc code 5), so it is a real response, not a failure to get one.
+ *
+ * Returns `{ notFound: true }` or `{ body }`. Throws once the retries are spent.
+ */
+async function restGet(url, { attempts = 3, baseDelayMs = 200 } = {}) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 404) return { notFound: true };
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { body: await res.json() };
+    } catch (e) {
+      last = e;
+      if (i < attempts - 1) await sleep(baseDelayMs * 2 ** i);
+    }
+  }
+  throw new Error(`${url} unreachable after ${attempts} attempts: ${last?.message ?? last}`, { cause: last });
+}
+
 // ---- identity ----
 const seed = await Bip39.mnemonicToSeed(new EnglishMnemonic(mnemonic));
 const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, stringToPath(TRUEOPEN_HD_PATH));
@@ -181,16 +213,18 @@ const FEE_DENOM = flag('--fee-denom', 'uusdc');
 // ---- chain_id (auto) ----
 let CHAIN_ID = flag('--chain-id', undefined);
 if (!CHAIN_ID) {
-  const ni = await fetch(`${REST}/cosmos/base/tendermint/v1beta1/node_info`).then((r) => r.json()).catch(() => ({}));
+  const ni = (await restGet(`${REST}/cosmos/base/tendermint/v1beta1/node_info`)).body ?? {};
   CHAIN_ID = ni?.default_node_info?.network || ni?.node_info?.network;
-  if (!CHAIN_ID) { console.error('Could not auto-detect chain_id; pass --chain-id'); process.exit(2); }
+  if (!CHAIN_ID) { console.error('Node answered but reported no network name; pass --chain-id'); process.exit(2); }
 }
 
 // ---- pick model (read-only validation) ----
-const modelRes = await fetch(`${REST}/TrueOpen/hub/v1/model/${encodeURIComponent(MODEL_ID)}`)
-  .then((r) => r.json()).catch(() => ({}));
-const activeModel = modelRes.model;
-if (!activeModel) { console.error(`Model does not exist: ${MODEL_ID}`); process.exit(2); }
+// Only a 404 means the model is genuinely not registered. Anything else throws and
+// stops the run with the transport error, instead of blaming the chain for it.
+const modelRes = await restGet(`${REST}/TrueOpen/hub/v1/model/${encodeURIComponent(MODEL_ID)}`);
+if (modelRes.notFound) { console.error(`Model is not registered on ${CHAIN_ID}: ${MODEL_ID}`); process.exit(2); }
+const activeModel = modelRes.body?.model;
+if (!activeModel) { console.error(`Model lookup returned 200 without a model field: ${MODEL_ID}`); process.exit(2); }
 
 // ---- wire up dependencies ----
 // On-chain endpoints may be grpc:// or https://; normalization happens inside the SDK.
@@ -386,9 +420,18 @@ const submittedAt = Date.now();
 
 // ---- 8) polling: on-chain state is the acceptance criterion, nexus taskStatus is informational only ----
 
-/** On-chain task snapshot; returns null if not yet on chain (the gateway omits the task field for a nonexistent task). */
+/**
+ * On-chain task snapshot; null means the chain answered 404, i.e. the task is genuinely
+ * not on chain yet.
+ *
+ * This read decides the whole run's verdict, so it must not answer "not on chain" when
+ * what actually happened is "could not ask". An unreachable node throws and the caller
+ * records it as its own state.
+ */
 async function queryChainTask(id) {
-  const body = await fetch(`${REST}/TrueOpen/task/v1/task/${id}`).then((r) => r.json()).catch(() => null);
+  const res = await restGet(`${REST}/TrueOpen/task/v1/task/${id}`);
+  if (res.notFound) return null;
+  const body = res.body;
   const core = body?.task?.active?.core;
   if (!core) return null;
   const asg = body.task.active.assignment ?? {};
@@ -584,8 +627,15 @@ if (DO_SUBMIT && POLL_TIMES > 0) {
 
   for (let i = 0; i < POLL_TIMES; i++) {
     const row = { t: Math.round((Date.now() - submittedAt) / 1000) };
-    chainTask = await queryChainTask(taskId);
-    row.chain_phase = chainTask?.task_phase ?? '(not on chain)';
+    try {
+      chainTask = await queryChainTask(taskId);
+      row.chain_phase = chainTask?.task_phase ?? '(not on chain)';
+    } catch (e) {
+      // Keep the last known snapshot rather than silently demoting the task to
+      // "(not on chain)": one unreachable poll says nothing about chain state.
+      row.chain_phase = '(chain unreachable)';
+      row.chain_error = String(e.message || e).slice(0, 200);
+    }
     if (ic) {
       try {
         const st = await ic.getTaskStatus(sessionId, taskId);

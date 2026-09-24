@@ -629,6 +629,18 @@ export class TrueOpenClient {
     }
 
     const failures: string[] = [];
+    // One decoder for the whole call, fed with `stream: true`, because a frame boundary is
+    // chosen by the Worker and can fall inside a multi-byte UTF-8 sequence -- a CJK character
+    // split across two frames decodes to two replacement characters if each frame is decoded
+    // on its own. It survives a reconnect unchanged: resuming after `resumeAfterSeq` continues
+    // the same byte stream, so the bytes held back are still the correct prefix. Duplicates are
+    // dropped before reaching it, so no byte is ever fed twice.
+    //
+    // Concatenating the emitted `chunk.text` reproduces the committed text whenever the
+    // committed bytes are valid UTF-8. If they are not, the trailing incomplete sequence is
+    // omitted here rather than emitted as a replacement character with no frame to belong to;
+    // `OutputStreamVerifier.text()` stays authoritative for the full text.
+    const decoder = new TextDecoder();
     let finSource: OutputStreamSource | undefined;
     // The termination reason declared by a signature-verified Fin; stays undefined if the peer never sends a signed Fin.
     let finishReason: number | undefined;
@@ -681,7 +693,7 @@ export class TrueOpenClient {
             yield {
               kind: 'chunk',
               seq: c.seq,
-              text: new TextDecoder().decode(c.text),
+              text: decoder.decode(c.text, { stream: true }),
               mmrRoot: Uint8Array.from(c.mmrRoot),
             };
             continue;

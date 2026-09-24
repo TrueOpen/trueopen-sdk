@@ -215,6 +215,36 @@ describe('TrueOpenClient facade', () => {
     expect(cap.ack?.lastSeq).toBe(2n);
   });
 
+  it('streamOutput decodes across frame boundaries, so a multi-byte character split by the Worker survives', async () => {
+    // A frame boundary is the Worker's choice and carries no semantics, so it can fall inside a
+    // UTF-8 sequence -- routinely, since a CJK character is several BPE tokens. Decoding each
+    // frame on its own turns the halves into two U+FFFD and silently corrupts delivered text.
+    const text = '伦敦天气';
+    const bytes = new TextEncoder().encode(text);
+    // 12 bytes, 3 per character. Both cuts land mid-character: byte 5 is inside the second
+    // character, byte 7 inside the third.
+    const chunks = [bytes.slice(0, 5), bytes.slice(5, 7), bytes.slice(7)];
+    const transport = scriptedStreamTransport(async function* () {
+      const frames = signedFrames('trueopen-devnet-1', chunks);
+      for (const f of frames) yield { frame: { case: 'chunk' as const, value: f } };
+      const last = frames[frames.length - 1]!;
+      yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+    });
+
+    const got: string[] = [];
+    for await (const f of makeClientWithTransport(transport).streamOutput({
+      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+    })) {
+      if (f.kind === 'chunk') got.push(f.text);
+    }
+
+    expect(got.join('')).toBe(text);
+    expect(got.join('')).not.toContain('�');
+    // Bytes held back wait for their continuation rather than being emitted early, so a frame
+    // that cut a character mid-sequence contributes only the characters it completed.
+    expect(got).toEqual(['伦', '敦', '天气']);
+  });
+
   // ---- wire v0.4.3 (wire#35): Fin carries finish_reason + worker_signature ----
   //
   // The key requirement here is that "the upgrade must not brick the SDK against the live

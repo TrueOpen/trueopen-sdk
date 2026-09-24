@@ -1,6 +1,6 @@
 version: v2
 modules:
-  # The single authority for the contract: TrueOpen/wire (submodule, pinned at v0.1.1).
+  # The single authority for the contract: TrueOpen/wire (submodule, pinned at v0.2.1).
   # This repository keeps no hand-copied proto: a hand-copied subset drifts silently, while nexus
   # compares order bytes with DiscardUnknown + proto.Equal, so one wrong field number rejects the
   # whole order. wire also publishes the nexus.v1.IngressAPI service, so the on-chain contract and

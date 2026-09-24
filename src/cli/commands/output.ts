@@ -2,6 +2,7 @@ import { buildContext, queryAcrossNexus, fetchLike } from '../context';
 import { HubReader } from '../../transport/hub-reader';
 import { fromHex } from '../../util/bytes';
 import { TrueOpenError } from '../../errors/errors';
+import { FinishReasonV1 } from '../../gen/task/v1/evidence_pb.js';
 import type { CliConfig } from '../config';
 import type { AccessLevelName } from '../../transport/sdk-request-envelope';
 
@@ -124,7 +125,10 @@ export async function cmdOutputStream(
     const sources = clients.map(({ ep, client }) => ({ id: ep.serviceEndpoint, ingress: client.ingress }));
     const frames: { seq: string; text: string }[] = [];
     let text = '';
-    for await (const f of first.client.streamOutput({
+    // undefined when the peer sent an unsigned Fin: reported as such rather than guessed,
+    // and it never says "tool_calls" -- see OutputStreamEvent.
+    let finishReason: FinishReasonV1 | undefined;
+    for await (const e of first.client.streamOutput({
       sessionId: session,
       taskId: task,
       taskHash,
@@ -134,10 +138,19 @@ export async function cmdOutputStream(
       idleTimeoutMs: 20_000,
       ack,
     })) {
-      frames.push({ seq: f.seq.toString(), text: f.text });
-      text += f.text;
+      if (e.kind === 'chunk') {
+        frames.push({ seq: e.seq.toString(), text: e.text });
+        text += e.text;
+        continue;
+      }
+      finishReason = e.finishReason;
     }
-    return { frameCount: frames.length, frames, text };
+    return {
+      frameCount: frames.length,
+      frames,
+      text,
+      finishReason: finishReason === undefined ? null : FinishReasonV1[finishReason],
+    };
   } finally {
     await ctx.dispose();
   }

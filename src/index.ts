@@ -300,5 +300,6 @@ export type {
   ChallengeParams,
   OutputStreamSource,
   StreamOutputParams,
+  OutputStreamEvent,
   ConfirmOutputParams,
 } from './client';

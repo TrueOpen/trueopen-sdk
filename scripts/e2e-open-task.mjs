@@ -515,6 +515,8 @@ async function startStream(winnerWorker) {
   // Record the actual resubscription that carries a non-empty checkpoint, as evidence
   // that this path was exercised.
   let resumedFromSeq = null;
+  // From the terminating fin; stays undefined when the peer sends an unsigned Fin.
+  let finishReason;
 
   while (Date.now() < overallDeadline) {
     for (const ep of streamCandidates()) {
@@ -558,6 +560,13 @@ async function startStream(winnerWorker) {
           }
           if (step.done) break;
           const f = step.value;
+          // The stream ends with one fin carrying the termination reason; only chunks
+          // are frames. undefined means the peer sent an unsigned Fin, so it is reported
+          // as unattested rather than defaulted to something that looks like an answer.
+          if (f.kind === 'fin') {
+            finishReason = f.finishReason;
+            continue;
+          }
           frames.push({ seq: f.seq.toString(), at_ms: Date.now() - t0, text: f.text });
           resumeAfterSeq = f.seq;
           if (breakArmed && frames.length >= STREAM_BREAK_AFTER) {
@@ -580,6 +589,10 @@ async function startStream(winnerWorker) {
           // actually exercised: subsequent frames continue from the verified seq
           // instead of restarting from scratch.
           resumed_from_seq: resumedFromSeq,
+          // The signature-verified termination reason, or null when the peer sent an
+          // unsigned Fin. Null means "not attested", not "ended normally"; and it never
+          // says tool_calls -- cortex normalises that to EOS.
+          finish_reason: finishReason === undefined ? null : finishReason,
           // Reaching here means streamOutput received fin, and fin's root matches the
           // root computed frame by frame.
           per_frame_verified: true,

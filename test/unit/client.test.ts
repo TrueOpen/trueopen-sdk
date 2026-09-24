@@ -10,6 +10,7 @@ import type {
   SubscribeOutputRequest,
   AckOutputRequest,
 } from '../../src/gen/nexus/v1/ingress_pb.js';
+import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { TrueOpenClient } from '../../src/client';
 import { sha256 } from '../../src/codec/hash';
@@ -205,7 +206,7 @@ describe('TrueOpenClient facade', () => {
     for await (const f of makeClient({}, cap).streamOutput({
       sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
     })) {
-      got.push(f.text);
+      if (f.kind === 'chunk') got.push(f.text);
     }
     expect(got).toEqual(['hello ', 'final ', 'output']);
     expect(got.join('')).toBe(OUTPUT_TEXT);
@@ -225,13 +226,14 @@ describe('TrueOpenClient facade', () => {
   function streamWithFin(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     finOverride: (last: { seq: bigint; mmrRoot: Uint8Array }) => any,
+    cap: { subscribes?: SubscribeOutputRequest[]; ack?: AckOutputRequest } = {},
   ): Transport {
     return scriptedStreamTransport(async function* () {
       const frames = signedFrames('trueopen-devnet-1');
       for (const f of frames) yield { frame: { case: 'chunk' as const, value: f } };
       const last = frames[frames.length - 1]!;
       yield { frame: { case: 'fin' as const, value: finOverride(last) } };
-    });
+    }, cap);
   }
 
   const signedFin = (last: { seq: bigint; mmrRoot: Uint8Array }, finishReason: number) => ({
@@ -257,7 +259,7 @@ describe('TrueOpenClient facade', () => {
     for await (const f of c.streamOutput({
       sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
-    })) out += f.text;
+    })) { if (f.kind === 'chunk') out += f.text; }
     return out;
   };
 
@@ -314,6 +316,60 @@ describe('TrueOpenClient facade', () => {
     }
   });
 
+  /** Collect the event kinds in order, plus whatever the terminal event carried. */
+  const drainEvents = async (
+    c: TrueOpenClient,
+    extra: Record<string, unknown> = {},
+  ): Promise<{ kinds: string[]; finishReason: FinishReasonV1 | undefined }> => {
+    const kinds: string[] = [];
+    let finishReason: FinishReasonV1 | undefined;
+    for await (const e of c.streamOutput({
+      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
+      workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
+    })) {
+      kinds.push(e.kind);
+      if (e.kind === 'fin') finishReason = e.finishReason;
+    }
+    return { kinds, finishReason };
+  };
+
+  it('the stream ends with exactly one fin, after every chunk', async () => {
+    const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1)));
+    const { kinds } = await drainEvents(c);
+    expect(kinds).toEqual(['chunk', 'chunk', 'chunk', 'fin']);
+  });
+
+  it('a signature-verified Fin surfaces its finish_reason', async () => {
+    const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1)));
+    const { finishReason } = await drainEvents(c);
+    expect(finishReason).toBe(1);
+  });
+
+  // Absence has to stay distinguishable from "ended normally": under the default
+  // accept-unsigned policy an unsigned Fin is let through, and nothing about it is attested.
+  it('an unsigned Fin surfaces finishReason undefined rather than a default', async () => {
+    const c = makeClientWithTransport(
+      streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot })),
+    );
+    const { kinds, finishReason } = await drainEvents(c);
+    expect(kinds.at(-1)).toBe('fin');
+    expect(finishReason).toBeUndefined();
+  });
+
+  // The fin is yielded after ackOutput, so a consumer that breaks on it cannot skip the ack:
+  // `break` runs the generator's cleanup path and anything after the yield never executes.
+  it('acks before yielding fin, so breaking on fin still reports progress', async () => {
+    const cap: { ack?: AckOutputRequest } = {};
+    const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1), cap));
+    for await (const e of c.streamOutput({
+      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
+      workerServicePubKey: WORKER_PUB, maxAttempts: 1,
+    })) {
+      if (e.kind === 'fin') break;
+    }
+    expect(cap.ack?.lastSeq).toBe(2n);
+  });
+
   it('streamOutput does not report progress when ack:false', async () => {
     const cap: { ack?: AckOutputRequest } = {};
     for await (const _ of makeClient({}, cap).streamOutput({
@@ -359,7 +415,7 @@ describe('TrueOpenClient facade', () => {
       sources: [{ id: 'builder-a', ingress: a.ingress }, { id: 'builder-b', ingress: b.ingress }],
       maxAttempts: 2,
       onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint.mmr.leafCount); },
-    })) got.push(frame.text);
+    })) { if (frame.kind === 'chunk') got.push(frame.text); }
 
     expect(got).toEqual(['hello ', 'final ', 'output']);
     expect(checkpoints).toEqual([1n, 2n, 3n]);
@@ -393,7 +449,7 @@ describe('TrueOpenClient facade', () => {
       sources: [{ id: 'gap-builder', ingress: a.ingress }, { id: 'good-builder', ingress: b.ingress }],
       maxAttempts: 2,
       ack: false,
-    })) got.push(frame.text);
+    })) { if (frame.kind === 'chunk') got.push(frame.text); }
 
     expect(got).toEqual(['hello ', 'final ', 'output']);
   });
@@ -426,7 +482,7 @@ describe('TrueOpenClient facade', () => {
       checkpoint: verifier.checkpoint(),
       resumeAfterSeq: 0n,
       ack: false,
-    })) got.push(frame.text);
+    })) { if (frame.kind === 'chunk') got.push(frame.text); }
 
     expect(got).toEqual(['final ', 'output']);
     expect(cap.subscribes?.[0]?.resumeAfterSeq).toBe(0n);

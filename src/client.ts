@@ -31,6 +31,7 @@ import { outputHash as outputMmrRoot, OutputStreamVerifier, verifyOutputFinSigna
 import type { OutputStreamVerifierCheckpoint } from './output/output-commitment';
 import { confirmOutputWithReceipt } from './output/output-confirmation';
 import type { ConfirmedOutputEvent } from './output/output-confirmation';
+import type { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
 import type { InferReceiptView } from './types/node';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { toHex, fromHex } from './util/bytes';
@@ -205,6 +206,40 @@ export interface StreamOutputParams {
    */
   readonly finSignaturePolicy?: 'require' | 'accept-unsigned';
 }
+
+/**
+ * One event from `streamOutput`. The stream ends with exactly one `fin` after the last
+ * `chunk`, so the terminal state is part of the control flow rather than something the
+ * caller has to reconstruct from the iterator finishing.
+ *
+ * Two shapes rather than one carrying an optional field: a caller that only handles
+ * `chunk` still type-checks under a non-exhaustive switch, but has to *say* it is ignoring
+ * termination. `finish_reason` carries caveats (see below) that are easy to miss if the
+ * value merely appears on every chunk.
+ */
+export type OutputStreamEvent =
+  | {
+      readonly kind: 'chunk';
+      readonly seq: bigint;
+      readonly text: string;
+      readonly mmrRoot: Uint8Array;
+    }
+  | {
+      readonly kind: 'fin';
+      /**
+       * The termination reason from a signature-verified `OutputFinV1`.
+       *
+       * `undefined` when the peer sent an unsigned Fin -- the default
+       * `finSignaturePolicy: 'accept-unsigned'` lets those through, so absence means "not
+       * attested", never "ended normally".
+       *
+       * **This cannot tell you the model made a tool call.** Cortex normalises vLLM's
+       * `finish_reason: "tool_calls"` to EOS so that the chat path reuses the raw-text
+       * resolver, so a turn that ended in a tool call arrives here as an ordinary EOS.
+       * Detecting a tool call means parsing the committed text (ADR-0022).
+       */
+      readonly finishReason: FinishReasonV1 | undefined;
+    };
 
 export interface ConfirmOutputParams {
   readonly taskId: string;
@@ -559,7 +594,7 @@ export class TrueOpenClient {
    * earlier. So this only raises an error when fin disagrees with the locally computed root; it is
    * never treated as the commitment itself.
    */
-  async *streamOutput(p: StreamOutputParams): AsyncIterable<{ seq: bigint; text: string; mmrRoot: Uint8Array }> {
+  async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent> {
     const verifier = new OutputStreamVerifier({
       chainId: this.cfg.chainId,
       taskHash: fromHex(p.taskHash),
@@ -643,7 +678,12 @@ export class TrueOpenClient {
                 );
               }
             }
-            yield { seq: c.seq, text: new TextDecoder().decode(c.text), mmrRoot: Uint8Array.from(c.mmrRoot) };
+            yield {
+              kind: 'chunk',
+              seq: c.seq,
+              text: new TextDecoder().decode(c.text),
+              mmrRoot: Uint8Array.from(c.mmrRoot),
+            };
             continue;
           }
           if (frame.case === 'fin') {
@@ -714,6 +754,10 @@ export class TrueOpenClient {
     if (p.ack !== false && verifier.leafCount > 0n) {
       await finSource.ingress.ackOutput({ sessionId: p.sessionId, taskId: p.taskId, lastSeq: verifier.resumeAfterSeq });
     }
+    // After the ack, not before: `break`ing on the fin event runs the generator's cleanup
+    // path, so anything left after the yield never executes. Acking first makes the caller's
+    // loop shape irrelevant to whether delivery progress is reported.
+    yield { kind: 'fin', finishReason };
   }
 
   /** Upgrade a locally verified output to confirmed, using the root/count/size from the on-chain InferReceipt. */

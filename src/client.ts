@@ -629,17 +629,25 @@ export class TrueOpenClient {
     }
 
     const failures: string[] = [];
-    // One decoder for the whole call, fed with `stream: true`, because a frame boundary is
-    // chosen by the Worker and can fall inside a multi-byte UTF-8 sequence -- a CJK character
-    // split across two frames decodes to two replacement characters if each frame is decoded
-    // on its own. It survives a reconnect unchanged: resuming after `resumeAfterSeq` continues
-    // the same byte stream, so the bytes held back are still the correct prefix. Duplicates are
-    // dropped before reaching it, so no byte is ever fed twice.
+    // One decoder for the whole streamOutput call, fed with `stream: true`, because a frame
+    // boundary is chosen by the Worker and can fall inside a multi-byte UTF-8 sequence -- a CJK
+    // character split across two frames decodes to two replacement characters if each frame is
+    // decoded on its own.
     //
-    // Concatenating the emitted `chunk.text` reproduces the committed text whenever the
-    // committed bytes are valid UTF-8. If they are not, the trailing incomplete sequence is
-    // omitted here rather than emitted as a replacement character with no frame to belong to;
-    // `OutputStreamVerifier.text()` stays authoritative for the full text.
+    // In-call reconnect and Builder rotation (lines 647-699) reuse this decoder unchanged, so
+    // bytes held back mid-sequence remain the correct UTF-8 prefix to the next frame. Duplicates
+    // are dropped before reaching the decoder (line 680), so no byte is fed twice. Concatenating
+    // chunk.text reproduces the committed text for valid UTF-8 within a single call.
+    //
+    // For checkpoint-resumed calls (caller-supplied StreamOutputParams.checkpoint), a new
+    // streamOutput invocation creates a new decoder at this line with no memory of the prior
+    // call. If the prior decoder held trailing bytes of a multi-byte character, those bytes are
+    // orphaned: OutputStreamVerifierCheckpoint carries raw bytes and MMR but not TextDecoder
+    // state, and resumeAfterSeq prevents the frame holding them from being redelivered. The new
+    // decoder thus receives orphaned continuation bytes that are not a valid sequence start,
+    // emitting a replacement character (U+FFFD) at the seam. This corrupts only the live
+    // chunk.text stream; OutputStreamVerifier.text() reconstructs from the full checkpoint.chunks
+    // and is authoritative for exact reconstruction.
     const decoder = new TextDecoder();
     let finSource: OutputStreamSource | undefined;
     // The termination reason declared by a signature-verified Fin; stays undefined if the peer never sends a signed Fin.

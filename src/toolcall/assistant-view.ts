@@ -91,9 +91,14 @@ export function confirmAssistantMessageWithReceipt(
 /**
  * The non-streaming path, which has no provisional stage (design S4.4).
  *
- * `fetchTaskOutput` takes the on-chain `InferReceipt.output_hash` as a required input and
- * retrieves content-addressed against it, so by the time its text exists the bytes have already
- * been reconciled with the chain commitment and a parse over them is confirmed by construction.
+ * **Guarantee is conditional on the caller.** This function receives no receipt, checkpoint, or
+ * hash and cannot itself verify that `text` comes from a verified source. However, if and only
+ * if `text` is sourced exclusively from `fetchTaskOutput`, the bytes are already reconciled:
+ * `fetchTaskOutput` requires the on-chain `InferReceipt.output_hash` as a required input and
+ * retrieves content-addressed against it, so by the time its text exists, the bytes have already
+ * been reconciled with the chain commitment. A parse over such text is confirmed by construction.
+ *
+ * Safe usage: source `text` only from `fetchTaskOutput`.
  */
 export function deriveAssistantMessage(
   text: string,

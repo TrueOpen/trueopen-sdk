@@ -186,6 +186,21 @@ describe('confirmAssistantMessageWithReceipt', () => {
     ).toThrow(TrueOpenError);
   });
 
+  it('throws on a receipt whose output size bytes disagrees', () => {
+    expect(() =>
+      confirmAssistantMessageWithReceipt(
+        {
+          chainId: CHAIN_ID,
+          taskId: TASK_ID,
+          taskHash: TASK_HASH,
+          checkpoint: checkpointOver(chunks),
+          receipt: { ...receiptFor(chunks), outputSizeBytes: 99n },
+        },
+        { parser },
+      ),
+    ).toThrow(TrueOpenError);
+  });
+
   it('decodes multi-byte characters split across chunks', () => {
     const bytes = utf8('伦敦天气');
     const split = [bytes.slice(0, 5), bytes.slice(5)];

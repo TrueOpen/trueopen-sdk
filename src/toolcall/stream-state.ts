@@ -66,6 +66,12 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
 
       const at = buffer.indexOf(endMarker);
       if (at < 0) {
+        // Unbounded buffering: while the segment remains open, the entire content is
+        // retained — a start marker that never closes grows the buffer for the stream's
+        // life. This is unavoidable: text inside an open segment cannot be classified as
+        // call-versus-content until the segment resolves, so nothing in it can be emitted
+        // early. No bound is imposed because capping overflow requires choosing what
+        // happens on excess (drop output? error?), a policy decision design S7 leaves open.
         if (!atEnd) return events;
         // Design S7 requirement 2: an unclosed segment at end of stream flushes as plain text,
         // start marker included. A generation truncated by max_output_tokens produces exactly

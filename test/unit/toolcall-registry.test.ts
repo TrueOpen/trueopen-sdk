@@ -63,6 +63,17 @@ describe('createToolCallRegistry', () => {
     ).toThrow(TrueOpenError);
   });
 
+  it('does not conflate two refs whose name and version merely concatenate the same way', () => {
+    const a = fakeParser('a', 'b c');
+    const b = fakeParser('a b', 'c');
+    const registry = createToolCallRegistry([
+      { parser: a, conformance: 'vector-verified' },
+      { parser: b, conformance: 'vector-verified' },
+    ]);
+    expect(registry.lookup({ name: 'a', version: 'b c' })).toEqual({ supported: true, parser: a });
+    expect(registry.lookup({ name: 'a b', version: 'c' })).toEqual({ supported: true, parser: b });
+  });
+
   it('ships no parsers, because none has vectors yet', () => {
     expect(BUILTIN_TOOL_CALL_PARSERS.lookup({ name: 'hermes', version: '1' })).toEqual({
       supported: false,

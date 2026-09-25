@@ -24,7 +24,11 @@ export interface ToolCallRegistry {
   lookup(ref: ParserRef, opts?: { readonly allowUnverified?: boolean }): ToolCallSupport;
 }
 
-const key = (ref: ParserRef): string => `${ref.name} ${ref.version}`;
+// The key must be injective (no collisions) because two different (name, version) pairs
+// must never map to the same key. A collision would either throw a confusing duplicate
+// error for two genuinely different parsers, or (if only one is registered) make
+// lookup silently return the wrong parser for a ref that merely looks similar.
+const key = (ref: ParserRef): string => JSON.stringify([ref.name, ref.version]);
 
 export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolCallRegistry {
   const byKey = new Map<string, RegistryEntry>();

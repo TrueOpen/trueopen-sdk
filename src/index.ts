@@ -261,6 +261,35 @@ export type {
   ConfirmOutputWithReceiptInput,
   ConfirmedOutputEvent,
 } from './output/output-confirmation';
+// --- Tool calling: derived views over committed output (ADR-0022). Never part of the protocol. ---
+export {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
+export { TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
+export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan';
+export {
+  BUILTIN_TOOL_CALL_PARSERS,
+  createToolCallRegistry,
+  resolveToolCalling,
+  type ParserConformance,
+  type RegistryEntry,
+  type ToolCallRegistry,
+} from './toolcall/registry';
+export type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+  DerivedToolCall,
+  ParserRef,
+  ToolCallParser,
+  ToolCallStreamState,
+  ToolCallSupport,
+  UnsupportedReason,
+} from './toolcall/types';
 export {
   DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES,
   openAIFinishReason,

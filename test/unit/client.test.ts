@@ -21,6 +21,7 @@ import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outputFinSigningDigest } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
+import { createMarkerStreamState } from '../../src/toolcall/stream-state';
 
 // deriveTaskId requires canonical 64-hex (raw Hash32 goes into the preimage).
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
@@ -586,5 +587,49 @@ describe('TrueOpenClient facade', () => {
           chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',
         }),
     ).not.toThrow();
+  });
+
+  it('streamAssistantMessage derives provisional calls over the verified frame stream', async () => {
+    // The start marker is split between the two frames, so a per-frame parse would find neither.
+    const chunks = ['weather <t', 'c>get_weather|{"city":"London"}</tc> done'].map((t) =>
+      new TextEncoder().encode(t),
+    );
+    const transport = scriptedStreamTransport(async function* () {
+      const built = signedFrames('trueopen-devnet-1', chunks);
+      for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+      const last = built[built.length - 1]!;
+      yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+    });
+
+    const parseCall = (inner: string) => {
+      const at = inner.indexOf('|');
+      return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+    };
+    const parser = {
+      name: 'test-markers',
+      version: '1',
+      createStreamState: () =>
+        createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall }),
+      parseComplete: (text: string) => ({ role: 'assistant' as const, content: text, toolCalls: [] }),
+    };
+
+    const events = [];
+    for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+      sessionId: SESSION,
+      taskId: 'task-1',
+      taskHash: TASK_HASH,
+      workerServicePubKey: WORKER_PUB,
+      parser,
+    })) {
+      events.push(e);
+    }
+
+    expect(events).toEqual([
+      { kind: 'content', text: 'weather ' },
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"city":"London"}' } },
+      { kind: 'content', text: ' done' },
+    ]);
+    // Nothing executable came out of the stream: that requires confirmAssistantMessage.
+    expect(events.every((e) => e.kind === 'content' || e.kind === 'tool-call-provisional')).toBe(true);
   });
 });

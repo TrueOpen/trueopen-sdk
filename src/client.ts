@@ -31,6 +31,17 @@ import { outputHash as outputMmrRoot, OutputStreamVerifier, verifyOutputFinSigna
 import type { OutputStreamVerifierCheckpoint } from './output/output-commitment';
 import { confirmOutputWithReceipt } from './output/output-confirmation';
 import type { ConfirmedOutputEvent } from './output/output-confirmation';
+import {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+import type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+} from './toolcall/types';
 import type { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
 import type { InferReceiptView } from './types/node';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
@@ -783,6 +794,43 @@ export class TrueOpenClient {
   /** Upgrade a locally verified output to confirmed, using the root/count/size from the on-chain InferReceipt. */
   confirmOutput(p: ConfirmOutputParams): ConfirmedOutputEvent {
     return confirmOutputWithReceipt({ chainId: this.cfg.chainId, ...p });
+  }
+
+  /**
+   * The derived-view counterpart of `streamOutput` (design S4.1, S5).
+   *
+   * Stage one of the execution gate: every tool call it yields is provisional and must not be
+   * executed. Obtain the checkpoint the usual way, via `onCheckpoint`, then call
+   * `confirmAssistantMessage` with the on-chain receipt to get the executable list.
+   */
+  async *streamAssistantMessage(
+    p: StreamOutputParams & DerivedViewOptions,
+  ): AsyncIterable<AssistantStreamEvent> {
+    yield* deriveAssistantStream(this.streamOutput(p), p);
+  }
+
+  /**
+   * The derived-view counterpart of `confirmOutput` (design S4.1, S5).
+   *
+   * Synchronous and receipt-taking for the same reason `confirmOutput` is: the chain read
+   * belongs to the caller, which is what lets the stream run against a Builder while the caller
+   * decides when to reach the node.
+   */
+  confirmAssistantMessage(p: ConfirmOutputParams & DerivedViewOptions): ConfirmedAssistantMessage {
+    return confirmAssistantMessageWithReceipt({ chainId: this.cfg.chainId, ...p }, p);
+  }
+
+  /**
+   * The derived-view counterpart of `fetchTaskOutput` (design S4.4).
+   *
+   * No provisional stage: retrieval is content-addressed against the on-chain
+   * `InferReceipt.output_hash`, so the bytes are already reconciled when they arrive.
+   */
+  async fetchAssistantMessage(
+    p: Parameters<TrueOpenClient['fetchTaskOutput']>[0] & DerivedViewOptions,
+  ): Promise<DerivedAssistantMessage> {
+    const got = await this.fetchTaskOutput(p);
+    return deriveAssistantMessage(got.text, p);
   }
 
   /** Prepare challenge materials (does not submit a verdict). */

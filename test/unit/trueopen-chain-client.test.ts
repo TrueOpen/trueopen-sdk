@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { EncodeObject } from '@cosmjs/proto-signing';
-import type { DeliverTxResponse, StdFee } from '@cosmjs/stargate';
+import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { createTrueOpenChainClient } from '../../src/transport/trueopen-chain-client';
 import type { TxBroadcaster } from '../../src/transport/cosmjs-chain-writer';
 import type { FetchLike, FetchResponse } from '../../src/transport/rest-chain-reader';
@@ -10,18 +10,21 @@ import { fromHex } from '../../src/util/bytes';
 
 const fee: StdFee = { amount: [{ denom: 'utrueopen', amount: '1' }], gas: '200000' };
 
-function deliverTx(typeUrl: string, value: Uint8Array): DeliverTxResponse {
+function deliverTx(typeUrl: string, value: Uint8Array): IndexedTx {
   return {
     code: 0, height: 1, txIndex: 0, transactionHash: 'H', events: [],
     gasUsed: 1n, gasWanted: 1n, msgResponses: [{ typeUrl, value }],
-  } as unknown as DeliverTxResponse;
+  } as unknown as IndexedTx;
 }
 
 class FakeBroadcaster implements TxBroadcaster {
   last?: readonly EncodeObject[];
-  constructor(private readonly resp: DeliverTxResponse) {}
-  async signAndBroadcast(_s: string, messages: readonly EncodeObject[]): Promise<DeliverTxResponse> {
+  constructor(private readonly resp: IndexedTx) {}
+  async signAndBroadcastSync(_s: string, messages: readonly EncodeObject[]): Promise<string> {
     this.last = messages;
+    return 'TXHASH';
+  }
+  async getTx(): Promise<IndexedTx | null> {
     return this.resp;
   }
 }

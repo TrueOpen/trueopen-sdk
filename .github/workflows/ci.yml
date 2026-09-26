@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `feat/**` is here because long-lived feature branches in this repo are developed
+    # without an intermediate PR, so `pull_request` alone would leave them with no CI at
+    # all. The codegen job matters most there: `npm run generate` leaving `src/gen` dirty
+    # is the failure a local run forgets to check.
+    branches: [main, 'feat/**']
   pull_request:
 
 # A newer push to the same ref makes the older run's verdict irrelevant.

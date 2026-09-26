@@ -55,6 +55,12 @@
  *                         the script always appends " @ <ISO timestamp>" because nexus
  *                         dedupes payloads by content hash, so resending the same text
  *                         would be rejected
+ *   --payload-file <path> send this file's bytes as the payload, unchanged. Mutually
+ *                         exclusive with --prompt. The only way to submit a structured
+ *                         body (an OpenAI chat request, later a ChatInferInput) instead
+ *                         of a line of text. Appends nothing, so the content-hash dedupe
+ *                         above applies: resubmitting an identical file fails with
+ *                         NEXUS_DATA_CONFLICT
  *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
  *                         winner_confirm lands on chain, verify signatures and the MMR
  *                         root frame by frame as output is generated, without waiting
@@ -115,6 +121,19 @@ const POLL_TIMES = Number(flag('--poll', '18'));
 // hash, so resending the same sentence would collide with NEXUS_DATA_CONFLICT.
 // --prompt only changes the prefix, it doesn't remove this constraint.
 const PROMPT = flag('--prompt', 'trueopen e2e open-task');
+// Send a file's bytes as the payload, unchanged. This is the only way to submit a
+// structured body -- an OpenAI chat request, and later a ChatInferInput -- rather than a
+// line of text, and it is how the stalled-worker cases were reproduced: every stall so far
+// used a file-loaded JSON payload while --prompt text always completed.
+//
+// Unlike --prompt this appends NOTHING. Appending would change the bytes, which defeats
+// the point of passing a file. The consequence is real and yours to handle: nexus dedupes
+// by content hash, so submitting the same file twice fails with NEXUS_DATA_CONFLICT. Vary
+// something inside the file between runs.
+const PAYLOAD_FILE = flag('--payload-file', undefined);
+if (PAYLOAD_FILE !== undefined && argv.includes('--prompt')) {
+  throw new Error('--payload-file and --prompt are mutually exclusive: one sends a file\'s exact bytes, the other builds a line of text');
+}
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
 // get hard-truncated mid-sentence (observed in practice), hence it's tunable.
@@ -274,7 +293,10 @@ const ORDER_SEQ = SEQ_OVERRIDE === undefined ? await client.nextOrderSequence(se
 log(`order_sequence=${ORDER_SEQ}${SEQ_OVERRIDE === undefined ? ' (read from chain)' : ' (overridden by --seq)'}`);
 
 // ---- 2) payload (plaintext V1) ----
-const payload = new TextEncoder().encode(`${PROMPT} @ ${new Date().toISOString()}`);
+// --payload-file is passed through byte for byte; --prompt gets the timestamp appended.
+const payload = PAYLOAD_FILE === undefined
+  ? new TextEncoder().encode(`${PROMPT} @ ${new Date().toISOString()}`)
+  : new Uint8Array(readFileSync(PAYLOAD_FILE));
 const payloadHash = hex(sha256(payload));
 
 // ---- 3) on-chain context (anchor / builder set / bucket version, all signed) ----

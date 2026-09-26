@@ -645,9 +645,9 @@ export class TrueOpenClient {
     // character split across two frames decodes to two replacement characters if each frame is
     // decoded on its own.
     //
-    // In-call reconnect and Builder rotation (lines 647-699) reuse this decoder unchanged, so
+    // In-call reconnect and Builder rotation reuse this decoder unchanged, so
     // bytes held back mid-sequence remain the correct UTF-8 prefix to the next frame. Duplicates
-    // are dropped before reaching the decoder (line 680), so no byte is fed twice. Concatenating
+    // are dropped before reaching the decoder, so no byte is fed twice. Concatenating
     // chunk.text reproduces the committed text for valid UTF-8 within a single call.
     //
     // For checkpoint-resumed calls (caller-supplied StreamOutputParams.checkpoint), a new
@@ -823,8 +823,12 @@ export class TrueOpenClient {
   /**
    * The derived-view counterpart of `fetchTaskOutput` (design S4.4).
    *
-   * No provisional stage: retrieval is content-addressed against the on-chain
-   * `InferReceipt.output_hash`, so the bytes are already reconciled when they arrive.
+   * No provisional stage: `fetchTaskOutput` re-derives the MMR root locally and reconciles it
+   * against `p.outputHash`. But `p.outputHash` is a plain string the caller supplies -- nothing
+   * here reads it from the chain. So the guarantee is conditional on the caller, exactly as
+   * `deriveAssistantMessage`'s docstring spells out: the bytes are reconciled against the
+   * on-chain `InferReceipt.output_hash` if and only if the caller sourced `p.outputHash` from
+   * that on-chain receipt. Pass anything else and this reconciles the bytes against that instead.
    */
   async fetchAssistantMessage(
     p: Parameters<TrueOpenClient['fetchTaskOutput']>[0] & DerivedViewOptions,

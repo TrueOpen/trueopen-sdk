@@ -136,8 +136,8 @@ describe('deriveAssistantStream', () => {
 });
 
 describe('confirmAssistantMessageWithReceipt', () => {
-  // The markers are split between the two chunks, so a per-chunk parse would find neither.
-  const chunks = [utf8('a<tc>get_'), utf8('weather|{"c":1}</tc>b')];
+  // Both markers straddle a chunk boundary, so a per-chunk parse would find neither.
+  const chunks = [utf8('a<t'), utf8('c>get_weather|{"c":1}</t'), utf8('c>b')];
 
   it('returns the full list once the receipt reconciles', () => {
     const message = confirmAssistantMessageWithReceipt(

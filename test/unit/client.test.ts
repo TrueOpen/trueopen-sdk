@@ -630,6 +630,8 @@ describe('TrueOpenClient facade', () => {
       { kind: 'content', text: ' done' },
     ]);
     // Nothing executable came out of the stream: that requires confirmAssistantMessage.
-    expect(events.every((e) => e.kind === 'content' || e.kind === 'tool-call-provisional')).toBe(true);
+    // Runtime check, not a type restatement: nothing the stream emits carries the `confirmation`
+    // field that marks a receipt-reconciled result.
+    expect(events.some((e) => 'confirmation' in e)).toBe(false);
   });
 });

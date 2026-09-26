@@ -77,7 +77,8 @@ export type {
 
 export { taskRegistry } from './transport/cosmjs-registry';
 export { CosmjsChainWriter, composeChainClient } from './transport/cosmjs-chain-writer';
-export type { TxBroadcaster, CosmjsChainWriterOptions } from './transport/cosmjs-chain-writer';
+export type { TxBroadcaster, CosmjsChainWriterOptions, TxInclusionPolicy } from './transport/cosmjs-chain-writer';
+export { DEFAULT_TX_INCLUSION } from './transport/cosmjs-chain-writer';
 
 export { createTrueOpenChainClient, connectTrueOpenChainClient } from './transport/trueopen-chain-client';
 export type {

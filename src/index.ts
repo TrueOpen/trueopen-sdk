@@ -95,6 +95,8 @@ export { settlementFinalityToChainView } from './state/finality-map';
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
 
+export { deriveModelId, MODEL_ID_DOMAIN } from './order/model-id';
+
 // ---- Frozen TaskOrderV3 / SignedOrderV2 (wire v0.3.0) ----
 export {
   taskOrderHash,

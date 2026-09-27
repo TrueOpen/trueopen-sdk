@@ -71,3 +71,63 @@ export function compareUtf8(a: string, b: string): number {
   }
   return x.length - y.length;
 }
+
+function invalid(code: string, message: string): TrueOpenError {
+  return new TrueOpenError('SDK_LOCAL', code, message);
+}
+
+/**
+ * Canonical JSON V1 (Manifest S2.6 rules 1-9): sorted object keys, no whitespace, integers
+ * only, no Unicode normalisation, shortest valid escapes.
+ *
+ * It refuses more than `JSON.stringify` does, and the refusals are the point. `JSON.stringify`
+ * silently drops an `undefined` property, emits `null`, and prints `1e21` for a large number
+ * -- each of which produces bytes that hash to something the chain will not match, with no
+ * indication anything went wrong. Here each is an error at the point it occurs.
+ */
+export function canonicalJsonV1(value: unknown): string {
+  return encode(value, '$');
+}
+
+/** The UTF-8 bytes of `canonicalJsonV1`, which is what gets hashed. */
+export function canonicalJsonV1Bytes(value: unknown): Uint8Array {
+  return enc.encode(canonicalJsonV1(value));
+}
+
+function encode(value: unknown, path: string): string {
+  if (value === null) throw invalid('MANIFEST_CANONICAL_NULL', `null at ${path}; S2.6 rule 10 rejects null, and rule 9 fixes the empty value per type instead`);
+  if (value === undefined) throw invalid('MANIFEST_CANONICAL_UNDEFINED', `undefined at ${path}; JSON.stringify would drop this property silently`);
+
+  switch (typeof value) {
+    case 'boolean':
+      return value ? 'true' : 'false';
+    case 'bigint':
+      return value.toString(10);
+    case 'number':
+      if (!Number.isInteger(value)) {
+        throw invalid('MANIFEST_CANONICAL_NOT_INTEGER', `${value} at ${path} is not an integer; S2.6 rule 5 allows only decimal integers`);
+      }
+      if (!Number.isSafeInteger(value)) {
+        // Above 2^53 the value has already lost precision; emitting it would encode a
+        // different number than the document meant. Callers must use bigint for u64.
+        throw invalid('MANIFEST_CANONICAL_UNSAFE_INTEGER', `${value} at ${path} exceeds Number.MAX_SAFE_INTEGER; pass a bigint so no precision is lost`);
+      }
+      return value.toString(10);
+    case 'string':
+      return JSON.stringify(value);
+    case 'object':
+      break;
+    default:
+      throw invalid('MANIFEST_CANONICAL_UNSUPPORTED', `${typeof value} at ${path} cannot appear in a canonical manifest`);
+  }
+
+  if (Array.isArray(value)) {
+    // Rule 3: arrays keep their semantic order. Sorting one here would silently repair a
+    // document that rule 10 requires be rejected; see validate.ts.
+    return `[${value.map((v, i) => encode(v, `${path}[${i}]`)).join(',')}]`;
+  }
+
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort(compareUtf8);
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${encode(obj[k], `${path}.${k}`)}`).join(',')}}`;
+}

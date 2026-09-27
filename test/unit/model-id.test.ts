@@ -4,7 +4,7 @@ import { buildTaskOrder, defaultGenerationParams } from '../../src/order/task-or
 import type { TaskOrderChainContext, TaskOrderRequest } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import { bech32 } from '@scure/base';
-import { toHex } from '../../src/util/bytes';
+import { fromHex, toHex } from '../../src/util/bytes';
 
 const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
 const amount = (atomicUnits: string) => ({ atomicUnits });
@@ -18,7 +18,7 @@ const CTX: TaskOrderChainContext = {
   },
 };
 
-const baseOrder = (modelId: string): TaskOrderRequest => ({
+const baseOrder = (modelId: Uint8Array): TaskOrderRequest => ({
   userAddress: bech32.encode('trueopen', bech32.toWords(new Uint8Array(20).fill(0x11))),
   sessionId: hexOf(0x12), orderSequence: 1n,
   modelId, profileVersion: 1, taskType: TASK_TYPE.CHAT,
@@ -63,7 +63,7 @@ describe('model_id validation (matches node ^[a-z0-9][a-z0-9_-]{0,127}$)', () =>
   });
 
   it('buildTaskOrder fails fast on an invalid model_id (never produces an order the chain would reject)', () => {
-    expect(() => buildTaskOrder(CTX, baseOrder('hf/bad'))).toThrow(/must match/);
-    expect(() => buildTaskOrder(CTX, baseOrder('hf-ad410'))).not.toThrow();
+    expect(() => buildTaskOrder(CTX, baseOrder(new Uint8Array(31)))).toThrow(/32-byte Hash32/);
+    expect(() => buildTaskOrder(CTX, baseOrder(fromHex('ab'.repeat(32))))).not.toThrow();
   });
 });

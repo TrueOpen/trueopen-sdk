@@ -200,7 +200,7 @@ describe('prefix root and accumulator', () => {
   });
 });
 
-describe('official cross-language vectors (wire v0.4.1 testdata/v1/shared/mmr_primitive_v1.json)', () => {
+describe('official cross-language vectors (wire v0.3.0 testdata/v1/shared/mmr_primitive_v1.json)', () => {
   /**
    * This vector is published byte-for-byte by wire per monorepo "Canonical Encoding and Domain Hashing.md §11.5",
    * and is the shared criterion used by cortex / nexus / trueopen-sdk. The SDK's earlier self-made vectors have

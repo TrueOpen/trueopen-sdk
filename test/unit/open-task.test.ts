@@ -56,7 +56,7 @@ const req: TaskOrderRequest = {
   userAddress: USER,
   sessionId: SESSION,
   orderSequence: 1n,
-  modelId: 'hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: fromHex('ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b'),
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: PAYLOAD,
@@ -73,7 +73,7 @@ const req: TaskOrderRequest = {
 };
 
 const order = buildTaskOrder(ctx, req);
-/** The two extra fields the order's EIP-712 signing needs: the numeric EVM chain ID and the fee denom, neither of which lives in TaskOrderV2. */
+/** The two extra fields the order's EIP-712 signing needs: the numeric EVM chain ID and the fee denom, neither of which lives in TaskOrderV3. */
 const ORDER_EIP712 = { evmChainId: 424242n, feeDenom: 'utrueopen' };
 const TASK_ID = deriveTaskId(SESSION, 1n);
 

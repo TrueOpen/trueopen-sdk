@@ -17,7 +17,7 @@ import { secp256k1Address } from '../../src/signer/secp256k1';
 import { toHex, fromHex } from '../../src/util/bytes';
 import { bech32 } from '@scure/base';
 
-/** Same anchor as eip712.test.ts: wire v0.4.1's account_signing_v1.json, read directly from the submodule. */
+/** Same anchor as eip712.test.ts: wire v0.3.0's account_signing_v1.json, read directly from the submodule. */
 const v = JSON.parse(readFileSync('third_party/wire/testdata/v1/shared/account_signing_v1.json', 'utf8'));
 const a = v.account;
 const priv = fromHex(a.private_key);

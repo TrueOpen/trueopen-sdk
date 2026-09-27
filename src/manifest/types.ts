@@ -19,9 +19,10 @@
 /**
  * A field whose wire type is a u64. A JS `number` loses precision above 2^53
  * (`Number.MAX_SAFE_INTEGER`), so every such field also accepts a `bigint`; the canonical
- * encoder (`canonical.ts`) already accepts `bigint` for exactly this reason. The vector's
- * largest value is 8,000,000,000, safely inside safe-integer range, so nothing here is
- * exercised by the vector alone -- see the Task 4 report for which fields this was applied to.
+ * encoder (`canonical.ts`) already accepts `bigint` for exactly this reason. Fields receive
+ * `U64` because protocol-declared u64 values above `Number.MAX_SAFE_INTEGER` arriving as a
+ * `number` have already lost precision by the time the canonical encoder sees them, and
+ * silent precision loss in a hash input defeats the validation this module exists to prevent.
  */
 export type U64 = number | bigint;
 
@@ -112,19 +113,19 @@ export interface MetadataV1 {
 
 export interface ModelMoeV1 {
   readonly enabled: boolean;
-  readonly num_experts: number;
-  readonly num_experts_per_tok: number;
+  readonly num_experts: U64;
+  readonly num_experts_per_tok: U64;
 }
 
 export interface ModelQuantizationV1 {
-  readonly bits: number;
+  readonly bits: U64;
   readonly method: string;
 }
 
 export interface ModelConfigSummaryV1 {
   readonly active_params: U64;
   readonly architecture: string;
-  readonly context_length: number;
+  readonly context_length: U64;
   readonly modality: readonly string[];
   readonly model_type: string;
   readonly moe: ModelMoeV1;
@@ -165,7 +166,7 @@ export interface PricingProfileV1 {
 // ---------------------------------------------------------------------------------------
 
 export interface ProfileSpecV1 {
-  readonly challenge_open_window_blocks: number;
+  readonly challenge_open_window_blocks: U64;
   readonly generation_type: string;
   readonly min_stake: Coin;
   readonly require_encrypted: boolean;

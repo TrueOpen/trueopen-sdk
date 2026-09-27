@@ -1,5 +1,5 @@
 import { TrueOpenError } from '../errors/errors';
-import { partialMarkerSuffix } from './marker-scan';
+import { indexOfOutsideQuotes, partialMarkerSuffix, unterminatedQuoteSuffix } from './marker-scan';
 import type { AssistantStreamEvent, DerivedToolCall, ToolCallStreamState } from './types';
 
 export interface MarkerStreamOptions {
@@ -49,10 +49,13 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
     const events: AssistantStreamEvent[] = [];
     for (;;) {
       if (!buffering) {
-        const at = buffer.indexOf(startMarker);
+        const at = indexOfOutsideQuotes(buffer, startMarker);
         if (at < 0) {
-          // Everything except a suffix that could still grow into the start marker.
-          const held = atEnd ? 0 : partialMarkerSuffix(buffer, [startMarker]);
+          // Everything except a suffix that could still grow into the start marker, or that is
+          // an as-yet-unclosed quote span (its closing quote may arrive next frame).
+          const held = atEnd
+            ? 0
+            : Math.max(partialMarkerSuffix(buffer, [startMarker]), unterminatedQuoteSuffix(buffer));
           const text = buffer.slice(0, buffer.length - held);
           buffer = held === 0 ? '' : buffer.slice(buffer.length - held);
           if (text !== '') events.push({ kind: 'content', text });
@@ -64,7 +67,7 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
         continue;
       }
 
-      const at = buffer.indexOf(endMarker);
+      const at = indexOfOutsideQuotes(buffer, endMarker);
       if (at < 0) {
         // Unbounded buffering: while the segment remains open, the entire content is
         // retained — a start marker that never closes grows the buffer for the stream's

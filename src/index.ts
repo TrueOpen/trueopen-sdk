@@ -279,6 +279,7 @@ export {
   type RegistryEntry,
   type ToolCallRegistry,
 } from './toolcall/registry';
+export { hermesParser } from './toolcall/parsers/hermes';
 export { resolveToolCalling } from './manifest-resolution';
 export type { ManifestSource, ResolvedManifest } from './manifest-resolution';
 export type {

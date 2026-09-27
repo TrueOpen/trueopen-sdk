@@ -85,6 +85,41 @@ describe('createMarkerStreamState', () => {
     ]);
   });
 
+  it('does not treat a marker quoted in prose as a call', () => {
+    // Design §5.3: a quoted marker is content, not control syntax.
+    expect(run(['say "<tc>a|1</tc>" done'])).toEqual([
+      { kind: 'content', text: 'say "<tc>a|1</tc>" done' },
+    ]);
+  });
+
+  it('does not close early on an end marker inside a quoted argument', () => {
+    // The `</tc>` inside `"b</tc>c"` is a string literal; only the final `</tc>` closes.
+    expect(run(['<tc>a|"b</tc>c"</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '"b</tc>c"' } },
+    ]);
+  });
+
+  it('mixes quoted text and calls', () => {
+    expect(run(['<tc>a|1</tc> "not a call" <tc>b|2</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+      { kind: 'content', text: ' "not a call" ' },
+      { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+    ]);
+  });
+
+  it('does not emit a frame that ends inside an unclosed quote', () => {
+    // The closing quote arrives next frame; emitting `"abc` now would make `def"`'s quote look
+    // like an opening quote and swallow the marker.
+    expect(run(['"abc', 'def" <tc>a|1</tc>'])).toEqual([
+      { kind: 'content', text: '"abcdef" ' },
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+    ]);
+  });
+
+  it('releases an unclosed quote as text on finish', () => {
+    expect(run(['"abc'])).toEqual([{ kind: 'content', text: '"abc' }]);
+  });
+
   it('flushes an unclosed segment as plain text at end of stream, marker included', () => {
     // What a generation truncated by max_output_tokens produces. A normal outcome, not an
     // error, and no character may be dropped.
@@ -98,6 +133,27 @@ describe('createMarkerStreamState', () => {
     // Design S6 row one: "the parse did not succeed" is what happens when calling an engine
     // directly too. It is not an error, and enabling tool calling must never lose data.
     expect(run(['<tc>not a call</tc>'])).toEqual([{ kind: 'content', text: '<tc>not a call</tc>' }]);
+  });
+
+  it('passes an orphan end marker through as text', () => {
+    // Design §5.4: an end marker with no opening marker is ordinary text.
+    expect(run(['hello </tc>'])).toEqual([{ kind: 'content', text: 'hello </tc>' }]);
+    expect(run(['</tc> <tc>a|1</tc>'])).toEqual([
+      { kind: 'content', text: '</tc> ' },
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+    ]);
+  });
+
+  it('passes an empty segment through as text', () => {
+    expect(run(['<tc></tc>'])).toEqual([{ kind: 'content', text: '<tc></tc>' }]);
+  });
+
+  it('treats a nested start marker as part of the inner text', () => {
+    // The machine only knows start/end markers, not JSON: a second start marker before the first
+    // end marker is inner text, so the call spans to the first end marker.
+    expect(run(['<tc>a<tc>b|2</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a<tc>b', arguments: '2' } },
+    ]);
   });
 
   it('emits nothing for an empty stream', () => {

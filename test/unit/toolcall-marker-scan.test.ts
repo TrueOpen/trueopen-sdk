@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { partialMarkerSuffix, pendingMarkerSuffix } from '../../src/toolcall/marker-scan';
+import {
+  indexOfOutsideQuotes,
+  partialMarkerSuffix,
+  pendingMarkerSuffix,
+  skipJsonString,
+  unterminatedQuoteSuffix,
+} from '../../src/toolcall/marker-scan';
 
 describe('partialMarkerSuffix', () => {
   it('holds back a marker that has only half arrived', () => {
@@ -40,5 +46,88 @@ describe('pendingMarkerSuffix', () => {
 
   it('holds back nothing when the tail cannot begin any marker', () => {
     expect(pendingMarkerSuffix('done.', ['<|im_end|>'])).toBe(0);
+  });
+});
+
+describe('skipJsonString', () => {
+  it('skips a complete string, returning the index just past the closing quote', () => {
+    expect(skipJsonString('"abc" rest', 0)).toBe(5);
+  });
+
+  it('skips an escaped quote as part of the string, not as the closing quote', () => {
+    // `"a\"b"` is the string `a"b`; the `\"` must not close it early.
+    expect(skipJsonString('"a\\"b" rest', 0)).toBe(6);
+  });
+
+  it('treats the hex digits of a \\uXXXX escape as ordinary characters', () => {
+    // `\u` is skipped as an escape; the four hex digits must not be mistaken for a quote.
+    expect(skipJsonString('"a\\u0041" rest', 0)).toBe(9);
+  });
+
+  it('scans to the end of the input on an unterminated string', () => {
+    expect(skipJsonString('"abc', 0)).toBe(4);
+  });
+
+  it('skips an empty string', () => {
+    expect(skipJsonString('"" rest', 0)).toBe(2);
+  });
+});
+
+describe('indexOfOutsideQuotes', () => {
+  it('behaves like indexOf when there are no quotes', () => {
+    expect(indexOfOutsideQuotes('abc<tc>def', '<tc>')).toBe(3);
+  });
+
+  it('does not find a marker inside double quotes', () => {
+    expect(indexOfOutsideQuotes('"<tc>"', '<tc>')).toBe(-1);
+    expect(indexOfOutsideQuotes('say "<tc>" done', '<tc>')).toBe(-1);
+  });
+
+  it('does not find a marker inside an escaped-quote string', () => {
+    // The `</tc>` inside `"print(\"</tc>\")"` is a string literal, not the end marker.
+    expect(indexOfOutsideQuotes('"print(\\"</tc>\\")"</tc>', '</tc>')).toBe(18);
+  });
+
+  it('finds a marker after a quoted span', () => {
+    expect(indexOfOutsideQuotes('"a" <tc>', '<tc>')).toBe(4);
+  });
+
+  it('does not find a marker swallowed by an unterminated string', () => {
+    expect(indexOfOutsideQuotes('"unterminated </tc>', '</tc>')).toBe(-1);
+  });
+
+  it('finds a marker before any quoted span', () => {
+    expect(indexOfOutsideQuotes('<tc> "later"', '<tc>')).toBe(0);
+  });
+
+  it('skips several quoted spans and finds the marker after the last', () => {
+    expect(indexOfOutsideQuotes('"a" "b" <tc>', '<tc>')).toBe(8);
+  });
+
+  it('honours fromIndex', () => {
+    expect(indexOfOutsideQuotes('"x"<tc>"y"<tc>', '<tc>', 4)).toBe(10);
+  });
+});
+
+describe('unterminatedQuoteSuffix', () => {
+  it('returns 0 when quotes are balanced', () => {
+    expect(unterminatedQuoteSuffix('"abc"')).toBe(0);
+    expect(unterminatedQuoteSuffix('no quotes')).toBe(0);
+    expect(unterminatedQuoteSuffix('"a" "b"')).toBe(0);
+    expect(unterminatedQuoteSuffix('')).toBe(0);
+  });
+
+  it('returns the length of a trailing unclosed quote span', () => {
+    expect(unterminatedQuoteSuffix('"abc')).toBe(4);
+    expect(unterminatedQuoteSuffix('text "abc')).toBe(4);
+  });
+
+  it('measures from the last unclosed opener when earlier quotes closed', () => {
+    expect(unterminatedQuoteSuffix('"a" "b')).toBe(2);
+  });
+
+  it('ignores an escaped quote when deciding closure', () => {
+    // `"a\"` ends with an escaped quote, so the string is still open.
+    expect(unterminatedQuoteSuffix('"a\\"')).toBe(4);
   });
 });

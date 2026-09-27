@@ -47,3 +47,73 @@ export function pendingMarkerSuffix(text: string, markers: readonly string[]): n
   }
   return held;
 }
+
+/** Skip a JSON string starting at `text[i] === '"'`; returns the index just past the closing quote. */
+export function skipJsonString(text: string, i: number): number {
+  i += 1; // opening quote
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\') {
+      // Skip the escape and the escaped character. For `\uXXXX` this skips the backslash and
+      // `u`, leaving the four hex digits as ordinary characters -- none is `"` or `\`, so they
+      // cannot be mistaken for the closing quote.
+      i += 2;
+      continue;
+    }
+    if (ch === '"') return i + 1;
+    i += 1;
+  }
+  return i;
+}
+
+/**
+ * First index of `marker` that is not inside a JSON string, or -1.
+ *
+ * A marker written as prose inside quotes ("here is `<tool_call>`") or as a string value in a
+ * tool's argument JSON is visible content, not parser control syntax (design §5.3). Only an
+ * unquoted marker is a real start/end marker, so this scan skips quoted spans.
+ */
+export function indexOfOutsideQuotes(text: string, marker: string, fromIndex = 0): number {
+  let i = fromIndex;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      i = skipJsonString(text, i);
+      continue;
+    }
+    if (text.startsWith(marker, i)) return i;
+    i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Length of the trailing span that begins with an as-yet-unclosed double quote, or 0 when the
+ * quotes are balanced.
+ *
+ * In the Text state, a frame that ends inside a quoted span must not be emitted yet: the closing
+ * quote may arrive in the next frame, and emitting now would make that closing quote look like
+ * an opening quote, swallowing whatever marker follows. Held back alongside the partial-marker
+ * suffix and released on finish.
+ */
+export function unterminatedQuoteSuffix(text: string): number {
+  let inQuote = false;
+  let lastOpen = -1;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\') {
+      i += 2;
+      continue;
+    }
+    if (ch === '"') {
+      if (inQuote) inQuote = false;
+      else {
+        inQuote = true;
+        lastOpen = i;
+      }
+    }
+    i += 1;
+  }
+  return inQuote ? text.length - lastOpen : 0;
+}

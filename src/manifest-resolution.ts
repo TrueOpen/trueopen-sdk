@@ -1,4 +1,3 @@
-import { TrueOpenError } from './errors/errors';
 import { manifestHash } from './manifest/hash';
 import { validateManifestV4 } from './manifest/validate';
 import type { ModelProfileManifestV4 } from './manifest/types';

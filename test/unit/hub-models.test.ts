@@ -26,6 +26,7 @@ const PROFILES = {
   profiles: [
     {
       model_id: 'hf-ad410', profile_version: 1, runtime_class: 'CAUSAL_LM_PREFILL_LOGPROBS_V1',
+      manifest_hash: 'ab'.repeat(32),
       required_top_k: 20, task_types: ['TASK_TYPE_CHAT', 'TASK_TYPE_TEXT_GENERATION'],
       generation_type: 'GENERATION_TYPE_SAMPLED', resource_tier: 1, status: 'MODEL_PROFILE_STATUS_ACTIVE',
     },
@@ -56,6 +57,7 @@ describe('HubReader Models/Profiles discovery queries', () => {
 
   it('listProfiles parses the trimmed ProfileInfo + task_types array', async () => {
     const r = await readerFor({ '/hub/v1/profiles': PROFILES }).listProfiles({ modelId: 'hf-ad410' });
+    expect(r[0]?.manifestHash).toBe('ab'.repeat(32));
     expect(r[0]?.profileVersion).toBe(1n);
     expect(r[0]?.resourceTier).toBe(1n);
     expect(r[0]?.requiredTopK).toBe(20n);

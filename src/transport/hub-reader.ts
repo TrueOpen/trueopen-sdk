@@ -438,6 +438,7 @@ function toProfile(o: Record<string, unknown>): ProfileInfo {
   const taskTypes = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
   return {
     modelId: str(o, 'model_id'),
+    manifestHash: str(o, 'manifest_hash'),
     profileVersion: u32(o, 'profile_version'),
     status: strOpt(o, 'status'),
     runtimeClass: strOpt(o, 'runtime_class'),

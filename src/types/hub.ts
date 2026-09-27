@@ -102,6 +102,8 @@ export interface ModelState {
 /** Trimmed-down SDK view of node hub.v1 ProfileState (Profiles list query; only discovery-relevant scalar fields, verification/pricing and other nested config are not expanded). */
 export interface ProfileInfo {
   readonly modelId: string;
+  /** The chain's committed manifest hash (lowercase 64-hex Hash32), the trusted anchor the SDK re-derives against. */
+  readonly manifestHash: string;
   readonly profileVersion: bigint;
   readonly status: string; // MODEL_PROFILE_STATUS_* (may be unset)
   readonly runtimeClass: string;

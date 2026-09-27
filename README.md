@@ -474,17 +474,61 @@ The Node downloader does the following for the chain-provided URI:
 Mirrors and the gateway are operator-configured. They get the same size and time limits, but
 no address policy.
 
-**Browsers:** a page cannot pin DNS or vet the address it connects to. The main entry therefore
-has no default downloader for `manifest_uri`, and `new ManifestSource(...)` requires one of:
+**Browsers.** A page cannot pin DNS or check which address it connects to, so the SDK never
+fetches an on-chain `manifest_uri` directly from a browser. `new ManifestSource(...)` needs at
+least one of these:
 
-- `fetcher`: your own SSRF-safe `ManifestFetcher`, for example a same-origin proxy endpoint that
-  enforces the rules above;
-- `mirrors` (and/or `ipfsGateway`): trusted sources fetched with `boundedWebFetch` over the
-  platform `fetch`.
+- **A `fetcher`**, for example the same-origin proxy described below.
+- **`mirrors` and/or `ipfsGateway`**: sources you control, fetched with `boundedWebFetch` over
+  the platform `fetch`.
 
-Without a `fetcher`, an `https` `manifest_uri` is skipped. The skip is recorded in `attempts` as
-`MANIFEST_URI_SKIPPED`, and the mirrors are used instead. Each body is still fully verified
-against `manifest_hash`.
+This is the default behaviour. Without a `fetcher`, an `https` `manifest_uri` is skipped and
+recorded in `attempts` as `MANIFEST_URI_SKIPPED`, and the mirrors are used instead.
+
+**Recommended browser deployment: a same-origin proxy fetcher.** Serve a small endpoint from
+your app's origin. It fetches the `manifest_uri` on the server with the Node downloader and
+returns the bytes unchanged. In the browser, point the fetcher at it:
+
+```ts
+import { ManifestSource, HubReader, boundedWebFetch } from 'trueopen-sdk';
+import type { ManifestFetcher } from 'trueopen-sdk';
+
+// ManifestFetcher = (url, { maxBytes, timeoutMs }) => Promise<Uint8Array>
+const proxyFetcher: ManifestFetcher = (url, limits) =>
+  boundedWebFetch(`/manifest-proxy?url=${encodeURIComponent(url)}`, limits);
+
+const source = new ManifestSource({
+  reader: new HubReader({ baseUrl: 'https://node.example:1317', fetch }),
+  fetcher: proxyFetcher,
+  mirrors: ['https://mirror.example/manifests/{manifest_hash}.json'], // optional fallback
+});
+```
+
+The proxy must enforce every downloader rule on the server. `createNodeManifestFetcher()` from
+`trueopen-sdk/node` does this by default:
+
+- Resolve the host, and refuse unless every address is public (IPv4 and IPv6, including
+  IPv4-mapped, NAT64 and 6to4 forms).
+- Connect only to the address it checked (no DNS rebinding).
+- Verify TLS against the original host name.
+- Re-check the address on every retry and every redirect hop. Follow at most 3 redirects, and
+  never from https to http.
+- Apply a connect timeout and a total timeout.
+- Cap the body at 4 MiB after decompression, and allow only gzip, deflate or br.
+- Accept only a URL that is valid `manifest_uri` syntax (`parseManifestUri`, https), so the
+  endpoint is not an open proxy.
+- Return the bytes exactly as fetched.
+
+The proxy is trusted for network safety only, not for integrity. The browser SDK still re-checks
+everything the proxy returns:
+
+- the hash against `manifest_hash`;
+- strict parsing;
+- exact canonical bytes;
+- the projection against `ProfileState`.
+
+A proxy that alters the body therefore cannot get a manifest accepted.
+[`examples/manifest-proxy.mjs`](examples/manifest-proxy.mjs) is a runnable example.
 
 ### ⚠️ Integration checkpoint (byte encoding conventions)
 

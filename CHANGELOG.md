@@ -13,6 +13,8 @@
   policy, a pinned connection, TLS checked against the host name, and re-checks on retry and on
   each redirect (at most 3). It applies connect and total timeouts and caps the body at 4 MiB
   after decompression.
+- `examples/manifest-proxy.mjs`: a same-origin manifest proxy, the recommended browser
+  deployment. Browsers never fetch an on-chain `manifest_uri` directly.
 - `parseManifestUri` / `isValidManifestUri`, matching `testdata/v1/hub/manifest_uri_v1.json`.
 - canonical_json_v1 encoder and strict parser (no HTML escaping), the H_V1 framing,
   `chainProjectionHash` and `registrationDigest` (`TRUEOPEN_MODEL_CHAIN_PROJECTION_V3`,

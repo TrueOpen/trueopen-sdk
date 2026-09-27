@@ -302,19 +302,23 @@ also what decides how each is reported:
 | Marker never closes, argument JSON invalid | during parse | **plain text**, not an error |
 | `tool_calling = {}` (profile pins no parser) | before streaming | `resolveToolCalling` -> `parser-not-pinned` |
 | `(name, version)` unknown to this SDK build | before streaming | `resolveToolCalling` -> `parser-unknown` |
+| `(name, version)` implemented but not vector-verified | before streaming | `resolveToolCalling` -> `parser-unverified` |
 | Manifest cannot be retrieved | before streaming | `resolveToolCalling` -> `manifest-unavailable` |
 | Re-derived `manifest_hash` disagrees with chain | before streaming | `resolveToolCalling` -> `manifest-hash-mismatch` |
+| Manifest fails `validateManifestV4` (rule 11 / rule 10 / malformed) | before streaming | `resolveToolCalling` -> `manifest-invalid` |
 
 ```ts
 export type UnsupportedReason =
   | 'parser-not-pinned'
   | 'parser-unknown'
+  | 'parser-unverified'
   | 'manifest-unavailable'
-  | 'manifest-hash-mismatch';
+  | 'manifest-hash-mismatch'
+  | 'manifest-invalid';
 ```
 
 Row one is "the parse did not succeed" -- exactly what happens when calling an engine
-directly, so it is not an error and the text flows through unchanged. The other four are
+directly, so it is not an error and the text flows through unchanged. The other six are
 "this SDK is not entitled to parse", a different fact, and they are kept distinct because
 callers treat them differently: `manifest-hash-mismatch` means something is wrong and a
 deployment may want to refuse to start, while `parser-not-pinned` is an ordinary profile
@@ -480,8 +484,8 @@ Three things this plan does **not** resolve:
 |---|---|---|---|
 | **P1** | All of `src/toolcall/`: registry, state machine, event types. Parser supplied by explicit injection rather than read from a manifest. | nothing | **delivered** (`feat/toolcall-p1`) |
 | **P2** | `src/manifest/`: canonical encoding, hash, validation, types (`fetch.ts` not built -- no source) | (was `monorepo#29`, now resolved) | **delivered** (`feat/toolcall-p1`) |
-| **P3** | Wire them together: `manifestSource` drives the full verification chain; the two manifest `UnsupportedReason` values become reachable | P2 | waiting |
-| **P4** | Provider layer: synthesize `id` per `tool_calling.call_id_format`, plus `type` / `index` / `finish_reason` / SSE | ADR's Provider boundary settling | waiting |
+| **P3** | Wire them together: `manifestSource` drives the full verification chain; the three manifest `UnsupportedReason` values become reachable | (was P2) | **delivered** (`feat/toolcall-p1`) |
+| **P4** | Provider layer (lives in `trueopen-proxy`, not the SDK): synthesize `id` per `tool_calling.call_id_format`, plus `type` / `index` / `finish_reason` / SSE | ADR's Provider boundary settling | waiting |
 
 **P1 shipped without any concrete parser.** Parser behaviour specs and their shared vectors
 belong to wire under ADR-0022 decision four and are unpublished (`monorepo#11`), so a parser

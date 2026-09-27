@@ -81,25 +81,20 @@ export interface ConfirmedAssistantMessage extends DerivedAssistantMessage {
  * Why this SDK is not entitled to parse. All are known before any frame arrives, which is why
  * they are resolved up front rather than delivered as a stream event (design S5.1).
  *
- * `parser-unverified` extends the four in design S6: ADR-0022 decision four's shared vectors do
+ * `parser-unverified` extends the two in design S6: ADR-0022 decision four's shared vectors do
  * not exist yet (monorepo#11), so a registry that reported an implemented-but-unchecked parser
  * as supported would claim precisely what cannot be claimed.
  *
- * The three manifest reasons are reached through `resolveToolCalling`: `manifest-unavailable`
- * means no document could be obtained at all; `manifest-hash-mismatch` means a valid document
- * was obtained but is not the one the chain committed to; and `manifest-invalid` means a
- * document was obtained but fails `validateManifestV4` (garbage, or a `manifest_version` this
- * build rejects). `manifest-invalid` is distinct from `manifest-hash-mismatch`: the latter is a
- * well-formed document that re-derives to a different hash, while the former never gets far
- * enough to be hashed.
+ * The parser is read from the profile's on-chain `tool_call_parser` projection, which is
+ * authoritative, so there is no manifest fetch/hash/validate step that could fail: the three
+ * manifest failure modes the earlier design carried are gone. Full-document verification (of the
+ * artifacts, `output_decoding`, etc.) is a separate concern handled by `manifestHash` +
+ * `assertManifestMatchesChain`, not by tool-call resolution.
  */
 export type UnsupportedReason =
   | 'parser-not-pinned'
   | 'parser-unknown'
-  | 'parser-unverified'
-  | 'manifest-unavailable'
-  | 'manifest-hash-mismatch'
-  | 'manifest-invalid';
+  | 'parser-unverified';
 
 export type ToolCallSupport =
   | { readonly supported: true; readonly parser: ToolCallParser }

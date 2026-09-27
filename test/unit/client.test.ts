@@ -24,7 +24,7 @@ import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 import { createMarkerStreamState } from '../../src/toolcall/stream-state';
 import { createToolCallRegistry } from '../../src/toolcall/registry';
-import type { ToolCallParser } from '../../src/toolcall/types';
+import type { AssistantStreamEvent, ParserRef, ToolCallParser } from '../../src/toolcall/types';
 import { validateManifestV4 } from '../../src/manifest/validate';
 import { manifestHash } from '../../src/manifest/hash';
 
@@ -640,18 +640,13 @@ describe('TrueOpenClient facade', () => {
     expect(events.some((e) => 'confirmation' in e)).toBe(false);
   });
 
-  describe('manifest-aware streamAssistantMessage', () => {
-    const VECTOR = JSON.parse(readFileSync('test/fixtures/wire/model_manifest_v4.json', 'utf8')) as {
-      manifest: Record<string, unknown>;
-      vectors: { digest_hex: string }[];
-    };
-
+  describe('tool-call-aware streamAssistantMessage (chain projection)', () => {
     const parseCall = (inner: string) => {
       const at = inner.indexOf('|');
       return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
     };
 
-    // A vector-verified parser registered for hermes@1, matching the manifest's pinned ref below.
+    // A vector-verified parser registered for hermes@1.
     const hermesParser: ToolCallParser = {
       name: 'hermes',
       version: 1,
@@ -661,16 +656,6 @@ describe('TrueOpenClient facade', () => {
     };
 
     const registry = createToolCallRegistry([{ parser: hermesParser, conformance: 'vector-verified' }]);
-
-    // The fixture's own digest hashes `tool_calling: {}`; the supported case needs a populated
-    // block, and the hash must be of that modified manifest (mirrors manifest-resolution.test.ts).
-    const pinnedManifest = (): { manifest: Record<string, unknown>; hashHex: string } => {
-      const manifest: Record<string, unknown> = {
-        ...VECTOR.manifest,
-        tool_calling: { parser: { name: 'hermes', version: 1 }, call_id_format: 'OPENAI_CALL_PREFIX' },
-      };
-      return { manifest, hashHex: toHex(manifestHash(validateManifestV4(manifest))) };
-    };
 
     // One tool call, its start marker split across frames so a per-frame parse would find nothing.
     const toolCallChunks = ['weather <t', 'c>get_weather|{"city":"London"}</tc> done'].map((t) =>
@@ -685,16 +670,14 @@ describe('TrueOpenClient facade', () => {
         yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
       });
 
-    const drainManifest = async (
-      manifestSource: () => Promise<{ manifest: unknown; manifestHashHex: string }>,
-    ) => {
-      const events = [];
+    const drain = async (toolCallParser: ParserRef): Promise<AssistantStreamEvent[]> => {
+      const events: AssistantStreamEvent[] = [];
       for await (const e of makeClientWithTransport(toolCallTransport()).streamAssistantMessage({
         sessionId: SESSION,
         taskId: 'task-1',
         taskHash: TASK_HASH,
         workerServicePubKey: WORKER_PUB,
-        manifestSource,
+        toolCallParser,
         registry,
       })) {
         events.push(e);
@@ -702,19 +685,16 @@ describe('TrueOpenClient facade', () => {
       return events;
     };
 
-    it('yields a tool-call-provisional event when the manifest pins a vector-verified parser', async () => {
-      const { manifest, hashHex } = pinnedManifest();
-      const events = await drainManifest(async () => ({ manifest, manifestHashHex: hashHex }));
+    it('yields a tool-call-provisional event when the profile pins a vector-verified parser', async () => {
+      const events = await drain({ name: 'hermes', version: 1 });
       expect(events).toContainEqual({
         kind: 'tool-call-provisional',
         call: { name: 'get_weather', arguments: '{"city":"London"}' },
       });
     });
 
-    it('degrades to content-only and does not throw when the manifest source rejects', async () => {
-      const events = await drainManifest(async () => {
-        throw new Error('unavailable');
-      });
+    it('degrades to content-only when the profile pins no parser', async () => {
+      const events = await drain({ name: '', version: 0 });
       expect(events.every((e) => e.kind === 'content')).toBe(true);
       expect(events.some((e) => e.kind === 'tool-call-provisional')).toBe(false);
       expect(events.map((e) => (e.kind === 'content' ? e.text : '')).join('')).toBe(
@@ -722,9 +702,8 @@ describe('TrueOpenClient facade', () => {
       );
     });
 
-    it('degrades to content-only when the manifest hash does not match the chain value', async () => {
-      const { manifest } = pinnedManifest();
-      const events = await drainManifest(async () => ({ manifest, manifestHashHex: 'dd'.repeat(32) }));
+    it('degrades to content-only when the profile pins a parser this registry does not have', async () => {
+      const events = await drain({ name: 'unknown-parser', version: 1 });
       expect(events.every((e) => e.kind === 'content')).toBe(true);
       expect(events.some((e) => e.kind === 'tool-call-provisional')).toBe(false);
       expect(events.map((e) => (e.kind === 'content' ? e.text : '')).join('')).toBe(
@@ -733,7 +712,7 @@ describe('TrueOpenClient facade', () => {
     });
   });
 
-  describe('manifest-aware fetchAssistantMessage', () => {
+  describe('tool-call-aware fetchAssistantMessage (chain projection)', () => {
     // fetchTaskOutput's TaskDataObjectRef requires every Hash32 field to be canonical 64-hex.
     const TASK_ID = '1'.repeat(64);
 
@@ -760,19 +739,6 @@ describe('TrueOpenClient facade', () => {
     };
 
     const registry = createToolCallRegistry([{ parser: hermesParser, conformance: 'vector-verified' }]);
-
-    const VECTOR = JSON.parse(readFileSync('test/fixtures/wire/model_manifest_v4.json', 'utf8')) as {
-      manifest: Record<string, unknown>;
-      vectors: { digest_hex: string }[];
-    };
-
-    const pinnedManifest = (): { manifest: Record<string, unknown>; hashHex: string } => {
-      const manifest: Record<string, unknown> = {
-        ...VECTOR.manifest,
-        tool_calling: { parser: { name: 'hermes', version: 1 }, call_id_format: 'OPENAI_CALL_PREFIX' },
-      };
-      return { manifest, hashHex: toHex(manifestHash(validateManifestV4(manifest))) };
-    };
 
     // fetchTaskOutput needs getTaskDataMetadata + fetchTaskData on the transport; serve one object.
     const fetchTransport = (text: string): Transport => {
@@ -816,7 +782,7 @@ describe('TrueOpenClient facade', () => {
         expiry: () => 1893456000000n,
       });
 
-    it('degrades to the fetched text with no tool calls when the manifest source rejects', async () => {
+    it('degrades to the fetched text with no tool calls when the profile pins no parser', async () => {
       const text = '<tc>get_weather|{"city":"London"}</tc> done';
       const client = makeFetchClient(fetchTransport(text));
       const result = await client.fetchAssistantMessage({
@@ -826,17 +792,14 @@ describe('TrueOpenClient facade', () => {
         outputHash: outputHashFor(text),
         builderAddress: 'trueopen1builder',
         expiresAtHeight: 1000n,
-        manifestSource: async () => {
-          throw new Error('unavailable');
-        },
+        toolCallParser: { name: '', version: 0 },
         registry,
       });
       expect(result).toEqual({ role: 'assistant', content: text, toolCalls: [] });
     });
 
-    it('parses the fetched text when the manifest pins a vector-verified parser', async () => {
+    it('parses the fetched text when the profile pins a vector-verified parser', async () => {
       const text = '<tc>get_weather|{"city":"London"}</tc> done';
-      const { manifest, hashHex } = pinnedManifest();
       const client = makeFetchClient(fetchTransport(text));
       const result = await client.fetchAssistantMessage({
         sessionId: SESSION,
@@ -845,7 +808,7 @@ describe('TrueOpenClient facade', () => {
         outputHash: outputHashFor(text),
         builderAddress: 'trueopen1builder',
         expiresAtHeight: 1000n,
-        manifestSource: async () => ({ manifest, manifestHashHex: hashHex }),
+        toolCallParser: { name: 'hermes', version: 1 },
         registry,
       });
       expect(result).toEqual({

@@ -77,3 +77,22 @@ export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolC
  * exist (monorepo#11). Callers inject their own with `createToolCallRegistry`.
  */
 export const BUILTIN_TOOL_CALL_PARSERS: ToolCallRegistry = createToolCallRegistry([]);
+
+/**
+ * Resolve whether tool calling is available, from the parser the chain projects for a profile.
+ *
+ * The profile's `tool_call_parser` is authoritative on chain (`ProfileState.tool_call_parser`),
+ * so the SDK reads it directly rather than fetching and re-hashing the full manifest document. The
+ * zero value (`name === ''`) is the sole "no tool calling" encoding, which `registry.lookup` maps
+ * to `parser-not-pinned`. Resolve once and cache per (model, profileVersion) (design S5.1).
+ */
+export function resolveToolCalling(p: {
+  readonly toolCallParser: ParserRef;
+  readonly registry: ToolCallRegistry;
+  readonly allowUnverified?: boolean;
+}): ToolCallSupport {
+  return p.registry.lookup(
+    p.toolCallParser,
+    p.allowUnverified === undefined ? undefined : { allowUnverified: p.allowUnverified },
+  );
+}

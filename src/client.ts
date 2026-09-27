@@ -38,12 +38,12 @@ import {
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
 import { TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
-import { BUILTIN_TOOL_CALL_PARSERS, type ToolCallRegistry } from './toolcall/registry';
-import { resolveToolCalling, type ManifestSource } from './manifest-resolution';
+import { BUILTIN_TOOL_CALL_PARSERS, resolveToolCalling, type ToolCallRegistry } from './toolcall/registry';
 import type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,
   DerivedAssistantMessage,
+  ParserRef,
 } from './toolcall/types';
 import type { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
 import type { InferReceiptView } from './types/node';
@@ -263,16 +263,16 @@ export interface ConfirmOutputParams {
 }
 
 /**
- * Manifest-aware tool-calling parameters for `streamAssistantMessage` / `fetchAssistantMessage`.
+ * Tool-calling parameters for `streamAssistantMessage` / `fetchAssistantMessage`.
  *
  * The alternative to passing an already-resolved `parser` (the phase-1 path). When this shape is
- * used, the facade resolves the parser itself from the profile manifest before any frame arrives
- * (design S5.1), and degrades to `content`-only output when the manifest does not support tool
- * calling. The two shapes are disjoint: this one has no `parser` and a required `manifestSource`.
+ * used, the facade resolves the parser from the profile's on-chain `tool_call_parser` projection
+ * (design S5.1), and degrades to `content`-only output when the profile does not support tool
+ * calling. The two shapes are disjoint: this one has no `parser` and a required `toolCallParser`.
  */
 export interface ToolCallParams {
-  /** Where the profile manifest comes from; the SDK re-derives its hash (design S8). */
-  readonly manifestSource: ManifestSource;
+  /** The profile's on-chain tool-call parser (ProfileInfo.toolCallParser); zero value = "no tool calling". */
+  readonly toolCallParser: ParserRef;
   /** Defaults to the built-in registry (empty today); injectable for tests/custom parsers. */
   readonly registry?: ToolCallRegistry;
   /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
@@ -858,8 +858,8 @@ export class TrueOpenClient {
       yield* deriveAssistantStream(this.streamOutput(p), p);
       return;
     }
-    const support = await resolveToolCalling({
-      manifestSource: p.manifestSource,
+    const support = resolveToolCalling({
+      toolCallParser: p.toolCallParser,
       registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
       ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
     });
@@ -899,7 +899,7 @@ export class TrueOpenClient {
    * that on-chain receipt. Pass anything else and this reconciles the bytes against that instead.
    *
    * Like `streamAssistantMessage`, it accepts either an already-resolved `parser` (phase-1) or a
-   * `manifestSource`. When the manifest does not support tool calling, the result carries the
+   * `toolCallParser`. When the profile does not support tool calling, the result carries the
    * text as `content` with an empty `toolCalls` list rather than throwing.
    */
   async fetchAssistantMessage(
@@ -909,8 +909,8 @@ export class TrueOpenClient {
       const got = await this.fetchTaskOutput(p);
       return deriveAssistantMessage(got.text, p);
     }
-    const support = await resolveToolCalling({
-      manifestSource: p.manifestSource,
+    const support = resolveToolCalling({
+      toolCallParser: p.toolCallParser,
       registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
       ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
     });

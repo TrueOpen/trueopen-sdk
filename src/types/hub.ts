@@ -99,11 +99,19 @@ export interface ModelState {
   readonly updatedHeight: bigint;
 }
 
+/** node shared.v1.ParserRefV1 projected on chain. The zero value is the sole "absent parser" encoding. */
+export interface ParserRefV1 {
+  readonly name: string;
+  readonly version: number;
+}
+
 /** Trimmed-down SDK view of node hub.v1 ProfileState (Profiles list query; only discovery-relevant scalar fields, verification/pricing and other nested config are not expanded). */
 export interface ProfileInfo {
   readonly modelId: string;
   /** The chain's committed manifest hash (lowercase 64-hex Hash32), the trusted anchor the SDK re-derives against. */
   readonly manifestHash: string;
+  /** The projected tool-call parser (name/version). The zero value (`name === ''`) is the sole "no tool calling" encoding. */
+  readonly toolCallParser: ParserRefV1;
   readonly profileVersion: bigint;
   readonly status: string; // MODEL_PROFILE_STATUS_* (may be unset)
   readonly runtimeClass: string;

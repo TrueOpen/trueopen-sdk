@@ -333,3 +333,39 @@ export type {
   OutputStreamEvent,
   ConfirmOutputParams,
 } from './client';
+
+// ---- V4 model profile manifest (canonical JSON V1, validation, hash; Manifest S7 / S2.6) ----
+export { hV1, hV1Preimage } from './codec/h-v1';
+export { compareUtf8, canonicalJsonV1, canonicalJsonV1Bytes } from './manifest/canonical';
+export { validateManifestV4 } from './manifest/validate';
+export { manifestHash, assertManifestMatchesChain, MODEL_MANIFEST_V4_DOMAIN } from './manifest/hash';
+export { OUTPUT_DECODERS, TOOL_CALL_ID_FORMATS } from './manifest/types';
+export type {
+  U64,
+  Coin,
+  ParserRefV1,
+  FileEntryV1,
+  ArtifactsV1,
+  BatchVerificationV1,
+  IdentityV1,
+  MetadataV1,
+  ModelMoeV1,
+  ModelQuantizationV1,
+  ModelConfigSummaryV1,
+  OutputDecoder,
+  OutputDecodingV1,
+  PricingProfileV1,
+  ProfileSpecV1,
+  ReasoningParsingV1,
+  RuntimeRequirementsV1,
+  SourceV1,
+  TimeoutBootstrapProfileV1,
+  ToolCallIdFormat,
+  ToolCallingV1,
+  RequiredInferEvidenceV1,
+  EvidenceSchemaV1,
+  VerificationMetricsV1,
+  VerificationProfileV1,
+  VerificationThresholdsV1,
+  ModelProfileManifestV4,
+} from './manifest/types';

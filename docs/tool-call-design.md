@@ -31,7 +31,7 @@
 | What happens when parsing fails or is not possible | S6 Failure Semantics |
 | How a tool call split across frames is handled | S7 Streaming State Machine |
 | How the parser is chosen and trusted | S8 Manifest Verification |
-| What cannot be built yet | **S9 Upstream Blocker** |
+| What cannot be built yet | **S9 What P2 leaves open** |
 | Order of work, and what is delivered | S10 Phasing |
 | Why we are waiting, and what changes when each blocker clears | **S10.1 Deliberately waiting** |
 | Why reasoning separation is deferred, and what that leaves open | **S10.2 reasoning_parsing** |
@@ -78,7 +78,7 @@ to yield verified `{seq, text, mmrRoot}`. Tool calling is a layer wrapped around
 
 ```text
 src/manifest/          (new)
-  fetch.ts             retrieve the full manifest from pointer / indexer
+  fetch.ts             retrieve the full manifest from pointer / indexer (NOT built -- no defined source; see §9)
   canonical.ts         S2.6 canonical encoding + TRUEOPEN_MODEL_MANIFEST_V4 hash
   validate.ts          rule 11 (reject unknown fields) + S7 block validation
   types.ts             ModelProfileManifestV4 / ToolCalling / ReasoningParsing
@@ -373,39 +373,26 @@ require one, that is a signal the decoding rule moved, not that the SDK needs to
 
 ---
 
-## 9. Upstream Blocker
+## 9. What P2 leaves open
 
-**S8 cannot be validated today.**
+**The V4 manifest vectors now exist, and P2 is delivered against them.**
 
-The V4 cross-language canonical vectors do not exist yet. `03-models/03` S2.6 states that
-its fixture is still generated at `manifest_version: 2` and that the V2 vectors are "for
-historical reference only" until wire recomputes them.
+`monorepo#29` is resolved: wire published `testdata/v1/hub/model_manifest_v4.json` in
+v0.3.0-rc.1. This SDK vendored that manifest as `test/fixtures/wire/model_manifest_v4.json`
+with a drift guard (`test/unit/wire-vector-provenance.test.ts`), because `third_party/wire`
+is still pinned behind that release. `src/manifest/` now recomputes `manifest_hash` from the
+canonical encoding and reproduces the published `digest_hex` byte for byte -- the
+cross-language agreement this section used to say could not be obtained.
 
-The ADR-0022 write-back matrix **does** assign this, to wire. Its row for
-`03-models/03` S2.6 and `wire testdata/v1/hub/model_profile_canonical_*.json` reads, in
-translation: a change to `manifest_hash` carries a change to `registration_digest`; all
-three digests are to be recomputed by wire in one pass, and until that recomputation
-the V2 vectors serve only as historical reference.
-
-The matrix opens by requiring its rows to be completed as one batch, at adoption. The ADR
-was adopted 2026-09-23. As of wire v0.2.1 the recomputation has not happened:
-`testdata/v1/hub/` still holds only `model_profile_canonical_v2.json`, and
-`TRUEOPEN_MODEL_MANIFEST_V4` is not yet a row in `registry/v1/domains.json` either, so the
-domain this would be computed under does not exist. Tracked in `monorepo#29`.
-
-An earlier revision of this section claimed the matrix "does not list producing the
-manifest vectors as work for anyone." That was wrong -- it was written without reading the
-matrix. The distinction matters in practice: this is not an unowned problem needing an owner,
-it is an assigned deliverable that did not ship with its batch.
-
-**The target is V4, not the V3 that ADR-0022 named, and it is three digests rather than
-one.** ADR-0022 bumped `manifest_version` 2 to 3. Before V3 shipped, ADR-0028 (model
-identity derivation; `source` / `tool_call_parser` / `reasoning_parser` projected on chain)
-and ADR-0023 were folded into a single freeze to **4** -- Manifest S2.6 states the current
-version is 4 under domain `TRUEOPEN_MODEL_MANIFEST_V4`. Because the projected field set
-changed with it, `chain_projection` went V2 to V3 and `registration_digest` followed, so
-what wire owes is `manifest_hash`, `chain_projection_hash` and `registration_digest`
-together, under three domains none of which is registered yet.
+**The target was V4, not the V3 that ADR-0022 named.** ADR-0022 bumped `manifest_version`
+2 to 3. Before V3 shipped, ADR-0028 (model identity derivation; `source` /
+`tool_call_parser` / `reasoning_parser` projected on chain) and ADR-0023 were folded into a
+single freeze to **4** -- Manifest S2.6 states the current version is 4 under domain
+`TRUEOPEN_MODEL_MANIFEST_V4`. Because the projected field set changed with it,
+`chain_projection` went V2 to V3 and `registration_digest` followed, so the full
+`monorepo#29` deliverable spans three digests (`manifest_hash`, `chain_projection_hash`,
+`registration_digest`). This plan builds only `manifest_hash`; the other two remain outside
+the SDK.
 
 Two consequences worth stating rather than deriving:
 
@@ -413,24 +400,35 @@ Two consequences worth stating rather than deriving:
   requires unknown fields to be rejected rather than ignored, and V4 adds the top-level
   `reasoning_parsing` block. So "write it for V3 now and extend later" is not a smaller
   first step; it produces something that cannot read a live manifest at all.
-- **The canonical rules are not the missing piece.** S2.6 specifies them fully -- eleven
+- **The canonical rules were never the missing piece.** S2.6 specifies them fully -- eleven
   rules covering key ordering by UTF-8 bytes, integers without float or exponent or leading
   zeros, lowercase `0x` bytes32, `artifacts.files` sorted by path, and unknown-field
-  rejection. `canonical.ts` can therefore be *written*; what it cannot be is *proven*, which
-  under the golden-authority rule is the same as not having it.
-
-This document said "V3" throughout until 2026-09-27 because it followed ADR-0022 without
-reading the specification the ADR writes back into. An ADR records a decision as of its
-adoption; the specification carries the current reading, and later ADRs land in it.
+  rejection. `canonical.ts` was always writable; what it could not be without a published
+  vector was *proven* -- and against the V4 vector it now is.
 
 Under this repository's golden-authority rule, byte-level cross-language agreement is
 established against published vectors, never against a self-consistent local
-implementation. A TypeScript canonical encoder written now could agree with itself and
-still disagree with node's Go encoder, and nothing would reveal it until a profile failed
-to resolve in production.
+implementation. A TypeScript canonical encoder written in isolation could agree with itself
+and still disagree with node's Go encoder, and nothing would reveal it until a profile failed
+to resolve in production. P2 is real only because that rule could finally be satisfied.
 
-So `src/manifest/` waits. This does not block `src/toolcall/`, which is why S2 forbids a
-dependency from the latter to the former.
+The one-way boundary still holds: `src/toolcall/` must not depend on `src/manifest/`. That
+separation is why P1 could ship before P2, and it stays true until P3 wires the two together
+at the client facade, not below it.
+
+Three things this plan does **not** resolve:
+
+1. **`fetch.ts` has no defined source.** The design says "retrieve the full manifest from
+   pointer / indexer", but nothing establishes where a manifest is fetched from or what
+   authenticates it. Until that exists, `assertManifestMatchesChain` is the whole defence,
+   and it only works on a document the caller obtained somehow.
+2. **u64 above 2^53 is unproven.** The vector's largest integer is 8,000,000,000, so nothing
+   exercises the bigint path end to end. `JSON.parse` on a manifest containing a real u64
+   would lose precision before validation ever sees it, so a JSON parser that yields bigint
+   is still needed for documents that arrive as text.
+3. **Rules 2 and 4 are unexercised by the vector.** It is pure ASCII with no escapes, so
+   UTF-8 key ordering and shortest-escape behaviour rest on this plan's own constructed
+   tests, not on a cross-language vector.
 
 ---
 
@@ -439,7 +437,7 @@ dependency from the latter to the former.
 | Phase | Content | Blocked by | Status |
 |---|---|---|---|
 | **P1** | All of `src/toolcall/`: registry, state machine, event types. Parser supplied by explicit injection rather than read from a manifest. | nothing | **delivered** (`feat/toolcall-p1`) |
-| **P2** | `src/manifest/`: fetch, canonical encoding, hash, validation | S9 -- wire must recompute the V4 vectors (`monorepo#29`) | waiting |
+| **P2** | `src/manifest/`: canonical encoding, hash, validation, types (`fetch.ts` not built -- no source) | (was `monorepo#29`, now resolved) | **delivered** (`feat/toolcall-p1`) |
 | **P3** | Wire them together: `manifestSource` drives the full verification chain; the two manifest `UnsupportedReason` values become reachable | P2 | waiting |
 | **P4** | Provider layer: synthesize `id` per `tool_calling.call_id_format`, plus `type` / `index` / `finish_reason` / SSE | ADR's Provider boundary settling | waiting |
 
@@ -463,9 +461,13 @@ This posture is already what the code does; it costs nothing to hold.
 | Blocker | What the SDK does meanwhile | What changes when it lands |
 |---|---|---|
 | **payload canonical encoding** (`monorepo#30`) | `task-order-input.ts` computes `inputHash: sha256(req.payload)` over a caller-supplied `Uint8Array`. The payload is opaque: never parsed, never re-serialized. | Add a canonical encoder for `ChatInferInput`, modelled on the existing `canonicalOrderEnvelopeJson`. `inputHash` then hashes the canonicalized bytes rather than whatever the caller passed, and the SDK gains a documented rule about which of the several legal serializations it emits. |
-| **V4 manifest vectors** (`monorepo#29`) | `src/manifest/` does not exist. S2 forbids `src/toolcall/` from depending on it, which is why P1 was not blocked. | P2 becomes buildable; then P3 wires `manifestSource` through, and `manifest-unavailable` / `manifest-hash-mismatch` turn from declared-but-unreachable into reachable. |
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
 | **parser vectors** (`monorepo#11`) | No concrete parser ships. The registry can hold one as `'unverified'`, which is the honest state, but nothing is registered. | Write the parsers, run them against the published vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
+
+The **V4 manifest vectors** row has cleared rather than been updated: wire shipped the V4
+manifest vector in v0.3.0-rc.1, the SDK vendored it as `test/fixtures/wire/model_manifest_v4.json`
+with a drift guard (`test/unit/wire-vector-provenance.test.ts`), and P2 was built against it --
+`src/manifest/` recomputes `manifest_hash` and reproduces the published `digest_hex` byte for byte.
 
 One row that used to be in this table has been removed rather than updated:
 `trailingEosMarkers` was listed as caller-supplied in phase 1 and manifest-supplied in

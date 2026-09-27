@@ -333,6 +333,7 @@ export type {
   StreamOutputParams,
   OutputStreamEvent,
   ConfirmOutputParams,
+  ToolCallParams,
 } from './client';
 
 // ---- V4 model profile manifest (canonical JSON V1, validation, hash; Manifest S7 / S2.6) ----

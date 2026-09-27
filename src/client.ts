@@ -37,6 +37,8 @@ import {
   deriveAssistantStream,
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
+import { BUILTIN_TOOL_CALL_PARSERS, type ToolCallRegistry } from './toolcall/registry';
+import { resolveToolCalling, type ManifestSource } from './manifest-resolution';
 import type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,
@@ -259,6 +261,25 @@ export interface ConfirmOutputParams {
   readonly receipt: InferReceiptView;
 }
 
+/**
+ * Manifest-aware tool-calling parameters for `streamAssistantMessage` / `fetchAssistantMessage`.
+ *
+ * The alternative to passing an already-resolved `parser` (the phase-1 path). When this shape is
+ * used, the facade resolves the parser itself from the profile manifest before any frame arrives
+ * (design S5.1), and degrades to `content`-only output when the manifest does not support tool
+ * calling. The two shapes are disjoint: this one has no `parser` and a required `manifestSource`.
+ */
+export interface ToolCallParams {
+  /** Where the profile manifest comes from; the SDK re-derives its hash (design S8). */
+  readonly manifestSource: ManifestSource;
+  /** Defaults to the built-in registry (empty today); injectable for tests/custom parsers. */
+  readonly registry?: ToolCallRegistry;
+  /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
+  readonly allowUnverified?: boolean;
+  /** Caller-supplied EOS tolerance (design S13.2), carried through to the derive layer. */
+  readonly trailingEosMarkers?: readonly string[];
+}
+
 async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?: number): Promise<IteratorResult<T>> {
   if (idleTimeoutMs === undefined) return iterator.next();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -274,6 +295,19 @@ async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * The degrade path for an unsupported tool-calling resolution (design S6): re-emit the committed
+ * text as `content` events and drop the terminal `fin` marker. The stream is exactly what
+ * `streamOutput` produced, minus tool calls.
+ */
+async function* contentOnly(
+  source: AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'fin' }>,
+): AsyncIterable<AssistantStreamEvent> {
+  for await (const event of source) {
+    if (event.kind === 'chunk') yield { kind: 'content', text: event.text };
   }
 }
 
@@ -802,11 +836,34 @@ export class TrueOpenClient {
    * Stage one of the execution gate: every tool call it yields is provisional and must not be
    * executed. Obtain the checkpoint the usual way, via `onCheckpoint`, then call
    * `confirmAssistantMessage` with the on-chain receipt to get the executable list.
+   *
+   * Two entry shapes, discriminated on `'parser' in p`:
+   *  - pass an already-resolved `parser` (phase-1, backward compatible), or
+   *  - pass `manifestSource` and let this method resolve the parser from the manifest up front
+   *    (design S5.1). When the manifest does not support tool calling, the stream degrades to
+   *    `content`-only events and never throws.
    */
   async *streamAssistantMessage(
-    p: StreamOutputParams & DerivedViewOptions,
+    p: StreamOutputParams & (DerivedViewOptions | ToolCallParams),
   ): AsyncIterable<AssistantStreamEvent> {
-    yield* deriveAssistantStream(this.streamOutput(p), p);
+    if ('parser' in p) {
+      // Phase-1 path, unchanged: the caller already resolved the parser.
+      yield* deriveAssistantStream(this.streamOutput(p), p);
+      return;
+    }
+    const support = await resolveToolCalling({
+      manifestSource: p.manifestSource,
+      registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
+      ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+    });
+    if (!support.supported) {
+      yield* contentOnly(this.streamOutput(p));
+      return;
+    }
+    yield* deriveAssistantStream(this.streamOutput(p), {
+      parser: support.parser,
+      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+    });
   }
 
   /**
@@ -815,6 +872,10 @@ export class TrueOpenClient {
    * Synchronous and receipt-taking for the same reason `confirmOutput` is: the chain read
    * belongs to the caller, which is what lets the stream run against a Builder while the caller
    * decides when to reach the node.
+   *
+   * It takes an already-resolved `parser` (Decision 3): resolve once via `resolveToolCalling`
+   * before streaming, then pass that same parser here. This method stays synchronous because the
+   * resolution is the caller's job, not a second async hop hidden inside a receipt check.
    */
   confirmAssistantMessage(p: ConfirmOutputParams & DerivedViewOptions): ConfirmedAssistantMessage {
     return confirmAssistantMessageWithReceipt({ chainId: this.cfg.chainId, ...p }, p);
@@ -829,12 +890,31 @@ export class TrueOpenClient {
    * `deriveAssistantMessage`'s docstring spells out: the bytes are reconciled against the
    * on-chain `InferReceipt.output_hash` if and only if the caller sourced `p.outputHash` from
    * that on-chain receipt. Pass anything else and this reconciles the bytes against that instead.
+   *
+   * Like `streamAssistantMessage`, it accepts either an already-resolved `parser` (phase-1) or a
+   * `manifestSource`. When the manifest does not support tool calling, the result carries the
+   * text as `content` with an empty `toolCalls` list rather than throwing.
    */
   async fetchAssistantMessage(
-    p: Parameters<TrueOpenClient['fetchTaskOutput']>[0] & DerivedViewOptions,
+    p: Parameters<TrueOpenClient['fetchTaskOutput']>[0] & (DerivedViewOptions | ToolCallParams),
   ): Promise<DerivedAssistantMessage> {
+    if ('parser' in p) {
+      const got = await this.fetchTaskOutput(p);
+      return deriveAssistantMessage(got.text, p);
+    }
+    const support = await resolveToolCalling({
+      manifestSource: p.manifestSource,
+      registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
+      ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+    });
     const got = await this.fetchTaskOutput(p);
-    return deriveAssistantMessage(got.text, p);
+    if (!support.supported) {
+      return { role: 'assistant', content: got.text, toolCalls: [] };
+    }
+    return deriveAssistantMessage(got.text, {
+      parser: support.parser,
+      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+    });
   }
 
   /** Prepare challenge materials (does not submit a verdict). */

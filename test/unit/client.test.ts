@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createRouterTransport } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
@@ -22,6 +23,10 @@ import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outp
 import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 import { createMarkerStreamState } from '../../src/toolcall/stream-state';
+import { createToolCallRegistry } from '../../src/toolcall/registry';
+import type { ToolCallParser } from '../../src/toolcall/types';
+import { validateManifestV4 } from '../../src/manifest/validate';
+import { manifestHash } from '../../src/manifest/hash';
 
 // deriveTaskId requires canonical 64-hex (raw Hash32 goes into the preimage).
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
@@ -633,5 +638,98 @@ describe('TrueOpenClient facade', () => {
     // Runtime check, not a type restatement: nothing the stream emits carries the `confirmation`
     // field that marks a receipt-reconciled result.
     expect(events.some((e) => 'confirmation' in e)).toBe(false);
+  });
+
+  describe('manifest-aware streamAssistantMessage', () => {
+    const VECTOR = JSON.parse(readFileSync('test/fixtures/wire/model_manifest_v4.json', 'utf8')) as {
+      manifest: Record<string, unknown>;
+      vectors: { digest_hex: string }[];
+    };
+
+    const parseCall = (inner: string) => {
+      const at = inner.indexOf('|');
+      return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+    };
+
+    // A vector-verified parser registered for hermes@1, matching the manifest's pinned ref below.
+    const hermesParser: ToolCallParser = {
+      name: 'hermes',
+      version: 1,
+      createStreamState: () =>
+        createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall }),
+      parseComplete: (text: string) => ({ role: 'assistant' as const, content: text, toolCalls: [] }),
+    };
+
+    const registry = createToolCallRegistry([{ parser: hermesParser, conformance: 'vector-verified' }]);
+
+    // The fixture's own digest hashes `tool_calling: {}`; the supported case needs a populated
+    // block, and the hash must be of that modified manifest (mirrors manifest-resolution.test.ts).
+    const pinnedManifest = (): { manifest: Record<string, unknown>; hashHex: string } => {
+      const manifest: Record<string, unknown> = {
+        ...VECTOR.manifest,
+        tool_calling: { parser: { name: 'hermes', version: 1 }, call_id_format: 'OPENAI_CALL_PREFIX' },
+      };
+      return { manifest, hashHex: toHex(manifestHash(validateManifestV4(manifest))) };
+    };
+
+    // One tool call, its start marker split across frames so a per-frame parse would find nothing.
+    const toolCallChunks = ['weather <t', 'c>get_weather|{"city":"London"}</tc> done'].map((t) =>
+      new TextEncoder().encode(t),
+    );
+
+    const toolCallTransport = (): Transport =>
+      scriptedStreamTransport(async function* () {
+        const built = signedFrames('trueopen-devnet-1', toolCallChunks);
+        for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+        const last = built[built.length - 1]!;
+        yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+      });
+
+    const drainManifest = async (
+      manifestSource: () => Promise<{ manifest: unknown; manifestHashHex: string }>,
+    ) => {
+      const events = [];
+      for await (const e of makeClientWithTransport(toolCallTransport()).streamAssistantMessage({
+        sessionId: SESSION,
+        taskId: 'task-1',
+        taskHash: TASK_HASH,
+        workerServicePubKey: WORKER_PUB,
+        manifestSource,
+        registry,
+      })) {
+        events.push(e);
+      }
+      return events;
+    };
+
+    it('yields a tool-call-provisional event when the manifest pins a vector-verified parser', async () => {
+      const { manifest, hashHex } = pinnedManifest();
+      const events = await drainManifest(async () => ({ manifest, manifestHashHex: hashHex }));
+      expect(events).toContainEqual({
+        kind: 'tool-call-provisional',
+        call: { name: 'get_weather', arguments: '{"city":"London"}' },
+      });
+    });
+
+    it('degrades to content-only and does not throw when the manifest source rejects', async () => {
+      const events = await drainManifest(async () => {
+        throw new Error('unavailable');
+      });
+      expect(events.every((e) => e.kind === 'content')).toBe(true);
+      expect(events.some((e) => e.kind === 'tool-call-provisional')).toBe(false);
+      expect(events.map((e) => (e.kind === 'content' ? e.text : '')).join('')).toBe(
+        'weather <tc>get_weather|{"city":"London"}</tc> done',
+      );
+    });
+
+    it('degrades to content-only when the manifest hash does not match the chain value', async () => {
+      const { manifest } = pinnedManifest();
+      const events = await drainManifest(async () => ({ manifest, manifestHashHex: 'dd'.repeat(32) }));
+      expect(events.every((e) => e.kind === 'content')).toBe(true);
+      expect(events.some((e) => e.kind === 'tool-call-provisional')).toBe(false);
+      expect(events.map((e) => (e.kind === 'content' ? e.text : '')).join('')).toBe(
+        'weather <tc>get_weather|{"city":"London"}</tc> done',
+      );
+    });
   });
 });

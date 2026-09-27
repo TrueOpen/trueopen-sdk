@@ -114,4 +114,37 @@ describe('canonicalJsonV1', () => {
     // The only safe representation for a u64 above 2^53.
     expect(canonicalJsonV1({ k: 18446744073709551615n })).toBe('{"k":18446744073709551615}');
   });
+
+  it('rejects a lone surrogate in a single-key object, where sorting never calls the comparator', () => {
+    // Array.prototype.sort does not invoke the comparator for length 0 or 1, so relying on
+    // compareUtf8 to catch a bad key leaves singleton objects unguarded.
+    expect(() => canonicalJsonV1({ ['\uD800']: 1 })).toThrow(TrueOpenError);
+    expect(() => canonicalJsonV1({ nested: { ['\uD800']: 1 } })).toThrow(TrueOpenError);
+  });
+
+  it('rejects a lone surrogate in a string value, as it does in a key', () => {
+    // JSON.stringify would emit the escape \ud800 instead, producing a canonical string the
+    // reference implementation may well refuse -- a difference that looks like success.
+    expect(() => canonicalJsonV1({ k: '\uD800' })).toThrow(TrueOpenError);
+    expect(() => canonicalJsonV1({ k: 'ok\uDC00tail' })).toThrow(TrueOpenError);
+  });
+
+  it('accepts a well-formed surrogate pair in a key and in a value', () => {
+    expect(canonicalJsonV1({ ['\u{10000}']: '\u{10001}' })).toBe('{"\u{10000}":"\u{10001}"}');
+  });
+
+  it('rejects a Date, Map or Set rather than encoding it as an empty object', () => {
+    // Object.keys on any of these is [], so without a check they canonicalize to {} and the
+    // caller gets a wrong hash with nothing to indicate it.
+    expect(() => canonicalJsonV1({ k: new Date() })).toThrow(TrueOpenError);
+    expect(() => canonicalJsonV1({ k: new Map() })).toThrow(TrueOpenError);
+    expect(() => canonicalJsonV1({ k: new Set() })).toThrow(TrueOpenError);
+  });
+
+  it('still accepts a plain object and an object with a null prototype', () => {
+    expect(canonicalJsonV1({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+    const bare = Object.create(null) as Record<string, unknown>;
+    bare['x'] = 1;
+    expect(canonicalJsonV1(bare)).toBe('{"x":1}');
+  });
 });

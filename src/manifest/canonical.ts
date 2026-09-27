@@ -114,6 +114,12 @@ function encode(value: unknown, path: string): string {
       }
       return value.toString(10);
     case 'string':
+      // Check for lone surrogates before delegating to JSON.stringify. JSON.stringify would emit
+      // an escape like \ud800 instead of rejecting it, producing canonical bytes the reference
+      // implementation may refuse -- a difference that looks like success.
+      if (hasLoneSurrogate(value)) {
+        throw invalid('MANIFEST_CANONICAL_LONE_SURROGATE', `String contains a lone surrogate which has no UTF-8 encoding and cannot appear in a canonical manifest at ${path}: ${JSON.stringify(value)}`);
+      }
       return JSON.stringify(value);
     case 'object':
       break;
@@ -127,7 +133,25 @@ function encode(value: unknown, path: string): string {
     return `[${value.map((v, i) => encode(v, `${path}[${i}]`)).join(',')}]`;
   }
 
+  // Reject non-plain objects. Date, Map, Set, etc. have Object.keys([]) and would silently
+  // encode as {} with no indication anything went wrong. The caller would get a wrong hash.
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    throw invalid('MANIFEST_CANONICAL_NOT_PLAIN_OBJECT', `Object at ${path} is not a plain object (prototype is ${proto.constructor?.name || 'unknown'}); only plain objects and objects with null prototype are allowed`);
+  }
+
   const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort(compareUtf8);
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${encode(obj[k], `${path}.${k}`)}`).join(',')}}`;
+  const keys = Object.keys(obj);
+
+  // Check every key for lone surrogates before sorting. Array.prototype.sort does not invoke
+  // the comparator for arrays of length 0 or 1, so relying on compareUtf8 to catch a bad key
+  // would leave singleton and empty objects unguarded.
+  for (const k of keys) {
+    if (hasLoneSurrogate(k)) {
+      throw invalid('MANIFEST_CANONICAL_LONE_SURROGATE', `Object key contains a lone surrogate which has no UTF-8 encoding and cannot appear in a canonical manifest at ${path}: ${JSON.stringify(k)}`);
+    }
+  }
+
+  const sortedKeys = keys.sort(compareUtf8);
+  return `{${sortedKeys.map((k) => `${JSON.stringify(k)}:${encode(obj[k], `${path}.${k}`)}`).join(',')}}`;
 }

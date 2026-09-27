@@ -1,9 +1,9 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig([
-  // Library entry: ESM + CJS + d.ts, runtime-agnostic.
+  // Library entries: ESM + CJS + d.ts. index is runtime-agnostic; node adds the Node-only manifest downloader.
   {
-    entry: ['src/index.ts'],
+    entry: ['src/index.ts', 'src/node.ts'],
     format: ['esm', 'cjs'],
     dts: true,
     sourcemap: true,

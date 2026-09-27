@@ -33,7 +33,7 @@ const ORDER_FILE = join(tmpdir(), `trueopen-order-${process.pid}.json`);
 writeFileSync(
   ORDER_FILE,
   JSON.stringify({
-    modelId: 'm', profileVersion: 1, taskType: 'TEXT_GENERATION',
+    modelId: '5555555555555555555555555555555555555555555555555555555555555555', profileVersion: 1, taskType: 'TEXT_GENERATION',
     inputBucket: 1, outputBudgetBucket: 1, maxOutputTokens: 128, maxOutputDurationMs: 60_000,
     inferInputUnitPriceBid: '2', inferOutputUnitPriceBid: '3', verifyUnitPriceBid: '4',
     maxFee: '1000', inferFeeCap: '600', verifyFeeCap: '300',
@@ -70,7 +70,7 @@ describe('cmdOrderSubmit', () => {
     };
     expect(p.sessionId).toBe('s');
     expect(p.orderSequence).toBe(3n);
-    expect(p.order.modelId).toBe('m');
+    expect(p.order.modelId).toBe('5555555555555555555555555555555555555555555555555555555555555555');
     expect(p.order.amounts.maxFee).toEqual({ atomicUnits: '1000' });
     expect(new TextDecoder().decode(p.order.payload)).toBe('trueopen-input');
   });

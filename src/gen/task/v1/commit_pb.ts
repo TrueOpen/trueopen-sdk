@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file task/v1/commit.proto.
  */
 export const file_task_v1_commit: GenFile = /*@__PURE__*/
-  fileDesc("ChR0YXNrL3YxL2NvbW1pdC5wcm90bxIHdGFzay52MSKcAgoOVmVyaWZ5Q29tbWl0VjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSFQoHdGFza19pZBgDIAEoDEIEyPMYAhIUCgx2ZXJpZnlfcm91bmQYBCABKA0SOwoZdmVyaWZpZXJfb3BlcmF0b3JfYWRkcmVzcxgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiMKG3NlcnZpY2VfYXV0aG9yaXphdGlvbl9ub25jZRgGIAEoBBIZCgtjb21taXRfaGFzaBgHIAEoDEIEyPMYAhIVCg1leHBpcnlfaGVpZ2h0GAggASgEEh8KEXNlcnZpY2Vfc2lnbmF0dXJlGAkgASgMQgTI8xgBIrECCgtDb21taXRTdGF0ZRIYCgpjb21taXRfa2V5GAEgASgMQgTI8xgCEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISFAoMdmVyaWZ5X3JvdW5kGAMgASgNEjsKGXZlcmlmaWVyX29wZXJhdG9yX2FkZHJlc3MYBCABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIZCgtjb21taXRfaGFzaBgFIAEoDEIEyPMYAhIjChVjb21taXRfc2lnbmluZ19kaWdlc3QYBiABKAxCBMjzGAISHgoQc2lnbmF0dXJlX2RpZ2VzdBgHIAEoDEIEyPMYAhIVCg1jb21taXRfaGVpZ2h0GAggASgEEicKBnN0YXR1cxgJIAEoDjIXLnRhc2sudjEuQ29tbWl0U3RhdHVzVjEqUQoOQ29tbWl0U3RhdHVzVjESIAocQ09NTUlUX1NUQVRVU19WMV9VTlNQRUNJRklFRBAAEh0KGUNPTU1JVF9TVEFUVVNfVjFfQUNDRVBURUQQAUInWiVnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC90YXNrL3R5cGVzYgZwcm90bzM", [file_cosmos_proto_cosmos, file_shared_v1_rest_encoding]);
+  fileDesc("ChR0YXNrL3YxL2NvbW1pdC5wcm90bxIHdGFzay52MSKcAgoOVmVyaWZ5Q29tbWl0VjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSFQoHdGFza19pZBgDIAEoDEIEyPMYAhIUCgx2ZXJpZnlfcm91bmQYBCABKA0SOwoZdmVyaWZpZXJfb3BlcmF0b3JfYWRkcmVzcxgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiMKG3NlcnZpY2VfYXV0aG9yaXphdGlvbl9ub25jZRgGIAEoBBIZCgtjb21taXRfaGFzaBgHIAEoDEIEyPMYAhIVCg1leHBpcnlfaGVpZ2h0GAggASgEEh8KEXNlcnZpY2Vfc2lnbmF0dXJlGAkgASgMQgTI8xgBIvECCgtDb21taXRTdGF0ZRIYCgpjb21taXRfa2V5GAEgASgMQgTI8xgCEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISFAoMdmVyaWZ5X3JvdW5kGAMgASgNEjsKGXZlcmlmaWVyX29wZXJhdG9yX2FkZHJlc3MYBCABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIZCgtjb21taXRfaGFzaBgFIAEoDEIEyPMYAhIjChVjb21taXRfc2lnbmluZ19kaWdlc3QYBiABKAxCBMjzGAISHgoQc2lnbmF0dXJlX2RpZ2VzdBgHIAEoDEIEyPMYAhIVCg1jb21taXRfaGVpZ2h0GAggASgEEicKBnN0YXR1cxgJIAEoDjIXLnRhc2sudjEuQ29tbWl0U3RhdHVzVjESJgoTdmVyaWZpZXJfdmFsdWVfcm9vdBgKIAEoDEIEyPMYAkgAiAEBQhYKFF92ZXJpZmllcl92YWx1ZV9yb290KlEKDkNvbW1pdFN0YXR1c1YxEiAKHENPTU1JVF9TVEFUVVNfVjFfVU5TUEVDSUZJRUQQABIdChlDT01NSVRfU1RBVFVTX1YxX0FDQ0VQVEVEEAFCJ1olZ2l0aHViLmNvbS9UcnVlT3Blbi9ub2RlL3gvdGFzay90eXBlc2IGcHJvdG8z", [file_cosmos_proto_cosmos, file_shared_v1_rest_encoding]);
 
 /**
  * VerifyCommitV1 is the verifier-signed result commitment carried by
@@ -27,24 +27,23 @@ export const file_task_v1_commit: GenFile = /*@__PURE__*/
  *
  * commit_hash must be a canonical 32-byte SHA-256 value produced by
  *
- *   commit_hash = H_FIELDS_V1("TRUEOPEN_RESULT_COMMITMENT_V2", chain_id, task_id,
- *     task_hash, verify_round, verifier_operator_address, result_payload_hash,
+ *   commit_hash = H_FIELDS_V1("TRUEOPEN_RESULT_COMMITMENT_V3", chain_id, task_id,
+ *     task_hash, verify_round, verifier_operator_address, verifier_value_root,
  *     salt)
  *
  * Non-canonical placeholder values are rejected at the entry point; there is no
  * "looks like a hash" conditional branch and no optional commitment field.
  *
- * schema_version is 1, the same value as every other §5.14 stage wire and §4.1
+ * schema_version is 1, the same value as every other stage wire and every
  * handraise wire. The single normative statement of that value, its derivation and
- * its schema-version rule lives on InferReceiptV2 in task/v1/infer_receipt.proto;
- * this file does not restate them.
+ * its schema-version rule is independent of the receipt schema versions.
  * VerifyCommitV1 defines the VerifyCommitV1 wire type.
  *
  * @generated from message task.v1.VerifyCommitV1
  */
 export type VerifyCommitV1 = Message<"task.v1.VerifyCommitV1"> & {
   /**
-   * Always 1; InferReceiptV2 alone uses schema version 2.
+   * Always 1; receipt schema versions do not change this commit version.
    *
    * @generated from field: uint32 schema_version = 1;
    */
@@ -165,6 +164,13 @@ export type CommitState = Message<"task.v1.CommitState"> & {
    * @generated from field: task.v1.CommitStatusV1 status = 9;
    */
   status: CommitStatusV1;
+
+  /**
+   * Filled when the accepted result opens the V3 commit; absent beforehand.
+   *
+   * @generated from field: optional bytes verifier_value_root = 10;
+   */
+  verifierValueRoot?: Uint8Array | undefined;
 };
 
 /**
@@ -177,9 +183,7 @@ export const CommitStateSchema: GenMessage<CommitState> = /*@__PURE__*/
 /**
  * CommitStatusV1 is the lifecycle of one accepted verifier commit row.
  *
- * CONTRACT-GAP: the data-structure contract declares CommitState.status =
- * ACCEPTED as the only value, and the API contract does not register this
- * enum. The single non-zero value below is exactly what the frozen schema names.
+ * ACCEPTED is the only nonzero CommitState status in this schema.
  * CommitStatusV1 defines the CommitStatusV1 wire type.
  *
  * @generated from enum task.v1.CommitStatusV1

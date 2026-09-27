@@ -130,7 +130,7 @@ const submitted = await client.openTask({
   // Required by contract §3.1; must stay identical across retries.
   idempotencyKey: `${session.sessionId}:1`,
   order: {
-    modelId: 'hf-<64hex>',
+    modelId: '<64hex>', // raw Hash32 model ID, lowercase hex
     profileVersion: 1,
     taskType: TASK_TYPE.TEXT_GENERATION,
     payload: new Uint8Array(plaintextInputBytes), // input_hash / size are derived from this
@@ -426,6 +426,66 @@ the account's first tx, the chain stores its public key as ethsecp256k1, and the
 > times: the address derivation via keccak, the keccak256(SignDoc) digest, and the rewritten
 > ethsecp256k1 public key type URL all passed node's ante handler.
 
+### ✅ Model manifest retrieval (`ManifestSource`)
+
+The chain stores a profile's `manifest_hash` and a retrieval hint, `ProfileState.manifest_uri`.
+`ManifestSource` turns them into a verified manifest. Trust comes only from `manifest_hash`:
+`manifest_uri` is never trusted, and a dead URI costs availability, never correctness.
+
+- **Fetch order:** local cache (keyed by `manifest_hash`) → `manifest_uri` → configured mirrors.
+  Every source is verified the same way, and a failure moves on to the next one.
+- **Verification order:** `H_V1("TRUEOPEN_MODEL_MANIFEST_V4", bytes)` must equal `manifest_hash` →
+  strict parse and V4 schema check → the canonical JSON re-encoding must equal the fetched bytes →
+  the projection fields must match `ProfileState`. `manifest_uri` always comes from the chain.
+  With `registration: { chainId, registrationFee }`, the rebuilt projection's registration digest
+  must also equal `ProfileState.registration_digest`, which binds every projection field.
+- **`manifest_uri` syntax:** `parseManifestUri` follows `testdata/v1/hub/manifest_uri_v1.json`
+  exactly: only `https://` or `ipfs://`, no userinfo or fragment, and strict host, port, percent
+  and CID rules.
+- **`ipfs://`** is fetched only through a configured `ipfsGateway`.
+
+**Node (full downloader safety):**
+
+```ts
+import { HubReader } from 'trueopen-sdk';
+import { createNodeManifestSource } from 'trueopen-sdk/node';
+
+const source = createNodeManifestSource({
+  reader: new HubReader({ baseUrl: 'https://node.example:1317', fetch }),
+  mirrors: ['https://mirror.example/manifests/{manifest_hash}.json'], // optional
+  ipfsGateway: 'http://127.0.0.1:8080', // optional; needed for ipfs:// URIs
+});
+const { manifest, bytes, source: from } = await source.fetchManifest(modelIdHex, 1n);
+```
+
+The Node downloader does the following for the chain-provided URI:
+
+- It resolves the host and refuses loopback, private, CGNAT, link-local and metadata addresses.
+  It also refuses unique-local, multicast, unspecified and reserved addresses. This applies to
+  IPv4 and IPv6, including IPv4-mapped, NAT64 and 6to4 forms.
+- It connects only to the address it checked, through a pinned lookup.
+- It verifies TLS against the original host name.
+- It re-resolves and re-checks on every retry and redirect hop, and follows at most 3 redirects.
+  It never follows a redirect from https to http.
+- It applies a connect timeout and a total timeout.
+- It caps the body at 4 MiB, both by `Content-Length` and by the bytes actually read after
+  gzip, deflate or br decompression. It refuses any other encoding.
+
+Mirrors and the gateway are operator-configured. They get the same size and time limits, but
+no address policy.
+
+**Browsers:** a page cannot pin DNS or vet the address it connects to. The main entry therefore
+has no default downloader for `manifest_uri`, and `new ManifestSource(...)` requires one of:
+
+- `fetcher`: your own SSRF-safe `ManifestFetcher`, for example a same-origin proxy endpoint that
+  enforces the rules above;
+- `mirrors` (and/or `ipfsGateway`): trusted sources fetched with `boundedWebFetch` over the
+  platform `fetch`.
+
+Without a `fetcher`, an `https` `manifest_uri` is skipped. The skip is recorded in `attempts` as
+`MANIFEST_URI_SKIPPED`, and the mirrors are used instead. Each body is still fully verified
+against `manifest_hash`.
+
 ### ⚠️ Integration checkpoint (byte encoding conventions)
 
 `evidence_digest` / `owner_signature` / `challenger_signature` are `string` in the on-chain
@@ -462,7 +522,7 @@ real devnet.
 
 | Command | Description |
 |---|---|
-| `npm test` | vitest (111 test cases passing) |
+| `npm test` | vitest |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run build` | tsup -> ESM + CJS + `.d.ts` + `dist/cli.cjs` (bin, target es2022) |
 | `npm run generate` | `buf generate` (generates protobuf-es from the wire submodule + nexus proto) |
@@ -474,7 +534,7 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` (currently **v0.4.3**). **This repo no longer keeps
+pinned as a submodule at `third_party/wire` (currently **v0.3.1**). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -488,8 +548,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (v0.4.3) |
-| `task.v1` / `shared.v1` | `third_party/wire` (v0.4.3) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (v0.3.1) |
+| `task.v1` / `shared.v1` | `third_party/wire` (v0.3.1) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK
@@ -540,7 +600,7 @@ from `--payload-file` and the on-chain height.
 
 ```json
 {
-  "modelId": "hf-<64hex>",
+  "modelId": "<64hex>",
   "profileVersion": 1,
   "taskType": "TEXT_GENERATION",
   "inputBucket": 1,

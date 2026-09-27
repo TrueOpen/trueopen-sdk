@@ -11,7 +11,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file shared/v1/evidence.proto.
  */
 export const file_shared_v1_evidence: GenFile = /*@__PURE__*/
-  fileDesc("ChhzaGFyZWQvdjEvZXZpZGVuY2UucHJvdG8SCXNoYXJlZC52MSKVAQoaSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjESLgoNZXZpZGVuY2Vfa2luZBgBIAEoDjIXLnNoYXJlZC52MS5FdmlkZW5jZUtpbmQSIQoZY29tbWl0bWVudF9zY2hlbWFfdmVyc2lvbhgCIAEoDRIeChZtYXhfZW5jb2RlZF9zaXplX2J5dGVzGAMgASgEOgTooB8BIn4KEEV2aWRlbmNlU2NoZW1hVjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0STAoXcmVxdWlyZWRfaW5mZXJfZXZpZGVuY2UYAiADKAsyJS5zaGFyZWQudjEuSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjFCBMjeHwA6BOigHwEqqgEKDEV2aWRlbmNlS2luZBIdChlFVklERU5DRV9LSU5EX1VOU1BFQ0lGSUVEEAASJgoiRVZJREVOQ0VfS0lORF9XT1JLRVJfVkFMVUVfT1BFTklORxABEigKJEVWSURFTkNFX0tJTkRfVkVSSUZJRVJfVkFMVUVfT1BFTklORxACEikKJUVWSURFTkNFX0tJTkRfU0VUVExFTUVOVF9ST09UX09QRU5JTkcQA0IpWidnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC9zaGFyZWQvdHlwZXNiBnByb3RvMw", [file_gogoproto_gogo]);
+  fileDesc("ChhzaGFyZWQvdjEvZXZpZGVuY2UucHJvdG8SCXNoYXJlZC52MSKVAQoaSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjESLgoNZXZpZGVuY2Vfa2luZBgBIAEoDjIXLnNoYXJlZC52MS5FdmlkZW5jZUtpbmQSIQoZY29tbWl0bWVudF9zY2hlbWFfdmVyc2lvbhgCIAEoDRIeChZtYXhfZW5jb2RlZF9zaXplX2J5dGVzGAMgASgEOgTooB8BIn4KEEV2aWRlbmNlU2NoZW1hVjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0STAoXcmVxdWlyZWRfaW5mZXJfZXZpZGVuY2UYAiADKAsyJS5zaGFyZWQudjEuSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjFCBMjeHwA6BOigHwEq0gEKDEV2aWRlbmNlS2luZBIdChlFVklERU5DRV9LSU5EX1VOU1BFQ0lGSUVEEAASJgoiRVZJREVOQ0VfS0lORF9XT1JLRVJfVkFMVUVfT1BFTklORxABEigKJEVWSURFTkNFX0tJTkRfVkVSSUZJRVJfVkFMVUVfT1BFTklORxACEikKJUVWSURFTkNFX0tJTkRfU0VUVExFTUVOVF9ST09UX09QRU5JTkcQAxImCiJFVklERU5DRV9LSU5EX1dPUktFUl9UT0tFTl9PUEVOSU5HEARCKVonZ2l0aHViLmNvbS9UcnVlT3Blbi9ub2RlL3gvc2hhcmVkL3R5cGVzYgZwcm90bzM", [file_gogoproto_gogo]);
 
 /**
  * InferEvidenceRequirementV1 freezes one evidence kind required from the
@@ -88,7 +88,7 @@ export enum EvidenceKind {
   UNSPECIFIED = 0,
 
   /**
-   * Selected Worker four-artifact opening folded by WorkerValueCommitmentV2.
+   * Selected Worker B-level value-tree opening.
    * EVIDENCE_KIND_WORKER_VALUE_OPENING identifies the corresponding protocol value.
    *
    * @generated from enum value: EVIDENCE_KIND_WORKER_VALUE_OPENING = 1;
@@ -110,6 +110,13 @@ export enum EvidenceKind {
    * @generated from enum value: EVIDENCE_KIND_SETTLEMENT_ROOT_OPENING = 3;
    */
   SETTLEMENT_ROOT_OPENING = 3,
+
+  /**
+   * Selected Worker A-level input and generated token-ID opening.
+   *
+   * @generated from enum value: EVIDENCE_KIND_WORKER_TOKEN_OPENING = 4;
+   */
+  WORKER_TOKEN_OPENING = 4,
 }
 
 /**

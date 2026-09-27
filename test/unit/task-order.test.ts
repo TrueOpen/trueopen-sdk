@@ -5,31 +5,19 @@ import {
   TASK_TYPE,
   DEADLINE_LATENCY_CLASS,
   GENERATION_PARAMS_SCHEMA_VERSION_V1,
+  PAYLOAD_MODE,
 } from '../../src/order/task-order';
-import type { TaskOrderV2, AmountV1 } from '../../src/order/task-order';
+import type { TaskOrderV3, AmountV1 } from '../../src/order/task-order';
 import { canonicalOperatorAddressBytes } from '../../src/codec/address';
 import { toHex } from '../../src/util/bytes';
 import { bech32 } from '@scure/base';
 
 /**
- * ⚠️ **This is not a cross-language golden value -- just a self-consistency
- * regression value.**
- *
- * Back in v0.1.2 this asserted against the V1 golden value published by node itself
- * (f7d3f70c..., from node x/task/types/task_order_test.go, which nexus also mirrored
- * as the same constant) -- that was hard evidence for task_hash between the SDK and
- * node/nexus. Since wire v0.3.0, TaskOrderV2 and TRUEOPEN_TASK_ORDER_V1 were removed
- * together, and V2 still has **no testdata vectors at all**
- * (registry/v1/domains.json only gives the 25 field names and framing rules), so that
- * hard evidence no longer applies.
- *
- * The value below is computed by this implementation itself. It only guards against
- * "accidental changes" -- it cannot catch "all three parties misreading the spec the
- * same way". As soon as wire publishes task_order_v2 vectors, switch to that value
- * immediately -- if it doesn't match, this implementation is wrong; do not change the
- * vector to match instead.
+ * Self-consistency regression value for a second, independent TaskOrderV3 input.
+ * The cross-language gate is task-order-contract-vectors.test.ts, which checks the
+ * published wire vectors; this value only guards against accidental changes.
  */
-const GOLDEN = 'd1456a9d1b78598387f6d9aa3aa8a2fd27e9ab4c9193ce2eec142060819da362';
+const GOLDEN = 'a3eba489b6de7e92cdc00a445c1bcc5744ed76ee358fd885300ae285168441b7';
 
 const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fill(byte);
 const amount = (atomicUnits: string): AmountV1 => ({ atomicUnits });
@@ -39,15 +27,15 @@ const amount = (atomicUnits: string): AmountV1 => ({ atomicUnits });
 // to match node's prefix.
 const accAddress = (raw: Uint8Array): string => bech32.encode('trueopen', bech32.toWords(raw));
 
-/** Reuses the values from the v0.1.2 fixture, rearranged to match TaskOrderV2's field set. */
-function fixture(): TaskOrderV2 {
+/** An order distinct from the wire vectors, so the regression value covers a second input. */
+function fixture(): TaskOrderV3 {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     chainId: 'trueopen-test-1',
     userAddress: accAddress(rep(0x11, 20)),
     sessionId: rep(0x12, 32),
     orderSequence: 7n,
-    modelId: 'model-task-order',
+    modelId: rep(0x16, 32),
     profileVersion: 3,
     taskType: TASK_TYPE.TEXT_GENERATION,
     inputHash: rep(0x13, 32),
@@ -83,22 +71,25 @@ function fixture(): TaskOrderV2 {
     sessionAnchorBlockHash: rep(0x14, 32),
     builderSetId: '7',
     builderSetHash: rep(0x15, 32),
+    payloadMode: PAYLOAD_MODE.PLAINTEXT,
+    inputKeyCommitment: new Uint8Array(32),
+    userRecipientPubkey: new Uint8Array(0),
   };
 }
 
-describe('taskOrderHash (cross-language golden gate)', () => {
-  it('matches the task_hash golden value published by node', () => {
+describe('taskOrderHash (regression value + content identity)', () => {
+  it('matches the regression value', () => {
     expect(taskOrderHashHex(fixture())).toBe(GOLDEN);
     expect(toHex(taskOrderHash(fixture()))).toBe(GOLDEN);
   });
 
   // Content identity: changing a single bit in any field must change task_hash (the TS-side counterpart of node's test of the same name).
-  const mutations: Array<[string, (o: TaskOrderV2) => TaskOrderV2]> = [
+  const mutations: Array<[string, (o: TaskOrderV3) => TaskOrderV3]> = [
     ['chain_id', (o) => ({ ...o, chainId: `${o.chainId}-x` })],
     ['user_address', (o) => ({ ...o, userAddress: accAddress(rep(0x22, 20)) })],
     ['session_id', (o) => ({ ...o, sessionId: rep(0x23, 32) })],
     ['order_sequence', (o) => ({ ...o, orderSequence: o.orderSequence + 1n })],
-    ['model_id', (o) => ({ ...o, modelId: `${o.modelId}-x` })],
+    ['model_id', (o) => ({ ...o, modelId: rep(0x17, 32) })],
     ['profile_version', (o) => ({ ...o, profileVersion: o.profileVersion + 1 })],
     ['task_type', (o) => ({ ...o, taskType: TASK_TYPE.IMAGE_GENERATION })],
     ['input_hash', (o) => ({ ...o, inputHash: rep(0x24, 32) })],
@@ -150,20 +141,20 @@ describe('taskOrderHash (cross-language golden gate)', () => {
 
   it('swapping two Amounts changes the digest (the order of the 4 Amounts cannot be swapped)', () => {
     const o = fixture();
-    const swapped: TaskOrderV2 = { ...o, priceBid: o.maxFee, maxFee: o.priceBid };
+    const swapped: TaskOrderV3 = { ...o, priceBid: o.maxFee, maxFee: o.priceBid };
     expect(taskOrderHashHex(swapped)).not.toBe(GOLDEN);
   });
 });
 
 describe('scalar scope validation', () => {
   it.each([
-    ['session_id is not 32 bytes', (o: TaskOrderV2) => ({ ...o, sessionId: rep(0x12, 31) })],
-    ['input_hash is not 32 bytes', (o: TaskOrderV2) => ({ ...o, inputHash: rep(0x13, 33) })],
-    ['schema_version != 2', (o: TaskOrderV2) => ({ ...o, schemaVersion: 1 })],
-    ['task_type unspecified', (o: TaskOrderV2) => ({ ...o, taskType: TASK_TYPE.UNSPECIFIED })],
-    ['earliest >= expire', (o: TaskOrderV2) => ({ ...o, earliestSubmitHeight: 80n })],
-    ['builder_set_id is empty', (o: TaskOrderV2) => ({ ...o, builderSetId: '' })],
-    ['latency_class unspecified', (o: TaskOrderV2) => ({
+    ['session_id is not 32 bytes', (o: TaskOrderV3) => ({ ...o, sessionId: rep(0x12, 31) })],
+    ['input_hash is not 32 bytes', (o: TaskOrderV3) => ({ ...o, inputHash: rep(0x13, 33) })],
+    ['schema_version != 2', (o: TaskOrderV3) => ({ ...o, schemaVersion: 1 })],
+    ['task_type unspecified', (o: TaskOrderV3) => ({ ...o, taskType: TASK_TYPE.UNSPECIFIED })],
+    ['earliest >= expire', (o: TaskOrderV3) => ({ ...o, earliestSubmitHeight: 80n })],
+    ['builder_set_id is empty', (o: TaskOrderV3) => ({ ...o, builderSetId: '' })],
+    ['latency_class unspecified', (o: TaskOrderV3) => ({
       ...o, deadlinePolicy: { latencyClass: DEADLINE_LATENCY_CLASS.UNSPECIFIED },
     })],
   ])('%s -> throws instead of computing a digest', (_name, mutate) => {

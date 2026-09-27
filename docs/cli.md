@@ -403,7 +403,7 @@ Since `TaskOrderV2` was frozen, the fields have changed materially:
 
 ```json
 {
-  "modelId": "hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b",
+  "modelId": "ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b",
   "profileVersion": 1,
   "taskType": "TEXT_GENERATION",
   "inputBucket": 1,
@@ -470,7 +470,7 @@ curl -s "$TRUEOPEN_REST_URL/cosmos/base/tendermint/v1beta1/blocks/latest" \
 # 3) write the order-file (height window uses the value from the previous step)
 cat > /tmp/order.json <<'JSON'
 {
-  "modelId": "hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b",
+  "modelId": "ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b",
   "profileVersion": 1,
   "taskType": "TEXT_GENERATION",
   "inputBucket": 1,

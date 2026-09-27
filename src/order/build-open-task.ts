@@ -6,7 +6,7 @@ import type { OrderEip712Context } from './signed-order';
 import { payloadRefFor } from './task-order-input';
 import { orderEnvelopeSigningBytes } from './order-signing';
 import { openTaskBodyDigest, signSdkRequestEnvelope } from '../transport/sdk-request-envelope';
-import type { TaskOrderV2 } from './task-order';
+import type { TaskOrderV3 } from './task-order';
 import type { OpenTaskInput } from '../transport/ingress-client';
 import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
 import type { Eip712Signer } from '../signer/eth-secp256k1';
@@ -21,7 +21,7 @@ const DEFAULT_MEDIA_TYPE = 'application/octet-stream';
 
 export interface BuildOpenTaskInput {
   /** The already-assembled, frozen order (see buildTaskOrder). */
-  readonly order: TaskOrderV2;
+  readonly order: TaskOrderV3;
   /** Two values the order's EIP-712 signing needs but that aren't part of the order itself: the EVM numeric chain ID and the fee denomination. */
   readonly orderEip712: OrderEip712Context;
   /** The plaintext input payload itself; must match order.inputHash / inputSizeBytes. */

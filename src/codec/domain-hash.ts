@@ -91,3 +91,32 @@ export function enumBE(value: number): Uint8Array {
 export function domainHashHex(domain: string, ...fields: string[]): string {
   return toHex(domainHash(domain, ...fields));
 }
+
+const FRAME_V1_TAG = enc.encode('TRUEOPEN_FRAME_V1');
+
+/**
+ * The H_V1 preimage (wire registry/v1/framing.json):
+ *   ascii("TRUEOPEN_FRAME_V1") || u32_be(len(domain)) || domain || u64_be(len(payload)) || payload
+ * Distinct from H_FIELDS_V1: a single opaque payload (for example canonical JSON bytes)
+ * rather than a list of fields.
+ */
+export function framedV1Preimage(domain: string, payload: Uint8Array): Uint8Array {
+  const d = enc.encode(domain);
+  const out = new Uint8Array(FRAME_V1_TAG.length + 4 + d.length + 8 + payload.length);
+  let off = 0;
+  out.set(FRAME_V1_TAG, off);
+  off += FRAME_V1_TAG.length;
+  out.set(uint32BE(d.length), off);
+  off += 4;
+  out.set(d, off);
+  off += d.length;
+  out.set(uint64BE(BigInt(payload.length)), off);
+  off += 8;
+  out.set(payload, off);
+  return out;
+}
+
+/** H_V1(domain, payload) = sha256(framedV1Preimage(domain, payload)). Raw 32 bytes. */
+export function framedHashV1(domain: string, payload: Uint8Array): Uint8Array {
+  return sha256(framedV1Preimage(domain, payload));
+}

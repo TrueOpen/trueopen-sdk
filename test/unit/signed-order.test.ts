@@ -13,9 +13,10 @@ import {
   TASK_TYPE,
   DEADLINE_LATENCY_CLASS,
   GENERATION_PARAMS_SCHEMA_VERSION_V1,
-  TASK_ORDER_SCHEMA_VERSION_V2,
+  TASK_ORDER_SCHEMA_VERSION_V3,
+  PAYLOAD_MODE,
 } from '../../src/order/task-order';
-import type { TaskOrderV2, AmountV1 } from '../../src/order/task-order';
+import type { TaskOrderV3, AmountV1 } from '../../src/order/task-order';
 import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import {
   privKeySecp256k1Signer,
@@ -38,18 +39,18 @@ const pub = secp256k1PublicKey(PRIV);
 const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fill(byte);
 const amount = (atomicUnits: string): AmountV1 => ({ atomicUnits });
 const accAddress = (raw: Uint8Array): string => bech32.encode('trueopen', bech32.toWords(raw));
-/** The two fields the order's EIP-712 signing needs that are not in TaskOrderV2. */
+/** The two fields the order's EIP-712 signing needs that are not in TaskOrderV3. */
 const ORDER_EIP712 = { evmChainId: 424242n, feeDenom: 'utrueopen' };
 
 // The same order as the node golden fixture in task-order.test.ts.
-function fixture(): TaskOrderV2 {
+function fixture(): TaskOrderV3 {
   return {
-    schemaVersion: TASK_ORDER_SCHEMA_VERSION_V2,
+    schemaVersion: TASK_ORDER_SCHEMA_VERSION_V3,
     chainId: 'trueopen-test-1',
     userAddress: accAddress(rep(0x11, 20)),
     sessionId: rep(0x12, 32),
     orderSequence: 7n,
-    modelId: 'model-task-order',
+    modelId: rep(0x16, 32),
     profileVersion: 3,
     taskType: TASK_TYPE.TEXT_GENERATION,
     inputHash: rep(0x13, 32),
@@ -85,11 +86,14 @@ function fixture(): TaskOrderV2 {
     sessionAnchorBlockHash: rep(0x14, 32),
     builderSetId: '7',
     builderSetHash: rep(0x15, 32),
+    payloadMode: PAYLOAD_MODE.PLAINTEXT,
+    inputKeyCommitment: new Uint8Array(32),
+    userRecipientPubkey: new Uint8Array(0),
   };
 }
 
 /** Rebuild the SDK view from the decoded proto -- if the hand-written view drifts from the proto, this will show missing fields or mismatched types. */
-function viewFromProto(bytes: Uint8Array): TaskOrderV2 {
+function viewFromProto(bytes: Uint8Array): TaskOrderV3 {
   const o = decodeSignedOrder(bytes).order;
   if (!o) throw new Error('missing order');
   const d = o.generationParams?.decodingParams;
@@ -136,12 +140,15 @@ function viewFromProto(bytes: Uint8Array): TaskOrderV2 {
     sessionAnchorBlockHash: o.sessionAnchorBlockHash,
     builderSetId: o.builderSetId,
     builderSetHash: o.builderSetHash,
+    payloadMode: o.payloadMode,
+    inputKeyCommitment: o.inputKeyCommitment,
+    userRecipientPubkey: o.userRecipientPubkey,
   };
 }
 
-describe('SignedOrderV1 encoding', () => {
+describe('SignedOrderV2 encoding', () => {
   // Same self-consistent regression value as task-order.test.ts (not a cross-language golden value; see that file for details).
-  const GOLDEN = 'd1456a9d1b78598387f6d9aa3aa8a2fd27e9ab4c9193ce2eec142060819da362';
+  const GOLDEN = 'a3eba489b6de7e92cdc00a445c1bcc5744ed76ee358fd885300ae285168441b7';
 
   it('task_hash is unchanged after a proto round trip (a drift gate between the hand-written view and the generated type)', () => {
     const bytes = encodeSignedOrder(fixture(), rep(0xaa, 64));

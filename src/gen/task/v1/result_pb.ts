@@ -13,7 +13,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file task/v1/result.proto.
  */
 export const file_task_v1_result: GenFile = /*@__PURE__*/
-  fileDesc("ChR0YXNrL3YxL3Jlc3VsdC5wcm90bxIHdGFzay52MSKXAwoPTWV0cmljU3VtbWFyeVYxEhQKDGZpbml0ZV9jb3VudBgBIAEoDRIeChZtaXNzaW5nX2NvbXBhcmVkX2NvdW50GAIgASgNEiQKHG1lYW5fYWJzX2xvZ3Byb2JfZGlmZl9mcF8xZTYYAyABKA0SIwobYWJzX2xvZ3Byb2JfZGlmZl9wOTVfZnBfMWU2GAQgASgNEiMKG2Fic19sb2dwcm9iX2RpZmZfcDk5X2ZwXzFlNhgFIAEoDRImCh5yYW5rX2RlbHRhX25vbnplcm9fcmF0ZV9mcF8xZTYYBiABKA0SJQoYdG9wa19qYWNjYXJkX21lYW5fZnBfMWU2GAcgASgNSACIAQESIAoTdW5pb25fanNfcDk5X2ZwXzFlNhgIIAEoDUgBiAEBEhsKE2NvbXBhcmVkX3RvcGtfY291bnQYCSABKA0SGwoTY29tcGFyZWRfcmFua19jb3VudBgKIAEoDUIbChlfdG9wa19qYWNjYXJkX21lYW5fZnBfMWU2QhYKFF91bmlvbl9qc19wOTlfZnBfMWU2IpEECg9SZXN1bHRSZWNlaXB0VjISFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSFQoHdGFza19pZBgDIAEoDEIEyPMYAhIUCgx2ZXJpZnlfcm91bmQYBCABKA0SOwoZdmVyaWZpZXJfb3BlcmF0b3JfYWRkcmVzcxgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiMKG3NlcnZpY2VfYXV0aG9yaXphdGlvbl9ub25jZRgGIAEoBBImChhnZW5lcmF0aW9uX3BhcmFtc19kaWdlc3QYByABKAxCBMjzGAISGQoLbWV0cmljX3Jvb3QYCCABKAxCBMjzGAISNgoObWV0cmljX3N1bW1hcnkYCSABKAsyGC50YXNrLnYxLk1ldHJpY1N1bW1hcnlWMUIEyN4fABIiChRhZ2dyZWdhdGVfcHJvb2ZfaGFzaBgKIAEoDEIEyPMYAhIrCh12ZXJpZmllcl9ldmlkZW5jZV9idW5kbGVfaGFzaBgLIAEoDEIEyPMYAhItCiV2ZXJpZmllcl9ldmlkZW5jZV9tYW5pZmVzdF9zaXplX2J5dGVzGAwgASgEEhIKBHNhbHQYDSABKAxCBMjzGAISFQoNZXhwaXJ5X2hlaWdodBgOIAEoBBIfChFzZXJ2aWNlX3NpZ25hdHVyZRgPIAEoDEIEyPMYASLMBAoSUmVzdWx0UmVjZWlwdFN0YXRlEhgKCmNvbW1pdF9rZXkYASABKAxCBMjzGAISFQoHdGFza19pZBgCIAEoDEIEyPMYAhIUCgx2ZXJpZnlfcm91bmQYAyABKA0SOwoZdmVyaWZpZXJfb3BlcmF0b3JfYWRkcmVzcxgEIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEh8KF3NlbGVjdGVkX3ZlcmlmaWVyX2luZGV4GAUgASgNEhkKC21ldHJpY19yb290GAYgASgMQgTI8xgCEjYKDm1ldHJpY19zdW1tYXJ5GAcgASgLMhgudGFzay52MS5NZXRyaWNTdW1tYXJ5VjFCBMjeHwASIQoTbWV0cmljX3N1bW1hcnlfaGFzaBgIIAEoDEIEyPMYAhIiChRhZ2dyZWdhdGVfcHJvb2ZfaGFzaBgJIAEoDEIEyPMYAhIrCh12ZXJpZmllcl9ldmlkZW5jZV9idW5kbGVfaGFzaBgKIAEoDEIEyPMYAhItCiV2ZXJpZmllcl9ldmlkZW5jZV9tYW5pZmVzdF9zaXplX2J5dGVzGAsgASgEEhIKBHNhbHQYDCABKAxCBMjzGAISIQoTcmVzdWx0X3BheWxvYWRfaGFzaBgNIAEoDEIEyPMYAhIrCh1yZXN1bHRfcmVjZWlwdF9zaWduaW5nX2RpZ2VzdBgOIAEoDEIEyPMYAhIeChBzaWduYXR1cmVfZGlnZXN0GA8gASgMQgTI8xgCEhcKD2FjY2VwdGVkX2hlaWdodBgQIAEoBCq0AQoVTWV0cmljU2FtcGxlVmVyZGljdFYxEigKJE1FVFJJQ19TQU1QTEVfVkVSRElDVF9WMV9VTlNQRUNJRklFRBAAEiEKHU1FVFJJQ19TQU1QTEVfVkVSRElDVF9WMV9QQVNTEAESIwofTUVUUklDX1NBTVBMRV9WRVJESUNUX1YxX1JFSkVDVBACEikKJU1FVFJJQ19TQU1QTEVfVkVSRElDVF9WMV9JTkNPTkNMVVNJVkUQA0InWiVnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC90YXNrL3R5cGVzYgZwcm90bzM", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_rest_encoding]);
+  fileDesc("ChR0YXNrL3YxL3Jlc3VsdC5wcm90bxIHdGFzay52MSKXAwoPTWV0cmljU3VtbWFyeVYxEhQKDGZpbml0ZV9jb3VudBgBIAEoDRIeChZtaXNzaW5nX2NvbXBhcmVkX2NvdW50GAIgASgNEiQKHG1lYW5fYWJzX2xvZ3Byb2JfZGlmZl9mcF8xZTYYAyABKA0SIwobYWJzX2xvZ3Byb2JfZGlmZl9wOTVfZnBfMWU2GAQgASgNEiMKG2Fic19sb2dwcm9iX2RpZmZfcDk5X2ZwXzFlNhgFIAEoDRImCh5yYW5rX2RlbHRhX25vbnplcm9fcmF0ZV9mcF8xZTYYBiABKA0SJQoYdG9wa19qYWNjYXJkX21lYW5fZnBfMWU2GAcgASgNSACIAQESIAoTdW5pb25fanNfcDk5X2ZwXzFlNhgIIAEoDUgBiAEBEhsKE2NvbXBhcmVkX3RvcGtfY291bnQYCSABKA0SGwoTY29tcGFyZWRfcmFua19jb3VudBgKIAEoDUIbChlfdG9wa19qYWNjYXJkX21lYW5fZnBfMWU2QhYKFF91bmlvbl9qc19wOTlfZnBfMWU2IoUFCg9SZXN1bHRSZWNlaXB0VjMSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSFQoHdGFza19pZBgDIAEoDEIEyPMYAhIUCgx2ZXJpZnlfcm91bmQYBCABKA0SOwoZdmVyaWZpZXJfb3BlcmF0b3JfYWRkcmVzcxgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiMKG3NlcnZpY2VfYXV0aG9yaXphdGlvbl9ub25jZRgGIAEoBBImChhnZW5lcmF0aW9uX3BhcmFtc19kaWdlc3QYByABKAxCBMjzGAISGQoLbWV0cmljX3Jvb3QYCCABKAxCBMjzGAISNgoObWV0cmljX3N1bW1hcnkYCSABKAsyGC50YXNrLnYxLk1ldHJpY1N1bW1hcnlWMUIEyN4fABIiChRhZ2dyZWdhdGVfcHJvb2ZfaGFzaBgKIAEoDEIEyPMYAhIrCh12ZXJpZmllcl9ldmlkZW5jZV9idW5kbGVfaGFzaBgLIAEoDEIEyPMYAhItCiV2ZXJpZmllcl9ldmlkZW5jZV9tYW5pZmVzdF9zaXplX2J5dGVzGAwgASgEEhIKBHNhbHQYDSABKAxCBMjzGAISFQoNZXhwaXJ5X2hlaWdodBgOIAEoBBIfChFzZXJ2aWNlX3NpZ25hdHVyZRgPIAEoDEIEyPMYARIhChN2ZXJpZmllcl92YWx1ZV9yb290GBAgASgMQgTI8xgCEhkKEW1ldHJpY19sZWFmX2NvdW50GBEgASgNEi4KIHZlcmlmaWVyX2V2aWRlbmNlX2tleV9jb21taXRtZW50GBIgASgMQgTI8xgCSgQIExAUIroFChJSZXN1bHRSZWNlaXB0U3RhdGUSGAoKY29tbWl0X2tleRgBIAEoDEIEyPMYAhIVCgd0YXNrX2lkGAIgASgMQgTI8xgCEhQKDHZlcmlmeV9yb3VuZBgDIAEoDRI7Chl2ZXJpZmllcl9vcGVyYXRvcl9hZGRyZXNzGAQgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSHwoXc2VsZWN0ZWRfdmVyaWZpZXJfaW5kZXgYBSABKA0SGQoLbWV0cmljX3Jvb3QYBiABKAxCBMjzGAISNgoObWV0cmljX3N1bW1hcnkYByABKAsyGC50YXNrLnYxLk1ldHJpY1N1bW1hcnlWMUIEyN4fABIhChNtZXRyaWNfc3VtbWFyeV9oYXNoGAggASgMQgTI8xgCEiIKFGFnZ3JlZ2F0ZV9wcm9vZl9oYXNoGAkgASgMQgTI8xgCEisKHXZlcmlmaWVyX2V2aWRlbmNlX2J1bmRsZV9oYXNoGAogASgMQgTI8xgCEi0KJXZlcmlmaWVyX2V2aWRlbmNlX21hbmlmZXN0X3NpemVfYnl0ZXMYCyABKAQSEgoEc2FsdBgMIAEoDEIEyPMYAhIhChNyZXN1bHRfcGF5bG9hZF9oYXNoGA0gASgMQgTI8xgCEisKHXJlc3VsdF9yZWNlaXB0X3NpZ25pbmdfZGlnZXN0GA4gASgMQgTI8xgCEh4KEHNpZ25hdHVyZV9kaWdlc3QYDyABKAxCBMjzGAISFwoPYWNjZXB0ZWRfaGVpZ2h0GBAgASgEEhkKEW1ldHJpY19sZWFmX2NvdW50GBEgASgNEi4KIHZlcmlmaWVyX2V2aWRlbmNlX2tleV9jb21taXRtZW50GBIgASgMQgTI8xgCEiEKE3ZlcmlmaWVyX3ZhbHVlX3Jvb3QYEyABKAxCBMjzGAIqtAEKFU1ldHJpY1NhbXBsZVZlcmRpY3RWMRIoCiRNRVRSSUNfU0FNUExFX1ZFUkRJQ1RfVjFfVU5TUEVDSUZJRUQQABIhCh1NRVRSSUNfU0FNUExFX1ZFUkRJQ1RfVjFfUEFTUxABEiMKH01FVFJJQ19TQU1QTEVfVkVSRElDVF9WMV9SRUpFQ1QQAhIpCiVNRVRSSUNfU0FNUExFX1ZFUkRJQ1RfVjFfSU5DT05DTFVTSVZFEANCJ1olZ2l0aHViLmNvbS9UcnVlT3Blbi9ub2RlL3gvdGFzay90eXBlc2IGcHJvdG8z", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_rest_encoding]);
 
 /**
  * MetricSummaryV1 is the typed canonical verification summary. Field numbers and
@@ -86,17 +86,18 @@ export const MetricSummaryV1Schema: GenMessage<MetricSummaryV1> = /*@__PURE__*/
   messageDesc(file_task_v1_result, 0);
 
 /**
- * ResultReceiptV2 is the verifier-signed result credential carried by
+ * ResultReceiptV3 is the verifier-signed result credential carried by
  * MsgSubmitVerifyResult and MsgBatchSubmitVerifyResult. Field numbers, types and
  * order are frozen and are the length-framed preimage
  * of
  *
- *   result_receipt_signing_digest = H_FIELDS_V1("TRUEOPEN_RESULT_V2",
+ *   result_receipt_signing_digest = H_FIELDS_V1("TRUEOPEN_RESULT_V3",
  *     schema_version, chain_id, task_id, verify_round,
  *     verifier_operator_address, service_authorization_nonce,
  *     generation_params_digest, metric_root, canonical metric_summary,
  *     aggregate_proof_hash, verifier_evidence_bundle_hash,
- *     verifier_evidence_manifest_size_bytes, salt, expiry_height)
+ *     verifier_evidence_manifest_size_bytes, salt, expiry_height,
+ *     verifier_value_root, metric_leaf_count, verifier_evidence_key_commitment)
  *
  * commit_key is recomputed by the Keeper and is not a caller field.
  * metric_root, aggregate_proof_hash, verifier_evidence_bundle_hash and salt must
@@ -104,14 +105,14 @@ export const MetricSummaryV1Schema: GenMessage<MetricSummaryV1> = /*@__PURE__*/
  * result_payload_hash are recomputed by the Keeper and are never asserted by the
  * request. No final verdict field is accepted.
  *
- * schema_version is 2. V1 receipts are not accepted by the fresh v0.3.0 schema.
- * ResultReceiptV2 defines the ResultReceiptV2 wire type.
+ * schema_version is 3. Earlier receipts are not accepted by the fresh schema.
+ * ResultReceiptV3 defines the ResultReceiptV3 wire type.
  *
- * @generated from message task.v1.ResultReceiptV2
+ * @generated from message task.v1.ResultReceiptV3
  */
-export type ResultReceiptV2 = Message<"task.v1.ResultReceiptV2"> & {
+export type ResultReceiptV3 = Message<"task.v1.ResultReceiptV3"> & {
   /**
-   * Always 2.
+   * Always 3.
    *
    * @generated from field: uint32 schema_version = 1;
    */
@@ -189,20 +190,37 @@ export type ResultReceiptV2 = Message<"task.v1.ResultReceiptV2"> & {
    * @generated from field: bytes service_signature = 15;
    */
   serviceSignature: Uint8Array;
+
+  /**
+   * @generated from field: bytes verifier_value_root = 16;
+   */
+  verifierValueRoot: Uint8Array;
+
+  /**
+   * @generated from field: uint32 metric_leaf_count = 17;
+   */
+  metricLeafCount: number;
+
+  /**
+   * Reserved encryption commitment: all-zero Hash32 in plaintext Phase 0.
+   *
+   * @generated from field: bytes verifier_evidence_key_commitment = 18;
+   */
+  verifierEvidenceKeyCommitment: Uint8Array;
 };
 
 /**
- * Describes the message task.v1.ResultReceiptV2.
- * Use `create(ResultReceiptV2Schema)` to create a new message.
+ * Describes the message task.v1.ResultReceiptV3.
+ * Use `create(ResultReceiptV3Schema)` to create a new message.
  */
-export const ResultReceiptV2Schema: GenMessage<ResultReceiptV2> = /*@__PURE__*/
+export const ResultReceiptV3Schema: GenMessage<ResultReceiptV3> = /*@__PURE__*/
   messageDesc(file_task_v1_result, 1);
 
 /**
  * ResultReceiptState is the first accepted verifier result credential keyed by
  * commit_key. It retains enough authoritative scope
  * and commitments to reconstruct result_payload_hash and verify the accepted
- * TRUEOPEN_RESULT_COMMITMENT_V2 without storing a full-result body on chain.
+ * TRUEOPEN_RESULT_COMMITMENT_V3 without storing a full-result body on chain.
  * ResultReceiptState defines the ResultReceiptState wire type.
  *
  * @generated from message task.v1.ResultReceiptState
@@ -292,6 +310,21 @@ export type ResultReceiptState = Message<"task.v1.ResultReceiptState"> & {
    * @generated from field: uint64 accepted_height = 16;
    */
   acceptedHeight: bigint;
+
+  /**
+   * @generated from field: uint32 metric_leaf_count = 17;
+   */
+  metricLeafCount: number;
+
+  /**
+   * @generated from field: bytes verifier_evidence_key_commitment = 18;
+   */
+  verifierEvidenceKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes verifier_value_root = 19;
+   */
+  verifierValueRoot: Uint8Array;
 };
 
 /**
@@ -304,7 +337,7 @@ export const ResultReceiptStateSchema: GenMessage<ResultReceiptState> = /*@__PUR
 /**
  * MetricSampleVerdictV1 is the per-sample judgment produced by JudgeMetricSample
  * from the task-snapshot verification thresholds. Frozen values:
- * the API contract. Verifiers never submit a verdict field, and
+ * the wire API. Verifiers never submit a verdict field, and
  * METRIC_SAMPLE_VERDICT_V1_INCONCLUSIVE can never become a final task verdict.
  * MetricSampleVerdictV1 defines the MetricSampleVerdictV1 wire type.
  *

@@ -82,6 +82,8 @@ describe('openAIFinishReason', () => {
     [FinishReasonV1.STOP_SEQUENCE, 'stop'],
     [FinishReasonV1.MAX_OUTPUT_TOKENS, 'length'],
     [FinishReasonV1.MAX_OUTPUT_DURATION, 'length'],
+    [FinishReasonV1.USER_STOP, 'stop'],
+    [FinishReasonV1.STOP_TOKEN, 'stop'],
   ] as const)('%s maps to %s', (reason, expected) => {
     expect(openAIFinishReason(reason)).toBe(expected);
   });

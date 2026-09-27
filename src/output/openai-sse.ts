@@ -98,6 +98,8 @@ export function openAIFinishReason(reason: FinishReasonV1): OpenAIFinishReason {
   switch (reason) {
     case FinishReasonV1.EOS_TOKEN:
     case FinishReasonV1.STOP_SEQUENCE:
+    case FinishReasonV1.STOP_TOKEN:
+    case FinishReasonV1.USER_STOP:
       return 'stop';
     case FinishReasonV1.MAX_OUTPUT_TOKENS:
     case FinishReasonV1.MAX_OUTPUT_DURATION:

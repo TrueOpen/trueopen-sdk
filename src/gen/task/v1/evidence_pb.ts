@@ -15,20 +15,20 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file task/v1/evidence.proto.
  */
 export const file_task_v1_evidence: GenFile = /*@__PURE__*/
-  fileDesc("ChZ0YXNrL3YxL2V2aWRlbmNlLnByb3RvEgd0YXNrLnYxIocBChRFdmlkZW5jZUNvbW1pdG1lbnRWMRIuCg1ldmlkZW5jZV9raW5kGAEgASgOMhcuc2hhcmVkLnYxLkV2aWRlbmNlS2luZBIjChVldmlkZW5jZV9oYXNoX29yX3Jvb3QYAiABKAxCBMjzGAISGgoSZW5jb2RlZF9zaXplX2J5dGVzGAMgASgEIr0FChdXb3JrZXJWYWx1ZUNvbW1pdG1lbnRWMhIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIQCghjaGFpbl9pZBgCIAEoCRIVCgd0YXNrX2lkGAMgASgMQgTI8xgCEiAKEmFjY2VwdGVkX3Rhc2tfaGFzaBgEIAEoDEIEyPMYAhI5Chd3b3JrZXJfb3BlcmF0b3JfYWRkcmVzcxgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgGIAEoDEIEyPMYAhIiChRldmlkZW5jZV9zY2hlbWFfaGFzaBgHIAEoDEIEyPMYAhIZCgtvdXRwdXRfaGFzaBgIIAEoDEIEyPMYAhIZChFvdXRwdXRfc2l6ZV9ieXRlcxgJIAEoBBIuCg1maW5pc2hfcmVhc29uGAogASgOMhcudGFzay52MS5GaW5pc2hSZWFzb25WMRIYCgp0cmFjZV9yb290GAsgASgMQgTI8xgCEiAKGHRyYWNlX2VuY29kZWRfc2l6ZV9ieXRlcxgMIAEoBBIdCg9jaGVja3BvaW50X3Jvb3QYDSABKAxCBMjzGAISJQodY2hlY2twb2ludF9lbmNvZGVkX3NpemVfYnl0ZXMYDiABKAQSHQoVZ2VuZXJhdGVkX3Rva2VuX2NvdW50GA8gASgEEhkKEW91dHB1dF9sZWFmX2NvdW50GBAgASgEEiIKFGlucHV0X3Rva2VuX2lkc19oYXNoGBEgASgMQgTI8xgCEiYKGGdlbmVyYXRlZF90b2tlbl9pZHNfaGFzaBgSIAEoDEIEyPMYAhIiChppbnB1dF90b2tlbl9pZHNfc2l6ZV9ieXRlcxgTIAEoBBImCh5nZW5lcmF0ZWRfdG9rZW5faWRzX3NpemVfYnl0ZXMYFCABKAQiUwoUT3V0cHV0TU1SUGVha1Byb29mVjESFwoJcGVha19oYXNoGAEgASgMQgTI8xgCEiIKFGZpbmFsX2luY2x1c2lvbl9wYXRoGAIgAygMQgTI8xgCIuwBChlPdXRwdXRDaHVua0VxdWl2b2NhdGlvblYxEhUKB3Rhc2tfaWQYASABKAxCBMjzGAISKQobYWNjZXB0ZWRfaW5mZXJfcmVjZWlwdF9oYXNoGAIgASgMQgTI8xgCEgsKA3NlcRgDIAEoBBIfChFzdHJlYW1lZF9tbXJfcm9vdBgEIAEoDEIEyPMYAhIeChB3b3JrZXJfc2lnbmF0dXJlGAUgASgMQgTI8xgBEj8KEnByZWZpeF9wZWFrX3Byb29mcxgGIAMoCzIdLnRhc2sudjEuT3V0cHV0TU1SUGVha1Byb29mVjFCBMjeHwAifwoQV29ya2VyRXZpZGVuY2VWMRIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRJHChlvdXRwdXRfY2h1bmtfZXF1aXZvY2F0aW9uGAIgASgLMiIudGFzay52MS5PdXRwdXRDaHVua0VxdWl2b2NhdGlvblYxSABCCgoIZXZpZGVuY2UixAIKGldvcmtlckV2aWRlbmNlUmVjZWlwdFN0YXRlEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISOQoXd29ya2VyX29wZXJhdG9yX2FkZHJlc3MYAyABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxI0Cg1ldmlkZW5jZV9raW5kGAQgASgOMh0udGFzay52MS5Xb3JrZXJFdmlkZW5jZUtpbmRWMRILCgNzZXEYBSABKAQSKQobYWNjZXB0ZWRfaW5mZXJfcmVjZWlwdF9oYXNoGAYgASgMQgTI8xgCEh0KD2V2aWRlbmNlX2RpZ2VzdBgHIAEoDEIEyPMYAhIWCghmYXVsdF9pZBgIIAEoDEIEyPMYAhIXCg9hY2NlcHRlZF9oZWlnaHQYCSABKAQqyAEKDkZpbmlzaFJlYXNvblYxEiAKHEZJTklTSF9SRUFTT05fVjFfVU5TUEVDSUZJRUQQABIeChpGSU5JU0hfUkVBU09OX1YxX0VPU19UT0tFThABEiIKHkZJTklTSF9SRUFTT05fVjFfU1RPUF9TRVFVRU5DRRACEiYKIkZJTklTSF9SRUFTT05fVjFfTUFYX09VVFBVVF9UT0tFTlMQAxIoCiRGSU5JU0hfUkVBU09OX1YxX01BWF9PVVRQVVRfRFVSQVRJT04QBCp2ChRXb3JrZXJFdmlkZW5jZUtpbmRWMRInCiNXT1JLRVJfRVZJREVOQ0VfS0lORF9WMV9VTlNQRUNJRklFRBAAEjUKMVdPUktFUl9FVklERU5DRV9LSU5EX1YxX09VVFBVVF9DSFVOS19FUVVJVk9DQVRJT04QAUInWiVnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC90YXNrL3R5cGVzYgZwcm90bzM", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_evidence, file_shared_v1_rest_encoding]);
+  fileDesc("ChZ0YXNrL3YxL2V2aWRlbmNlLnByb3RvEgd0YXNrLnYxIocBChRFdmlkZW5jZUNvbW1pdG1lbnRWMRIuCg1ldmlkZW5jZV9raW5kGAEgASgOMhcuc2hhcmVkLnYxLkV2aWRlbmNlS2luZBIjChVldmlkZW5jZV9oYXNoX29yX3Jvb3QYAiABKAxCBMjzGAISGgoSZW5jb2RlZF9zaXplX2J5dGVzGAMgASgEIrsEChdXb3JrZXJUb2tlbkNvbW1pdG1lbnRWMRIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIQCghjaGFpbl9pZBgCIAEoCRIVCgd0YXNrX2lkGAMgASgMQgTI8xgCEiAKEmFjY2VwdGVkX3Rhc2tfaGFzaBgEIAEoDEIEyPMYAhI5Chd3b3JrZXJfb3BlcmF0b3JfYWRkcmVzcxgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgGIAEoDEIEyPMYAhIiChRldmlkZW5jZV9zY2hlbWFfaGFzaBgHIAEoDEIEyPMYAhIZCgtvdXRwdXRfaGFzaBgIIAEoDEIEyPMYAhIZChFvdXRwdXRfc2l6ZV9ieXRlcxgJIAEoBBIZChFvdXRwdXRfbGVhZl9jb3VudBgKIAEoBBIuCg1maW5pc2hfcmVhc29uGAsgASgOMhcudGFzay52MS5GaW5pc2hSZWFzb25WMRIdChVnZW5lcmF0ZWRfdG9rZW5fY291bnQYDCABKAQSIgoUaW5wdXRfdG9rZW5faWRzX2hhc2gYDSABKAxCBMjzGAISJgoYZ2VuZXJhdGVkX3Rva2VuX2lkc19oYXNoGA4gASgMQgTI8xgCEiIKGmlucHV0X3Rva2VuX2lkc19zaXplX2J5dGVzGA8gASgEEiYKHmdlbmVyYXRlZF90b2tlbl9pZHNfc2l6ZV9ieXRlcxgQIAEoBCKmAgoXV29ya2VyVmFsdWVDb21taXRtZW50VjMSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSFQoHdGFza19pZBgDIAEoDEIEyPMYAhIgChJhY2NlcHRlZF90YXNrX2hhc2gYBCABKAxCBMjzGAISOQoXd29ya2VyX29wZXJhdG9yX2FkZHJlc3MYBSABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIiChRldmlkZW5jZV9zY2hlbWFfaGFzaBgGIAEoDEIEyPMYAhIfChF3b3JrZXJfdmFsdWVfcm9vdBgHIAEoDEIEyPMYAhIoCiB3b3JrZXJfdmFsdWVzX2VuY29kZWRfc2l6ZV9ieXRlcxgIIAEoBCJTChRPdXRwdXRNTVJQZWFrUHJvb2ZWMRIXCglwZWFrX2hhc2gYASABKAxCBMjzGAISIgoUZmluYWxfaW5jbHVzaW9uX3BhdGgYAiADKAxCBMjzGAIi7AEKGU91dHB1dENodW5rRXF1aXZvY2F0aW9uVjESFQoHdGFza19pZBgBIAEoDEIEyPMYAhIpChthY2NlcHRlZF9pbmZlcl9yZWNlaXB0X2hhc2gYAiABKAxCBMjzGAISCwoDc2VxGAMgASgEEh8KEXN0cmVhbWVkX21tcl9yb290GAQgASgMQgTI8xgCEh4KEHdvcmtlcl9zaWduYXR1cmUYBSABKAxCBMjzGAESPwoScHJlZml4X3BlYWtfcHJvb2ZzGAYgAygLMh0udGFzay52MS5PdXRwdXRNTVJQZWFrUHJvb2ZWMUIEyN4fACJ/ChBXb3JrZXJFdmlkZW5jZVYxEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEkcKGW91dHB1dF9jaHVua19lcXVpdm9jYXRpb24YAiABKAsyIi50YXNrLnYxLk91dHB1dENodW5rRXF1aXZvY2F0aW9uVjFIAEIKCghldmlkZW5jZSLEAgoaV29ya2VyRXZpZGVuY2VSZWNlaXB0U3RhdGUSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SFQoHdGFza19pZBgCIAEoDEIEyPMYAhI5Chd3b3JrZXJfb3BlcmF0b3JfYWRkcmVzcxgDIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEjQKDWV2aWRlbmNlX2tpbmQYBCABKA4yHS50YXNrLnYxLldvcmtlckV2aWRlbmNlS2luZFYxEgsKA3NlcRgFIAEoBBIpChthY2NlcHRlZF9pbmZlcl9yZWNlaXB0X2hhc2gYBiABKAxCBMjzGAISHQoPZXZpZGVuY2VfZGlnZXN0GAcgASgMQgTI8xgCEhYKCGZhdWx0X2lkGAggASgMQgTI8xgCEhcKD2FjY2VwdGVkX2hlaWdodBgJIAEoBCqJAgoORmluaXNoUmVhc29uVjESIAocRklOSVNIX1JFQVNPTl9WMV9VTlNQRUNJRklFRBAAEh4KGkZJTklTSF9SRUFTT05fVjFfRU9TX1RPS0VOEAESIgoeRklOSVNIX1JFQVNPTl9WMV9TVE9QX1NFUVVFTkNFEAISJgoiRklOSVNIX1JFQVNPTl9WMV9NQVhfT1VUUFVUX1RPS0VOUxADEigKJEZJTklTSF9SRUFTT05fVjFfTUFYX09VVFBVVF9EVVJBVElPThAEEh4KGkZJTklTSF9SRUFTT05fVjFfVVNFUl9TVE9QEAUSHwobRklOSVNIX1JFQVNPTl9WMV9TVE9QX1RPS0VOEAYqdgoUV29ya2VyRXZpZGVuY2VLaW5kVjESJwojV09SS0VSX0VWSURFTkNFX0tJTkRfVjFfVU5TUEVDSUZJRUQQABI1CjFXT1JLRVJfRVZJREVOQ0VfS0lORF9WMV9PVVRQVVRfQ0hVTktfRVFVSVZPQ0FUSU9OEAEqTgobVmVyaWZpZXJWYWx1ZUV2aWRlbmNlS2luZFYxEi8KK1ZFUklGSUVSX1ZBTFVFX0VWSURFTkNFX0tJTkRfVjFfVU5TUEVDSUZJRUQQAEInWiVnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC90YXNrL3R5cGVzYgZwcm90bzM", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_evidence, file_shared_v1_rest_encoding]);
 
 /**
  * EvidenceCommitmentV1 is one worker-authored evidence commitment carried by
- * InferReceiptV2. The list is sorted by evidence_kind
+ * InferReceiptV3. The list is sorted by evidence_kind
  * ascending with unique kinds and must exactly equal the kind set required by
  * the locked profile.
  *
  * The list's commitment - evidence_commitments_hash, domain
- * TRUEOPEN_INFER_EVIDENCE_COMMITMENTS_V1 (§1.4) - has exactly one ordered preimage in
+ * TRUEOPEN_INFER_EVIDENCE_COMMITMENTS_V1 - has exactly one ordered preimage in
  * this repository, defined in task/v1/infer_receipt.proto next to the
- * TRUEOPEN_INFER_RECEIPT_V2 formula that consumes it. It covers the per-element frame
+ * TRUEOPEN_INFER_RECEIPT_V3 formula that consumes it. It covers the per-element frame
  * layout of the three fields below, the leading uint32_be(count) and the empty-list
- * case. §1.4 rule 1 forbids a second copy, so this file only points at it.
+ * case. The contract forbids a second copy, so this file only points at it.
  * EvidenceCommitmentV1 defines the EvidenceCommitmentV1 wire type.
  *
  * @generated from message task.v1.EvidenceCommitmentV1
@@ -58,20 +58,12 @@ export const EvidenceCommitmentV1Schema: GenMessage<EvidenceCommitmentV1> = /*@_
   messageDesc(file_task_v1_evidence, 0);
 
 /**
- * WorkerValueCommitmentV2 is the canonical fixed-field commitment behind the
- * single WORKER_VALUE_OPENING evidence item. trace_root and checkpoint_root are
- * the two Hash32 commitments Cortex already produces; this message folds them
- * into one evidence kind without making either artifact's private file format
- * part of consensus. EvidenceCommitmentV1.encoded_size_bytes is exactly the
- * checked sum of trace/checkpoint/input-token/generated-token artifact sizes.
- * WorkerValueCommitmentV2 defines the WorkerValueCommitmentV2 wire type.
+ * WorkerTokenCommitmentV1 binds the A-level token-ID artifacts and finish reason.
  *
- * @generated from message task.v1.WorkerValueCommitmentV2
+ * @generated from message task.v1.WorkerTokenCommitmentV1
  */
-export type WorkerValueCommitmentV2 = Message<"task.v1.WorkerValueCommitmentV2"> & {
+export type WorkerTokenCommitmentV1 = Message<"task.v1.WorkerTokenCommitmentV1"> & {
   /**
-   * Always 2 in the fresh Phase 0 contract.
-   *
    * @generated from field: uint32 schema_version = 1;
    */
   schemaVersion: number;
@@ -117,67 +109,101 @@ export type WorkerValueCommitmentV2 = Message<"task.v1.WorkerValueCommitmentV2">
   outputSizeBytes: bigint;
 
   /**
-   * @generated from field: task.v1.FinishReasonV1 finish_reason = 10;
-   */
-  finishReason: FinishReasonV1;
-
-  /**
-   * @generated from field: bytes trace_root = 11;
-   */
-  traceRoot: Uint8Array;
-
-  /**
-   * @generated from field: uint64 trace_encoded_size_bytes = 12;
-   */
-  traceEncodedSizeBytes: bigint;
-
-  /**
-   * @generated from field: bytes checkpoint_root = 13;
-   */
-  checkpointRoot: Uint8Array;
-
-  /**
-   * @generated from field: uint64 checkpoint_encoded_size_bytes = 14;
-   */
-  checkpointEncodedSizeBytes: bigint;
-
-  /**
-   * @generated from field: uint64 generated_token_count = 15;
-   */
-  generatedTokenCount: bigint;
-
-  /**
-   * @generated from field: uint64 output_leaf_count = 16;
+   * @generated from field: uint64 output_leaf_count = 10;
    */
   outputLeafCount: bigint;
 
   /**
-   * @generated from field: bytes input_token_ids_hash = 17;
+   * @generated from field: task.v1.FinishReasonV1 finish_reason = 11;
+   */
+  finishReason: FinishReasonV1;
+
+  /**
+   * @generated from field: uint64 generated_token_count = 12;
+   */
+  generatedTokenCount: bigint;
+
+  /**
+   * @generated from field: bytes input_token_ids_hash = 13;
    */
   inputTokenIdsHash: Uint8Array;
 
   /**
-   * @generated from field: bytes generated_token_ids_hash = 18;
+   * @generated from field: bytes generated_token_ids_hash = 14;
    */
   generatedTokenIdsHash: Uint8Array;
 
   /**
-   * @generated from field: uint64 input_token_ids_size_bytes = 19;
+   * @generated from field: uint64 input_token_ids_size_bytes = 15;
    */
   inputTokenIdsSizeBytes: bigint;
 
   /**
-   * @generated from field: uint64 generated_token_ids_size_bytes = 20;
+   * @generated from field: uint64 generated_token_ids_size_bytes = 16;
    */
   generatedTokenIdsSizeBytes: bigint;
 };
 
 /**
- * Describes the message task.v1.WorkerValueCommitmentV2.
- * Use `create(WorkerValueCommitmentV2Schema)` to create a new message.
+ * Describes the message task.v1.WorkerTokenCommitmentV1.
+ * Use `create(WorkerTokenCommitmentV1Schema)` to create a new message.
  */
-export const WorkerValueCommitmentV2Schema: GenMessage<WorkerValueCommitmentV2> = /*@__PURE__*/
+export const WorkerTokenCommitmentV1Schema: GenMessage<WorkerTokenCommitmentV1> = /*@__PURE__*/
   messageDesc(file_task_v1_evidence, 1);
+
+/**
+ * WorkerValueCommitmentV3 binds the B-level Worker value Merkle root.
+ *
+ * @generated from message task.v1.WorkerValueCommitmentV3
+ */
+export type WorkerValueCommitmentV3 = Message<"task.v1.WorkerValueCommitmentV3"> & {
+  /**
+   * @generated from field: uint32 schema_version = 1;
+   */
+  schemaVersion: number;
+
+  /**
+   * @generated from field: string chain_id = 2;
+   */
+  chainId: string;
+
+  /**
+   * @generated from field: bytes task_id = 3;
+   */
+  taskId: Uint8Array;
+
+  /**
+   * @generated from field: bytes accepted_task_hash = 4;
+   */
+  acceptedTaskHash: Uint8Array;
+
+  /**
+   * @generated from field: string worker_operator_address = 5;
+   */
+  workerOperatorAddress: string;
+
+  /**
+   * @generated from field: bytes evidence_schema_hash = 6;
+   */
+  evidenceSchemaHash: Uint8Array;
+
+  /**
+   * @generated from field: bytes worker_value_root = 7;
+   */
+  workerValueRoot: Uint8Array;
+
+  /**
+   * @generated from field: uint64 worker_values_encoded_size_bytes = 8;
+   */
+  workerValuesEncodedSizeBytes: bigint;
+};
+
+/**
+ * Describes the message task.v1.WorkerValueCommitmentV3.
+ * Use `create(WorkerValueCommitmentV3Schema)` to create a new message.
+ */
+export const WorkerValueCommitmentV3Schema: GenMessage<WorkerValueCommitmentV3> = /*@__PURE__*/
+  messageDesc(file_task_v1_evidence, 2);
 
 /**
  * OutputMMRPeakProofV1 proves one prefix peak into the accepted final MMR root.
@@ -204,11 +230,11 @@ export type OutputMMRPeakProofV1 = Message<"task.v1.OutputMMRPeakProofV1"> & {
  * Use `create(OutputMMRPeakProofV1Schema)` to create a new message.
  */
 export const OutputMMRPeakProofV1Schema: GenMessage<OutputMMRPeakProofV1> = /*@__PURE__*/
-  messageDesc(file_task_v1_evidence, 2);
+  messageDesc(file_task_v1_evidence, 3);
 
 /**
  * OutputChunkEquivocationV1 proves that a valid Worker-signed streamed prefix
- * conflicts with the final MMR root bound by an accepted InferReceiptV2.
+ * conflicts with the final MMR root bound by an accepted InferReceiptV3.
  * OutputChunkEquivocationV1 defines the OutputChunkEquivocationV1 wire type.
  *
  * @generated from message task.v1.OutputChunkEquivocationV1
@@ -252,7 +278,7 @@ export type OutputChunkEquivocationV1 = Message<"task.v1.OutputChunkEquivocation
  * Use `create(OutputChunkEquivocationV1Schema)` to create a new message.
  */
 export const OutputChunkEquivocationV1Schema: GenMessage<OutputChunkEquivocationV1> = /*@__PURE__*/
-  messageDesc(file_task_v1_evidence, 3);
+  messageDesc(file_task_v1_evidence, 4);
 
 /**
  * WorkerEvidenceV1 is strict-decoded from MsgSubmitWorkerEvidence.evidence_bytes.
@@ -285,7 +311,7 @@ export type WorkerEvidenceV1 = Message<"task.v1.WorkerEvidenceV1"> & {
  * Use `create(WorkerEvidenceV1Schema)` to create a new message.
  */
 export const WorkerEvidenceV1Schema: GenMessage<WorkerEvidenceV1> = /*@__PURE__*/
-  messageDesc(file_task_v1_evidence, 4);
+  messageDesc(file_task_v1_evidence, 5);
 
 /**
  * WorkerEvidenceReceiptState is the compact auditable receipt retained on chain;
@@ -346,7 +372,7 @@ export type WorkerEvidenceReceiptState = Message<"task.v1.WorkerEvidenceReceiptS
  * Use `create(WorkerEvidenceReceiptStateSchema)` to create a new message.
  */
 export const WorkerEvidenceReceiptStateSchema: GenMessage<WorkerEvidenceReceiptState> = /*@__PURE__*/
-  messageDesc(file_task_v1_evidence, 5);
+  messageDesc(file_task_v1_evidence, 6);
 
 /**
  * FinishReasonV1 is the closed successful termination set committed by the
@@ -396,6 +422,33 @@ export enum FinishReasonV1 {
    * @generated from enum value: FINISH_REASON_V1_MAX_OUTPUT_DURATION = 4;
    */
   MAX_OUTPUT_DURATION = 4,
+
+  /**
+   * The user stopped the generation and the Worker closed the stream on their
+   * behalf. A stop is a successful termination, not an abandonment: the Worker
+   * signs a Fin carrying this value and then signs the receipt, so a stopped
+   * task is indistinguishable in shape from any other completed one. "No Fin"
+   * stays reserved for a Worker that failed or gave up, which produces no
+   * receipt either.
+   *
+   * Unlike every other value, this one cannot be checked: the stop signal
+   * arrives off chain, so it is accepted as a Worker assertion.
+   * FINISH_REASON_V1_USER_STOP identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FINISH_REASON_V1_USER_STOP = 5;
+   */
+  USER_STOP = 5,
+
+  /**
+   * Generation emitted one of the order's stop_token_ids. Distinct from
+   * STOP_SEQUENCE because an order may carry both stop strings and stop tokens,
+   * and which one ended the generation is a different fact. Checkable: the last
+   * token of T belongs to the order's stop_token_ids.
+   * FINISH_REASON_V1_STOP_TOKEN identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FINISH_REASON_V1_STOP_TOKEN = 6;
+   */
+  STOP_TOKEN = 6,
 }
 
 /**
@@ -432,4 +485,25 @@ export enum WorkerEvidenceKindV1 {
  */
 export const WorkerEvidenceKindV1Schema: GenEnum<WorkerEvidenceKindV1> = /*@__PURE__*/
   enumDesc(file_task_v1_evidence, 1);
+
+/**
+ * VerifierValueEvidenceKindV1 is reserved for the later bounded value-evidence
+ * activation. No nonzero kind is assigned or accepted in this release.
+ *
+ * @generated from enum task.v1.VerifierValueEvidenceKindV1
+ */
+export enum VerifierValueEvidenceKindV1 {
+  /**
+   * The only registered pre-activation value; evidence is not accepted.
+   *
+   * @generated from enum value: VERIFIER_VALUE_EVIDENCE_KIND_V1_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+}
+
+/**
+ * Describes the enum task.v1.VerifierValueEvidenceKindV1.
+ */
+export const VerifierValueEvidenceKindV1Schema: GenEnum<VerifierValueEvidenceKindV1> = /*@__PURE__*/
+  enumDesc(file_task_v1_evidence, 2);
 

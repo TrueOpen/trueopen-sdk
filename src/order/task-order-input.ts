@@ -5,9 +5,10 @@ import { validateModelId } from './model-id';
 import {
   DEADLINE_LATENCY_CLASS,
   GENERATION_PARAMS_SCHEMA_VERSION_V1,
-  TASK_ORDER_SCHEMA_VERSION_V2,
+  PAYLOAD_MODE,
+  TASK_ORDER_SCHEMA_VERSION_V3,
 } from './task-order';
-import type { AmountV1, GenerationParamsV1, TaskOrderV2 } from './task-order';
+import type { AmountV1, GenerationParamsV1, TaskOrderV3 } from './task-order';
 import { BUCKET_KIND } from '../types/hub';
 import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricing, TaskGenerationLimits } from '../types/hub';
 
@@ -24,7 +25,7 @@ import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricin
  *  - session_anchor_block_hash must equal GetBlockAnchorHash(height), i.e. the
  *    block_hash recorded by the on-chain **beacon** (not a block header read directly).
  *  - timeout_bucket_version must equal the currently effective version.
- *    (reference_bucket_version was removed from TaskOrderV2 and no longer feeds the
+ *    (reference_bucket_version was removed from the order and no longer feeds the
  *    signature, so it is no longer read.)
  */
 export interface TaskOrderChainContext {
@@ -61,7 +62,7 @@ export interface TaskOrderContextReader {
 /**
  * The four Amount fields (proto fields 14-17, in the same order as the preimage).
  * V1's eight separate price fields (infer_input/infer_output/verify unit prices,
- * infer/verify caps) were merged into a single price_bid in TaskOrderV2.
+ * infer/verify caps) were merged into a single price_bid.
  */
 export interface TaskOrderAmounts {
   readonly priceBid: AmountV1;
@@ -83,6 +84,7 @@ export interface TaskOrderRequest {
   /** Canonical lowercase 64-hex (the SDK's internal uniform representation). */
   readonly sessionId: string;
   readonly orderSequence: bigint;
+  /** Canonical lowercase 64-hex Hash32 model ID. */
   readonly modelId: string;
   readonly profileVersion: number;
   /** shared.v1.TaskType numeric value (see TASK_TYPE). */
@@ -190,7 +192,7 @@ export async function resolveTaskOrderContext(
 }
 
 /**
- * Assemble the frozen TaskOrderV2. This is a pure function: both the on-chain context
+ * Assemble the frozen TaskOrderV3. This is a pure function: both the on-chain context
  * and the user intent are supplied by the caller; this function only does
  * representation conversion and local validation, and never implicitly fills in any
  * field that feeds into the signature.
@@ -200,7 +202,7 @@ export function buildTaskOrder(
   req: TaskOrderRequest,
   /** Pricing constraints for this model profile (HubReader.getProfile().pricing). If provided, validated locally. */
   pricing?: ProfilePricing,
-): TaskOrderV2 {
+): TaskOrderV3 {
   validateModelId(req.modelId);
   if (req.payload.length === 0) {
     throw invalid('SDK_LOCAL_PAYLOAD_EMPTY', 'payload must be non-empty');
@@ -278,12 +280,12 @@ export function buildTaskOrder(
 
   const a = req.amounts;
   return {
-    schemaVersion: TASK_ORDER_SCHEMA_VERSION_V2,
+    schemaVersion: TASK_ORDER_SCHEMA_VERSION_V3,
     chainId: ctx.chainId,
     userAddress: req.userAddress,
     sessionId: hash32('session_id', req.sessionId),
     orderSequence: req.orderSequence,
-    modelId: req.modelId,
+    modelId: fromHex(req.modelId),
     profileVersion: req.profileVersion,
     taskType: req.taskType,
     inputHash: sha256(req.payload),
@@ -303,6 +305,10 @@ export function buildTaskOrder(
     sessionAnchorBlockHash: hash32('session_anchor_block_hash', ctx.sessionAnchorBlockHash),
     builderSetId: ctx.builderSetId,
     builderSetHash: hash32('builder_set_hash', ctx.builderSetHash),
+    // Plaintext Phase 0: the reserved encryption fields are fixed.
+    payloadMode: PAYLOAD_MODE.PLAINTEXT,
+    inputKeyCommitment: new Uint8Array(32),
+    userRecipientPubkey: new Uint8Array(0),
   };
 }
 

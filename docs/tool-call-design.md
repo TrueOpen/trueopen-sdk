@@ -1,12 +1,14 @@
 # Tool Call Support in the SDK (Design)
 
-> Version: v0.4 / 2026-09-27 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
+> Version: v0.5 / 2026-09-27 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
 > the V3 manifest vectors, and refreshed S12.1 and S12.4, which predated wire v0.2.1. v0.3
 > recorded P1 as delivered and added S10.1, the standing decision to wait for the undefined
 > encodings rather than invent them. v0.4 follows Manifest S7, whose write-back HAS landed:
 > it corrects `ParserRef` (the name is TrueOpen's canonical name, NOT an engine's, and the
 > version is a number), and adds S10.2 on `reasoning_parsing` being deferred and the hazard
-> that leaves open.
+> that leaves open. v0.5 corrects the manifest target from V3 to **V4** throughout -- ADR-0022
+> named V3, but ADR-0028 and ADR-0023 were folded into a single freeze to 4 before V3 shipped
+> -- and removes the claim that `trailingEosMarkers` would ever come from the manifest.
 > Scope: **How the TypeScript SDK turns committed output text into an OpenAI-compatible
 > `content` + `tool_calls` view** -- module layout, public API, the execution gate,
 > failure semantics, and what is blocked upstream.
@@ -77,9 +79,9 @@ to yield verified `{seq, text, mmrRoot}`. Tool calling is a layer wrapped around
 ```text
 src/manifest/          (new)
   fetch.ts             retrieve the full manifest from pointer / indexer
-  canonical.ts         S2.6 canonical encoding + TRUEOPEN_MODEL_MANIFEST_V3 hash
+  canonical.ts         S2.6 canonical encoding + TRUEOPEN_MODEL_MANIFEST_V4 hash
   validate.ts          rule 11 (reject unknown fields) + S7 block validation
-  types.ts             ManifestV3 / OutputDecoding / ToolCalling
+  types.ts             ModelProfileManifestV4 / ToolCalling / ReasoningParsing
 
 src/toolcall/          (new)
   registry.ts          (name, version) -> parser
@@ -354,7 +356,7 @@ fetch full manifest from pointer / indexer
         |
 re-encode per S2.6 canonical rules            (field order, empty-value rules,
         |                                      reject unknown fields -- rule 11)
-hash with domain TRUEOPEN_MODEL_MANIFEST_V3
+hash with domain TRUEOPEN_MODEL_MANIFEST_V4
         |
 compare byte for byte with the chain's manifest_hash
         |                                      mismatch -> unsupported, never a fallback guess
@@ -375,26 +377,51 @@ require one, that is a signal the decoding rule moved, not that the SDK needs to
 
 **S8 cannot be validated today.**
 
-The V3 cross-language canonical vectors do not exist yet. `03-models/03` S2.6 states that
+The V4 cross-language canonical vectors do not exist yet. `03-models/03` S2.6 states that
 its fixture is still generated at `manifest_version: 2` and that the V2 vectors are "for
-historical reference only" until wire recomputes them for V3.
+historical reference only" until wire recomputes them.
 
 The ADR-0022 write-back matrix **does** assign this, to wire. Its row for
 `03-models/03` S2.6 and `wire testdata/v1/hub/model_profile_canonical_*.json` reads, in
 translation: a change to `manifest_hash` carries a change to `registration_digest`; all
-three digests are to be recomputed by wire in one pass for V3, and until that recomputation
+three digests are to be recomputed by wire in one pass, and until that recomputation
 the V2 vectors serve only as historical reference.
 
 The matrix opens by requiring its rows to be completed as one batch, at adoption. The ADR
 was adopted 2026-09-23. As of wire v0.2.1 the recomputation has not happened:
 `testdata/v1/hub/` still holds only `model_profile_canonical_v2.json`, and
-`TRUEOPEN_MODEL_MANIFEST_V3` is not yet a row in `registry/v1/domains.json` either, so the
+`TRUEOPEN_MODEL_MANIFEST_V4` is not yet a row in `registry/v1/domains.json` either, so the
 domain this would be computed under does not exist. Tracked in `monorepo#29`.
 
-An earlier revision of this section claimed the matrix "does not list producing the V3
+An earlier revision of this section claimed the matrix "does not list producing the
 manifest vectors as work for anyone." That was wrong -- it was written without reading the
 matrix. The distinction matters in practice: this is not an unowned problem needing an owner,
 it is an assigned deliverable that did not ship with its batch.
+
+**The target is V4, not the V3 that ADR-0022 named, and it is three digests rather than
+one.** ADR-0022 bumped `manifest_version` 2 to 3. Before V3 shipped, ADR-0028 (model
+identity derivation; `source` / `tool_call_parser` / `reasoning_parser` projected on chain)
+and ADR-0023 were folded into a single freeze to **4** -- Manifest S2.6 states the current
+version is 4 under domain `TRUEOPEN_MODEL_MANIFEST_V4`. Because the projected field set
+changed with it, `chain_projection` went V2 to V3 and `registration_digest` followed, so
+what wire owes is `manifest_hash`, `chain_projection_hash` and `registration_digest`
+together, under three domains none of which is registered yet.
+
+Two consequences worth stating rather than deriving:
+
+- **A V3 parser does not degrade against a V4 manifest, it rejects it.** S2.6 rule 11
+  requires unknown fields to be rejected rather than ignored, and V4 adds the top-level
+  `reasoning_parsing` block. So "write it for V3 now and extend later" is not a smaller
+  first step; it produces something that cannot read a live manifest at all.
+- **The canonical rules are not the missing piece.** S2.6 specifies them fully -- eleven
+  rules covering key ordering by UTF-8 bytes, integers without float or exponent or leading
+  zeros, lowercase `0x` bytes32, `artifacts.files` sorted by path, and unknown-field
+  rejection. `canonical.ts` can therefore be *written*; what it cannot be is *proven*, which
+  under the golden-authority rule is the same as not having it.
+
+This document said "V3" throughout until 2026-09-27 because it followed ADR-0022 without
+reading the specification the ADR writes back into. An ADR records a decision as of its
+adoption; the specification carries the current reading, and later ADRs land in it.
 
 Under this repository's golden-authority rule, byte-level cross-language agreement is
 established against published vectors, never against a self-consistent local
@@ -412,7 +439,7 @@ dependency from the latter to the former.
 | Phase | Content | Blocked by | Status |
 |---|---|---|---|
 | **P1** | All of `src/toolcall/`: registry, state machine, event types. Parser supplied by explicit injection rather than read from a manifest. | nothing | **delivered** (`feat/toolcall-p1`) |
-| **P2** | `src/manifest/`: fetch, canonical encoding, hash, validation | S9 -- wire must recompute the V3 vectors (`monorepo#29`) | waiting |
+| **P2** | `src/manifest/`: fetch, canonical encoding, hash, validation | S9 -- wire must recompute the V4 vectors (`monorepo#29`) | waiting |
 | **P3** | Wire them together: `manifestSource` drives the full verification chain; the two manifest `UnsupportedReason` values become reachable | P2 | waiting |
 | **P4** | Provider layer: synthesize `id` per `tool_calling.call_id_format`, plus `type` / `index` / `finish_reason` / SSE | ADR's Provider boundary settling | waiting |
 
@@ -436,9 +463,18 @@ This posture is already what the code does; it costs nothing to hold.
 | Blocker | What the SDK does meanwhile | What changes when it lands |
 |---|---|---|
 | **payload canonical encoding** (`monorepo#30`) | `task-order-input.ts` computes `inputHash: sha256(req.payload)` over a caller-supplied `Uint8Array`. The payload is opaque: never parsed, never re-serialized. | Add a canonical encoder for `ChatInferInput`, modelled on the existing `canonicalOrderEnvelopeJson`. `inputHash` then hashes the canonicalized bytes rather than whatever the caller passed, and the SDK gains a documented rule about which of the several legal serializations it emits. |
-| **V3 manifest vectors** (`monorepo#29`) | `src/manifest/` does not exist. S2 forbids `src/toolcall/` from depending on it, which is why P1 was not blocked. | P2 becomes buildable; then P3 wires `manifestSource` through, and `manifest-unavailable` / `manifest-hash-mismatch` turn from declared-but-unreachable into reachable. |
+| **V4 manifest vectors** (`monorepo#29`) | `src/manifest/` does not exist. S2 forbids `src/toolcall/` from depending on it, which is why P1 was not blocked. | P2 becomes buildable; then P3 wires `manifestSource` through, and `manifest-unavailable` / `manifest-hash-mismatch` turn from declared-but-unreachable into reachable. |
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
 | **parser vectors** (`monorepo#11`) | No concrete parser ships. The registry can hold one as `'unverified'`, which is the honest state, but nothing is registered. | Write the parsers, run them against the published vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
+
+One row that used to be in this table has been removed rather than updated:
+`trailingEosMarkers` was listed as caller-supplied in phase 1 and manifest-supplied in
+phase 3. **That was wrong in both directions.** Manifest S7.1's consumer note says the SDK
+is not EOS-aware and needs no tokenizer, and the manifest's `eos_token_ids` are `[]u32`
+token ids that this SDK could not turn into strings if it wanted to. The option is a
+tolerance for a producer that has not caught up (S13.2), it stays caller-supplied, and the
+correct end state is deleting it once Cortex strips the EOS itself -- not sourcing it from
+anywhere.
 
 ### 10.2 `reasoning_parsing` is deliberately not implemented, and that leaves a live hazard
 

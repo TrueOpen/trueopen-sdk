@@ -18,9 +18,15 @@ export interface DerivedViewOptions {
    */
   readonly parser: ToolCallParser;
   /**
-   * Decoded end-of-sequence markers to strip if present (design S13.2). Phase 1 takes them from
-   * the caller; phase 3 from the manifest's `output_decoding`. Empty means strip nothing, which
-   * is the correct behaviour once cortex strips the EOS itself.
+   * Decoded end-of-sequence markers to strip if present (design S13.2).
+   *
+   * Caller-supplied, permanently. Manifest S7.1 says the SDK is not EOS-aware and needs no
+   * tokenizer, and the manifest's own `eos_token_ids` are `[]u32` token ids that nothing
+   * here could turn into strings. So this is a tolerance for a producer that has not caught
+   * up, not a placeholder for a later manifest lookup.
+   *
+   * Empty means strip nothing, which is the correct setting once Cortex strips the EOS
+   * itself -- at which point this option should be deleted rather than defaulted.
    */
   readonly trailingEosMarkers?: readonly string[];
 }

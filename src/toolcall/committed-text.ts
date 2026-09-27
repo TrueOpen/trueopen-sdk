@@ -14,8 +14,12 @@ import { pendingMarkerSuffix } from './marker-scan';
  * producer. Keeping it here makes its eventual deletion a one-line change.
  *
  * `markers` are decoded strings, not token ids: the SDK has no tokenizer and must not acquire
- * one (design S8). Phase 1 takes them from the caller; phase 3 from the manifest's
- * `output_decoding`.
+ * one (design S8). They come from the caller and always will: Manifest S7.1 states outright
+ * that the SDK is not EOS-aware and needs no tokenizer, and its `eos_token_ids` are `[]u32`
+ * token ids, which nothing here could turn into strings anyway. So this is not a phase-1
+ * placeholder for a manifest lookup -- it is a tolerance for a producer that has not caught
+ * up, and when Cortex strips the EOS itself the right move is to delete it rather than
+ * source it from somewhere.
  *
  * Exactly one marker is removed. A doubled EOS is not normal output, and silently collapsing a
  * run of them would hide that.

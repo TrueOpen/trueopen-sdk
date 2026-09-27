@@ -33,6 +33,15 @@ const key = (ref: ParserRef): string => JSON.stringify([ref.name, ref.version]);
 export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolCallRegistry {
   const byKey = new Map<string, RegistryEntry>();
   for (const entry of entries) {
+    // Manifest S7.2 rule 2 rejects a profile whose parser version is 0. Refusing it here
+    // too keeps a registry from holding a ref that could never have been pinned on chain.
+    if (!Number.isInteger(entry.parser.version) || entry.parser.version < 1) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'TOOLCALL_PARSER_VERSION_INVALID',
+        `parser ${entry.parser.name} has version ${entry.parser.version}; the manifest spec requires an integer >= 1`,
+      );
+    }
     const k = key(entry.parser);
     if (byKey.has(k)) {
       // Last-one-wins would make the parse depend on registration order, which is the same

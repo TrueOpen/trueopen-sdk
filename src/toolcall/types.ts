@@ -26,12 +26,21 @@ export interface DerivedToolCall {
 }
 
 /**
- * Identifies a parser. `name` matches vLLM's --tool-call-parser and the manifest's
- * `tool_calling.parser.name`; `version` is the version of the behaviour spec, not of the engine.
+ * Identifies a parser, matching the manifest's `tool_calling.parser` (Manifest S7.2).
+ *
+ * `name` is TrueOpen's **engine-independent canonical** name, drawn from the governance
+ * whitelist `supported_tool_call_parsers`. It is deliberately *not* an engine's own parser
+ * name: those disagree across engines -- Phi-4 is `phi4_mini_json` in vLLM and `phi4` in
+ * Dynamo -- so a node maps the canonical name onto whatever its local engine calls it. An
+ * implementation that looked up an engine's registry by this name would be right on one
+ * engine and wrong on the next.
+ *
+ * `version` is the version of that canonical parser *specification*, not of any engine, and
+ * is `>= 1`. Same name at a different version is a different parser.
  */
 export interface ParserRef {
   readonly name: string;
-  readonly version: string;
+  readonly version: number;
 }
 
 /**

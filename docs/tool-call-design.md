@@ -1,9 +1,12 @@
 # Tool Call Support in the SDK (Design)
 
-> Version: v0.3 / 2026-09-26 (v0.1 2026-09-23). v0.2 corrected S9, which misstated who owns
+> Version: v0.4 / 2026-09-27 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
 > the V3 manifest vectors, and refreshed S12.1 and S12.4, which predated wire v0.2.1. v0.3
-> records P1 as delivered and adds S10.1: the standing decision to wait for the undefined
-> encodings rather than invent them, with the change list for when each blocker clears.
+> recorded P1 as delivered and added S10.1, the standing decision to wait for the undefined
+> encodings rather than invent them. v0.4 follows Manifest S7, whose write-back HAS landed:
+> it corrects `ParserRef` (the name is TrueOpen's canonical name, NOT an engine's, and the
+> version is a number), and adds S10.2 on `reasoning_parsing` being deferred and the hazard
+> that leaves open.
 > Scope: **How the TypeScript SDK turns committed output text into an OpenAI-compatible
 > `content` + `tool_calls` view** -- module layout, public API, the execution gate,
 > failure semantics, and what is blocked upstream.
@@ -29,6 +32,7 @@
 | What cannot be built yet | **S9 Upstream Blocker** |
 | Order of work, and what is delivered | S10 Phasing |
 | Why we are waiting, and what changes when each blocker clears | **S10.1 Deliberately waiting** |
+| Why reasoning separation is deferred, and what that leaves open | **S10.2 reasoning_parsing** |
 | How this gets tested | S11 Testing |
 | Where `tools[]` goes, who renders the chat template | **S12 The Input Side** |
 | What the producer emits right now, and where it diverges | **S13 What Actually Arrives Today** |
@@ -121,8 +125,12 @@ export interface DerivedToolCall {
 }
 
 export interface ToolCallParser {
-  readonly name: string;      // matches vLLM --tool-call-parser
-  readonly version: string;   // version of the behaviour spec, not of the engine
+  // TrueOpen's engine-independent canonical name, from the governance whitelist
+  // `supported_tool_call_parsers`. Deliberately NOT an engine's own parser name: those
+  // disagree across engines (Phi-4 is `phi4_mini_json` in vLLM, `phi4` in Dynamo), and a
+  // node maps the canonical name onto its local engine. Manifest S7.2.
+  readonly name: string;
+  readonly version: number;   // version of the canonical parser spec, >= 1
   parseComplete(text: string): DerivedAssistantMessage;
   createStreamState(): ToolCallStreamState;
 }
@@ -432,8 +440,37 @@ This posture is already what the code does; it costs nothing to hold.
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
 | **parser vectors** (`monorepo#11`) | No concrete parser ships. The registry can hold one as `'unverified'`, which is the honest state, but nothing is registered. | Write the parsers, run them against the published vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
 
-Two items found while building P1 are prerequisites for P3 specifically, and are recorded
-here because nothing else in this document would carry them:
+### 10.2 `reasoning_parsing` is deliberately not implemented, and that leaves a live hazard
+
+Manifest S7.3 defines a third block alongside `output_decoding` and `tool_calling`:
+`reasoning_parsing`, with its own parser ref and a deterministic pipeline. Standing
+decision: **the SDK does not implement it for now.**
+
+The consequence is not merely a missing feature, and it is not covered by the execution
+gate, so it is written down rather than left implicit.
+
+S7.3 fixes the pipeline order -- the reasoning parser first separates a leading reasoning
+span, and only the *remainder* is handed to the tool-call parser -- and rule 7 makes the
+reason explicit:
+
+> tool markers appearing inside reasoning do not produce an executable call; any
+> tool-call-shaped marker inside `reasoning_content` is treated as reasoning text, yields
+> no `tool_calls`, and triggers no execution.
+
+P1 runs the tool parser over the **whole** committed output. A model that writes a
+`<tool_call>`-shaped marker while reasoning therefore produces a call we surface.
+
+**The execution gate does not save this.** The gate withholds calls parsed from bytes that
+have not been reconciled with the receipt; here the bytes are committed and verified, and
+we have merely parsed a region the spec says is out of bounds. `confirmAssistantMessage`
+will promote such a call exactly as it promotes a real one.
+
+Until `reasoning_parsing` is implemented, a caller whose profile pins a reasoning parser
+should treat tool calls derived by this SDK as unfiltered by that rule.
+
+### 10.3 P3 prerequisites found while building P1
+
+Two items, recorded here because nothing else in this document would carry them:
 
 - **The EOS/end-marker collision guard is missing.** `deriveAssistantStream` runs the EOS
   stripper before the marker state machine. If a configured EOS marker overlaps the parser's

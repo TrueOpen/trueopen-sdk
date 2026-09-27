@@ -37,7 +37,7 @@ const newState = () => createMarkerStreamState({ startMarker: '<tc>', endMarker:
 /** The same marker grammar in both directions, so streaming and one-shot agree. */
 const parser: ToolCallParser = {
   name: 'test-markers',
-  version: '1',
+  version: 1,
   createStreamState: newState,
   parseComplete(text) {
     const state = newState();

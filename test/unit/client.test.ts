@@ -607,7 +607,7 @@ describe('TrueOpenClient facade', () => {
     };
     const parser = {
       name: 'test-markers',
-      version: '1',
+      version: 1,
       createStreamState: () =>
         createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall }),
       parseComplete: (text: string) => ({ role: 'assistant' as const, content: text, toolCalls: [] }),

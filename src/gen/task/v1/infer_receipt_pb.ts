@@ -15,19 +15,20 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file task/v1/infer_receipt.proto.
  */
 export const file_task_v1_infer_receipt: GenFile = /*@__PURE__*/
-  fileDesc("Cht0YXNrL3YxL2luZmVyX3JlY2VpcHQucHJvdG8SB3Rhc2sudjEi5gMKDkluZmVyUmVjZWlwdFYyEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhAKCGNoYWluX2lkGAIgASgJEhUKB3Rhc2tfaWQYAyABKAxCBMjzGAISFwoJdGFza19oYXNoGAQgASgMQgTI8xgCEjkKF3dvcmtlcl9vcGVyYXRvcl9hZGRyZXNzGAUgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSIwobc2VydmljZV9hdXRob3JpemF0aW9uX25vbmNlGAYgASgEEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgHIAEoDEIEyPMYAhIZCgtvdXRwdXRfaGFzaBgIIAEoDEIEyPMYAhIZChFvdXRwdXRfc2l6ZV9ieXRlcxgJIAEoBBJKCh1yZXF1aXJlZF9ldmlkZW5jZV9jb21taXRtZW50cxgKIAMoCzIdLnRhc2sudjEuRXZpZGVuY2VDb21taXRtZW50VjFCBMjeHwASFQoNZXhwaXJ5X2hlaWdodBgLIAEoBBIfChFzZXJ2aWNlX3NpZ25hdHVyZRgMIAEoDEIEyPMYARIdChVnZW5lcmF0ZWRfdG9rZW5fY291bnQYDSABKAQSGQoRb3V0cHV0X2xlYWZfY291bnQYDiABKAQiqAQKEUluZmVyUmVjZWlwdFN0YXRlEhUKB3Rhc2tfaWQYASABKAxCBMjzGAISLwoNd2lubmVyX3dvcmtlchgCIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEiAKEmluZmVyX3JlY2VpcHRfaGFzaBgDIAEoDEIEyPMYAhImChhnZW5lcmF0aW9uX3BhcmFtc19kaWdlc3QYBCABKAxCBMjzGAISGQoLb3V0cHV0X2hhc2gYBSABKAxCBMjzGAISGQoRb3V0cHV0X3NpemVfYnl0ZXMYBiABKAQSHQoVZ2VuZXJhdGVkX3Rva2VuX2NvdW50GAcgASgEEicKGWV2aWRlbmNlX2NvbW1pdG1lbnRzX2hhc2gYCCABKAxCBMjzGAISSgodcmVxdWlyZWRfZXZpZGVuY2VfY29tbWl0bWVudHMYCSADKAsyHS50YXNrLnYxLkV2aWRlbmNlQ29tbWl0bWVudFYxQgTI3h8AEiEKGWV2aWRlbmNlX2NvbW1pdG1lbnRfY291bnQYCiABKA0SKgocaW5mZXJfcmVjZWlwdF9zaWduaW5nX2RpZ2VzdBgLIAEoDEIEyPMYAhIeChBzaWduYXR1cmVfZGlnZXN0GAwgASgMQgTI8xgCEhUKDWV4cGlyeV9oZWlnaHQYDSABKAQSFgoOcmVjZWlwdF9oZWlnaHQYDiABKAQSGQoRb3V0cHV0X2xlYWZfY291bnQYDyABKARCJ1olZ2l0aHViLmNvbS9UcnVlT3Blbi9ub2RlL3gvdGFzay90eXBlc2IGcHJvdG8z", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_rest_encoding, file_task_v1_evidence]);
+  fileDesc("Cht0YXNrL3YxL2luZmVyX3JlY2VpcHQucHJvdG8SB3Rhc2sudjEihwUKDkluZmVyUmVjZWlwdFYzEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhAKCGNoYWluX2lkGAIgASgJEhUKB3Rhc2tfaWQYAyABKAxCBMjzGAISFwoJdGFza19oYXNoGAQgASgMQgTI8xgCEjkKF3dvcmtlcl9vcGVyYXRvcl9hZGRyZXNzGAUgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSIwobc2VydmljZV9hdXRob3JpemF0aW9uX25vbmNlGAYgASgEEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgHIAEoDEIEyPMYAhIZCgtvdXRwdXRfaGFzaBgIIAEoDEIEyPMYAhIZChFvdXRwdXRfc2l6ZV9ieXRlcxgJIAEoBBJKCh1yZXF1aXJlZF9ldmlkZW5jZV9jb21taXRtZW50cxgKIAMoCzIdLnRhc2sudjEuRXZpZGVuY2VDb21taXRtZW50VjFCBMjeHwASFQoNZXhwaXJ5X2hlaWdodBgLIAEoBBIfChFzZXJ2aWNlX3NpZ25hdHVyZRgMIAEoDEIEyPMYARIdChVnZW5lcmF0ZWRfdG9rZW5fY291bnQYDSABKAQSGQoRb3V0cHV0X2xlYWZfY291bnQYDiABKAQSIwoVb3V0cHV0X2tleV9jb21taXRtZW50GA8gASgMQgTI8xgCEikKG3dvcmtlcl90b2tlbl9rZXlfY29tbWl0bWVudBgQIAEoDEIEyPMYAhIpCht3b3JrZXJfdmFsdWVfa2V5X2NvbW1pdG1lbnQYESABKAxCBMjzGAISJAoWY2lwaGVydGV4dF9vdXRwdXRfcm9vdBgSIAEoDEIEyPMYAiLJBQoRSW5mZXJSZWNlaXB0U3RhdGUSFQoHdGFza19pZBgBIAEoDEIEyPMYAhIvCg13aW5uZXJfd29ya2VyGAIgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSIAoSaW5mZXJfcmVjZWlwdF9oYXNoGAMgASgMQgTI8xgCEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgEIAEoDEIEyPMYAhIZCgtvdXRwdXRfaGFzaBgFIAEoDEIEyPMYAhIZChFvdXRwdXRfc2l6ZV9ieXRlcxgGIAEoBBIdChVnZW5lcmF0ZWRfdG9rZW5fY291bnQYByABKAQSJwoZZXZpZGVuY2VfY29tbWl0bWVudHNfaGFzaBgIIAEoDEIEyPMYAhJKCh1yZXF1aXJlZF9ldmlkZW5jZV9jb21taXRtZW50cxgJIAMoCzIdLnRhc2sudjEuRXZpZGVuY2VDb21taXRtZW50VjFCBMjeHwASIQoZZXZpZGVuY2VfY29tbWl0bWVudF9jb3VudBgKIAEoDRIqChxpbmZlcl9yZWNlaXB0X3NpZ25pbmdfZGlnZXN0GAsgASgMQgTI8xgCEh4KEHNpZ25hdHVyZV9kaWdlc3QYDCABKAxCBMjzGAISFQoNZXhwaXJ5X2hlaWdodBgNIAEoBBIWCg5yZWNlaXB0X2hlaWdodBgOIAEoBBIZChFvdXRwdXRfbGVhZl9jb3VudBgPIAEoBBIjChVvdXRwdXRfa2V5X2NvbW1pdG1lbnQYECABKAxCBMjzGAISKQobd29ya2VyX3Rva2VuX2tleV9jb21taXRtZW50GBEgASgMQgTI8xgCEikKG3dvcmtlcl92YWx1ZV9rZXlfY29tbWl0bWVudBgSIAEoDEIEyPMYAhIkChZjaXBoZXJ0ZXh0X291dHB1dF9yb290GBMgASgMQgTI8xgCQidaJWdpdGh1Yi5jb20vVHJ1ZU9wZW4vbm9kZS94L3Rhc2svdHlwZXNiBnByb3RvMw", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_rest_encoding, file_task_v1_evidence]);
 
 /**
- * InferReceiptV2 is the worker-signed inference receipt carried by
+ * InferReceiptV3 is the worker-signed inference receipt carried by
  * MsgSubmitInferReceipt. Field numbers, types and order are frozen by
- * the API contract; the same order is the length-framed preimage of
+ * the wire API; the same order is the length-framed preimage of
  *
  *   infer_receipt_hash = infer_receipt_signing_digest =
- *     H_FIELDS_V1("TRUEOPEN_INFER_RECEIPT_V2", schema_version, chain_id, task_id,
+ *     H_FIELDS_V1("TRUEOPEN_INFER_RECEIPT_V3", schema_version, chain_id, task_id,
  *       task_hash, worker_operator_address, service_authorization_nonce,
  *       generation_params_digest, output_hash, output_size_bytes,
  *       evidence_commitments_hash, expiry_height, generated_token_count,
- *       output_leaf_count)
+ *       output_leaf_count, output_key_commitment, worker_token_key_commitment,
+ *       worker_value_key_commitment, ciphertext_output_root)
  *
  * Note that service_signature (field 12) is excluded and that
  * evidence_commitments_hash is NOT a wire field: it is derived by the Keeper from
@@ -37,19 +38,19 @@ export const file_task_v1_infer_receipt: GenFile = /*@__PURE__*/
  * evidence_availability_endpoint_hash are not part of this wire; the work-unit
  * landing point is the SETTLEMENT_BILL leaf in task/v1/settlement.proto.
  *
- * schema_version is exactly 2. InferReceiptV1 and its old domain have no decoder
+ * schema_version is exactly 3. Earlier receipt domains have no decoder
  * or alias in this fresh contract.
  *
  * The locked Profile carries a typed EvidenceSchemaV1 descriptor and its
  * evidence_schema_hash. The Keeper requires this list to match the descriptor
  * exactly; callers cannot supply an empty set, subset, superset, or unknown kind.
- * InferReceiptV2 defines the InferReceiptV2 wire type.
+ * InferReceiptV3 defines the InferReceiptV3 wire type.
  *
- * @generated from message task.v1.InferReceiptV2
+ * @generated from message task.v1.InferReceiptV3
  */
-export type InferReceiptV2 = Message<"task.v1.InferReceiptV2"> & {
+export type InferReceiptV3 = Message<"task.v1.InferReceiptV3"> & {
   /**
-   * Always 2 in the fresh Phase 0 contract.
+   * Always 3 in the fresh Phase 0 contract.
    *
    * @generated from field: uint32 schema_version = 1;
    */
@@ -122,13 +123,35 @@ export type InferReceiptV2 = Message<"task.v1.InferReceiptV2"> & {
    * @generated from field: uint64 output_leaf_count = 14;
    */
   outputLeafCount: bigint;
+
+  /**
+   * Reserved encryption commitments: all-zero Hash32 in plaintext Phase 0.
+   *
+   * @generated from field: bytes output_key_commitment = 15;
+   */
+  outputKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes worker_token_key_commitment = 16;
+   */
+  workerTokenKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes worker_value_key_commitment = 17;
+   */
+  workerValueKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes ciphertext_output_root = 18;
+   */
+  ciphertextOutputRoot: Uint8Array;
 };
 
 /**
- * Describes the message task.v1.InferReceiptV2.
- * Use `create(InferReceiptV2Schema)` to create a new message.
+ * Describes the message task.v1.InferReceiptV3.
+ * Use `create(InferReceiptV3Schema)` to create a new message.
  */
-export const InferReceiptV2Schema: GenMessage<InferReceiptV2> = /*@__PURE__*/
+export const InferReceiptV3Schema: GenMessage<InferReceiptV3> = /*@__PURE__*/
   messageDesc(file_task_v1_infer_receipt, 0);
 
 /**
@@ -222,6 +245,26 @@ export type InferReceiptState = Message<"task.v1.InferReceiptState"> & {
    * @generated from field: uint64 output_leaf_count = 15;
    */
   outputLeafCount: bigint;
+
+  /**
+   * @generated from field: bytes output_key_commitment = 16;
+   */
+  outputKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes worker_token_key_commitment = 17;
+   */
+  workerTokenKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes worker_value_key_commitment = 18;
+   */
+  workerValueKeyCommitment: Uint8Array;
+
+  /**
+   * @generated from field: bytes ciphertext_output_root = 19;
+   */
+  ciphertextOutputRoot: Uint8Array;
 };
 
 /**

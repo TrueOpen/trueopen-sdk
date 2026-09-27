@@ -97,7 +97,7 @@ export type { SessionHandle } from './session/session-manager';
 
 export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
 
-// ---- Frozen TaskOrderV2 / SignedOrderV2 (wire v0.4.1) ----
+// ---- Frozen TaskOrderV2 / SignedOrderV2 ----
 export {
   taskOrderHash,
   taskOrderHashHex,
@@ -161,7 +161,7 @@ export {
   userChallengeSigningBytes,
 } from './order/order-signing';
 
-// ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme from wire v0.4.1) ----
+// ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme) ----
 export {
   eip712EncodeType,
   eip712TypeHash,
@@ -241,7 +241,7 @@ export type {
 } from './transport/task-data-signbytes';
 export type { OpenTaskInput, OpenTaskAck, SubmitOrderAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
 
-// ---- MMR commitment for streamed output (ADR-0017, wired into both the SubscribeOutput and retrieval paths) ----
+// ---- MMR commitment for streamed output (wired into both the SubscribeOutput and retrieval paths) ----
 export { mmrLeaf, mmrNode, mmrEmpty, mmrRoot, mmrPrefixRoot, MmrAccumulator } from './codec/mmr';
 export type { MmrPeakCheckpoint, MmrAccumulatorCheckpoint } from './codec/mmr';
 export {

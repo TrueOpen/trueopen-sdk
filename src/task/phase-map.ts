@@ -1,10 +1,9 @@
 import type { TaskPhase, TaskState } from '../types/task';
 
 /**
- * TaskPhase -> TaskState coarse-state mapping (Interface Inventory §0.1).
+ * TaskPhase -> TaskState coarse-state mapping.
  * Note: SWEEP_OBSERVED maps to SETTLED; whether the final outcome is FAILED
- * is decided by task_verdict / an on-chain query, not by phase alone
- * (Detailed Design §2.7 / §3).
+ * is decided by task_verdict / an on-chain query, not by phase alone.
  */
 const MAP: Record<TaskPhase, TaskState> = {
   ASSIGN_RANDOMNESS_PENDING: 'PENDING',

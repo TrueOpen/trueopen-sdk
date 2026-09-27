@@ -8,7 +8,7 @@ const enc = new TextEncoder();
 /** Number of Task Builders selected per task (node builders_per_task). */
 export const BUILDERS_PER_TASK = 3;
 
-/** §1.4 domain registry: Task Builder selection seed and ranking. */
+/** Domain registry entries: Task Builder selection seed and ranking. */
 export const DOMAIN_TASK_BUILDERS_V1 = 'TRUEOPEN_TASK_BUILDERS_V1';
 export const DOMAIN_TASK_BUILDER_RANK_V1 = 'TRUEOPEN_TASK_BUILDER_RANK_V1';
 

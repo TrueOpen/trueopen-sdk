@@ -5,7 +5,7 @@
  * The Builder's nexus terminates TLS itself with a self-signed certificate; the
  * on-chain ServiceEndpointV1.tls_pubkey_hash is the sha256 of the certificate
  * public key (SubjectPublicKeyInfo DER), registered by the Builder operator
- * alongside the descriptor (monorepo ADR-0015).
+ * alongside the descriptor.
  * The client trusts only this public key -- who issued the certificate doesn't
  * matter -- so instead of CA chain validation we compare the public key hash
  * right after the TLS handshake completes and before any request bytes go out,
@@ -122,8 +122,7 @@ export interface NexusTransportOptions {
 
 export interface NexusTransportPolicy {
   /**
-   * What to do when an https endpoint has no tls_pubkey_hash on chain
-   * (ADR-0015 decision 6):
+   * What to do when an https endpoint has no tls_pubkey_hash on chain:
    * - `plaintext-fallback` (default): transitional behavior. First attempt
    *   https via the standard CA chain; if the peer doesn't speak TLS at all
    *   (nexus hasn't enabled TLS yet, but the descriptor says https), fall back
@@ -239,7 +238,7 @@ export class PlaintextFallbackAgent extends HttpsAgent {
       this.plaintextHosts.set(key, Date.now());
       this.warn(
         `nexus ${key} does not speak TLS although its descriptor says https; falling back to plaintext http. ` +
-          'The Builder should enable ingress TLS and register its certificate fingerprint (ADR-0015). ' +
+          'The Builder should enable ingress TLS and register its certificate fingerprint. ' +
           'Set NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 to refuse instead.',
       );
       plain();

@@ -16,11 +16,8 @@ import { toHex } from '../../src/util/bytes';
 /**
  * Cross-repo consistency gate for TaskOrderV2.
  *
- * These three digests are **published by the contract itself**: monorepo
- * docs/10-protocol-spec/04-task/08-TaskOrder-hash-and-signing.md §8.3 gives the full
- * 25-field input and expected values. wire v0.4.1 hasn't turned this into a fixture yet
- * (wire#24), but the published values themselves are authoritative -- node / cortex /
- * nexus / SDK all agree on the same value. The fixtures and constants are copied
+ * These three digests are contract values: the full 25-field input and expected values
+ * that node / nexus / SDK all agree on. The fixtures and constants are copied
  * verbatim from nexus internal/nodecontract/taskorder_test.go (main@b19f6206, hard
  * cutover to TaskOrderV2 on 2026-09-15).
  *
@@ -37,7 +34,7 @@ const CONTRACT = {
   maxAmount: { digest: '3b78f4ba9d854367ca948e1243d3ffe84421778af10392ff6a0ce7ee453ba94c', preimageLen: 839 },
 } as const;
 
-/** Key intermediate frames listed in §8.3. When the digest doesn't match, these pinpoint exactly which framing layer is wrong. */
+/** Key intermediate frames of the contract vectors. When the digest doesn't match, these pinpoint exactly which framing layer is wrong. */
 const CONTRACT_FRAMES = {
   stopSequences: '00000000000000040000000200000000000000043c2f733e000000000000000453544f50',
   stopTokenIds: '00000000000000040000000200000000000000040000000b0000000000000004000000dc',
@@ -46,7 +43,7 @@ const CONTRACT_FRAMES = {
   priorityFee: '000000000000000130',
 } as const;
 
-/** §8.3: user_address = bech32("trueopen", a0a1...b3). */
+/** user_address = bech32("trueopen", a0a1...b3). */
 const CONTRACT_USER_ADDRESS = 'trueopen15zs69gay5kn2029f4246etdw47ctrv4ns6facc';
 
 const repeatByte = (value: number, size: number): Uint8Array => new Uint8Array(size).fill(value);
@@ -57,7 +54,7 @@ function accAddress(raw: Uint8Array): string {
   return bech32.encode('trueopen', bech32.toWords(raw));
 }
 
-/** Replicates the core input from 08 §8.3 field by field. */
+/** Replicates the core contract input field by field. */
 function contractFixture(): TaskOrderV2 {
   const raw = new Uint8Array(20);
   for (let i = 0; i < raw.length; i++) raw[i] = 0xa0 + i;
@@ -109,7 +106,7 @@ function contractFixture(): TaskOrderV2 {
   };
 }
 
-/** §8.3's second vector: decoding params at their lower bound, both repeated lists empty. */
+/** The second contract vector: decoding params at their lower bound, both repeated lists empty. */
 function lowerBoundFixture(): TaskOrderV2 {
   const base = contractFixture();
   return {
@@ -134,7 +131,7 @@ function lowerBoundFixture(): TaskOrderV2 {
   };
 }
 
-/** §8.3's third vector: all four Amounts at the u64 upper bound. */
+/** The third contract vector: all four Amounts at the u64 upper bound. */
 function maxAmountFixture(): TaskOrderV2 {
   const u64max = amountOf('18446744073709551615');
   return {
@@ -146,7 +143,7 @@ function maxAmountFixture(): TaskOrderV2 {
   };
 }
 
-describe('TaskOrderV2 contract-published vectors (monorepo 08-TaskOrder-hash-and-signing §8.3)', () => {
+describe('TaskOrderV2 contract vectors', () => {
   const cases: [string, () => TaskOrderV2, { digest: string; preimageLen: number }][] = [
     ['core', contractFixture, CONTRACT.core],
     ['decoding params at lower bound, lists empty', lowerBoundFixture, CONTRACT.lower],
@@ -170,7 +167,7 @@ describe('TaskOrderV2 contract-published vectors (monorepo 08-TaskOrder-hash-and
   }
 });
 
-describe('TaskOrderV2 key intermediate frames (§8.3)', () => {
+describe('TaskOrderV2 key intermediate frames', () => {
   const d = contractFixture().generationParams.decodingParams;
 
   it('stop_sequences count frame', () => {

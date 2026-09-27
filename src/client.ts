@@ -118,7 +118,7 @@ export interface OpenTaskParams {
    *
    * This counter only advances when the Keeper **accepts** an order (node keeper/order_sequence.go:56-58);
    * `CancelOrder` also advances it (msg_server_session.go:267). It **stays put** when an order is
-   * rejected, times out, or is replaced via RBF (SDK design §5.2). So once a locally incremented
+   * rejected, times out, or is replaced via RBF. So once a locally incremented
    * counter drifts out of sync, it never self-heals -- every subsequent order gets rejected with
    * `ErrInvalidOrderSequence`. Pass an explicit value only for RBF -- resending a bumped-fee order
    * under the same sequence number.
@@ -126,7 +126,7 @@ export interface OpenTaskParams {
   readonly orderSequence?: bigint;
   /** User intent (including the plaintext payload); userAddress/sessionId/orderSequence are filled in by the client. */
   readonly order: TaskOrderIntent;
-  /** Required per contract §3.1; the same key + the same input_hash returns the same result, the same key + a different input_hash is rejected. */
+  /** Required; the same key + the same input_hash returns the same result, the same key + a different input_hash is rejected. */
   readonly idempotencyKey: string;
   /** Defaults to resolveTaskOrderContext(hub, chainId). Reusing the same context saves a round trip to chain. */
   readonly context?: TaskOrderChainContext;
@@ -191,12 +191,11 @@ export interface StreamOutputParams {
    *
    * - `'require'`: Fin must carry a valid `finish_reason` and a verifiable `worker_signature`,
    *   otherwise an error is thrown. **This is the protocol's target state**, but it requires the
-   *   peer to already produce a signed Fin per wire v0.4.3.
+   *   peer to already produce a signed Fin.
    * - `'accept-unsigned'` (default): if Fin carries a signature it is verified; if not, it is let through.
    *
-   * Why the default isn't `'require'`: wire v0.4.3 only **adds fields** -- an old Fin decodes with
-   * `finish_reason=0` and an empty `worker_signature`. Before nexus forwards signed Fins (nexus#99)
-   * goes live, every live chain sends old-style Fins -- defaulting to fail-closed would make the SDK
+   * Why the default isn't `'require'`: the signed Fin only **adds fields** -- an old Fin decodes with
+   * `finish_reason=0` and an empty `worker_signature`. Until nexus forwards signed Fins, every live chain sends old-style Fins -- defaulting to fail-closed would make the SDK
    * immediately unusable against the whole network. The wire CHANGELOG also requires an explicit
    * consumer replay policy for pre-activation streams.
    *
@@ -236,7 +235,7 @@ export type OutputStreamEvent =
        * **This cannot tell you the model made a tool call.** Cortex normalises vLLM's
        * `finish_reason: "tool_calls"` to EOS so that the chat path reuses the raw-text
        * resolver, so a turn that ended in a tool call arrives here as an ordinary EOS.
-       * Detecting a tool call means parsing the committed text (ADR-0022).
+       * Detecting a tool call means parsing the committed text.
        */
       readonly finishReason: FinishReasonV1 | undefined;
     };
@@ -283,7 +282,7 @@ export class TrueOpenClient {
     if (cfg.addressPrefix !== undefined) {
       const addr = cfg.sdkSignerAddress ?? cfg.userAddress;
       const pk = cfg.sdkSignerPubKey ?? cfg.signerPubKey;
-      // As of v0.4.1 accounts are EVM-style (keccak(uncompressed XY)[12:32]), no longer ripemd160.
+      // Accounts are EVM-style (keccak(uncompressed XY)[12:32]), no longer ripemd160.
       if (!ethSecp256k1AddressMatches(addr, pk, cfg.addressPrefix)) {
         throw new TrueOpenError(
           'SDK_LOCAL',
@@ -334,7 +333,7 @@ export class TrueOpenClient {
   }
 
   /**
-   * Place an order (contract §3.1 target-state entry point, OpenTask).
+   * Place an order through OpenTask, the order-placement entry point.
    *
    * Full flow: read the on-chain context -> assemble the frozen TaskOrderV2 -> sign the order's
    * inner EIP-712 digest, sign the outer order envelope, then sign the request envelope -> select
@@ -425,7 +424,7 @@ export class TrueOpenClient {
       try {
         return await submit(endpoint.serviceEndpoint, endpoint.tlsPubkeyHash ?? '');
       } catch (err) {
-        // ADR-0015: the Builder rotated its certificate and the locally cached fingerprint is
+        // The Builder rotated its certificate and the locally cached fingerprint is
         // stale -> re-read that Builder's descriptor; if the fingerprint changed, retry with the
         // new fingerprint, otherwise the peer certificate really is wrong, so return the original error.
         if (!isTLSPubkeyMismatch(err)) throw err;
@@ -477,12 +476,12 @@ export class TrueOpenClient {
   }
 
   /**
-   * Retrieve the OUTPUT body (the data plane from contract §3.5/§3.6):
+   * Retrieve the OUTPUT body over the task data plane:
    * GetTaskDataMetadata gets size / chunk_lengths / output_leaf_count ->
    * FetchTaskData fetches the bytes -> re-split into chunks per chunk_lengths -> compute the MMR
    * root and compare it against the receipt's output_hash.
    *
-   * **The verification criterion changed after ADR-0017**: output_hash is no longer a whole-object
+   * **Verification criterion**: output_hash is no longer a whole-object
    * sha256, it is the MMR root of the ordered chunk list under TRUEOPEN_OUTPUT_MMR_V1. Chunk
    * boundaries are part of the commitment, so re-splitting must follow chunk_lengths exactly --
    * merging or re-segmenting chunks yourself produces a different root for the same underlying bytes.
@@ -571,7 +570,7 @@ export class TrueOpenClient {
   }
 
   /**
-   * Subscribe to output as a stream (ADR-0017 / contract §3.5). Yields verified text segments frame by frame.
+   * Subscribe to output as a stream. Yields verified text segments frame by frame.
    *
    * The Builder forwards Worker-signed frames as-is without adding its own signature, so
    * verification happens entirely on the client side, with two checks per frame:
@@ -639,7 +638,7 @@ export class TrueOpenClient {
       // underlying request. iterator.return() only stops reading -- connect-node does not close
       // the HTTP connection because of it. If the Builder being asked isn't the dispatching one,
       // it has no frame to push, and that connection just hangs waiting for a response, keeping
-      // the event loop referenced and preventing the caller's process from exiting (nexus#102:
+      // the event loop referenced and preventing the caller's process from exiting (this was
       // observed hanging the CLI output stream).
       const abort = new AbortController();
       const iterator = source.ingress.subscribeOutput({
@@ -694,7 +693,7 @@ export class TrueOpenClient {
             if (!verifier.matchesReceipt(f.outputMmrRoot)) {
               throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `fin root does not match the locally computed root for task ${p.taskId}`);
             }
-            // As of wire v0.4.3 (wire#35), Fin carries finish_reason + worker_signature.
+            // Fin carries finish_reason + worker_signature.
             // If present it must verify; if absent, finSignaturePolicy decides whether to accept or reject.
             const policy = p.finSignaturePolicy ?? 'accept-unsigned';
             const signed = f.workerSignature.length > 0;

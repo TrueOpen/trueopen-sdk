@@ -15,7 +15,7 @@ const enc = new TextEncoder();
 const HASH32 = 32;
 const U64_MAX = (1n << 64n) - 1n;
 
-/** The TaskOrder entry in wire registry/v1/domains.json (the V1 row was removed as of v0.3.0). */
+/** The TaskOrder entry in wire registry/v1/domains.json (the V1 row has been removed). */
 export const DOMAIN_TASK_ORDER_V2 = 'TRUEOPEN_TASK_ORDER_V2';
 
 /** The only value currently accepted for GenerationParamsV1.generation_params_schema_version. */
@@ -86,7 +86,7 @@ export interface DeadlinePolicyV1 {
 }
 
 /**
- * task.v1.TaskOrderV2 (frozen as of wire v0.3.0). Field names correspond to proto field
+ * task.v1.TaskOrderV2. Field names correspond to proto field
  * numbers 1..25.
  *
  * Changes relative to V1: the 8 Amount fields were collapsed into 4 (dropping
@@ -136,13 +136,9 @@ export interface TaskOrderV2 {
  * single bit in any TaskOrder field and task_hash changes; swapping in a different user
  * signature alone does not. Paired with it is task_id (the stable RBF-slot identity).
  *
- * Reference: the three digests published in monorepo
- * docs/10-Protocol-Spec/04-Task/08-TaskOrder-Hash-and-Signature.md Section 8.3 (core /
- * decoding-params lower bound / the four Amount fields at their u64 upper bound), which
- * are checked together with the preimage length and five key intermediate frames in
- * test/unit/task-order-contract-vectors.test.ts. wire v0.4.1 hasn't turned this into a
- * testdata fixture yet (wire#24), but the published values are themselves authoritative
- * - node / cortex / nexus / SDK all match against the same values. This implementation
+ * Reference: three contract digests (core / decoding-params lower bound / the four Amount
+ * fields at their u64 upper bound), which are checked together with the preimage length and
+ * five key intermediate frames in test/unit/task-order-contract-vectors.test.ts. This implementation
  * matches nexus internal/nodecontract/taskorder.go's canonicalTaskOrderFieldsV2
  * field-for-field (verified 2026-09-15 against nexus main@b19f6206).
  *
@@ -287,7 +283,7 @@ function validateTaskOrderScalarScope(order: TaskOrderV2): void {
   if (!ok) throw invalid('task order scalar scope is invalid');
 }
 
-/** The string rule from Section 1.2: validate strict UTF-8 first (on the JS side, this means rejecting lone surrogates), then take the bytes. */
+/** Strings enter the preimage as strict UTF-8: validate strict UTF-8 first (on the JS side, this means rejecting lone surrogates), then take the bytes. */
 function utf8Field(field: string, value: string): Uint8Array {
   if (/[\uD800-\uDFFF]/.test(value.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''))) {
     throw invalid(`${field} must be strict UTF-8`);

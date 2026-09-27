@@ -67,7 +67,7 @@ export interface ChainTaskSnapshot {
 
 /**
  * The on-chain InferReceipt (QueryInferReceipt).
- * Since ADR-0017, output_hash is the MMR root over the list of chunks, not a
+ * output_hash is the MMR root over the list of chunks, not a
  * whole-object sha256 -- it is both the validation target for retrieval and
  * TaskDataObjectRefV1.content_hash (retrieval is content-addressed).
  */

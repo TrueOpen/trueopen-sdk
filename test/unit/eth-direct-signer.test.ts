@@ -16,7 +16,7 @@ import {
 import { ethSecp256k1Address, TRUEOPEN_HD_PATH } from '../../src/signer/eth-secp256k1';
 import { fromHex, toHex } from '../../src/util/bytes';
 
-/** Same key as eth-secp256k1.test.ts: the account block from wire v0.4.1 account_signing_v1.json. */
+/** Same key as eth-secp256k1.test.ts: the account block from wire's account_signing_v1.json. */
 const account = JSON.parse(
   readFileSync('third_party/wire/testdata/v1/shared/account_signing_v1.json', 'utf8'),
 ).account;

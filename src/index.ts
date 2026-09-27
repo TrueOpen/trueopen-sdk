@@ -97,7 +97,7 @@ export type { SessionHandle } from './session/session-manager';
 
 export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
 
-// ---- Frozen TaskOrderV3 / SignedOrderV2 (wire v0.3.1) ----
+// ---- Frozen TaskOrderV3 / SignedOrderV2 (wire v0.3.2) ----
 export {
   taskOrderHash,
   taskOrderHashHex,
@@ -306,7 +306,7 @@ export type {
   ConfirmOutputParams,
 } from './client';
 
-// ---- Model manifest retrieval (wire v0.3.1). The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----
+// ---- Model manifest retrieval (wire v0.3.2). The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----
 export {
   ManifestSource,
   MemoryManifestCache,

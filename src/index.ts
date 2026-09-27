@@ -270,7 +270,7 @@ export {
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
 export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
-export { TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
+export { assertNoEndMarkerCollision, TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
 export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan';
 export {
   BUILTIN_TOOL_CALL_PARSERS,

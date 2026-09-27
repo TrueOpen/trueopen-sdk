@@ -62,6 +62,12 @@ export interface ToolCallStreamState {
 }
 
 export interface ToolCallParser extends ParserRef {
+  /**
+   * The marker sequences that terminate a tool call (e.g. `</tc>`). Exposed so the
+   * collision guard can reject a parser whose end marker overlaps a configured EOS marker
+   * (design S10.3). Omitted only by parsers that have no explicit end marker.
+   */
+  readonly endMarkers?: readonly string[];
   parseComplete(text: string): DerivedAssistantMessage;
   createStreamState(): ToolCallStreamState;
 }

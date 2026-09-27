@@ -1,3 +1,4 @@
+import { TrueOpenError } from '../errors/errors';
 import { pendingMarkerSuffix } from './marker-scan';
 
 /**
@@ -31,6 +32,34 @@ export function stripTrailingEos(text: string, markers: readonly string[]): stri
     if (marker !== '' && marker.length > longest && text.endsWith(marker)) longest = marker.length;
   }
   return longest === 0 ? text : text.slice(0, text.length - longest);
+}
+
+/**
+ * The EOS/end-marker collision guard (design S10.3).
+ *
+ * `deriveAssistantStream` runs the EOS stripper *before* the marker state machine, so a
+ * configured EOS marker that overlaps the parser's end marker would let the stripper
+ * withhold the characters that complete the end marker, silently losing the tool call as
+ * plain text. Reject that combination instead.
+ *
+ * The check must be symmetric: with end `</tc>` and EOS `}</tc>`, `'</tc>'.endsWith('}</tc>')`
+ * is false yet the call is lost and a `}` eaten, so a one-sided check misses it.
+ */
+export function assertNoEndMarkerCollision(
+  endMarkers: readonly string[],
+  trailingEosMarkers: readonly string[],
+): void {
+  for (const end of endMarkers) {
+    for (const eos of trailingEosMarkers) {
+      if (end.endsWith(eos) || eos.endsWith(end)) {
+        throw new TrueOpenError(
+          'SDK_LOCAL',
+          'TOOLCALL_END_MARKER_COLLISION',
+          `parser end marker ${JSON.stringify(end)} collides with EOS marker ${JSON.stringify(eos)}`,
+        );
+      }
+    }
+  }
 }
 
 /**

@@ -3,7 +3,7 @@ import {
   type ConfirmOutputWithReceiptInput,
 } from '../output/output-confirmation';
 import { concatBytes } from '../util/bytes';
-import { TrailingEosStripper, stripTrailingEos } from './committed-text';
+import { assertNoEndMarkerCollision, TrailingEosStripper, stripTrailingEos } from './committed-text';
 import type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,
@@ -52,6 +52,7 @@ export async function* deriveAssistantStream(
   source: AsyncIterable<OutputEventLike>,
   opts: DerivedViewOptions,
 ): AsyncIterable<AssistantStreamEvent> {
+  assertNoEndMarkerCollision(opts.parser.endMarkers ?? [], opts.trailingEosMarkers ?? []);
   const stripper = new TrailingEosStripper(opts.trailingEosMarkers ?? []);
   const state = opts.parser.createStreamState();
   for await (const event of source) {
@@ -90,6 +91,7 @@ export function confirmAssistantMessageWithReceipt(
   const text = new TextDecoder().decode(
     concatBytes(...input.checkpoint.chunks.map((chunk) => Uint8Array.from(chunk))),
   );
+  // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
   const message = opts.parser.parseComplete(stripTrailingEos(text, opts.trailingEosMarkers ?? []));
   return { ...message, confirmation };
 }
@@ -110,5 +112,6 @@ export function deriveAssistantMessage(
   text: string,
   opts: DerivedViewOptions,
 ): DerivedAssistantMessage {
+  // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
   return opts.parser.parseComplete(stripTrailingEos(text, opts.trailingEosMarkers ?? []));
 }

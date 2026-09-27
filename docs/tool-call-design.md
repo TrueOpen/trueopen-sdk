@@ -129,10 +129,18 @@ export interface DerivedToolCall {
 export interface ToolCallParser {
   // TrueOpen's engine-independent canonical name, from the governance whitelist
   // `supported_tool_call_parsers`. Deliberately NOT an engine's own parser name: those
-  // disagree across engines (Phi-4 is `phi4_mini_json` in vLLM, `phi4` in Dynamo), and a
-  // node maps the canonical name onto its local engine. Manifest S7.2.
+  // disagree across engines (Phi-4 is `phi4_mini_json` in vLLM, `phi4` in Dynamo), and the
+  // same `name` does not even mean the same model set across engines (`hermes` covers a
+  // different union in vLLM than in Dynamo). Identity therefore anchors on wire's published
+  // behaviour spec + vectors, with engine names kept as a documented mapping table -- and the
+  // registry looks up by exact `(name, version)`, with no alias normalisation and no fallback
+  // parser (S6: no path guesses a format). Manifest S7.2.
   readonly name: string;
   readonly version: number;   // version of the canonical parser spec, >= 1
+  /** The marker(s) that terminate a tool call (e.g. `</tool_call>`), exposed so the
+   *  EOS/end-marker collision guard (S10.3) can reject a parser whose end marker overlaps a
+   *  configured EOS marker. Omitted by parsers with no explicit end marker. */
+  readonly endMarkers?: readonly string[];
   parseComplete(text: string): DerivedAssistantMessage;
   createStreamState(): ToolCallStreamState;
 }
@@ -329,14 +337,48 @@ text. Enabling tool calling can never lose data.
         v emit as content           v flush buffer as plain text
 ```
 
-Two things are easy to get wrong and are therefore stated as requirements:
+Six things are easy to get wrong and are therefore stated as requirements. The first two
+follow the grammar-driven model of vLLM's `JsonToolCallParser`: `parse_into` accumulates each
+chunk, consumes what the grammar has resolved, and `drain`s only that, leaving the rest in the
+buffer for the next chunk.
 
 1. **A marker can straddle a frame boundary** (`<tool_` then `call>`). Matching runs
    against the accumulated buffer, never per frame. Frame boundaries are chosen by the
    Worker and carry no semantics.
-2. **Fin with an unclosed buffer flushes as plain text.** It is neither dropped nor an
+
+2. **Only emit what the syntax has consumed; hold the rest back.** A frame that ends in
+   `<tool_` must not emit `<tool_` as a content event -- the next frame may complete it into
+   `<tool_call>`, and a content event once yielded cannot be retracted. This is
+   grammar-driven rather than marker-driven, so it degrades gracefully for the markerless
+   `llama3_json` form (unbalanced JSON braces are simply not consumed). Do not copy Dynamo's
+   unconditional "keep the last N-1 bytes" jail: it delays plain prose for no reason.
+
+3. **The holdback cut must land on a Unicode code-point boundary** and never split a
+   surrogate pair. Only a start marker that itself contains non-ASCII (e.g. DeepSeek DSML's
+   full-width vertical bar, U+FF5C, three UTF-8 bytes) can make a true prefix fall
+   mid-character; plain CJK prose is unaffected. Slicing a decoded JS string on an index can
+   split a surrogate pair and leave a lone surrogate -- the parser layer's half of the hazard
+   `35290c8` fixed on the transport layer.
+
+4. **A marker inside a quoted span is content, not control syntax.** Start/end-marker matching
+   skips occurrences inside a JSON string: a marker written as prose (`"here is <tool_call>"`)
+   or as a string value in an argument JSON is visible content, and only an unquoted marker is
+   a real one. The holdback rule applies only outside quotes too.
+
+5. **An orphan closing marker is emitted verbatim.** A `</tool_call>` with no matching opening
+   marker stays in `Text` and flows through as content -- a decided and covered case, not a
+   by-product of the state machine.
+
+6. **Fin with an unclosed buffer flushes as plain text.** It is neither dropped nor an
    error -- a truncated generation (hit `max_output_tokens`) produces exactly this, and it
-   is a normal outcome.
+   is a normal outcome. This is a **deliberate divergence** from both references: vLLM's
+   `finish()` returns `Err("incomplete ... tool call")`, and Dynamo's "never-leak gate" drops
+   the markup (suppressing to empty when there is no prose). TrueOpen keeps the bytes because
+   they are the very bytes `output_hash` covers -- suppressing committed bytes would make what
+   the application sees diverge from what the chain committed, undetectably (S6). What a later
+   revision may still add is making the "ended unclosed" fact visible to the caller through the
+   S5 public API so a UI can choose to hide the trailing partial markup; the SDK itself never
+   decides.
 
 The return edge to `Text` is load-bearing: the chat path has no stop conditions (S13.3),
 so generation continues past a closing marker. Content can follow a completed tool call,

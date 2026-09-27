@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  BUILTIN_TOOL_CALL_PARSERS,
-  createToolCallRegistry,
-  resolveToolCalling,
-} from '../../src/toolcall/registry';
+import { BUILTIN_TOOL_CALL_PARSERS, createToolCallRegistry } from '../../src/toolcall/registry';
 import type { ToolCallParser } from '../../src/toolcall/types';
 import { TrueOpenError } from '../../src/errors/errors';
 
@@ -91,24 +87,5 @@ describe('createToolCallRegistry', () => {
       supported: false,
       reason: 'parser-unknown',
     });
-  });
-});
-
-describe('resolveToolCalling', () => {
-  it('resolves through the registry', async () => {
-    const parser = fakeParser('hermes', 1);
-    const registry = createToolCallRegistry([{ parser, conformance: 'vector-verified' }]);
-    await expect(resolveToolCalling({ registry, ref: { name: 'hermes', version: 1 } })).resolves.toEqual({
-      supported: true,
-      parser,
-    });
-  });
-
-  it('passes allowUnverified through', async () => {
-    const parser = fakeParser('hermes', 1);
-    const registry = createToolCallRegistry([{ parser, conformance: 'unverified' }]);
-    await expect(
-      resolveToolCalling({ registry, ref: { name: 'hermes', version: 1 }, allowUnverified: true }),
-    ).resolves.toEqual({ supported: true, parser });
   });
 });

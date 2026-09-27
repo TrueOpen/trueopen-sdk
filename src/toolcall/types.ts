@@ -79,15 +79,21 @@ export interface ConfirmedAssistantMessage extends DerivedAssistantMessage {
  * not exist yet (monorepo#11), so a registry that reported an implemented-but-unchecked parser
  * as supported would claim precisely what cannot be claimed.
  *
- * `manifest-unavailable` and `manifest-hash-mismatch` are declared here but unreachable in
- * phase 1: the manifest layer is blocked on wire publishing V3 canonical vectors.
+ * The three manifest reasons are reached through `resolveToolCalling`: `manifest-unavailable`
+ * means no document could be obtained at all; `manifest-hash-mismatch` means a valid document
+ * was obtained but is not the one the chain committed to; and `manifest-invalid` means a
+ * document was obtained but fails `validateManifestV4` (garbage, or a `manifest_version` this
+ * build rejects). `manifest-invalid` is distinct from `manifest-hash-mismatch`: the latter is a
+ * well-formed document that re-derives to a different hash, while the former never gets far
+ * enough to be hashed.
  */
 export type UnsupportedReason =
   | 'parser-not-pinned'
   | 'parser-unknown'
   | 'parser-unverified'
   | 'manifest-unavailable'
-  | 'manifest-hash-mismatch';
+  | 'manifest-hash-mismatch'
+  | 'manifest-invalid';
 
 export type ToolCallSupport =
   | { readonly supported: true; readonly parser: ToolCallParser }

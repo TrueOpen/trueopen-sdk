@@ -77,20 +77,3 @@ export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolC
  * exist (monorepo#11). Callers inject their own with `createToolCallRegistry`.
  */
 export const BUILTIN_TOOL_CALL_PARSERS: ToolCallRegistry = createToolCallRegistry([]);
-
-/**
- * Resolve whether tool calling is available, before any frame arrives (design S5.1).
- *
- * Asynchronous although phase 1 never awaits: phase 3 resolves `(name, version)` by fetching the
- * profile manifest and re-deriving its hash, and the signature should not change then.
- */
-export async function resolveToolCalling(p: {
-  readonly registry: ToolCallRegistry;
-  readonly ref: ParserRef;
-  readonly allowUnverified?: boolean;
-}): Promise<ToolCallSupport> {
-  return p.registry.lookup(
-    p.ref,
-    p.allowUnverified === undefined ? undefined : { allowUnverified: p.allowUnverified },
-  );
-}

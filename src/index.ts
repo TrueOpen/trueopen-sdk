@@ -275,11 +275,12 @@ export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan
 export {
   BUILTIN_TOOL_CALL_PARSERS,
   createToolCallRegistry,
-  resolveToolCalling,
   type ParserConformance,
   type RegistryEntry,
   type ToolCallRegistry,
 } from './toolcall/registry';
+export { resolveToolCalling } from './manifest-resolution';
+export type { ManifestSource, ResolvedManifest } from './manifest-resolution';
 export type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,

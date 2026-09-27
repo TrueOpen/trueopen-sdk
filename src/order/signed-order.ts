@@ -1,12 +1,12 @@
 import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
-import { SignedOrderV2Schema, TaskOrderV2Schema } from '../gen/task/v1/msg_assignment_pb.js';
+import { SignedOrderV2Schema, TaskOrderV3Schema } from '../gen/task/v1/msg_assignment_pb.js';
 import type { TaskType as ProtoTaskType } from '../gen/shared/v1/model_profile_pb.js';
 import type {
   DeadlineLatencyClass as ProtoLatencyClass,
-  TaskOrderV2 as ProtoTaskOrderV2,
+  TaskOrderV3 as ProtoTaskOrderV3,
   SignedOrderV2 as ProtoSignedOrderV2,
 } from '../gen/task/v1/msg_assignment_pb.js';
-import type { TaskOrderV2 } from './task-order';
+import type { TaskOrderV3 } from './task-order';
 import { taskOrderHash } from './task-order';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
 import { eip712Digest } from '../codec/eip712';
@@ -34,11 +34,11 @@ export const OPEN_TASK_HEADER_SIGNATURE_SCHEME = 'secp256k1';
 
 /** EIP-712 order domain; values are frozen by task_order.domain in account_signing_v1.json. */
 export const ORDER_EIP712_DOMAIN_NAME = 'TrueOpen Task Order';
-export const ORDER_EIP712_DOMAIN_VERSION = '2';
+export const ORDER_EIP712_DOMAIN_VERSION = '3';
 
 /**
  * Type table for the order's EIP-712 payload. The message has only 11 fields - it is
- * **not** a full-field mirror of TaskOrderV2, but a "human-readable summary + taskHash":
+ * **not** a full-field mirror of TaskOrderV3, but a "human-readable summary + taskHash":
  * the wallet prompt shows the first 10 fields, and the 11th field, taskHash, binds the
  * canonical hash of the full order into the same signature. So the signature effectively
  * covers all 25 fields.
@@ -54,7 +54,7 @@ export const ORDER_EIP712_TYPES: Eip712Types = {
     { name: 'user', type: 'string' },
     { name: 'sessionId', type: 'bytes32' },
     { name: 'orderSequence', type: 'uint64' },
-    { name: 'modelId', type: 'string' },
+    { name: 'modelId', type: 'bytes32' },
     { name: 'profileVersion', type: 'uint32' },
     { name: 'maxFee', type: 'string' },
     { name: 'feeDenom', type: 'string' },
@@ -64,11 +64,11 @@ export const ORDER_EIP712_TYPES: Eip712Types = {
   ],
 };
 
-/** Two values the order's EIP-712 payload needs but that don't live on TaskOrderV2. */
+/** Two values the order's EIP-712 payload needs but that don't live on TaskOrderV3. */
 export interface OrderEip712Context {
   /**
    * The chainId in the EIP-712 domain is the **EVM numeric chain ID** (424242 in the
-   * test vectors), which is distinct from TaskOrderV2.chain_id (the cosmos string chain
+   * test vectors), which is distinct from TaskOrderV3.chain_id (the cosmos string chain
    * ID) - both are included in the signature.
    */
   readonly evmChainId: bigint | number | string;
@@ -77,7 +77,7 @@ export interface OrderEip712Context {
 }
 
 /** The order's EIP-712 signing digest (32 bytes). */
-export function taskOrderEip712Digest(order: TaskOrderV2, ctx: OrderEip712Context): Uint8Array {
+export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Context): Uint8Array {
   const message: Eip712Struct = {
     chainId: order.chainId,
     user: order.userAddress,
@@ -104,7 +104,7 @@ export function taskOrderEip712Digest(order: TaskOrderV2, ctx: OrderEip712Contex
 }
 
 /**
- * Convert the SDK-side TaskOrderV2 view into the frozen protobuf message.
+ * Convert the SDK-side TaskOrderV3 view into the frozen protobuf message.
  *
  * We deliberately keep two parallel representations: the hand-written view is the input
  * to task_hash (taskOrderHash depends only on it, which keeps it easy to assert as a
@@ -112,9 +112,9 @@ export function taskOrderEip712Digest(order: TaskOrderV2, ctx: OrderEip712Contex
  * drift between the two is caught by the "task_hash is unchanged after a proto
  * round-trip" test case in signed-order.test.ts.
  */
-function toProtoTaskOrder(order: TaskOrderV2): ProtoTaskOrderV2 {
+function toProtoTaskOrder(order: TaskOrderV3): ProtoTaskOrderV3 {
   const d = order.generationParams.decodingParams;
-  return create(TaskOrderV2Schema, {
+  return create(TaskOrderV3Schema, {
     schemaVersion: order.schemaVersion,
     chainId: order.chainId,
     userAddress: order.userAddress,
@@ -156,6 +156,9 @@ function toProtoTaskOrder(order: TaskOrderV2): ProtoTaskOrderV2 {
     sessionAnchorBlockHash: order.sessionAnchorBlockHash,
     builderSetId: order.builderSetId,
     builderSetHash: order.builderSetHash,
+    payloadMode: order.payloadMode,
+    inputKeyCommitment: order.inputKeyCommitment,
+    userRecipientPubkey: order.userRecipientPubkey,
   });
 }
 
@@ -186,7 +189,7 @@ export interface EncodedSignedOrder {
  * two separate signatures.
  */
 export async function signAndEncodeOrder(
-  order: TaskOrderV2,
+  order: TaskOrderV3,
   ctx: OrderEip712Context,
   signer: Eip712Signer,
 ): Promise<EncodedSignedOrder> {
@@ -214,7 +217,7 @@ export async function signAndEncodeOrder(
  * user_signature gets it omitted by proto3, and nexus will reject it outright because
  * the length isn't 65 - so this function is only used on the local validation path.
  */
-export function encodeSignedOrder(order: TaskOrderV2, userSignature: Uint8Array): Uint8Array {
+export function encodeSignedOrder(order: TaskOrderV3, userSignature: Uint8Array): Uint8Array {
   return toBinary(
     SignedOrderV2Schema,
     create(SignedOrderV2Schema, {

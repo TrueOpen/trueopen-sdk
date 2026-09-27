@@ -97,18 +97,18 @@ export type { SessionHandle } from './session/session-manager';
 
 export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
 
-// ---- Frozen TaskOrderV2 / SignedOrderV2 (wire v0.4.1) ----
+// ---- Frozen TaskOrderV3 / SignedOrderV2 (wire v0.4.1) ----
 export {
   taskOrderHash,
   taskOrderHashHex,
-  DOMAIN_TASK_ORDER_V2,
-  TASK_ORDER_SCHEMA_VERSION_V2,
+  DOMAIN_TASK_ORDER_V3,
+  TASK_ORDER_SCHEMA_VERSION_V3,
   GENERATION_PARAMS_SCHEMA_VERSION_V1,
   TASK_TYPE,
   DEADLINE_LATENCY_CLASS,
 } from './order/task-order';
 export type {
-  TaskOrderV2,
+  TaskOrderV3,
   AmountV1,
   GenerationParamsV1,
   DecodingParamsV1,

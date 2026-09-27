@@ -39,7 +39,7 @@ const snapshot: BuilderSetSnapshot = {
   builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDRS.join(','), setHash: hexOf(0x15), };
 
 const order: TaskOrderIntent = {
-  modelId: 'hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: fromHex('ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b'),
   profileVersion: 1, taskType: TASK_TYPE.TEXT_GENERATION, payload: new TextEncoder().encode('trueopen-input'),
   inputBucket: 1, outputBudgetBucket: 1, generationParams: defaultGenerationParams(128n, 2_000n),
   amounts: {

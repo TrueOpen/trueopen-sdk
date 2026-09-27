@@ -5,6 +5,7 @@ import { resolveConfig } from '../../src/cli/config';
 import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fromHex } from '../../src/util/bytes';
 
 const MN = 'flee cover glad finish category story alpha envelope twelve tube glory athlete ugly road roof milk idle ketchup utility park source jewel head shift';
 
@@ -14,7 +15,7 @@ describe('cli commands', () => {
     // parameters on the user's behalf that they never saw, and too small a limit would cut the
     // response off mid-sentence without the user noticing.
     const base = {
-      modelId: 'hf-x', profileVersion: 1, taskType: 'TEXT_GENERATION',
+      modelId: 'ab'.repeat(32), profileVersion: 1, taskType: 'TEXT_GENERATION',
       inputBucket: 1, outputBudgetBucket: 1,
       earliestSubmitHeight: '1', orderExpireHeight: '2', latencyClass: 'STANDARD',
     };
@@ -36,12 +37,12 @@ describe('cli commands', () => {
     expect(r.address).toBe('trueopen1jah6xx0ve056wgl3cxlxhe393ywwwyuamfl037');
   });
 
-  it('parseOrderFile parses JSON into a frozen TaskOrderV1 intent (fees are Amount decimal text)', () => {
+  it('parseOrderFile parses JSON into a frozen TaskOrder intent (fees are Amount decimal text)', () => {
     const p = join(tmpdir(), `order-${Date.now()}.json`);
     writeFileSync(
       p,
       JSON.stringify({
-        modelId: 'm', profileVersion: 1, taskType: 'TEXT_GENERATION',
+        modelId: 'ab'.repeat(32), profileVersion: 1, taskType: 'TEXT_GENERATION',
         inputBucket: 1, outputBudgetBucket: 1, maxOutputTokens: 128, maxOutputDurationMs: 60_000,
         maxFee: '1000', inferFeeCap: '600', verifyFeeCap: '300',
         earliestSubmitHeight: '100', orderExpireHeight: '50100',
@@ -50,7 +51,7 @@ describe('cli commands', () => {
     );
     try {
       const order = parseOrderFile(p, new TextEncoder().encode('payload'));
-      expect(order.modelId).toBe('m');
+      expect(order.modelId).toEqual(fromHex('ab'.repeat(32)));
       expect(order.profileVersion).toBe(1);
       // Fees changed to Amount: what goes into the task_hash preimage is decimal text, not a numeric value.
       expect(order.amounts.maxFee).toEqual({ atomicUnits: '1000' });

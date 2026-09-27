@@ -4,6 +4,7 @@ import type { CliConfig } from '../config';
 import type { TaskOrderIntent } from '../../order/task-order-input';
 import { defaultGenerationParams } from '../../order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../order/task-order';
+import { fromHex } from '../../util/bytes';
 
 /** Fields in the order file that are parsed as uint64 (JSON numbers don't have enough precision, so we always use BigInt). */
 const U64_FIELDS = ['earliestSubmitHeight', 'orderExpireHeight'] as const;
@@ -48,7 +49,7 @@ export function parseOrderFile(path: string, payload: Uint8Array): TaskOrderInte
   const taskType = raw['taskType'];
   const latency = raw['latencyClass'];
   return {
-    modelId: String(raw['modelId'] ?? ''),
+    modelId: fromHex(String(raw['modelId'] ?? '')),
     profileVersion: num('profileVersion', raw['profileVersion'] ?? 1),
     taskType: typeof taskType === 'string' ? (TASK_TYPE[taskType as keyof typeof TASK_TYPE] ?? 0) : num('taskType', taskType ?? TASK_TYPE.TEXT_GENERATION),
     payload,

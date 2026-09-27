@@ -11,11 +11,11 @@ import {
 import { fromHex, toHex } from '../../src/util/bytes';
 
 /**
- * TRUEOPEN_OUTPUT_FIN_V1 is anchored to the official wire vectors (wire v0.4.3 / wire#35).
+ * TRUEOPEN_OUTPUT_FIN_V1 is anchored to the official wire vectors (wire v0.3.0 / wire#35).
  *
  * All expected values come from the fin_signing section of
  * third_party/wire/testdata/v1/task/output_mmr_v1.json, never made up locally:
- * the digests for the four accepted reasons, the full preimage and raw64 signature for the
+ * the digests for the six accepted reasons, the full preimage and raw64 signature for the
  * EOS branch, the per-field mutation digests, and the rejected enum values. A self-made vector
  * can only prove the implementation is consistent with itself.
  */
@@ -54,15 +54,15 @@ describe('TRUEOPEN_OUTPUT_FIN_V1 (anchored to official wire vectors)', () => {
     expect(FIN.fields).toEqual(['chain_id', 'task_hash', 'final_seq', 'output_mmr_root', 'finish_reason']);
   });
 
-  it('each of the four accepted finish_reason values matches the official digest', () => {
-    expect(FIN.accepted_finish_reasons).toHaveLength(4);
+  it('each of the six accepted finish_reason values matches the official digest', () => {
+    expect(FIN.accepted_finish_reasons).toHaveLength(6);
     for (const c of FIN.accepted_finish_reasons) {
       expect(toHex(outputFinSigningDigest({ ...BASE, finishReason: c.value }))).toBe(c.digest_hex);
     }
   });
 
-  it('the accepted set is exactly 1..4, and everything else fails closed', () => {
-    expect([...ACCEPTED_FINISH_REASONS]).toEqual([1, 2, 3, 4]);
+  it('the accepted set is exactly 1..6, and everything else fails closed', () => {
+    expect([...ACCEPTED_FINISH_REASONS]).toEqual([1, 2, 3, 4, 5, 6]);
     for (const c of FIN.rejected_finish_reason_values) {
       expect(isAcceptedFinishReason(c.value)).toBe(false);
       // An invalid reason must be rejected before the digest is even computed, not after producing a digest that merely looks verifiable.

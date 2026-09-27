@@ -64,7 +64,7 @@ const hub = {
 } as never;
 
 const order: TaskOrderIntent = {
-  modelId: 'hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: fromHex('ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b'),
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: PAYLOAD,

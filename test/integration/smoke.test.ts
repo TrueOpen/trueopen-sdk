@@ -46,7 +46,7 @@ const amount = (atomicUnits: string) => ({ atomicUnits });
 const ANCHOR = hexOf(0x14);
 
 const order: TaskOrderIntent = {
-  modelId: 'model-1', profileVersion: 1, taskType: TASK_TYPE.TEXT_GENERATION,
+  modelId: fromHex('ab'.repeat(32)), profileVersion: 1, taskType: TASK_TYPE.TEXT_GENERATION,
   payload: new TextEncoder().encode('trueopen-input'),
   inputBucket: 1, outputBudgetBucket: 1,
   generationParams: defaultGenerationParams(128n, 2_000n),

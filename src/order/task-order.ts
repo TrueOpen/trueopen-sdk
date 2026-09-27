@@ -15,14 +15,21 @@ const enc = new TextEncoder();
 const HASH32 = 32;
 const U64_MAX = (1n << 64n) - 1n;
 
-/** The TaskOrder entry in wire registry/v1/domains.json (the V1 row was removed as of v0.3.0). */
-export const DOMAIN_TASK_ORDER_V2 = 'TRUEOPEN_TASK_ORDER_V2';
+/** The TaskOrder entry in wire registry/v1/domains.json (V3 supersedes V2, which is `registered: false`). */
+export const DOMAIN_TASK_ORDER_V3 = 'TRUEOPEN_TASK_ORDER_V3';
 
 /** The only value currently accepted for GenerationParamsV1.generation_params_schema_version. */
 export const GENERATION_PARAMS_SCHEMA_VERSION_V1 = 1;
 
-/** TaskOrderV2.schema_version is always 2; a fresh genesis does not accept V1 orders and has no compatibility decode path. */
-export const TASK_ORDER_SCHEMA_VERSION_V2 = 2;
+/** TaskOrderV3.schema_version is always 3; a fresh genesis does not accept V2 orders and has no compatibility decode path. */
+export const TASK_ORDER_SCHEMA_VERSION_V3 = 3;
+
+/** task.v1.PayloadModeV1. V3 adds payload_mode; the current schema accepts only PLAINTEXT. */
+export const PAYLOAD_MODE = {
+  UNSPECIFIED: 0,
+  PLAINTEXT: 1,
+  ENCRYPTED: 2,
+} as const;
 
 /** shared.v1.TaskType. */
 export const TASK_TYPE = {
@@ -86,19 +93,23 @@ export interface DeadlinePolicyV1 {
 }
 
 /**
- * task.v1.TaskOrderV2 (frozen as of wire v0.3.0). Field names correspond to proto field
- * numbers 1..25.
+ * task.v1.TaskOrderV3 (frozen as of wire v0.3.0). Field names correspond to proto field
+ * numbers 1..28.
  *
  * Changes relative to V1: the 8 Amount fields were collapsed into 4 (dropping
  * infer_input_unit_price_bid / infer_output_unit_price_bid / verify_unit_price_bid /
  * infer_fee_cap / verify_fee_cap, and adding a unified price_bid), reference_bucket_version
  * was removed, and field numbers from 14 onward shifted accordingly.
  *
+ * Changes relative to V2 (fields 26..28): payload_mode, input_key_commitment and
+ * user_recipient_pubkey enter the task hash. The current schema accepts only the
+ * PLAINTEXT payload mode, a zero input_key_commitment, and an empty recipient pubkey.
+ *
  * task_id / task_hash / generation_params_digest / order_value / task_builder_seed /
  * reward bucket / resource tier / Task Builders are all derived by the Keeper and
  * **must not** be submitted here.
  */
-export interface TaskOrderV2 {
+export interface TaskOrderV3 {
   readonly schemaVersion: number;
   readonly chainId: string;
   /** Canonical bech32; what feeds into the preimage is the address codec bytes, not the text. */
@@ -106,7 +117,8 @@ export interface TaskOrderV2 {
   /** Raw 32-byte Hash32. */
   readonly sessionId: Uint8Array;
   readonly orderSequence: bigint;
-  readonly modelId: string;
+  /** Raw 32-byte Hash32 (derived by the hub from chain_id/provider/repo_id/proposer_address). */
+  readonly modelId: Uint8Array;
   readonly profileVersion: number;
   readonly taskType: number;
   /** Raw 32-byte Hash32 = sha256(input). */
@@ -129,6 +141,12 @@ export interface TaskOrderV2 {
   readonly builderSetId: string;
   /** Raw 32-byte Hash32. */
   readonly builderSetHash: Uint8Array;
+  /** task.v1.PayloadModeV1. The current schema accepts only PLAINTEXT (1). */
+  readonly payloadMode: number;
+  /** Raw 32-byte Hash32; zero for the current PLAINTEXT schema. */
+  readonly inputKeyCommitment: Uint8Array;
+  /** Raw pubkey bytes; empty for the current schema (encryption is not used). */
+  readonly userRecipientPubkey: Uint8Array;
 }
 
 /**
@@ -140,7 +158,7 @@ export interface TaskOrderV2 {
  * docs/10-Protocol-Spec/04-Task/08-TaskOrder-Hash-and-Signature.md Section 8.3 (core /
  * decoding-params lower bound / the four Amount fields at their u64 upper bound), which
  * are checked together with the preimage length and five key intermediate frames in
- * test/unit/task-order-contract-vectors.test.ts. wire v0.4.1 hasn't turned this into a
+ * test/unit/task-order-contract-vectors.test.ts. wire v0.3.0 hasn't turned this into a
  * testdata fixture yet (wire#24), but the published values are themselves authoritative
  * - node / cortex / nexus / SDK all match against the same values. This implementation
  * matches nexus internal/nodecontract/taskorder.go's canonicalTaskOrderFieldsV2
@@ -152,17 +170,17 @@ export interface TaskOrderV2 {
  * synchronized with the contract. Don't just "update the expected value in place" -
  * first confirm what changed on the contract side.
  */
-export function taskOrderHash(order: TaskOrderV2): Uint8Array {
-  return canonicalHashBytes(enc.encode(DOMAIN_TASK_ORDER_V2), ...canonicalTaskOrderFields(order));
+export function taskOrderHash(order: TaskOrderV3): Uint8Array {
+  return canonicalHashBytes(enc.encode(DOMAIN_TASK_ORDER_V3), ...canonicalTaskOrderFields(order));
 }
 
 /** The canonical lowercase 64-hex form of taskOrderHash. */
-export function taskOrderHashHex(order: TaskOrderV2): string {
+export function taskOrderHashHex(order: TaskOrderV3): string {
   return toHex(taskOrderHash(order));
 }
 
-/** Flatten TaskOrderV2 in ascending order of proto field numbers 1..25 (the same order as the registry's fields array). */
-function canonicalTaskOrderFields(order: TaskOrderV2): Uint8Array[] {
+/** Flatten TaskOrderV3 in ascending order of proto field numbers 1..25 (the same order as the registry's fields array). */
+function canonicalTaskOrderFields(order: TaskOrderV3): Uint8Array[] {
   validateTaskOrderScalarScope(order);
 
   const user = canonicalOperatorAddressBytes('user_address', order.userAddress);
@@ -183,7 +201,7 @@ function canonicalTaskOrderFields(order: TaskOrderV2): Uint8Array[] {
     user,
     order.sessionId,
     uint64BE(order.orderSequence),
-    utf8Field('model_id', order.modelId),
+    order.modelId,
     uint32BE(order.profileVersion),
     enumBE(order.taskType),
     order.inputHash,
@@ -200,6 +218,9 @@ function canonicalTaskOrderFields(order: TaskOrderV2): Uint8Array[] {
     order.sessionAnchorBlockHash,
     utf8Field('builder_set_id', order.builderSetId),
     order.builderSetHash,
+    enumBE(order.payloadMode),
+    order.inputKeyCommitment,
+    order.userRecipientPubkey,
   ];
 }
 
@@ -264,11 +285,11 @@ function canonicalAmountUnits(amount: AmountV1, fieldNumber: number): Uint8Array
  * "business validation" - an order that can't produce a task_hash will be rejected on
  * chain regardless, so failing early is better.
  */
-function validateTaskOrderScalarScope(order: TaskOrderV2): void {
+function validateTaskOrderScalarScope(order: TaskOrderV3): void {
   const ok =
-    order.schemaVersion === TASK_ORDER_SCHEMA_VERSION_V2 &&
+    order.schemaVersion === TASK_ORDER_SCHEMA_VERSION_V3 &&
     order.chainId !== '' &&
-    order.modelId !== '' &&
+    order.modelId.length === HASH32 &&
     order.sessionId.length === HASH32 &&
     order.profileVersion !== 0 &&
     order.taskType !== TASK_TYPE.UNSPECIFIED &&
@@ -283,7 +304,11 @@ function validateTaskOrderScalarScope(order: TaskOrderV2): void {
     order.sessionAnchorHeight !== 0n &&
     order.sessionAnchorBlockHash.length === HASH32 &&
     order.builderSetId !== '' &&
-    order.builderSetHash.length === HASH32;
+    order.builderSetHash.length === HASH32 &&
+    order.payloadMode === PAYLOAD_MODE.PLAINTEXT &&
+    order.inputKeyCommitment.length === HASH32 &&
+    order.inputKeyCommitment.every((b) => b === 0) &&
+    order.userRecipientPubkey.length === 0;
   if (!ok) throw invalid('task order scalar scope is invalid');
 }
 

@@ -11,7 +11,7 @@ import type { Eip712Types } from '../../src/codec/eip712';
 import { toHex, fromHex } from '../../src/util/bytes';
 
 /**
- * Anchor: wire v0.4.1's testdata/v1/shared/account_signing_v1.json.
+ * Anchor: wire v0.3.0's testdata/v1/shared/account_signing_v1.json.
  * This file is published byte-for-byte by wire per the monorepo's "Account and Signing
  * Protocol" doc, and is a cross-language vector shared by all three parties.
  * This test **reads that file directly from the submodule** rather than copying it into a
@@ -91,7 +91,7 @@ describe('TrueOpen Task Order', () => {
       { name: 'user', type: 'string' },
       { name: 'sessionId', type: 'bytes32' },
       { name: 'orderSequence', type: 'uint64' },
-      { name: 'modelId', type: 'string' },
+      { name: 'modelId', type: 'bytes32' },
       { name: 'profileVersion', type: 'uint32' },
       { name: 'maxFee', type: 'string' },
       { name: 'feeDenom', type: 'string' },
@@ -106,7 +106,7 @@ describe('TrueOpen Task Order', () => {
     user: m.user,
     sessionId: fromHex(m.sessionId),
     orderSequence: m.orderSequence,
-    modelId: m.modelId,
+    modelId: fromHex(m.modelId),
     profileVersion: m.profileVersion,
     maxFee: m.maxFee,
     feeDenom: m.feeDenom,

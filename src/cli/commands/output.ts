@@ -34,7 +34,7 @@ export async function cmdOutputRef(
  * configuration, so each endpoint must use its own address. The expiry is a **chain height**, fetched
  * fresh here each time -- a stale height cannot be reused.
  *
- * Since v0.4.1, retrieval is content-addressed: both the on-chain task_hash and the InferReceipt's
+ * Since v0.3.0, retrieval is content-addressed: both the on-chain task_hash and the InferReceipt's
  * output_hash must be supplied -- the latter is both object_ref.content_hash (used to locate the object)
  * and the verification target for the MMR root. Both values only exist on chain; the CLI does not guess
  * them or fetch them back from nexus.

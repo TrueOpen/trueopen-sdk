@@ -624,7 +624,7 @@ export class IngressClient {
 const TASK_DATA_AUTH_SCHEMA_VERSION = 1;
 
 /**
- * request_nonce must be **exactly 32 bytes** as of v0.4.1 (v0.1.2 only required >= 16).
+ * request_nonce must be **exactly 32 bytes** as of v0.3.0 (v0.1.2 only required >= 16).
  * IngressAuth.nonce() is a generic nonce source whose length isn't guaranteed to comply,
  * so this normalizes it to 32 bytes: if it's shorter, pad it out with sha256 (preserving
  * entropy rather than truncating); if it's longer, also collapse it with sha256.

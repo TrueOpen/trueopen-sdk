@@ -251,10 +251,10 @@ describe('TrueOpenClient facade', () => {
     expect(got).toEqual(['伦', '敦', '天气']);
   });
 
-  // ---- wire v0.4.3 (wire#35): Fin carries finish_reason + worker_signature ----
+  // ---- wire v0.3.0 (wire#35): Fin carries finish_reason + worker_signature ----
   //
   // The key requirement here is that "the upgrade must not brick the SDK against the live
-  // network": v0.4.3 only adds fields, and before nexus#99 ships, the live chain still sends an
+  // network": v0.3.0 only adds fields, and before nexus#99 ships, the live chain still sends an
   // unsigned Fin, so the default policy must allow it through; but once a Fin does carry a
   // signature, a bad signature must never be accepted under any policy.
 
@@ -433,7 +433,7 @@ describe('TrueOpenClient facade', () => {
       throw new Error('connection reset');
     }, capA);
     const transportB = scriptedStreamTransport(async function* () {
-      // Wire v0.4.1's bare uint64 replays seq=0 on present(0); the SDK must re-verify and dedupe it.
+      // Wire v0.3.0's bare uint64 replays seq=0 on present(0); the SDK must re-verify and dedupe it.
       for (const frame of frames) yield { frame: { case: 'chunk', value: frame } };
       const last = frames[frames.length - 1]!;
       yield { frame: { case: 'fin', value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
@@ -586,7 +586,7 @@ describe('TrueOpenClient facade', () => {
       () =>
         new TrueOpenClient({
           chainId: 'trueopen-devnet-1',
-          // Since v0.4.1 the address is keccak-derived; the derivation rule itself is anchored against the official vectors in eth-secp256k1.test.ts.
+          // Since v0.3.0 the address is keccak-derived; the derivation rule itself is anchored against the official vectors in eth-secp256k1.test.ts.
           userAddress: ethSecp256k1Address(pub, 'trueopen'),
           signerPubKey: pub, signer,
           chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',

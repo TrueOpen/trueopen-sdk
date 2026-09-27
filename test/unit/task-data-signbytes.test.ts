@@ -16,7 +16,7 @@ import { bech32 } from '@scure/base';
 import { canonicalFrameBytes } from '../../src/codec/domain-hash';
 import { toHex, fromHex, concatBytes } from '../../src/util/bytes';
 
-/** Anchor: wire v0.4.1's testdata/v1/task/task_data_auth_v1.json, read directly from the submodule. */
+/** Anchor: wire v0.3.0's testdata/v1/task/task_data_auth_v1.json, read directly from the submodule. */
 const auth = JSON.parse(readFileSync('third_party/wire/testdata/v1/task/task_data_auth_v1.json', 'utf8'));
 const account = JSON.parse(readFileSync('third_party/wire/testdata/v1/shared/account_signing_v1.json', 'utf8'));
 
@@ -34,7 +34,7 @@ const REF: TaskDataObjectRef = {
 
 describe('body digest (H_FIELDS_V1)', () => {
   it('GetTaskDataMetadata preimage and digest', () => {
-    const v = vector('task_data_metadata_body_v1');
+    const v = vector('task_data_metadata_body_v2');
     expect(v['domain']).toBe(TASK_DATA_BODY_DOMAIN.METADATA);
     // Compare the preimage first, then the digest: if the digest doesn't match, the preimage pinpoints exactly which segment is wrong.
     const preimage = canonicalFrameBytes(
@@ -46,7 +46,7 @@ describe('body digest (H_FIELDS_V1)', () => {
   });
 
   it('FetchTaskData preimage and digest with a range', () => {
-    const v = vector('task_data_fetch_body_v1');
+    const v = vector('task_data_fetch_body_v2');
     expect(v['domain']).toBe(TASK_DATA_BODY_DOMAIN.FETCH);
     const range = { offset: 64n, length: 128n };
     // present optional = 0x01 followed by a length-prefixed frame of the value itself; that value is in turn
@@ -93,7 +93,7 @@ describe('CORTEX_SERVICE branch (H_FIELDS_V1 outer layer)', () => {
     );
     // The address field vector provides both bech32 and 20-byte hex: the SDK accepts bech32, but the preimage must use the hex form.
     // Here we **re-encode bech32 from the hex** instead of using the vector's bech32 annotation directly:
-    // in v0.4.1, the requester_address annotation has a broken checksum (see the dedicated test case below),
+    // in v0.3.0, the requester_address annotation has a broken checksum (see the dedicated test case below),
     // and since the digest is computed from hex, re-encoding from hex sidesteps the annotation defect without touching the authoritative value.
     const val = (name: string): unknown => f[name]?.['value'] ?? f[name]?.['utf8'] ?? f[name]?.['hex'];
     const addr = (name: string): string =>
@@ -117,9 +117,9 @@ describe('CORTEX_SERVICE branch (H_FIELDS_V1 outer layer)', () => {
   });
 
   it('every address\'s bech32 annotation in the vector is self-consistent with its hex', () => {
-    // This was previously a snapshot of a known defect: in v0.4.1's task_data_auth_v1.json, the requester_address's
+    // This was previously a snapshot of a known defect: in v0.3.0's task_data_auth_v1.json, the requester_address's
     // bech32 annotation has a broken checksum (hex is authoritative and the digest only consumes hex, so the digest
-    // itself is unaffected). wire#33 fixed the bech32 column of four fixtures in v0.4.2, so this is now a positive
+    // itself is unaffected). wire#33 fixed the bech32 column of four fixtures in v0.3.0, so this is now a positive
     // assertion: both addresses must re-encode from hex into an identical bech32, and both must decode successfully.
     const v = vector('task_data_request_v1_cortex_service');
     const f = Object.fromEntries((v['fields'] as { name: string }[]).map((x) => [x.name, x])) as Record<
@@ -168,8 +168,8 @@ describe('USER branch (EIP-712 outer layer)', () => {
   });
 
   it('the vector\'s body_digest is exactly the fetch body one', () => {
-    // The vector itself declares this chain: body_digest_source = task_data_fetch_body_v1.
-    expect(m.bodyDigest).toBe(vector('task_data_fetch_body_v1')['digest_hex']);
+    // The vector itself declares this chain: body_digest_source = task_data_fetch_body_v2.
+    expect(m.bodyDigest).toBe(vector('task_data_fetch_body_v2')['digest_hex']);
     expect(m.rpcMethod).toBe(TASK_DATA_RPC_METHOD.FetchTaskData);
     expect(Number(m.requesterKind)).toBe(TASK_DATA_REQUESTER_KIND.USER);
   });

@@ -102,19 +102,20 @@ export function verifyOutputChunkSignature(
   return verifySecp256k1Digest(outputChunkSigningDigest(f), signature, workerServicePubKey);
 }
 
-/** Domain for the terminal frame's signature (wire v0.4.3 / wire#35). Also data-plane only, never in the receipt. */
+/** Domain for the terminal frame's signature (wire v0.3.0 / wire#35). Also data-plane only, never in the receipt. */
 export const OUTPUT_FIN_DOMAIN = 'TRUEOPEN_OUTPUT_FIN_V1';
 
 /**
- * The **only four accepted successful-termination values** in FinishReasonV1.
+ * The **only six accepted successful-termination values** in FinishReasonV1.
  *
  * This is a closed set: UNSPECIFIED(0), unknown enum values, failure, and cancellation never
  * produce a valid Fin, and must be rejected **before** the digest is computed -- otherwise
  * that would amount to accepting a termination reason the protocol doesn't recognize, and
  * verifying its signature afterward would be meaningless. The wire registry's comment on
- * TRUEOPEN_OUTPUT_FIN_V1 explicitly requires failing closed.
+ * TRUEOPEN_OUTPUT_FIN_V1 explicitly requires failing closed. EOS_TOKEN(1), STOP_SEQUENCE(2),
+ * MAX_OUTPUT_TOKENS(3), MAX_OUTPUT_DURATION(4), USER_STOP(5) and STOP_TOKEN(6) are accepted.
  */
-export const ACCEPTED_FINISH_REASONS: readonly number[] = [1, 2, 3, 4];
+export const ACCEPTED_FINISH_REASONS: readonly number[] = [1, 2, 3, 4, 5, 6];
 
 /** Whether this value is a protocol-accepted successful termination reason. */
 export function isAcceptedFinishReason(value: number): boolean {
@@ -129,7 +130,7 @@ export interface OutputFinSigningFields {
   readonly finalSeq: bigint;
   /** The final MMR root over all leaves, raw 32 bytes. */
   readonly outputMmrRoot: Uint8Array;
-  /** FinishReasonV1's enum value; only 1..4 are accepted. */
+  /** FinishReasonV1's enum value; only 1..6 are accepted. */
   readonly finishReason: number;
 }
 

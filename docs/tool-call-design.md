@@ -514,8 +514,11 @@ Two items, recorded here because nothing else in this document would carry them:
   stripper before the marker state machine. If a configured EOS marker overlaps the parser's
   end marker at the seam, the stripper withholds the characters that would have completed
   the end marker and the tool call is silently lost as plain text. In P1 both values are
-  caller-supplied, so this is only reachable by deliberate misconfiguration; **in P3 both
-  come from the manifest**, so a manifest could pin a colliding pair with nothing objecting.
+  caller-supplied, so this is only reachable by deliberate misconfiguration. **In P3 only the
+  parser -- and with it the end marker -- is manifest-selected (`tool_calling.parser {name,
+  version}`); the EOS markers stay caller-supplied (S10.1).** So the end marker is no longer
+  visible at the call site, and a profile whose selected parser's end marker overlaps the
+  caller's EOS markers would collide with nothing objecting.
   The guard must be symmetric -- reject when `endMarker.endsWith(m) || m.endsWith(endMarker)`
   for any EOS marker `m`. A one-sided check (only "EOS is a suffix of the end marker") misses
   the mirror case: with end `</tc>` and EOS `}</tc>`, the call is lost and a `}` eaten as

@@ -11,9 +11,24 @@ export interface VerifiedOutputChunkEvent {
 }
 
 /**
- * A verified termination event. The current SDK cannot yet produce it from Wire v0.4.1:
- * callers must wait until Wire #35's Fin reason/signature verification lands before
- * converting a real stream into this event.
+ * A verified termination event.
+ *
+ * The wait this comment used to describe is over: Fin reason/signature verification landed,
+ * and `TrueOpenClient.streamOutput` now ends its stream with a `fin` event carrying a
+ * `finish_reason` taken from a signature-verified `OutputFinV1`.
+ *
+ * Building this event from a real stream takes one step the stream does not do for you.
+ * `finalSeq` and `outputMmrRoot` are not on the `fin` event; take them from the **last
+ * chunk** -- its `seq` is the final sequence and its `mmrRoot` is the output MMR root.
+ * That substitution is safe rather than convenient: `streamOutput` refuses the Fin unless
+ * `final_seq` equals the last verified sequence and the Fin's root matches the locally
+ * computed one, so by the time you see the `fin` event those two facts have already been
+ * reconciled.
+ *
+ * What still cannot always be satisfied is `finishReason`, which is required here and
+ * optional there. Under the default `finSignaturePolicy: 'accept-unsigned'` the peer may
+ * send an unsigned Fin, and then there is no attested reason -- do not substitute one, as
+ * every candidate value reads as a claim about how generation ended.
  */
 export interface VerifiedOutputFinEvent {
   readonly type: 'fin';

@@ -63,6 +63,8 @@ function reqField(obj: Record<string, unknown>, key: string, path: string): unkn
   return v;
 }
 
+// String values are checked for type only; the canonical encoder is the final gate for
+// encodability (lone surrogates), so a value validation accepts can still be refused by `manifestHash`.
 function reqString(obj: Record<string, unknown>, key: string, path: string): string {
   const v = reqField(obj, key, path);
   if (typeof v !== 'string') {
@@ -286,7 +288,7 @@ function validateOutputDecoding(obj: Record<string, unknown>, path: string): voi
   let prev: number | null = null;
   for (let i = 0; i < eos.length; i += 1) {
     const id = eos[i];
-    if (typeof id !== 'number' || !Number.isInteger(id)) {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) {
       throw invalid('MANIFEST_VALIDATE_NOT_INTEGER', `${path}.eos_token_ids[${i}] must be an integer`);
     }
     if (prev !== null && id <= prev) {

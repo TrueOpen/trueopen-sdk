@@ -93,7 +93,7 @@ describe('validateManifestV4', () => {
   });
 
   it('rejects eos_token_ids that are empty, unsorted, or contain duplicates (S7.1 rule 2)', () => {
-    for (const bad of [[], [2, 1], [1, 1]]) {
+    for (const bad of [[], [2, 1], [1, 1], [2 ** 53]]) {
       const m = clone();
       (m['output_decoding'] as Record<string, unknown>)['eos_token_ids'] = bad;
       expect(() => validateManifestV4(m), JSON.stringify(bad)).toThrow(TrueOpenError);

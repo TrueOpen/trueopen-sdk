@@ -251,10 +251,10 @@ confirmAssistantMessage(
 ): ConfirmedAssistantMessage;
 
 export interface ToolCallParams {
-  /** Where the profile manifest comes from; the SDK re-derives its hash (S8). */
-  readonly manifestSource: ManifestSource;
+  /** The profile's on-chain `tool_call_parser` projection (ProfileInfo.toolCallParser). */
+  readonly toolCallParser: ParserRef;
   /** Defaults to the built-in registry. Injectable, which is what phase 1 uses. */
-  readonly parsers?: ToolCallRegistry;
+  readonly registry?: ToolCallRegistry;
 }
 ```
 
@@ -270,16 +270,17 @@ vectors.
 
 ### 5.1 Reporting "cannot parse here"
 
-Whether this SDK is entitled to parse at all (S6, rows 2-5) is decided by the manifest,
-which is known **before** any frame arrives. So it is not a stream event -- a stream
-event carrying "and here is the whole text" would contradict streaming, and the text is
-not available yet when the fact becomes known.
+Whether this SDK is entitled to parse at all (S6, rows 2-4) is decided by the profile's
+on-chain `tool_call_parser`, which is known **before** any frame arrives. So it is not a
+stream event -- a stream event carrying "and here is the whole text" would contradict
+streaming, and the text is not available yet when the fact becomes known.
 
-Instead it is resolved up front:
+Instead it is resolved up front, synchronously -- the parser is read straight off the chain
+projection, no document fetch or re-hash involved:
 
 ```ts
 /** Resolve once, before streaming. Callers can cache it per (model, profileVersion). */
-async resolveToolCalling(p: ToolCallParams): Promise<ToolCallSupport>;
+resolveToolCalling(p: { toolCallParser: ParserRef; registry: ToolCallRegistry }): ToolCallSupport;
 
 export type ToolCallSupport =
   | { readonly supported: true;  readonly parser: ToolCallParser }
@@ -288,7 +289,7 @@ export type ToolCallSupport =
 
 `streamAssistantMessage` calls it internally; when unsupported it degrades to emitting
 `content` events only, never synthesizing a tool call. An application that wants to fail
-loudly on `manifest-hash-mismatch` calls `resolveToolCalling` itself first.
+loudly calls `resolveToolCalling` itself first.
 
 ---
 
@@ -303,26 +304,21 @@ also what decides how each is reported:
 | `tool_calling = {}` (profile pins no parser) | before streaming | `resolveToolCalling` -> `parser-not-pinned` |
 | `(name, version)` unknown to this SDK build | before streaming | `resolveToolCalling` -> `parser-unknown` |
 | `(name, version)` implemented but not vector-verified | before streaming | `resolveToolCalling` -> `parser-unverified` |
-| Manifest cannot be retrieved | before streaming | `resolveToolCalling` -> `manifest-unavailable` |
-| Re-derived `manifest_hash` disagrees with chain | before streaming | `resolveToolCalling` -> `manifest-hash-mismatch` |
-| Manifest fails `validateManifestV4` (rule 11 / rule 10 / malformed) | before streaming | `resolveToolCalling` -> `manifest-invalid` |
 
 ```ts
 export type UnsupportedReason =
   | 'parser-not-pinned'
   | 'parser-unknown'
-  | 'parser-unverified'
-  | 'manifest-unavailable'
-  | 'manifest-hash-mismatch'
-  | 'manifest-invalid';
+  | 'parser-unverified';
 ```
 
 Row one is "the parse did not succeed" -- exactly what happens when calling an engine
-directly, so it is not an error and the text flows through unchanged. The other six are
-"this SDK is not entitled to parse", a different fact, and they are kept distinct because
-callers treat them differently: `manifest-hash-mismatch` means something is wrong and a
-deployment may want to refuse to start, while `parser-not-pinned` is an ordinary profile
-that simply does not offer tool calling.
+directly, so it is not an error and the text flows through unchanged. The other three are
+"this SDK is not entitled to parse", a different fact. The parser is read from the profile's
+on-chain `tool_call_parser` projection, which is authoritative, so there is no manifest
+fetch/hash/validate step that can fail here; full-document verification (artifacts,
+`output_decoding`, etc.) is a separate concern handled by `manifestHash` +
+`assertManifestMatchesChain`, not by tool-call resolution.
 
 **No path guesses a format**, and every path still hands the application the original
 text. Enabling tool calling can never lose data.
@@ -390,26 +386,29 @@ and one output can contain several.
 
 ---
 
-## 8. Manifest Verification
+## 8. Parser Resolution and Manifest Verification
 
-The chain holds only `manifest_hash` and a pointer, so the manifest must be fetched and
-re-derived rather than trusted:
+**Parser resolution is direct.** The profile's `tool_call_parser` (and `reasoning_parser`)
+is projected on chain (`ProfileState.tool_call_parser`, the V4 freeze), so the SDK reads it
+straight off the chain projection -- no document fetch or re-hash involved:
 
 ```text
-chain ProfileState -> manifest_hash            (the only trusted anchor)
+chain ProfileState -> tool_call_parser {name, version}   (authoritative)
         |
-fetch full manifest from pointer / indexer
-        |
-re-encode per S2.6 canonical rules            (field order, empty-value rules,
-        |                                      reject unknown fields -- rule 11)
-hash with domain TRUEOPEN_MODEL_MANIFEST_V4
-        |
-compare byte for byte with the chain's manifest_hash
-        |                                      mismatch -> unsupported, never a fallback guess
-validate output_decoding / tool_calling per S7
-        |
-read tool_calling.parser {name, version}
+        v
+registry.lookup({name, version}) -> parser | unsupported
 ```
+
+The zero value (`name === ''`) is the sole "no tool calling" encoding, mapped to
+`parser-not-pinned`.
+
+**Full-document verification is a separate concern.** The chain also holds `manifest_hash`
+over the *entire* manifest document (all 16 blocks: `artifacts`, `output_decoding`, etc.).
+Re-deriving that hash -- fetch the document, re-encode per S2.6, hash with
+`TRUEOPEN_MODEL_MANIFEST_V4`, compare byte-for-byte to the chain's `manifest_hash` -- is
+what `manifestHash` + `assertManifestMatchesChain` do, and it is needed only when the SDK
+must trust the document's *other* blocks, not for choosing the parser. That document fetch
+is the one still gated on a defined source (S9).
 
 **The SDK needs no tokenizer and knows nothing about EOS.** Committed output already had
 its trailing EOS stripped by the Worker per `output_decoding.strip_trailing_eos`. This is
@@ -484,7 +483,7 @@ Three things this plan does **not** resolve:
 |---|---|---|---|
 | **P1** | All of `src/toolcall/`: registry, state machine, event types. Parser supplied by explicit injection rather than read from a manifest. | nothing | **delivered** (`feat/toolcall-p1`) |
 | **P2** | `src/manifest/`: canonical encoding, hash, validation, types (`fetch.ts` not built -- no source) | (was `monorepo#29`, now resolved) | **delivered** (`feat/toolcall-p1`) |
-| **P3** | Wire them together: `manifestSource` drives the full verification chain; the three manifest `UnsupportedReason` values become reachable | (was P2) | **delivered** (`feat/toolcall-p1`) |
+| **P3** | Wire them together: `resolveToolCalling` reads the profile's on-chain `tool_call_parser` projection and resolves it through the registry | (was P2) | **delivered** (`feat/toolcall-p1`) |
 | **P4** | Provider layer (lives in `trueopen-proxy`, not the SDK): synthesize `id` per `tool_calling.call_id_format`, plus `type` / `index` / `finish_reason` / SSE | ADR's Provider boundary settling | waiting |
 
 **P1 shipped without any concrete parser.** Parser behaviour specs and their shared vectors

@@ -37,6 +37,7 @@ import {
   deriveAssistantStream,
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
+import { TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
 import { BUILTIN_TOOL_CALL_PARSERS, type ToolCallRegistry } from './toolcall/registry';
 import { resolveToolCalling, type ManifestSource } from './manifest-resolution';
 import type {
@@ -305,10 +306,16 @@ async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?
  */
 async function* contentOnly(
   source: AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'fin' }>,
+  trailingEosMarkers: readonly string[],
 ): AsyncIterable<AssistantStreamEvent> {
+  const stripper = new TrailingEosStripper(trailingEosMarkers);
   for await (const event of source) {
-    if (event.kind === 'chunk') yield { kind: 'content', text: event.text };
+    if (event.kind !== 'chunk') continue;
+    const safe = stripper.push(event.text);
+    if (safe !== '') yield { kind: 'content', text: safe };
   }
+  const tail = stripper.finish();
+  if (tail !== '') yield { kind: 'content', text: tail };
 }
 
 /**
@@ -857,7 +864,7 @@ export class TrueOpenClient {
       ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
     });
     if (!support.supported) {
-      yield* contentOnly(this.streamOutput(p));
+      yield* contentOnly(this.streamOutput(p), p.trailingEosMarkers ?? []);
       return;
     }
     yield* deriveAssistantStream(this.streamOutput(p), {
@@ -909,7 +916,7 @@ export class TrueOpenClient {
     });
     const got = await this.fetchTaskOutput(p);
     if (!support.supported) {
-      return { role: 'assistant', content: got.text, toolCalls: [] };
+      return { role: 'assistant', content: stripTrailingEos(got.text, p.trailingEosMarkers ?? []), toolCalls: [] };
     }
     return deriveAssistantMessage(got.text, {
       parser: support.parser,

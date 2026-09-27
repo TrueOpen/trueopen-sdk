@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createRouterTransport } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
-import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
+import { IngressAPI, TaskDataObjectReadinessV1 } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type {
   SubmitOrderRequest as GenSubmitOrderRequest,
   FetchOutputRefRequest,
@@ -12,7 +12,7 @@ import type {
   AckOutputRequest,
 } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
-import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { ethSecp256k1Address, privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
 import { TrueOpenClient } from '../../src/client';
 import { sha256 } from '../../src/codec/hash';
 import type { ChainClient } from '../../src/transport/chain-client';
@@ -730,6 +730,129 @@ describe('TrueOpenClient facade', () => {
       expect(events.map((e) => (e.kind === 'content' ? e.text : '')).join('')).toBe(
         'weather <tc>get_weather|{"city":"London"}</tc> done',
       );
+    });
+  });
+
+  describe('manifest-aware fetchAssistantMessage', () => {
+    // fetchTaskOutput's TaskDataObjectRef requires every Hash32 field to be canonical 64-hex.
+    const TASK_ID = '1'.repeat(64);
+
+    const parseCall = (inner: string) => {
+      const at = inner.indexOf('|');
+      return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+    };
+
+    // Same marker grammar in both directions, so the fetched full text and the parser agree.
+    const hermesParser: ToolCallParser = {
+      name: 'hermes',
+      version: 1,
+      createStreamState: () =>
+        createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall }),
+      parseComplete(text) {
+        const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall });
+        const events = [...state.push(text), ...state.finish()];
+        return {
+          role: 'assistant',
+          content: events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join(''),
+          toolCalls: events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call] : [])),
+        };
+      },
+    };
+
+    const registry = createToolCallRegistry([{ parser: hermesParser, conformance: 'vector-verified' }]);
+
+    const VECTOR = JSON.parse(readFileSync('test/fixtures/wire/model_manifest_v4.json', 'utf8')) as {
+      manifest: Record<string, unknown>;
+      vectors: { digest_hex: string }[];
+    };
+
+    const pinnedManifest = (): { manifest: Record<string, unknown>; hashHex: string } => {
+      const manifest: Record<string, unknown> = {
+        ...VECTOR.manifest,
+        tool_calling: { parser: { name: 'hermes', version: 1 }, call_id_format: 'OPENAI_CALL_PREFIX' },
+      };
+      return { manifest, hashHex: toHex(manifestHash(validateManifestV4(manifest))) };
+    };
+
+    // fetchTaskOutput needs getTaskDataMetadata + fetchTaskData on the transport; serve one object.
+    const fetchTransport = (text: string): Transport => {
+      const bytes = new TextEncoder().encode(text);
+      return createRouterTransport(({ service }) => {
+        service(IngressAPI, {
+          getTaskDataMetadata() {
+            return {
+              metadata: {
+                sizeBytes: BigInt(bytes.length),
+                mediaType: 'text/plain',
+                readiness: TaskDataObjectReadinessV1.READY,
+                chunkLengths: [bytes.length],
+                outputLeafCount: 1n,
+              },
+            };
+          },
+          async *fetchTaskData() {
+            yield { frame: { case: 'header' as const, value: { totalSizeBytes: BigInt(bytes.length), mediaType: 'text/plain' } } };
+            yield { frame: { case: 'chunk' as const, value: { offset: 0n, data: bytes, eof: true } } };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+      });
+    };
+
+    const outputHashFor = (text: string): string =>
+      toHex(mmrPrefixRoot(OUTPUT_MMR_DOMAIN, [new TextEncoder().encode(text)], 1));
+
+    const makeFetchClient = (transport: Transport): TrueOpenClient =>
+      new TrueOpenClient({
+        chainId: 'trueopen-devnet-1',
+        userAddress: 'trueopen1u',
+        signerPubKey: pub,
+        signer,
+        orderSigner: privKeyEip712Signer(PRIV),
+        evmChainId: 424242n,
+        chain: fakeChain(),
+        ingressTransport: transport,
+        nonce: () => new Uint8Array([1, 2, 3]),
+        expiry: () => 1893456000000n,
+      });
+
+    it('degrades to the fetched text with no tool calls when the manifest source rejects', async () => {
+      const text = '<tc>get_weather|{"city":"London"}</tc> done';
+      const client = makeFetchClient(fetchTransport(text));
+      const result = await client.fetchAssistantMessage({
+        sessionId: SESSION,
+        taskId: TASK_ID,
+        taskHash: TASK_HASH,
+        outputHash: outputHashFor(text),
+        builderAddress: 'trueopen1builder',
+        expiresAtHeight: 1000n,
+        manifestSource: async () => {
+          throw new Error('unavailable');
+        },
+        registry,
+      });
+      expect(result).toEqual({ role: 'assistant', content: text, toolCalls: [] });
+    });
+
+    it('parses the fetched text when the manifest pins a vector-verified parser', async () => {
+      const text = '<tc>get_weather|{"city":"London"}</tc> done';
+      const { manifest, hashHex } = pinnedManifest();
+      const client = makeFetchClient(fetchTransport(text));
+      const result = await client.fetchAssistantMessage({
+        sessionId: SESSION,
+        taskId: TASK_ID,
+        taskHash: TASK_HASH,
+        outputHash: outputHashFor(text),
+        builderAddress: 'trueopen1builder',
+        expiresAtHeight: 1000n,
+        manifestSource: async () => ({ manifest, manifestHashHex: hashHex }),
+        registry,
+      });
+      expect(result).toEqual({
+        role: 'assistant',
+        content: ' done',
+        toolCalls: [{ name: 'get_weather', arguments: '{"city":"London"}' }],
+      });
     });
   });
 });

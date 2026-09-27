@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compareUtf8 } from '../../src/manifest/canonical';
+import { TrueOpenError } from '../../src/errors/errors';
 
 describe('compareUtf8', () => {
   it('orders ASCII the same way the default comparison does', () => {
@@ -33,5 +34,20 @@ describe('compareUtf8', () => {
     for (let i = 0; i + 1 < sorted.length; i += 1) {
       expect(compareUtf8(sorted[i]!, sorted[i + 1]!)).toBeLessThanOrEqual(0);
     }
+  });
+
+  it('rejects a lone surrogate rather than calling two distinct strings equal', () => {
+    // TextEncoder maps every unpaired surrogate to U+FFFD, so '\uD800' and '\uD801' would
+    // otherwise encode identically and compare equal despite being different strings. A
+    // comparator that returns 0 for distinct keys makes the sort fall back to insertion
+    // order, which would make the "canonical" bytes depend on the parser. Reachable: JSON
+    // can carry such a key via \ud800 escapes.
+    expect(() => compareUtf8('\uD800', '\uD801')).toThrow(TrueOpenError);
+    expect(() => compareUtf8('a', '\uDC00')).toThrow(TrueOpenError);
+  });
+
+  it('accepts a well-formed surrogate pair, which does have a UTF-8 encoding', () => {
+    expect(() => compareUtf8('\u{10000}', 'a')).not.toThrow();
+    expect(compareUtf8('\u{10000}', 'a')).toBeGreaterThan(0);
   });
 });

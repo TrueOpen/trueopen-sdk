@@ -95,9 +95,7 @@ export { settlementFinalityToChainView } from './state/finality-map';
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
 
-export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
-
-// ---- Frozen TaskOrderV3 / SignedOrderV2 (wire v0.4.1) ----
+// ---- Frozen TaskOrderV3 / SignedOrderV2 (wire v0.3.0) ----
 export {
   taskOrderHash,
   taskOrderHashHex,
@@ -161,7 +159,7 @@ export {
   userChallengeSigningBytes,
 } from './order/order-signing';
 
-// ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme from wire v0.4.1) ----
+// ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme from wire v0.3.0) ----
 export {
   eip712EncodeType,
   eip712TypeHash,

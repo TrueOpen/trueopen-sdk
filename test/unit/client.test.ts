@@ -215,10 +215,10 @@ describe('TrueOpenClient facade', () => {
     expect(cap.ack?.lastSeq).toBe(2n);
   });
 
-  // ---- wire v0.4.3 (wire#35): Fin carries finish_reason + worker_signature ----
+  // ---- wire v0.3.0 (wire#35): Fin carries finish_reason + worker_signature ----
   //
   // The key requirement here is that "the upgrade must not brick the SDK against the live
-  // network": v0.4.3 only adds fields, and before nexus#99 ships, the live chain still sends an
+  // network": v0.3.0 only adds fields, and before nexus#99 ships, the live chain still sends an
   // unsigned Fin, so the default policy must allow it through; but once a Fin does carry a
   // signature, a bad signature must never be accepted under any policy.
 

@@ -17,7 +17,7 @@ import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricin
  * Keeper's validation rules for each field (node x/task/keeper/
  * task_builder_selection_runtime.go:51-71, msg_server_worker_handraises.go:486-502):
  *
- *  - builder_set_id is the identifier of that set on chain (as of v0.4.1 it looks like
+ *  - builder_set_id is the identifier of that set on chain (as of v0.3.0 it looks like
  *    "genesis-1", no longer a decimal term); builder_set_hash must equal that set
  *    snapshot's hash.
  *  - session_anchor_height must not be earlier than that set's effective_height.

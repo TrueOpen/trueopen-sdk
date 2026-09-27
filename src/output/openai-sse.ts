@@ -11,7 +11,7 @@ export interface VerifiedOutputChunkEvent {
 }
 
 /**
- * A verified termination event. The current SDK cannot yet produce it from Wire v0.4.1:
+ * A verified termination event. The current SDK cannot yet produce it from Wire v0.3.0:
  * callers must wait until Wire #35's Fin reason/signature verification lands before
  * converting a real stream into this event.
  */

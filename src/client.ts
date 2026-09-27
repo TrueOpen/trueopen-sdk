@@ -191,10 +191,10 @@ export interface StreamOutputParams {
    *
    * - `'require'`: Fin must carry a valid `finish_reason` and a verifiable `worker_signature`,
    *   otherwise an error is thrown. **This is the protocol's target state**, but it requires the
-   *   peer to already produce a signed Fin per wire v0.4.3.
+   *   peer to already produce a signed Fin per wire v0.3.0.
    * - `'accept-unsigned'` (default): if Fin carries a signature it is verified; if not, it is let through.
    *
-   * Why the default isn't `'require'`: wire v0.4.3 only **adds fields** -- an old Fin decodes with
+   * Why the default isn't `'require'`: wire v0.3.0 only **adds fields** -- an old Fin decodes with
    * `finish_reason=0` and an empty `worker_signature`. Before nexus forwards signed Fins (nexus#99)
    * goes live, every live chain sends old-style Fins -- defaulting to fail-closed would make the SDK
    * immediately unusable against the whole network. The wire CHANGELOG also requires an explicit
@@ -283,7 +283,7 @@ export class TrueOpenClient {
     if (cfg.addressPrefix !== undefined) {
       const addr = cfg.sdkSignerAddress ?? cfg.userAddress;
       const pk = cfg.sdkSignerPubKey ?? cfg.signerPubKey;
-      // As of v0.4.1 accounts are EVM-style (keccak(uncompressed XY)[12:32]), no longer ripemd160.
+      // As of v0.3.0 accounts are EVM-style (keccak(uncompressed XY)[12:32]), no longer ripemd160.
       if (!ethSecp256k1AddressMatches(addr, pk, cfg.addressPrefix)) {
         throw new TrueOpenError(
           'SDK_LOCAL',
@@ -694,7 +694,7 @@ export class TrueOpenClient {
             if (!verifier.matchesReceipt(f.outputMmrRoot)) {
               throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `fin root does not match the locally computed root for task ${p.taskId}`);
             }
-            // As of wire v0.4.3 (wire#35), Fin carries finish_reason + worker_signature.
+            // As of wire v0.3.0 (wire#35), Fin carries finish_reason + worker_signature.
             // If present it must verify; if absent, finSignaturePolicy decides whether to accept or reject.
             const policy = p.finSignaturePolicy ?? 'accept-unsigned';
             const signed = f.workerSignature.length > 0;

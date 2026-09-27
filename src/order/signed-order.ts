@@ -177,7 +177,7 @@ export interface EncodedSignedOrder {
 /**
  * Sign an order and encode it into a frozen SignedOrderV2.
  *
- * As of v0.4.1, users **no longer sign the raw task_hash directly**: they sign the
+ * As of v0.3.0, users **no longer sign the raw task_hash directly**: they sign the
  * digest of the EIP-712 "TrueOpen Task Order" v2 domain, with task_hash embedded as one
  * of its bytes32 fields. The signature shape changes accordingly, from a 64-byte R||S to
  * a **65-byte R||S||V** (V in {27,28}, low-S); the chain recovers the address from the
@@ -233,7 +233,7 @@ export function encodeSignedOrder(order: TaskOrderV3, userSignature: Uint8Array)
  * nexus re-decodes with DiscardUnknown and compares with proto.Equal, rejecting outright
  * any payload carrying unknown fields, so the SDK's generated types must share their
  * source of truth with the on-chain contract - which is why they're generated directly
- * from TrueOpen/wire (third_party/wire, v0.4.1) rather than hand-copied as a subset.
+ * from TrueOpen/wire (third_party/wire, v0.3.0) rather than hand-copied as a subset.
  */
 export function decodeSignedOrder(bytes: Uint8Array): ProtoSignedOrderV2 {
   return fromBinary(SignedOrderV2Schema, bytes);

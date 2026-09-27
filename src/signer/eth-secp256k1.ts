@@ -6,7 +6,7 @@ import { TrueOpenError } from '../errors/errors';
 
 /**
  * EVM-style secp256k1 identity (on-chain accounts switched to this scheme as
- * of wire v0.4.1).
+ * of wire v0.3.0).
  *
  * This is **a different address scheme** from the Cosmos style in
  * signer/secp256k1.ts -- the same private key produces different results:

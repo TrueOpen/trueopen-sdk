@@ -158,7 +158,7 @@ export interface TaskOrderV3 {
  * docs/10-Protocol-Spec/04-Task/08-TaskOrder-Hash-and-Signature.md Section 8.3 (core /
  * decoding-params lower bound / the four Amount fields at their u64 upper bound), which
  * are checked together with the preimage length and five key intermediate frames in
- * test/unit/task-order-contract-vectors.test.ts. wire v0.4.1 hasn't turned this into a
+ * test/unit/task-order-contract-vectors.test.ts. wire v0.3.0 hasn't turned this into a
  * testdata fixture yet (wire#24), but the published values are themselves authoritative
  * - node / cortex / nexus / SDK all match against the same values. This implementation
  * matches nexus internal/nodecontract/taskorder.go's canonicalTaskOrderFieldsV2

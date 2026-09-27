@@ -6,7 +6,7 @@ import { concatBytes, fromHex, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
- * Authentication for the nexus task data plane (wire v0.4.1, Interfaces and
+ * Authentication for the nexus task data plane (wire v0.3.0, Interfaces and
  * Topics manifest §4.2.1).
  *
  * Everything changed relative to v0.1.2: SignedTaskDataRangeV1 was removed,
@@ -32,11 +32,11 @@ const HASH32 = 32;
 
 /** Five body domains, each bound to one RPC. The SDK, acting as a User, only ever uses the last two. */
 export const TASK_DATA_BODY_DOMAIN = {
-  UPLOAD: 'TRUEOPEN_TASK_DATA_UPLOAD_BODY_V1',
-  FINALIZE_RESULT: 'TRUEOPEN_TASK_DATA_FINALIZE_RESULT_BODY_V1',
-  FINALIZE_VERIFIER: 'TRUEOPEN_TASK_DATA_FINALIZE_VERIFIER_BODY_V1',
-  METADATA: 'TRUEOPEN_TASK_DATA_METADATA_BODY_V1',
-  FETCH: 'TRUEOPEN_TASK_DATA_FETCH_BODY_V1',
+  UPLOAD: 'TRUEOPEN_TASK_DATA_UPLOAD_BODY_V2',
+  FINALIZE_RESULT: 'TRUEOPEN_TASK_DATA_FINALIZE_RESULT_BODY_V2',
+  FINALIZE_VERIFIER: 'TRUEOPEN_TASK_DATA_FINALIZE_VERIFIER_BODY_V2',
+  METADATA: 'TRUEOPEN_TASK_DATA_METADATA_BODY_V2',
+  FETCH: 'TRUEOPEN_TASK_DATA_FETCH_BODY_V2',
 } as const;
 
 /** The outer signature domain for the CORTEX_SERVICE branch; the USER branch doesn't use it (it uses EIP-712 instead). */
@@ -109,9 +109,11 @@ export interface TaskDataObjectRef {
   readonly verifyRound?: number;
   /** Must be absent for non-evidence objects, not an empty string -- an empty string is the present form and produces a different preimage. */
   readonly producerOperator?: string;
+  /** task.v1.EvidenceKind; EVIDENCE_KIND_UNSPECIFIED (0) for non-evidence objects. */
+  readonly evidenceKind?: number;
 }
 
-/** The nested eight-field frame of the canonical TaskDataObjectRefV1. */
+/** The nested nine-field frame of the canonical TaskDataObjectRefV1. */
 export function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array {
   return canonicalFrameBytes(
     hash32('task_hash', ref.taskHash),
@@ -122,6 +124,7 @@ export function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array {
     enumBE(ref.evidenceProducerKind ?? EVIDENCE_PRODUCER_KIND.UNSPECIFIED),
     uint32BE(ref.verifyRound ?? 0),
     optionalField(ref.producerOperator === undefined ? undefined : enc.encode(ref.producerOperator)),
+    enumBE(ref.evidenceKind ?? 0),
   );
 }
 

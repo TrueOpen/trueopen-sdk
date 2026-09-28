@@ -39,7 +39,7 @@
  *   --rest <url>          REST endpoint (default http://<rest-host>:1317)
  *   --rpc <url>           RPC endpoint (default http://<rpc-host>:26657)
  *   --chain-id <id>       chain id (default: read automatically from node_info)
- *   --model-id <id>       target model (default: devnet seed model)
+ *   --model-id <id>       target model (default: the first ACTIVE model on chain)
  *   --session <id>        reuse an existing session (skip on-chain creation)
  *   --seq <n>             order_sequence (default: read from on-chain StreamState;
  *                         pass this explicitly only to rebroadcast via RBF)
@@ -107,8 +107,23 @@ const has = (name) => argv.includes(name);
 const REST = flag('--rest', process.env.TRUEOPEN_REST || 'http://<rest-host>:1317');
 const RPC = flag('--rpc', process.env.TRUEOPEN_RPC || 'http://<rpc-host>:26657');
 const PREFIX = 'trueopen';
-const MODEL_ID = flag('--model-id', process.env.TRUEOPEN_MODEL_ID
-  || 'hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b');
+// No hardcoded seed model: a slug that predates the Hash32 model_id would be rejected by
+// the SDK, and any hardcoded id goes stale the moment a devnet resets. When no --model-id
+// is given, discover the first ACTIVE model on chain instead. (restGet is a hoisted
+// function declaration, so it is callable here before its definition below.)
+const MODEL_ID = await (async () => {
+  const explicit = flag('--model-id', process.env.TRUEOPEN_MODEL_ID);
+  if (explicit) return explicit;
+  const res = await restGet(`${REST}/TrueOpen/hub/v1/models`);
+  const models = Array.isArray(res.body?.models) ? res.body.models : [];
+  if (models.length === 0) {
+    console.error(`No model is registered on ${CHAIN_ID}; pass --model-id explicitly`);
+    process.exit(2);
+  }
+  const active = models.find((m) => m.status === 'MODEL_PROFILE_STATUS_ACTIVE') ?? models[0];
+  console.error(`model id = ${active.model_id} (first active model on chain)`);
+  return active.model_id;
+})();
 const REUSE_SESSION = flag('--session', undefined);
 const SEQ_OVERRIDE = flag('--seq', undefined);
 const POLL_TIMES = Number(flag('--poll', '18'));
@@ -234,6 +249,14 @@ if (!activeModel) { console.error(`Model lookup returned 200 without a model fie
 // tls_pubkey_hash registered on chain -- https is never downgraded to http. Plaintext
 // grpc:// / http:// endpoints (a localnet) need TRUEOPEN_ALLOW_INSECURE_HTTP=1.
 const nexusTransport = (url, tlsPubkeyHash = '') => nexusIngressTransport(url, tlsPubkeyHash);
+// Default ingress transport for a client that must never call nexus directly: openTask
+// routes through ingressTransportFactory, and streamOutput / fetchTaskOutput discover their
+// own per-Builder endpoints. Eagerly building a plaintext `http://nexus.unused.invalid`
+// transport used to be harmless, but the SDK now refuses plaintext endpoints outright.
+const noDefaultNexus = {
+  unary: () => Promise.reject(new Error('this client has no default nexus endpoint; a per-Builder endpoint should have been resolved')),
+  stream: () => Promise.reject(new Error('this client has no default nexus endpoint; a per-Builder endpoint should have been resolved')),
+};
 const hub = new HubReader({ baseUrl: REST, fetch: (u) => fetch(u) });
 // On-chain params.phase0.evm_chain_id feeds the EIP-712 domain separator; --evm-chain-id
 // only overrides it.
@@ -258,7 +281,7 @@ const conn = await connectTrueOpenChainClient({
 const client = new TrueOpenClient({
   chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
   evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM,
-  chain: conn.client, ingressTransport: nexusTransport('http://nexus.unused.invalid'),
+  chain: conn.client, ingressTransport: noDefaultNexus,
   hub, ingressTransportFactory: nexusTransport,
 });
 
@@ -370,6 +393,7 @@ let routed = await resolveTaskBuilderEndpoints(hub, {
   chainId: CHAIN_ID, taskId,
   builderSetHash: ctx.builderSetHash,
   sessionAnchorBlockHash: ctx.sessionAnchorBlockHash,
+  sessionAnchorHeight: ctx.sessionAnchorHeight,
 });
 
 // Manual override: the on-chain descriptor can be wrong (observed after a devnet reset:

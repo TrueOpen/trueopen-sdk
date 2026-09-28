@@ -50,6 +50,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The examples import dist, so they are checked against the emitted .d.ts.
+      - name: Typecheck examples
+        run: npm run typecheck:examples
+
   # Separate from the matrix: this checks the generator against the submodule,
   # which has nothing to do with the Node version, and it reaches buf.build for
   # the cosmos modules -- keeping it apart means a registry outage reads as a

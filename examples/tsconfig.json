@@ -1,0 +1,16 @@
+{
+  // Type-checks the examples against the built SDK (dist/*.d.ts): run `npm run build` first,
+  // then `npm run typecheck:examples`. It catches examples drifting from the real API.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["*.mjs"]
+}

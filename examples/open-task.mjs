@@ -1,114 +1,89 @@
 // OpenTask example: read the on-chain context, assemble the frozen TaskOrderV3, sign it in three
-// layers, pick the Task Builders and submit the order as a stream.
+// layers, pick the Task Builders by task_builder_seed and submit to each of them.
 //
-// The contract replaced the deprecated SubmitOrder entry point with OpenTask, and the order body
-// with the frozen SignedOrderV2. Three things differ from the older example:
-//   1. An orderSigner is required: the inner SignedOrderV2.user_signature is a 65-byte
-//      recoverable signature over the EIP-712 "TrueOpen Task Order" v3 digest, so an ordinary
-//      signer that hashes with sha256 first does not work;
-//   2. A hub and an ingressTransportFactory are required: the anchor signed into the order fixes
-//      the Task Builders, so the SDK reads the on-chain context and picks endpoints by
-//      task_builder_seed;
-//   3. The order no longer carries reward_bucket / profile_resource_tier / order_value /
-//      infer_timeout_blocks: the Keeper derives them, and sending them gets the order rejected.
+// What the SDK reads from chain rather than taking on trust: the EVM chain ID and the fee denom
+// (params.phase0), the anchor, Builder set and timeout bucket, the generation limits, the profile
+// pricing (an order the chain would reject is refused before signing), and the next order
+// sequence (0 for a new session).
 //
 // Run:
-//   TRUEOPEN_RPC_URL=... TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 \
-//   TRUEOPEN_MNEMONIC="..." TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_ORDER_SEQUENCE=1 \
+//   TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..." \
+//   TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_MODEL_ID=<64-hex model id> \
+//   TRUEOPEN_ALLOW_INSECURE_HTTP=1 \      # localnet only: its nexus endpoints are plain http
 //   node examples/open-task.mjs
 //
-// Without TRUEOPEN_SESSION_ID the example first creates a new session on chain, which spends gas.
-import {
-  TrueOpenClient, HubReader, connectTrueOpenChainClient,
-  privKeySecp256k1DigestSigner, defaultGenerationParams,
-  TASK_TYPE, DEADLINE_LATENCY_CLASS,
-} from '../dist/index.js';
-import { DirectSecp256k1HdWallet } from '@cosmjs/proto-signing';
-import { GasPrice } from '@cosmjs/stargate';
-import { deriveIdentity, nexusTransport, fetchLike, env, show } from './_shared.mjs';
+// Without TRUEOPEN_SESSION_ID the example first creates a session on chain, which needs
+// TRUEOPEN_RPC_URL and spends gas.
+import { readFileSync } from 'node:fs';
+import { defaultGenerationParams, TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../dist/index.js';
+import { setup, env, show } from './_shared.mjs';
 
-const prefix = env('TRUEOPEN_ADDR_PREFIX', 'trueopen');
-const mnemonic = env('TRUEOPEN_MNEMONIC');
-const restUrl = env('TRUEOPEN_REST_URL');
-const id = await deriveIdentity(mnemonic, prefix);
+const needsSession = process.env.TRUEOPEN_SESSION_ID === undefined || process.env.TRUEOPEN_SESSION_ID === '';
+const { id, hub, client, businessDenom, disconnect } = await setup({ write: needsSession });
 
-const wallet = await DirectSecp256k1HdWallet.fromMnemonic(mnemonic, { prefix });
-const [account] = await wallet.getAccounts();
-const { client: chain, signingClient } = await connectTrueOpenChainClient({
-  rpcUrl: env('TRUEOPEN_RPC_URL'), restUrl,
-  signer: wallet, signerAddress: account.address, fee: 'auto',
-  gasPrice: GasPrice.fromString(env('TRUEOPEN_GAS_PRICE', '0.025utrueopen')),
-});
-
-const hub = new HubReader({ baseUrl: restUrl, fetch: fetchLike });
-
-const client = new TrueOpenClient({
-  chainId: env('TRUEOPEN_CHAIN_ID', 'trueopen-localnet-1'),
-  userAddress: id.address, signerPubKey: id.pubKey, signer: id.signer,
-  // The inner order signature must sign the digest directly; see the note at the top of this file.
-  orderSigner: privKeySecp256k1DigestSigner(id.privkey),
-  chain,
-  ingressTransport: nexusTransport('http://nexus.unused.invalid'), // the factory provides the transport actually used
-  hub,
-  ingressTransportFactory: nexusTransport, // grpc:// is normalised to http(s) internally
-  addressPrefix: prefix, // checks signer_address against the public key at construction time, so nexus does not reject the signature
-});
-
-// The V1 data plane sends the input in the clear: the SDK derives input_hash / input_size_bytes / payload_ref from the payload.
-const { readFileSync } = await import('node:fs');
 const payloadFile = process.env.TRUEOPEN_PAYLOAD_FILE;
+// The V1 data plane sends the input in the clear; the SDK derives input_hash / size from it.
+// nexus dedupes inputs by content, so add a timestamp to the default one.
 const payload = payloadFile
   ? new Uint8Array(readFileSync(payloadFile))
-  : new TextEncoder().encode('trueopen-placeholder-input');
+  : new TextEncoder().encode(`trueopen example input ${new Date().toISOString()}`);
 
 try {
-  console.log('user/signer address:', id.address);
-  console.log('Once the order is accepted, a Task Builder may submit Assign on chain, which locks funds up to max_fee.');
-
-  const sessionId = process.env.TRUEOPEN_SESSION_ID
-    ?? (await client.createSession('example-open-task')).sessionId;
-  console.log('session:', sessionId);
+  console.log('user address:', id.address, '| fee denom (chain):', businessDenom);
+  const sessionId = needsSession ? (await client.createSession('example-open-task')).sessionId : env('TRUEOPEN_SESSION_ID');
+  // The chain is the only source of the next sequence; a new session starts at 0.
+  const orderSequence = process.env.TRUEOPEN_ORDER_SEQUENCE !== undefined
+    ? BigInt(process.env.TRUEOPEN_ORDER_SEQUENCE)
+    : await client.nextOrderSequence(sessionId);
+  const height = await hub.getLatestHeight();
 
   const res = await client.openTask({
     sessionId,
-    orderSequence: BigInt(env('TRUEOPEN_ORDER_SEQUENCE', '1')),
-    // Idempotency key: it must stay the same across retries; the same key with a different input_hash is rejected.
-    idempotencyKey: `${sessionId}:${env('TRUEOPEN_ORDER_SEQUENCE', '1')}`,
+    orderSequence,
+    // Must stay the same when retrying this order.
+    idempotencyKey: `${sessionId}:${orderSequence}`,
     order: {
-      modelId: env('TRUEOPEN_MODEL_ID', 'hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b'),
-      profileVersion: 1,
+      modelId: env('TRUEOPEN_MODEL_ID'), // raw Hash32, lowercase 64-hex
+      profileVersion: Number(env('TRUEOPEN_PROFILE_VERSION', '1')),
       taskType: TASK_TYPE.TEXT_GENERATION,
       payload,
       inputBucket: 1,
       outputBudgetBucket: 1,
-      // Generation params enter task_hash, so every field must be given explicitly with no implicit defaults.
-      generationParams: defaultGenerationParams(128n, 60_000n),
-      // Fees are Amounts: the preimage takes the atomic units as decimal text, not as a number.
+      // Enters task_hash: max output tokens and max duration are explicit, no hidden defaults.
+      generationParams: defaultGenerationParams(256n, 60_000n),
+      // Amounts are decimal atomic units. price_bid is per million output tokens:
+      // order_value = floor(256 x 100000 / 1e6) = 25, plus the verifier share.
       amounts: {
-        inferInputUnitPriceBid: { atomicUnits: '10' },
-        inferOutputUnitPriceBid: { atomicUnits: '10' },
-        verifyUnitPriceBid: { atomicUnits: '10' },
-        inferFeeCap: { atomicUnits: '600000' },
-        verifyFeeCap: { atomicUnits: '300000' },
-        maxFee: { atomicUnits: '1000000' },
-        assignmentPriorityFee: { atomicUnits: '0' },
+        priceBid: { atomicUnits: env('TRUEOPEN_PRICE_BID', '100000') },
+        maxFee: { atomicUnits: env('TRUEOPEN_MAX_FEE', '1000') }, // covers order_value + txFeeReserve
+        assignmentPriorityFee: { atomicUnits: '0' }, // must be 0
         txFeeReserve: { atomicUnits: '0' },
       },
-      // The caller decides the height window; this example uses the current height plus 50000 blocks.
-      earliestSubmitHeight: (await hub.getLatestHeight()),
-      orderExpireHeight: (await hub.getLatestHeight()) + 50_000n,
+      earliestSubmitHeight: height,
+      orderExpireHeight: height + 50_000n,
       latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
     },
   });
 
-  show('openTask ACK', {
-    accepted: res.accepted, taskId: res.taskId, taskHash: res.taskHash,
-    endpointsTried: res.endpointsTried, reason: res.reason,
+  show('openTask', {
+    accepted: res.accepted,
+    taskId: res.taskId,
+    taskHash: res.taskHash,
+    orderSequence,
+    feeDenom: res.feeDenom,
+    // Every selected Builder: fetch-output asks these for the output.
+    builders: res.builders.map((b) => ({
+      address: b.address,
+      endpoint: b.serviceEndpoint,
+      accepted: b.ack?.accepted ?? false,
+      error: b.error === undefined ? undefined : b.error instanceof Error ? b.error.message : String(b.error),
+    })),
   });
-  // An ingress ack only means local acceptance; whether the task reached the chain shows up when taskStatus leaves PENDING.
-  show('chain context (signed into the order)', res.context);
+  // An ack is local acceptance only; the chain decides whether the task exists.
+  console.log(`\nexport TRUEOPEN_SESSION_ID=${sessionId} TRUEOPEN_TASK_ID=${res.taskId}`);
 } catch (e) {
-  console.log('\nopenTask failed:', e?.code ?? '', '|', e?.rawMessage ?? e?.message ?? String(e));
+  console.log('\nopenTask failed:', e?.code ?? '', '|', e?.message ?? String(e));
+  process.exitCode = 1;
 } finally {
-  signingClient.disconnect();
+  disconnect();
 }

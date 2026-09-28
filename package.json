@@ -31,6 +31,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "typecheck:examples": "tsc -p examples/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "generate": "buf generate",

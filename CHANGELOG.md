@@ -29,6 +29,12 @@
 
 ### Changed
 
+- The examples and the README quick start are rewritten against the current facade:
+  `create-session`, `open-task` and `fetch-output` read the EVM chain ID and fee denom from chain,
+  start at order sequence 0, use the current amount fields, fetch output through the chain trust
+  anchors, and use the insecure-http opt-in only for localnet. `examples/_shared.mjs` no longer
+  downgrades https to http. `npm run typecheck:examples` checks the examples against the built
+  types, and CI runs it.
 - **Breaking:** errors are classified. `TrueOpenError` gains `category`, `switchSource` and
   `details`. `dataError` is no longer retriable: a hash mismatch, a bad chunk or Fin signature, a
   forbidden attachment or a bad range sets `switchSource` instead. `IngressClient` (including

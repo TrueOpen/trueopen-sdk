@@ -6,8 +6,7 @@ import {
   connectTrueOpenChainClient,
   ethSecp256k1SignerFromMnemonic,
   nexusIngressTransport,
-  privKeySecp256k1Signer,
-  privKeyEip712Signer,
+  privateKeyTypedDataSigner,
   secp256k1PublicKey,
   ethSecp256k1Address,
   TrueOpenError,
@@ -51,10 +50,10 @@ export async function deriveIdentity(mnemonic, prefix) {
     privkey,
     pubKey,
     address: ethSecp256k1Address(pubKey, prefix),
-    // Request envelopes: sha256 then secp256k1, 64 bytes.
-    signer: privKeySecp256k1Signer(privkey),
-    // The order and the task-data requests: an EIP-712 digest, 65-byte R||S||V.
-    orderSigner: privKeyEip712Signer(privkey),
+    // Every user signature (order, request envelopes, task-data requests, session grants) is
+    // EIP-712 typed data, 65-byte R||S||V. In a browser, use eip1193TypedDataSigner or
+    // keplrTypedDataSigner instead of holding the key.
+    wallet: privateKeyTypedDataSigner(privkey),
   };
 }
 
@@ -128,9 +127,7 @@ export async function setup(opts = {}) {
     new TrueOpenClient({
       chainId: env('TRUEOPEN_CHAIN_ID'),
       userAddress: id.address,
-      signerPubKey: id.pubKey,
-      signer: id.signer,
-      orderSigner: id.orderSigner,
+      wallet: id.wallet,
       evmChainId,
       // No feeDenom: openTask signs the chain business_denom read through the hub.
       chain,
@@ -138,7 +135,6 @@ export async function setup(opts = {}) {
       hub,
       taskReader,
       ingressTransportFactory: nexusTransport,
-      addressPrefix: prefix,
     });
   // openTask routes by itself (ingressTransportFactory) and per-Builder calls go through
   // clientFor, so this client has no default nexus. A placeholder that fails if it is ever used,

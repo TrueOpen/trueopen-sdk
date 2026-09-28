@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+### Breaking: EIP-712 request signing and session grants (wire v0.4.0)
+
+Requests to Builder Ingress and USER Task data requests are signed as EIP-712 typed data that
+a browser wallet can sign, following wire `ea2f230` (the untagged v0.4.0 revision, see the
+submodule note below). A Builder on the previous rules rejects this SDK, and the other way
+round.
+
+- **Breaking:** `TrueOpenClientConfig.wallet` (a `TypedDataSigner`) signs everything the user
+  signs: the order, the request envelopes and the Task data requests. It replaces `signer`,
+  `signerPubKey`, `orderSigner`, the separate `sdkSigner` / `sdkSignerPubKey` /
+  `sdkSignerAddress` identity, and `addressPrefix`. Every signature is recovered and checked
+  against `userAddress` before it is sent (`SDK_LOCAL_SIGNER_ADDRESS_MISMATCH`).
+  `BuildOpenTaskInput` takes `wallet` in place of `orderSigner`, `signer` and `signerPubKey`.
+- **Breaking:** `SDKRequestEnvelopeV2`. `request_domain` is `TRUEOPEN_SDK_REQUEST_V2`; the
+  signature is 65 bytes over the EIP-712 `SDKRequest` ("TrueOpen SDK Request" v1, chainId =
+  `evm_chain_id`); `method` is the bare name and `endpoint` `/nexus.v1.IngressAPI/<Method>`;
+  `session_id` / `task_id` must be 64-character lowercase hex. `signer_pubkey` is no longer
+  sent. Only OpenTask may use a chain-height expiry; every other request uses Unix
+  milliseconds.
+- **Breaking:** request bodies use the five registered `TRUEOPEN_SDK_BODY_*_V1` domains. The
+  OpenTask body is `task_hash, session_id, order_sequence, user_address, input_size_bytes,
+  input_hash, input_media_type, idempotency_key`; `payload_ref` is not signed but is still
+  `nexus://sha256/<input_hash>`. SubscribeOutput signs `resume_after_seq` by presence and
+  AckOutput signs `last_seq` (no longer `output_id`). `getTaskEventsBodyDigest` refuses a
+  non-canonical `from_cursor`; `prepareChallengeBodyDigest` refuses a `local_evidence_digest`
+  that is neither empty nor 32 bytes.
+- **Breaking:** OpenTask has no outer order signature: `OpenTaskHeader.signature` and
+  `signature_scheme` are sent empty, and `OpenTaskInput.signature` / `signatureScheme` are
+  gone. The order is authorized by its EIP-712 signature alone; the user's account must hold
+  its public key on chain (MsgCreateSession) before the first order. `buildOpenTaskRequest`
+  refuses a `taskId` not derived from the order's session and sequence.
+- **Breaking:** the USER Task data request signs "TrueOpen Task Data Request" **version 2**,
+  whose struct ends with `sessionGrantHash`. Version 1 signatures are no longer accepted.
+- **Breaking:** the request nonce is 32 CSPRNG bytes (was 16), and a configured `nonce()` must
+  return exactly 32 bytes.
+- **Breaking, removed:** `frame4`, `i64be`, `u64be`, `sdkRequestSignBytes`, `bodyDigest`,
+  `SdkRequestEnvelopeFields` (now `SdkRequestFields`), `orderEnvelopeSigningBytes`,
+  `SIGN_DOMAINS.order`, `OPEN_TASK_HEADER_SIGNATURE_SCHEME`, the SHA-256 request signer
+  (`privKeySecp256k1Signer`, `CosmosSecp256k1Signer`, `verifyCosmosSecp256k1`), and the exports
+  of the digest-level `privKeyEip712Signer` / `Eip712Signer`.
+- **Added:** `TypedDataSigner` with `privateKeyTypedDataSigner`, `eip1193TypedDataSigner`
+  (`eth_signTypedData_v4`; the wallet's active chain must be `evm_chain_id`) and
+  `keplrTypedDataSigner` (`signEthereum(..., EthSignType.EIP712)`), plus `typedDataJson`,
+  `typedDataDigest`, `normalizeWalletSignature` and `signTypedDataAs`.
+- **Added:** opt-in session grants. `session: { maxGrantBlocks, grantBlocks?, renewBeforeBlocks? }`
+  makes the wallet sign one `SessionGrant` for an in-memory session key, which then signs
+  SubscribeOutput, AckOutput, GetTaskEvents, PrepareChallenge and the OUTPUT
+  GetTaskDataMetadata / FetchTaskData. OpenTask stays wallet-signed. The grant is renewed
+  before it expires, and once more when a Builder reports it expired. New exports:
+  `SessionKeyManager`, `sessionGrantTypedData`, `sessionGrantHash`, `sessionGrantMessage`,
+  `SESSION_SDK_METHODS`, `SESSION_TASK_DATA_METHODS`, `TrueOpenClient.ingressAuth()`,
+  `TrueOpenClient.sessionGrants`.
+- **Added:** `evmChainId` defaults to `hub.getEvmChainId()`, read once.
+- **Added:** error codes `SDK_AUTH_SESSION_GRANT_INVALID` / `_EXPIRED` /
+  `_METHOD_NOT_ALLOWED`, `DATA_ACCESS_INVALID_SIGNATURE`, `DATA_ACCESS_DENIED`,
+  `DATA_ACCESS_SESSION_*`, `NEXUS_INGRESS_CONTRACT_NOT_FROZEN` and
+  `NEXUS_INGRESS_METHOD_RETIRED` are classified; `DATA_ACCESS_*` codes are now read from the
+  message. An expired grant is retriable (renew and resend); the rest are not.
+- **Tests:** every positive EIP-712 section of `account_signing_v1.json` (domain separator,
+  hash struct, digest and the exact signature from the fixture keys), every signed row of
+  `request_auth_negative_cases`, and every base, tamper and replay row of
+  `sdk_request_body_v1.json` are reproduced. The simulated Builders verify requests with an
+  SDK-independent implementation of the wire rules (including the five-step check order), and
+  new scenarios cover session-signed delivery, grant renewal, a grant on OpenTask and a
+  tampered `last_seq`.
+
 ### Added
 
 - Wire v0.3.3: model manifest retrieval. `ManifestSource` fetches from the local cache, then
@@ -41,7 +107,7 @@
   and #39, merged to wire main): the EIP-712 request signing and session grants intended for
   wire v0.4.0, which is not tagged yet. It will move to the `v0.4.0` tag once that is published.
   This revision renames `SDKRequestEnvelopeV1` to `SDKRequestEnvelopeV2` and adds
-  `SessionGrantV1`; see the breaking entries below.
+  `SessionGrantV1`; see the breaking entries above.
 - The examples and the README quick start are rewritten against the current facade:
   `create-session`, `open-task` and `fetch-output` read the EVM chain ID and fee denom from chain,
   start at order sequence 0, use the current amount fields, fetch output through the chain trust

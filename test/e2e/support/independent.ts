@@ -1,11 +1,13 @@
 /**
- * SDK-independent re-implementations of what nexus and node check.
+ * SDK-independent re-implementations of what a Task Builder (Ingress) and node check.
  *
  * Nothing here imports SDK code: the fakes use these to verify what the SDK sends, so an SDK bug
- * cannot hide behind the same bug on the verifying side. Each function mirrors the Go source it
- * is named after (nexus internal/sdkauth, internal/ingress, internal/taskdata, internal/nodecontract;
- * node's ante handler for ethsecp256k1 DIRECT signatures), written from that source rather than
- * from the SDK.
+ * cannot hide behind the same bug on the verifying side. The request authentication follows the
+ * public wire contract (proto/nexus/v1/ingress.proto comments on SDKRequestEnvelopeV2,
+ * SessionGrantV1 and TaskDataRequestAuthV1, registry/v1/domains.json and the
+ * testdata/v1 vectors), written from those texts rather than from the SDK: the EIP-712 type
+ * strings are the literal encodeType lines of the contract, and hashStruct is spelled out per
+ * struct. node's ante handler check for ethsecp256k1 DIRECT signatures is kept as before.
  */
 import { sha256 } from '@noble/hashes/sha256';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -18,7 +20,7 @@ const utf8 = (s: string): Uint8Array => enc.encode(s);
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 const unhex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, 'hex'));
 
-/** A check failed; `code` is the nexus error code the real service would answer with. */
+/** A check failed; `code` is the error code the real service would answer with. */
 export class VerifyError extends Error {
   constructor(readonly code: string, message: string) {
     super(`${code}: ${message}`);
@@ -40,48 +42,49 @@ export function u32be(v: number): Uint8Array {
   new DataView(b.buffer).setUint32(0, v);
   return b;
 }
+function i32be(v: number): Uint8Array {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setInt32(0, v);
+  return b;
+}
 export function u64be(v: bigint): Uint8Array {
   const b = new Uint8Array(8);
   new DataView(b.buffer).setBigUint64(0, v);
   return b;
 }
-function i64be(v: bigint): Uint8Array {
-  const b = new Uint8Array(8);
-  new DataView(b.buffer).setBigInt64(0, v);
-  return b;
-}
 
-/** sdkauth: fields with a 4-byte big-endian length prefix. */
-export function frame4(...fields: Uint8Array[]): Uint8Array {
-  return concat(fields.flatMap((f) => [u32be(f.length), f]));
-}
-/** nodecontract.CanonicalFrameBytes: fields with an 8-byte big-endian length prefix. */
+/** FRAME_V1 list: fields with an 8-byte big-endian length prefix. */
 export function frame8(...fields: Uint8Array[]): Uint8Array {
   return concat(fields.flatMap((f) => [u64be(BigInt(f.length)), f]));
 }
-/** H_FIELDS_V1(domain, fields...). */
+/** H_FIELDS_V1(domain, fields...) = SHA256(FRAME_V1(domain, fields...)). */
 export function hFields(domain: string, ...fields: Uint8Array[]): Uint8Array {
   return sha256(frame8(utf8(domain), ...fields));
 }
-function raw32(field: string, value: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(value)) throw new VerifyError('NEXUS_DATA_MALFORMED', `${field} is not canonical Hash32`);
+/** OPTIONAL_V1: 00 absent, 01 || FRAME_V1(value) present. */
+function optional(value: Uint8Array | undefined): Uint8Array {
+  return value === undefined ? new Uint8Array([0]) : concat([new Uint8Array([1]), frame8(value)]);
+}
+function raw32(field: string, value: string, code = 'NEXUS_INGRESS_MALFORMED'): Uint8Array {
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new VerifyError(code, `${field} is not 64-character lowercase hex`);
   return unhex(value);
+}
+/** The 20 address bytes of a canonical Bech32 address. */
+export function addressBytes(field: string, address: string, code = 'NEXUS_INGRESS_MALFORMED'): Uint8Array {
+  try {
+    const d = bech32.decode(address as `${string}1${string}`);
+    const raw = Uint8Array.from(bech32.fromWords(d.words));
+    if (bech32.encode(d.prefix, bech32.toWords(raw)) !== address || raw.length !== 20) throw new Error('not canonical');
+    return raw;
+  } catch {
+    throw new VerifyError(code, `${field} is not a canonical Bech32 address`);
+  }
 }
 
 /** signer.AddressFromPubKey: bech32(prefix, keccak256(uncompressed XY)[12:]). */
 export function addressFromPubKey(prefix: string, pubCompressed: Uint8Array): string {
   const xy = secp256k1.ProjectivePoint.fromHex(pubCompressed).toRawBytes(false).subarray(1);
   return bech32.encode(prefix, bech32.toWords(keccak_256(xy).subarray(12)));
-}
-
-/** signer.VerifySig: 64-byte low-S R||S over sha256(msg). */
-export function verifySha256Sig(pubCompressed: Uint8Array, msg: Uint8Array, sig: Uint8Array): boolean {
-  if (sig.length !== 64) return false;
-  try {
-    return secp256k1.verify(sig, sha256(msg), pubCompressed, { lowS: true, prehash: false });
-  } catch {
-    return false;
-  }
 }
 
 /** Direct-digest verification (Worker frames): 64-byte low-S R||S over the digest itself. */
@@ -93,6 +96,292 @@ export function verifyDigestSig(pubCompressed: Uint8Array, digest: Uint8Array, s
     return false;
   }
 }
+
+// ------------------------------------------------------------------ EIP-712
+
+const keccakText = (s: string): Uint8Array => keccak_256(utf8(s));
+/** A uint word: 32 bytes big-endian. */
+function word(v: bigint): Uint8Array {
+  const b = new Uint8Array(32);
+  let x = v;
+  for (let i = 31; i >= 0; i--) {
+    b[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return b;
+}
+function addressWord(a20: Uint8Array): Uint8Array {
+  const b = new Uint8Array(32);
+  b.set(a20, 12);
+  return b;
+}
+
+/** domain_separator = hashStruct(EIP712Domain(string name,string version,uint256 chainId)). */
+export function domainSeparator(name: string, version: string, evmChainId: bigint): Uint8Array {
+  return keccak_256(concat([
+    keccakText('EIP712Domain(string name,string version,uint256 chainId)'),
+    keccakText(name),
+    keccakText(version),
+    word(evmChainId),
+  ]));
+}
+function signingDigest(domain: Uint8Array, struct: Uint8Array): Uint8Array {
+  return keccak_256(concat([new Uint8Array([0x19, 0x01]), domain, struct]));
+}
+
+export const SDK_REQUEST_DOMAIN_NAME = 'TrueOpen SDK Request';
+
+/** The typed SDKRequest fields, already projected. */
+export interface SdkRequestTyped {
+  readonly chainId: string;
+  readonly method: string;
+  readonly endpoint: string;
+  readonly sessionId: Uint8Array;
+  readonly taskId: Uint8Array;
+  readonly requestNonce: Uint8Array;
+  readonly expiryHeightOrTime: bigint;
+  readonly bodyDigest: Uint8Array;
+  readonly sessionGrantHash: Uint8Array;
+}
+
+export function sdkRequestDigest(m: SdkRequestTyped, evmChainId: bigint): Uint8Array {
+  const struct = keccak_256(concat([
+    keccakText(
+      'SDKRequest(string chainId,string method,string endpoint,bytes32 sessionId,bytes32 taskId,' +
+        'bytes32 requestNonce,uint64 expiryHeightOrTime,bytes32 bodyDigest,bytes32 sessionGrantHash)',
+    ),
+    keccakText(m.chainId),
+    keccakText(m.method),
+    keccakText(m.endpoint),
+    m.sessionId,
+    m.taskId,
+    m.requestNonce,
+    word(m.expiryHeightOrTime),
+    m.bodyDigest,
+    m.sessionGrantHash,
+  ]));
+  return signingDigest(domainSeparator(SDK_REQUEST_DOMAIN_NAME, '1', evmChainId), struct);
+}
+
+/** nexus.v1.SessionGrantV1 as the fakes see it. */
+export interface GrantLike {
+  readonly chainId: string;
+  readonly user: string;
+  readonly sessionKey: Uint8Array;
+  readonly expiryHeight: bigint;
+  readonly grantNonce: Uint8Array;
+  readonly userSignature: Uint8Array;
+}
+
+/** hashStruct(SessionGrant(string chainId,string user,address sessionKey,uint64 expiryHeight,bytes32 grantNonce)). */
+export function sessionGrantHashStruct(g: GrantLike): Uint8Array {
+  return keccak_256(concat([
+    keccakText('SessionGrant(string chainId,string user,address sessionKey,uint64 expiryHeight,bytes32 grantNonce)'),
+    keccakText(g.chainId),
+    keccakText(g.user),
+    addressWord(g.sessionKey),
+    word(g.expiryHeight),
+    g.grantNonce,
+  ]));
+}
+
+/** A grant is always signed under the SDK Request domain. */
+export function sessionGrantDigest(g: GrantLike, evmChainId: bigint): Uint8Array {
+  return signingDigest(domainSeparator(SDK_REQUEST_DOMAIN_NAME, '1', evmChainId), sessionGrantHashStruct(g));
+}
+
+/**
+ * Recovers a 65-byte R||S||V signature (V 27/28, low S) over a digest; undefined for any other
+ * shape or a signature that recovers to nothing.
+ */
+export function recover65(digest: Uint8Array, sig: Uint8Array): { address20: Uint8Array; pub: Uint8Array } | undefined {
+  if (sig.length !== 65) return undefined;
+  const v = sig[64]!;
+  if (v !== 27 && v !== 28) return undefined;
+  try {
+    const s = secp256k1.Signature.fromCompact(sig.subarray(0, 64));
+    if (s.hasHighS()) return undefined;
+    const point = s.addRecoveryBit(v - 27).recoverPublicKey(digest);
+    return { address20: keccak_256(point.toRawBytes(false).subarray(1)).subarray(12), pub: point.toRawBytes(true) };
+  } catch {
+    return undefined;
+  }
+}
+
+// ------------------------------------------------------------------ request bodies
+
+export const BODY = {
+  OpenTask: 'TRUEOPEN_SDK_BODY_OPEN_TASK_V1',
+  SubscribeOutput: 'TRUEOPEN_SDK_BODY_SUBSCRIBE_OUTPUT_V1',
+  AckOutput: 'TRUEOPEN_SDK_BODY_ACK_OUTPUT_V1',
+  GetTaskEvents: 'TRUEOPEN_SDK_BODY_GET_TASK_EVENTS_V1',
+  PrepareChallenge: 'TRUEOPEN_SDK_BODY_PREPARE_CHALLENGE_V1',
+} as const;
+
+export interface OpenTaskHeaderLike {
+  readonly payloadRef: string;
+  readonly signature: Uint8Array;
+  readonly signatureScheme: string;
+  readonly sessionId: string;
+  readonly orderSequence: bigint;
+  readonly userAddress: string;
+  readonly inputSizeBytes: bigint;
+  readonly inputHash: string;
+  readonly inputMediaType: string;
+  readonly idempotencyKey: string;
+}
+
+/** TRUEOPEN_SDK_BODY_OPEN_TASK_V1, with task_hash recomputed from the order. */
+export function openTaskBody(h: OpenTaskHeaderLike, taskHash: Uint8Array): Uint8Array {
+  return hFields(
+    BODY.OpenTask,
+    taskHash,
+    raw32('session_id', h.sessionId),
+    u64be(h.orderSequence),
+    addressBytes('user_address', h.userAddress),
+    u64be(h.inputSizeBytes),
+    raw32('input_hash', h.inputHash),
+    utf8(h.inputMediaType),
+    utf8(h.idempotencyKey),
+  );
+}
+export function subscribeOutputBody(sessionId: string, taskId: string, resumeAfterSeq: bigint | undefined): Uint8Array {
+  return hFields(BODY.SubscribeOutput, raw32('session_id', sessionId), raw32('task_id', taskId), optional(resumeAfterSeq === undefined ? undefined : u64be(resumeAfterSeq)));
+}
+export function ackOutputBody(sessionId: string, taskId: string, lastSeq: bigint): Uint8Array {
+  return hFields(BODY.AckOutput, raw32('session_id', sessionId), raw32('task_id', taskId), u64be(lastSeq));
+}
+export function getTaskEventsBody(sessionId: string, taskId: string, fromCursor: string): Uint8Array {
+  let cursor: Uint8Array | undefined;
+  if (fromCursor !== '') {
+    if (!/^(0|[1-9][0-9]*)$/.test(fromCursor) || BigInt(fromCursor) >= 1n << 64n) {
+      throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'from_cursor is not canonical uint64 decimal');
+    }
+    cursor = u64be(BigInt(fromCursor));
+  }
+  return hFields(BODY.GetTaskEvents, raw32('session_id', sessionId), raw32('task_id', taskId), optional(cursor));
+}
+export function prepareChallengeBody(sessionId: string, taskId: string, kind: string, localEvidence: Uint8Array): Uint8Array {
+  if (localEvidence.length !== 0 && localEvidence.length !== 32) {
+    throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'local_evidence_digest must be empty or 32 bytes');
+  }
+  return hFields(BODY.PrepareChallenge, raw32('session_id', sessionId), raw32('task_id', taskId), utf8(kind), optional(localEvidence.length === 0 ? undefined : localEvidence));
+}
+
+/** TRUEOPEN_TASK_ID_V1(raw32(session_id), u64be(order_sequence)). */
+export function deriveTaskId(sessionId: string, seq: bigint): string {
+  return hex(hFields('TRUEOPEN_TASK_ID_V1', raw32('session_id', sessionId), u64be(seq)));
+}
+
+/** task.v1.TaskOrderV3 as decoded from the SignedOrderV2 protobuf. */
+export interface TaskOrderLike {
+  readonly schemaVersion: number;
+  readonly chainId: string;
+  readonly userAddress: string;
+  readonly sessionId: Uint8Array;
+  readonly orderSequence: bigint;
+  readonly modelId: Uint8Array;
+  readonly profileVersion: number;
+  readonly taskType: number;
+  readonly inputHash: Uint8Array;
+  readonly inputSizeBytes: bigint;
+  readonly inputBucket: number;
+  readonly outputBudgetBucket: number;
+  readonly generationParams?: undefined | {
+    readonly generationParamsSchemaVersion: number;
+    readonly maxOutputTokens: bigint;
+    readonly maxOutputDuration: bigint;
+    readonly decodingParams?: undefined | {
+      readonly samplingEnabled: boolean;
+      readonly temperatureMilli: number;
+      readonly topPPpm: number;
+      readonly topK: number;
+      readonly seed: bigint;
+      readonly presencePenaltyMilli: number;
+      readonly frequencyPenaltyMilli: number;
+      readonly repetitionPenaltyPpm: number;
+      readonly stopSequences: readonly string[];
+      readonly stopTokenIds: readonly number[];
+    };
+  };
+  readonly priceBid?: undefined | { readonly atomicUnits: string };
+  readonly maxFee?: undefined | { readonly atomicUnits: string };
+  readonly assignmentPriorityFee?: undefined | { readonly atomicUnits: string };
+  readonly txFeeReserve?: undefined | { readonly atomicUnits: string };
+  readonly earliestSubmitHeight: bigint;
+  readonly orderExpireHeight: bigint;
+  readonly deadlinePolicy?: undefined | { readonly latencyClass: number };
+  readonly timeoutBucketVersion: bigint;
+  readonly sessionAnchorHeight: bigint;
+  readonly sessionAnchorBlockHash: Uint8Array;
+  readonly builderSetId: string;
+  readonly builderSetHash: Uint8Array;
+  readonly payloadMode: number;
+  readonly inputKeyCommitment: Uint8Array;
+  readonly userRecipientPubkey: Uint8Array;
+}
+
+/**
+ * TRUEOPEN_TASK_ORDER_V3 over the 28 fields, nested messages as their own frames
+ * (testdata/v1/task/task_order_v3.json typed fields): the verifier recomputes the OpenTask
+ * task_hash from the order instead of taking it from the caller.
+ */
+export function taskOrderHash(o: TaskOrderLike): Uint8Array {
+  const g = o.generationParams;
+  const d = g?.decodingParams;
+  if (g === undefined || d === undefined) throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'order has no generation params');
+  const amount = (a: { atomicUnits: string } | undefined): Uint8Array => frame8(utf8(a?.atomicUnits ?? ''));
+  const generation = frame8(
+    u32be(g.generationParamsSchemaVersion),
+    u64be(g.maxOutputTokens),
+    u64be(g.maxOutputDuration),
+    frame8(
+      new Uint8Array([d.samplingEnabled ? 1 : 0]),
+      u32be(d.temperatureMilli),
+      u32be(d.topPPpm),
+      u32be(d.topK),
+      u64be(d.seed),
+      i32be(d.presencePenaltyMilli),
+      i32be(d.frequencyPenaltyMilli),
+      u32be(d.repetitionPenaltyPpm),
+      frame8(u32be(d.stopSequences.length), ...d.stopSequences.map(utf8)),
+      frame8(u32be(d.stopTokenIds.length), ...d.stopTokenIds.map(u32be)),
+    ),
+  );
+  return hFields(
+    'TRUEOPEN_TASK_ORDER_V3',
+    u32be(o.schemaVersion),
+    utf8(o.chainId),
+    addressBytes('order user_address', o.userAddress),
+    o.sessionId,
+    u64be(o.orderSequence),
+    o.modelId,
+    u32be(o.profileVersion),
+    u32be(o.taskType),
+    o.inputHash,
+    u64be(o.inputSizeBytes),
+    u32be(o.inputBucket),
+    u32be(o.outputBudgetBucket),
+    generation,
+    amount(o.priceBid),
+    amount(o.maxFee),
+    amount(o.assignmentPriorityFee),
+    amount(o.txFeeReserve),
+    u64be(o.earliestSubmitHeight),
+    u64be(o.orderExpireHeight),
+    frame8(u32be(o.deadlinePolicy?.latencyClass ?? 0)),
+    u64be(o.timeoutBucketVersion),
+    u64be(o.sessionAnchorHeight),
+    o.sessionAnchorBlockHash,
+    utf8(o.builderSetId),
+    o.builderSetHash,
+    u32be(o.payloadMode),
+    o.inputKeyCommitment,
+    o.userRecipientPubkey,
+  );
+}
+
+// ------------------------------------------------------------------ request authentication
 
 export interface EnvelopeLike {
   readonly requestDomain: string;
@@ -106,117 +395,108 @@ export interface EnvelopeLike {
   readonly bodyDigest: Uint8Array;
   readonly signerAddress: string;
   readonly signature: Uint8Array;
-  readonly signerPubkey: Uint8Array;
+  readonly sessionGrant?: GrantLike | undefined;
+}
+
+/** What the verifier knows about the chain and itself. */
+export interface AuthContext {
+  readonly chainId: string;
+  readonly evmChainId: bigint;
+  readonly height: bigint;
+  readonly nowMs: bigint;
+  readonly maxSessionGrantBlocks: bigint;
+  /** OpenTask's height-expiry window above the current height. */
+  readonly requestTtlBlocks: bigint;
+  /** The compressed public key stored on the account, undefined when there is none. */
+  readonly accountPubKey: (address: string) => Uint8Array | undefined;
+  readonly seenNonces: Set<string>;
 }
 
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
+const SESSION_SDK_METHODS = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
+const SESSION_DATA_METHODS = ['/nexus.v1.IngressAPI/GetTaskDataMetadata', '/nexus.v1.IngressAPI/FetchTaskData'];
+const zero32 = new Uint8Array(32);
 
-/** sdkauth.SignBytes. */
-export function sdkSignBytes(e: EnvelopeLike): Uint8Array {
-  return frame4(
-    utf8('TRUEOPEN_SDK_REQUEST_V1'),
-    utf8(e.chainId),
-    utf8(e.method),
-    utf8(e.endpoint),
-    utf8(e.sessionId),
-    utf8(e.taskId),
-    e.requestNonce,
-    i64be(e.expiryHeightOrTime),
-    e.bodyDigest,
-  );
-}
-
-/** sdkauth.BodyDigest. */
-export function sdkBodyDigest(...fields: Uint8Array[]): Uint8Array {
-  return sha256(frame4(...fields));
+/**
+ * SessionGrantV1 checks (step 3): chain, user, user signature, stored account key, then the
+ * height window. `prefix` names the codes: SDK_AUTH or DATA_ACCESS.
+ */
+function verifyGrant(g: GrantLike, user: string, requestChainId: string, ctx: AuthContext, prefix: 'SDK_AUTH' | 'DATA_ACCESS'): void {
+  const invalid = (why: string): never => { throw new VerifyError(`${prefix}_SESSION_GRANT_INVALID`, why); };
+  if (g.chainId !== requestChainId || g.chainId !== ctx.chainId) invalid('grant chain_id is not this chain');
+  if (g.user !== user) invalid('grant user is not the request signer');
+  if (g.sessionKey.length !== 20 || g.grantNonce.length !== 32) invalid('grant fields have the wrong length');
+  const rec = recover65(sessionGrantDigest(g, ctx.evmChainId), g.userSignature);
+  if (rec === undefined || hex(rec.address20) !== hex(addressBytes('grant user', g.user, `${prefix}_SESSION_GRANT_INVALID`))) {
+    invalid('user_signature does not recover to user');
+  }
+  const stored = ctx.accountPubKey(g.user);
+  if (stored === undefined || hex(stored) !== hex(rec!.pub)) invalid('user has no stored account key, or another one');
+  if (!(ctx.height <= g.expiryHeight && g.expiryHeight <= ctx.height + ctx.maxSessionGrantBlocks)) {
+    throw new VerifyError(`${prefix}_SESSION_GRANT_EXPIRED`, `grant expiry ${g.expiryHeight} outside [${ctx.height}, ${ctx.height + ctx.maxSessionGrantBlocks}]`);
+  }
 }
 
 /**
- * sdkauth.Verify plus ingress checkRequiredTaskEnvelope: structure, chain, method, expiry,
- * body digest, signature, address, then the endpoint/session/task binding. Returns the signer.
+ * SDKRequestEnvelopeV2 verification, the five steps in order: format, session method set,
+ * grant, request signature, expiry and replay. `body` recomputes the body digest from the
+ * request (it throws NEXUS_INGRESS_MALFORMED when the body does not project). Returns the
+ * signer address (the granting user for a session-key request).
  */
-export function verifySdkEnvelope(
+export function verifySdkRequest(
   e: EnvelopeLike | undefined,
-  want: {
-    chainId: string;
-    method: string;
-    sessionId: string;
-    taskId: string;
-    body: Uint8Array;
-    prefix: string;
-    allowHeightExpiry: boolean;
-    nowMs: bigint;
-    seenNonces?: Set<string>;
-  },
+  want: { method: string; sessionId: string; taskId: string; body: () => Uint8Array; openTaskSequence?: bigint },
+  ctx: AuthContext,
 ): string {
-  if (e === undefined) throw new VerifyError('SDK_AUTH_INVALID_SIGNATURE', 'request_envelope required');
-  if (
-    e.requestDomain !== 'TRUEOPEN_SDK_REQUEST_V1' || e.signerAddress === '' || e.signature.length === 0 ||
-    e.signerPubkey.length === 0 || e.requestNonce.length === 0
-  ) {
-    throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'envelope structure');
+  const malformed = (why: string): never => { throw new VerifyError('NEXUS_INGRESS_MALFORMED', why); };
+  // 1. Format.
+  if (e === undefined) return malformed('request_envelope required');
+  if (e.requestDomain !== 'TRUEOPEN_SDK_REQUEST_V2') malformed('request_domain');
+  if (e.method !== want.method || e.endpoint !== `/nexus.v1.IngressAPI/${e.method}`) malformed('method/endpoint');
+  const sessionId = raw32('session_id', e.sessionId);
+  const taskId = raw32('task_id', e.taskId);
+  if (e.sessionId !== want.sessionId || e.taskId !== want.taskId) malformed('envelope session/task is not the request');
+  if (e.requestNonce.length !== 32) malformed('request_nonce must be 32 bytes');
+  if (e.expiryHeightOrTime <= 0n) malformed('expiry must be above zero');
+  const heightExpiry = e.expiryHeightOrTime < HEIGHT_EXPIRY_THRESHOLD;
+  if (heightExpiry && want.openTaskSequence === undefined) malformed('a height expiry is accepted only for OpenTask');
+  if (want.openTaskSequence !== undefined && e.taskId !== deriveTaskId(e.sessionId, want.openTaskSequence)) malformed('OpenTask task_id is not derived');
+  addressBytes('signer_address', e.signerAddress);
+  const body = want.body();
+  // 2. Session method set.
+  const g = e.sessionGrant;
+  if (g !== undefined && !SESSION_SDK_METHODS.includes(e.method)) {
+    throw new VerifyError('SDK_AUTH_SESSION_METHOD_NOT_ALLOWED', `${e.method} does not accept a session grant`);
   }
-  if (e.chainId !== want.chainId || e.method !== want.method) throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'chain/method');
-  if (e.expiryHeightOrTime < HEIGHT_EXPIRY_THRESHOLD) {
-    if (!want.allowHeightExpiry) throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'height expiry on a timestamp method');
-  } else if (e.expiryHeightOrTime < want.nowMs) {
+  // 3. Grant.
+  if (g !== undefined) verifyGrant(g, e.signerAddress, e.chainId, ctx, 'SDK_AUTH');
+  // 4. Request signature, over the digest rebuilt with this chain and the derived grant hash.
+  const digest = sdkRequestDigest({
+    chainId: ctx.chainId, method: e.method, endpoint: e.endpoint, sessionId, taskId, requestNonce: e.requestNonce,
+    expiryHeightOrTime: e.expiryHeightOrTime, bodyDigest: body, sessionGrantHash: g === undefined ? zero32 : sessionGrantHashStruct(g),
+  }, ctx.evmChainId);
+  const rec = recover65(digest, e.signature);
+  const bad = (why: string): never => { throw new VerifyError('SDK_AUTH_INVALID_SIGNATURE', why); };
+  if (rec === undefined) bad('signature is not 65 bytes, V 27/28, low S');
+  if (g !== undefined) {
+    if (hex(rec!.address20) !== hex(g.sessionKey)) bad('request signature does not recover to the grant session_key');
+  } else {
+    if (hex(rec!.address20) !== hex(addressBytes('signer_address', e.signerAddress))) bad('request signature does not recover to signer_address');
+    const stored = ctx.accountPubKey(e.signerAddress);
+    if (stored === undefined || hex(stored) !== hex(rec!.pub)) bad('signer has no stored account key, or another one');
+  }
+  // 5. Expiry, then replay.
+  if (heightExpiry) {
+    if (e.expiryHeightOrTime < ctx.height || e.expiryHeightOrTime > ctx.height + ctx.requestTtlBlocks) {
+      throw new VerifyError('SDK_AUTH_EXPIRED', 'height expiry outside the request window');
+    }
+  } else if (e.expiryHeightOrTime < ctx.nowMs) {
     throw new VerifyError('SDK_AUTH_EXPIRED', 'envelope expired');
   }
-  if (hex(e.bodyDigest) !== hex(want.body)) throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'body_digest mismatch');
-  if (!verifySha256Sig(e.signerPubkey, sdkSignBytes(e), e.signature)) {
-    throw new VerifyError('SDK_AUTH_INVALID_SIGNATURE', 'envelope signature');
-  }
-  if (addressFromPubKey(want.prefix, e.signerPubkey) !== e.signerAddress) {
-    throw new VerifyError('SDK_AUTH_INVALID_SIGNATURE', 'signer_address does not match signer_pubkey');
-  }
-  if (want.seenNonces !== undefined) {
-    const key = `${e.chainId}|${e.signerAddress}|${hex(e.requestNonce)}`;
-    if (want.seenNonces.has(key)) throw new VerifyError('SDK_AUTH_REPLAY', 'nonce replayed');
-    want.seenNonces.add(key);
-  }
-  if (e.endpoint !== `/nexus.v1.IngressAPI/${want.method}` || e.sessionId !== want.sessionId || e.taskId !== want.taskId) {
-    throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'envelope binding mismatch');
-  }
+  const key = `${e.requestDomain}\u0000${e.chainId}\u0000${e.signerAddress}\u0000${hex(e.requestNonce)}`;
+  if (ctx.seenNonces.has(key)) throw new VerifyError('SDK_AUTH_REPLAY', 'nonce replayed');
+  ctx.seenNonces.add(key);
   return e.signerAddress;
-}
-
-export interface OpenTaskHeaderLike {
-  readonly orderEnvelope: Uint8Array;
-  readonly payloadRef: string;
-  readonly signature: Uint8Array;
-  readonly sessionId: string;
-  readonly orderSequence: bigint;
-  readonly userAddress: string;
-  readonly signatureScheme: string;
-  readonly inputSizeBytes: bigint;
-  readonly inputHash: string;
-  readonly inputMediaType: string;
-}
-
-/** ingress openTaskBodyDigest. */
-export function openTaskBodyDigest(h: OpenTaskHeaderLike): Uint8Array {
-  return sdkBodyDigest(
-    h.orderEnvelope,
-    utf8(h.payloadRef),
-    h.signature,
-    utf8(h.sessionId),
-    u64be(h.orderSequence),
-    utf8(h.userAddress),
-    utf8(h.signatureScheme),
-    u64be(h.inputSizeBytes),
-    utf8(h.inputHash),
-    utf8(h.inputMediaType),
-  );
-}
-
-/** nodecontract.CurrentOrderSigningBytes: sha256 over 8-byte-prefixed text fields. */
-export function orderSigningBytes(chainId: string, owner: string, sessionId: string, seq: bigint, orderEnvelopeHex: string): Uint8Array {
-  return sha256(frame8(...['TRUEOPEN_ORDER_V1', chainId, owner, sessionId, seq.toString(10), orderEnvelopeHex].map(utf8)));
-}
-
-/** nodecontract.DeriveTaskIDFromRawSession. */
-export function deriveTaskId(sessionId: string, seq: bigint): string {
-  return hex(hFields('TRUEOPEN_TASK_ID_V1', raw32('session_id', sessionId), u64be(seq)));
 }
 
 /** nexus.v1.TaskDataObjectRefV1 as the fakes see it. */
@@ -232,15 +512,11 @@ export interface ObjectRefLike {
   readonly evidenceKind: number;
 }
 
-function optional(present: boolean, value: Uint8Array): Uint8Array {
-  return present ? concat([new Uint8Array([1]), frame8(value)]) : new Uint8Array([0]);
-}
-
-/** taskdata.CanonicalObjectRefFrame, for non-evidence objects (the only ones a user reads). */
+/** The canonical object reference frame, for non-evidence objects (the only ones a user reads). */
 export function objectRefFrame(ref: ObjectRefLike): Uint8Array {
-  if (ref.objectKind === 0) throw new VerifyError('NEXUS_DATA_MALFORMED', 'object_kind');
+  if (ref.objectKind === 0) throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'object_kind');
   if (ref.evidenceProducerKind !== 0 || ref.verifyRound !== 0 || ref.producerOperator !== '' || ref.evidenceKind !== 0) {
-    throw new VerifyError('NEXUS_DATA_MALFORMED', 'non-evidence object must not carry producer fields');
+    throw new VerifyError('NEXUS_INGRESS_MALFORMED', 'non-evidence object must not carry producer fields');
   }
   return frame8(
     raw32('task_hash', ref.taskHash),
@@ -250,7 +526,7 @@ export function objectRefFrame(ref: ObjectRefLike): Uint8Array {
     raw32('content_hash', ref.contentHash),
     u32be(0),
     u32be(0),
-    optional(false, new Uint8Array()),
+    optional(undefined),
     u32be(0),
   );
 }
@@ -260,8 +536,7 @@ export function metadataBodyDigest(ref: ObjectRefLike): Uint8Array {
 }
 
 export function fetchBodyDigest(ref: ObjectRefLike, range: { offset: bigint; length: bigint } | undefined): Uint8Array {
-  const inner = range === undefined ? new Uint8Array() : frame8(u64be(range.offset), u64be(range.length));
-  return hFields('TRUEOPEN_TASK_DATA_FETCH_BODY_V2', objectRefFrame(ref), optional(range !== undefined, inner));
+  return hFields('TRUEOPEN_TASK_DATA_FETCH_BODY_V2', objectRefFrame(ref), optional(range === undefined ? undefined : frame8(u64be(range.offset), u64be(range.length))));
 }
 
 export interface RequestAuthLike {
@@ -276,68 +551,68 @@ export interface RequestAuthLike {
   readonly requestNonce: Uint8Array;
   readonly expiryHeight: bigint;
   readonly signature: Uint8Array;
+  readonly sessionGrant?: GrantLike | undefined;
 }
 
-const word = (v: bigint): Uint8Array => {
-  const b = new Uint8Array(32);
-  new DataView(b.buffer).setBigUint64(24, v);
-  return b;
-};
-
-/** taskdata.UserTaskDataRequestDigest (EIP-712 v4). */
-export function userTaskDataDigest(a: RequestAuthLike, evmChainId: bigint): Uint8Array {
-  const k = (s: string): Uint8Array => keccak_256(utf8(s));
-  const domain = keccak_256(concat([
-    k('EIP712Domain(string name,string version,uint256 chainId)'),
-    k('TrueOpen Task Data Request'),
-    k('1'),
-    word(evmChainId),
-  ]));
-  const typeHash = k(
-    'TaskDataRequest(uint32 schemaVersion,string chainId,string builderOperatorAddress,string rpcMethod,' +
-      'bytes32 bodyDigest,uint32 requesterKind,string requesterAddress,uint64 serviceAuthorizationNonce,' +
-      'bytes32 requestNonce,uint64 expiryHeight)',
-  );
-  if (a.requestNonce.length !== 32) throw new VerifyError('NEXUS_DATA_MALFORMED', 'request_nonce must be 32 bytes');
+/** The USER TaskDataRequest digest, EIP-712 "TrueOpen Task Data Request" version 2. */
+export function userTaskDataDigest(a: RequestAuthLike, chainId: string, evmChainId: bigint, sessionGrantHash: Uint8Array): Uint8Array {
   const struct = keccak_256(concat([
-    typeHash,
+    keccakText(
+      'TaskDataRequest(uint32 schemaVersion,string chainId,string builderOperatorAddress,string rpcMethod,' +
+        'bytes32 bodyDigest,uint32 requesterKind,string requesterAddress,uint64 serviceAuthorizationNonce,' +
+        'bytes32 requestNonce,uint64 expiryHeight,bytes32 sessionGrantHash)',
+    ),
     word(BigInt(a.schemaVersion)),
-    k(a.chainId),
-    k(a.builderOperatorAddress),
-    k(a.rpcMethod),
+    keccakText(chainId),
+    keccakText(a.builderOperatorAddress),
+    keccakText(a.rpcMethod),
     raw32('body_digest', a.bodyDigest),
     word(BigInt(a.requesterKind)),
-    k(a.requesterAddress),
+    keccakText(a.requesterAddress),
     word(a.serviceAuthorizationNonce),
     a.requestNonce,
     word(a.expiryHeight),
+    sessionGrantHash,
   ]));
-  return keccak_256(concat([new Uint8Array([0x19, 0x01]), domain, struct]));
+  return signingDigest(domainSeparator('TrueOpen Task Data Request', '2', evmChainId), struct);
 }
 
-/** taskdata.RecoverUserTaskDataRequester, then the address check against requester_address. */
+/**
+ * TaskDataRequestAuthV1, USER path, in the five steps: format (NEXUS_INGRESS_MALFORMED), session
+ * method and object set, grant, request signature (DATA_ACCESS_INVALID_SIGNATURE), then expiry
+ * (NEXUS_DATA_EXPIRED) and replay. Returns the requester address.
+ */
 export function verifyUserTaskDataAuth(
   a: RequestAuthLike | undefined,
-  want: { chainId: string; evmChainId: bigint; builder: string; rpcMethod: string; body: Uint8Array; prefix: string; minHeight: bigint; maxHeight: bigint },
+  want: { builder: string; rpcMethod: string; body: Uint8Array; objectKind: number; requestTtlBlocks: bigint },
+  ctx: AuthContext,
 ): string {
-  if (a === undefined) throw new VerifyError('NEXUS_DATA_UNAUTHORIZED', 'request_auth required');
-  if (a.schemaVersion !== 1 || a.chainId !== want.chainId || a.rpcMethod !== want.rpcMethod) {
-    throw new VerifyError('NEXUS_DATA_MALFORMED', 'request_auth fields');
+  const malformed = (why: string): never => { throw new VerifyError('NEXUS_INGRESS_MALFORMED', why); };
+  if (a === undefined) return malformed('request_auth required');
+  if (a.schemaVersion !== 1 || a.rpcMethod !== want.rpcMethod) malformed('request_auth fields');
+  if (a.requesterKind !== 1 || a.serviceAuthorizationNonce !== 0n) malformed('USER branch');
+  if (a.requestNonce.length !== 32) malformed('request_nonce must be 32 bytes');
+  if (a.bodyDigest !== hex(want.body)) malformed('body_digest mismatch');
+  addressBytes('requester_address', a.requesterAddress);
+  if (a.builderOperatorAddress !== want.builder) throw new VerifyError('DATA_ACCESS_DENIED', 'builder address is not this Builder');
+  const g = a.sessionGrant;
+  if (g !== undefined && (!SESSION_DATA_METHODS.includes(a.rpcMethod) || want.objectKind !== 2)) {
+    throw new VerifyError('DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED', 'a session key may read only an OUTPUT object');
   }
-  if (a.builderOperatorAddress !== want.builder) throw new VerifyError('NEXUS_DATA_UNAUTHORIZED', 'builder address is not this Builder');
-  if (a.requesterKind !== 1 || a.serviceAuthorizationNonce !== 0n) throw new VerifyError('NEXUS_DATA_MALFORMED', 'USER branch');
-  if (a.bodyDigest !== hex(want.body)) throw new VerifyError('NEXUS_DATA_MALFORMED', 'body_digest mismatch');
-  if (a.expiryHeight < want.minHeight || a.expiryHeight > want.maxHeight) throw new VerifyError('NEXUS_DATA_EXPIRED', 'expiry height outside window');
-  const sig = a.signature;
-  if (sig.length !== 65) throw new VerifyError('NEXUS_DATA_MALFORMED', 'USER signature must be 65 bytes');
-  const v = sig[64]!;
-  if (v !== 27 && v !== 28) throw new VerifyError('NEXUS_DATA_MALFORMED', 'USER signature V must be 27 or 28');
-  const s = secp256k1.Signature.fromCompact(sig.subarray(0, 64));
-  if (s.hasHighS()) throw new VerifyError('NEXUS_DATA_MALFORMED', 'USER signature must be low-S');
-  const pub = s.addRecoveryBit(v - 27).recoverPublicKey(userTaskDataDigest(a, want.evmChainId));
-  const addr = bech32.encode(want.prefix, bech32.toWords(keccak_256(pub.toRawBytes(false).subarray(1)).subarray(12)));
-  if (addr !== a.requesterAddress) throw new VerifyError('NEXUS_DATA_UNAUTHORIZED', 'recovered signer is not requester_address');
-  return addr;
+  if (g !== undefined) verifyGrant(g, a.requesterAddress, a.chainId, ctx, 'DATA_ACCESS');
+  const digest = userTaskDataDigest(a, ctx.chainId, ctx.evmChainId, g === undefined ? zero32 : sessionGrantHashStruct(g));
+  const rec = recover65(digest, a.signature);
+  const expected = g === undefined ? addressBytes('requester_address', a.requesterAddress) : g.sessionKey;
+  if (rec === undefined || hex(rec.address20) !== hex(expected)) {
+    throw new VerifyError('DATA_ACCESS_INVALID_SIGNATURE', 'the signature does not recover to the expected signer');
+  }
+  if (a.expiryHeight < ctx.height || a.expiryHeight > ctx.height + want.requestTtlBlocks) {
+    throw new VerifyError('NEXUS_DATA_EXPIRED', 'expiry height outside window');
+  }
+  const key = `task-data\u0000${a.chainId}\u0000${a.builderOperatorAddress}\u0000${a.requesterAddress}\u0000${hex(a.requestNonce)}`;
+  if (ctx.seenNonces.has(key)) throw new VerifyError('NEXUS_DATA_REPLAY', 'nonce replayed');
+  ctx.seenNonces.add(key);
+  return a.requesterAddress;
 }
 
 /** nodecontract.OutputChunkSigningDigest. */

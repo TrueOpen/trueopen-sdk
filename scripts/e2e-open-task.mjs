@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
  * Reusable e2e test: walks the full path end to end -- create/reuse a session, pick a
- * model, read on-chain context, assemble a frozen TaskOrderV1, apply three-layer
+ * model, read on-chain context, assemble a frozen TaskOrderV1, apply the
  * signing, select Task Builders by task_builder_seed, and submit OpenTask (streaming) --
  * printing every parameter and the real response from each endpoint, and independently
  * verifying signatures locally (this proves the SDK's own signatures are self-consistent;
@@ -87,11 +87,11 @@ import { Bip39, Slip10, Slip10Curve, EnglishMnemonic, stringToPath } from '@cosm
 const SDK = new URL('../dist/index.js', import.meta.url);
 const {
   TrueOpenClient, HubReader, connectTrueOpenChainClient, IngressClient,
-  privKeySecp256k1Signer, privKeyEip712Signer, recoverEip712PubKey,
-  secp256k1PublicKey, ethSecp256k1Address, verifyCosmosSecp256k1, taskOrderEip712Digest,
+  privateKeyTypedDataSigner, recoverEip712PubKey, recoverEip712Address, sdkRequestEip712Digest,
+  secp256k1PublicKey, ethSecp256k1Address, taskOrderEip712Digest,
   resolveTaskOrderContext, buildTaskOrder, defaultGenerationParams,
   buildOpenTaskRequest, resolveTaskBuilderEndpoints,
-  taskOrderHashHex, deriveTaskId, orderEnvelopeSigningBytes, sdkRequestSignBytes,
+  taskOrderHashHex, deriveTaskId,
   decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, RestChainReader,
   TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom,
 } = await import(SDK);
@@ -200,8 +200,9 @@ async function restGet(url, { attempts = 3, baseDelayMs = 200 } = {}) {
 // ---- identity ----
 const seed = await Bip39.mnemonicToSeed(new EnglishMnemonic(mnemonic));
 const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, stringToPath(TRUEOPEN_HD_PATH));
-const signer = privKeySecp256k1Signer(privkey);   // sha256 scheme, 64 bytes: outer order signature + request envelope
-const orderSigner = privKeyEip712Signer(privkey);  // keccak scheme, 65 bytes: order EIP-712 + task data plane
+// Every user signature is EIP-712 typed data, 65 bytes: the order, the request envelopes and
+// the task data plane.
+const userWallet = privateKeyTypedDataSigner(privkey);
 const pubKey = secp256k1PublicKey(privkey);
 // The address is EVM-style: bech32(keccak256(uncompressed_XY)[12:32]).
 const address = ethSecp256k1Address(pubKey, PREFIX);
@@ -255,10 +256,10 @@ const conn = await connectTrueOpenChainClient({
 });
 
 const client = new TrueOpenClient({
-  chainId: CHAIN_ID, userAddress: address, signerPubKey: pubKey, signer, orderSigner,
+  chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
   evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM,
   chain: conn.client, ingressTransport: nexusTransport('http://nexus.unused.invalid'),
-  addressPrefix: PREFIX, hub, ingressTransportFactory: nexusTransport,
+  hub, ingressTransportFactory: nexusTransport,
 });
 
 // ---- 1) session ----
@@ -338,35 +339,30 @@ const idempotencyKey = flag('--idempotency-key', `${sessionId}:${ORDER_SEQ}`);
 // (nexus taskdata/authorizer.go:327). We use 10 to leave margin for block production.
 const expiryHeight = ctx.latestHeight + BigInt(flag('--expiry-blocks', '10'));
 
-// ---- 5) three-layer signing ----
+// ---- 5) signing: the order and the request envelope, both EIP-712 by the wallet ----
 const built = await buildOpenTaskRequest({
   order, payload, sessionId, taskId, expiryHeight,
   orderEip712: { evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM },
   // TaskDataRequestAuthV1 requires request_nonce to be exactly 32 bytes.
   requestNonce: crypto.getRandomValues(new Uint8Array(32)),
-  idempotencyKey, orderSigner, signer, signerPubKey: pubKey,
+  idempotencyKey, wallet: userWallet,
 });
 
-// Independent local signature verification: each of the three signatures verifies on
-// its own, and the schemes are never mixed.
+// Independent local signature verification: both signatures recover to the user, and there is
+// no outer order signature.
 const innerSig = decodeSignedOrder(built.input.orderEnvelope).userSignature;
-const outerBytes = orderEnvelopeSigningBytes(CHAIN_ID, address, sessionId, ORDER_SEQ, built.orderEnvelopeHex);
 const re = built.input.requestEnvelope;
 const localChecks = {
   task_hash_matches: built.taskHash === taskOrderHashHex(order),
-  // The inner signature covers the order's EIP-712 digest (task_hash is one of its
-  // bytes32 fields); it's a 65-byte recoverable signature.
+  // The order signature covers the order's EIP-712 digest (task_hash is one of its bytes32
+  // fields); it's a 65-byte recoverable signature.
   inner_signature_length_65: innerSig.length === 65,
   inner_signature_recovers_to_user_pubkey:
     hex(recoverEip712PubKey(taskOrderEip712Digest(order, { evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM }), innerSig)) ===
     hex(pubKey),
-  // Negative check: verifying the inner signature under the Cosmos
-  // "sha256-then-verify" scheme must fail, proving the two schemes are never confused.
-  inner_signature_rejected_by_hashing_scheme: !verifyCosmosSecp256k1(
-    Buffer.from(built.taskHash, 'hex'), innerSig, pubKey,
-  ),
-  outer_signature_valid: verifyCosmosSecp256k1(outerBytes, built.input.signature, pubKey),
-  request_envelope_signature_valid: verifyCosmosSecp256k1(sdkRequestSignBytes(re), re.signature, re.signerPubKey),
+  no_outer_order_signature: !('signature' in built.input),
+  request_envelope_recovers_to_user:
+    recoverEip712Address(sdkRequestEip712Digest(re, EVM_CHAIN_ID), re.signature, PREFIX) === address,
 };
 
 // ---- 6) Task Builder routing (seeded with the same anchor / set hash signed into the order) ----
@@ -530,10 +526,10 @@ async function startStream(winnerWorker) {
       const resumingFrom = checkpoint !== undefined ? checkpoint.mmr.leafCount - 1n : null;
       if (resumingFrom !== null && resumedFromSeq === null) resumedFromSeq = resumingFrom.toString();
       const sc = new TrueOpenClient({
-        chainId: CHAIN_ID, userAddress: address, signerPubKey: pubKey, signer, orderSigner,
+        chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
         evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM, chain: conn.client,
         ingressTransport: nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? ''),
-        addressPrefix: PREFIX, hub,
+        hub,
       });
       const iter = sc.streamOutput({
         sessionId, taskId,
@@ -771,10 +767,10 @@ if (FETCH_OUTPUT && DO_SUBMIT && landedOnChain && !streamDelivered) {
     for (const a of acks.filter((x) => x.ack?.accepted === true)) {
       try {
         const oc = new TrueOpenClient({
-          chainId: CHAIN_ID, userAddress: address, signerPubKey: pubKey, signer, orderSigner,
+          chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
           evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM,
           chain: conn.client, ingressTransport: nexusTransport(a.endpoint, pinOf(a.endpoint)),
-          addressPrefix: PREFIX, hub,
+          hub,
         });
         const got = await Promise.race([
           oc.fetchTaskOutput({
@@ -851,7 +847,7 @@ const out = {
     request_nonce: hex(re.requestNonce),
     expiry_height: re.expiryHeightOrTime?.toString?.() ?? String(re.expiryHeightOrTime ?? ''),
     body_digest: hex(re.bodyDigest), signer_address: re.signerAddress,
-    signature: hex(re.signature), signer_pubkey: hex(re.signerPubKey),
+    signature: hex(re.signature),
   },
   derived: { task_id: taskId, task_hash: built.taskHash, payload_hash: payloadHash },
   local_verification: localChecks,
@@ -884,7 +880,7 @@ if (!JSON_ONLY) {
   log(`session=${sessionId}  seq=${ORDER_SEQ}  model=${activeModel.model_id}`);
   log(`task_id=${taskId}`);
   log(`task_hash=${built.taskHash}`);
-  log(`Local three-signature verification: ${JSON.stringify(localChecks)}`);
+  log(`Local signature verification: ${JSON.stringify(localChecks)}`);
   for (const a of acks) {
     log(`  rank${a.rank} ${a.endpoint} -> ${a.ack ? (a.ack.accepted ? 'accepted OK' : `rejected: ${a.ack.reason}`) : `ERR ${a.error.code} ${a.error.message}`}`);
   }

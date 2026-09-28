@@ -64,6 +64,8 @@ describe('e2e: full flow through the SDK facade', () => {
     }
     for (const n of world.nexus.slice(0, 3)) {
       expect(n.verifications.filter((x) => x.method === 'OpenTask')).toEqual([{ method: 'OpenTask', outcome: 'ok' }]);
+      // Each Builder recomputed the same task_hash from the order it received.
+      expect(n.taskHashes).toEqual([STREAM.task_hash]);
       expect(n.opened[0]!.payload).toEqual(w.PAYLOAD);
       expect(n.opened[0]!.idempotencyKey).toBe(`${sessionId}:0`);
     }

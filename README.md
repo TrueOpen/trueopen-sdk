@@ -10,12 +10,22 @@
 
 `trueopen-sdk` is the runtime-agnostic TypeScript client SDK for the **TrueOpen decentralized AI inference network**. It wraps the full user flow -- place an order -> track it -> retrieve output -> open a challenge -- into a single facade class, `TrueOpenClient`, that supports dependency injection and unit testing.
 
-### Two-layer signing
+### Signing: one wallet, EIP-712 everywhere
 
-At the core of the SDK are **two independent signing layers**:
+Every signature a user makes is **EIP-712 typed data** (65 bytes `R||S||V`, `V` 27/28, low S),
+signed through one interface, `TypedDataSigner`, so a browser wallet can sign it:
 
-1. **User signs the `OrderEnvelope`** -- the user signs the order envelope (price / budget / model / session / sequence / deadline / anchor, etc.), producing `user_signature`. The canonical JSON for this layer is **byte-for-byte identical** to the on-chain `CanonicalAssignmentOrderEnvelopeV1` (Go `json.Marshal`); `task_id` is derived from it.
-2. **SDK signs the nexus `SDKRequestEnvelope`** -- every request sent to the nexus IngressAPI is signed by an SDK-side signing key over the request envelope (domain + chainId + method + endpoint + session/task + nonce + expiry + `body_digest` + signerAddress). The `body_digest` is **byte-for-byte identical** to the one computed by the nexus oracle.
+1. **The order** -- `TaskOrder` under "TrueOpen Task Order" v3, with the canonical `task_hash`
+   as a bytes32 field. This alone authorizes the order; OpenTask has no outer order signature.
+2. **Requests to Builder Ingress** -- `SDKRequest` under "TrueOpen SDK Request" v1 (OpenTask,
+   SubscribeOutput, AckOutput, GetTaskEvents, PrepareChallenge). Its `bodyDigest` is the
+   method's registered `TRUEOPEN_SDK_BODY_*_V1` digest of the request body.
+3. **Task data requests** -- `TaskDataRequest` under "TrueOpen Task Data Request" v2
+   (GetTaskDataMetadata, FetchTaskData).
+
+Every EIP-712 domain uses the chain's `evm_chain_id` as its `chainId`. Optionally, the wallet signs
+one **session grant** and an in-memory session key signs the read and delivery-progress
+requests after that (see [Wallets and session grants](#wallets-and-session-grants)).
 
 ### The two backends the SDK talks to
 
@@ -67,8 +77,7 @@ import {
   connectTrueOpenChainClient,
   ethSecp256k1SignerFromMnemonic,
   nexusIngressTransport,
-  privKeySecp256k1Signer,
-  privKeyEip712Signer,
+  privateKeyTypedDataSigner,
   secp256k1PublicKey,
   ethSecp256k1Address,
   defaultGenerationParams,
@@ -111,14 +120,14 @@ const { client: chain, signingClient } = await connectTrueOpenChainClient({
 const nexus = (url: string, tlsPubkeyHash = '') => nexusIngressTransport(url, tlsPubkeyHash);
 const makeClient = (ingressTransport: ReturnType<typeof nexus>) =>
   new TrueOpenClient({
-    chainId, userAddress: address, signerPubKey: pubKey,
-    signer: privKeySecp256k1Signer(privkey), // request envelopes (64-byte)
-    orderSigner: privKeyEip712Signer(privkey), // order + task-data requests (EIP-712, 65-byte)
+    chainId, userAddress: address,
+    // Signs the order and every request as EIP-712 typed data. In a browser, use
+    // keplrTypedDataSigner or eip1193TypedDataSigner instead (see "Wallets and session grants").
+    wallet: privateKeyTypedDataSigner(privkey),
     evmChainId, // no feeDenom: openTask signs business_denom read through the hub
     chain, hub, taskReader,
     ingressTransport, // default transport for calls not routed by the SDK
     ingressTransportFactory: nexus, // openTask picks Builders by task_builder_seed
-    addressPrefix: prefix,
   });
 const client = makeClient(nexus('http://nexus.unused.invalid'));
 
@@ -178,7 +187,7 @@ endpoint to try instead (that is what `examples/fetch-output.mjs` does).
 | Method | Description |
 |---|---|
 | `createSession(label?)` / `getSession(sessionId)` | create / retrieve a session |
-| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
+| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
@@ -199,10 +208,10 @@ This section states plainly **which capabilities are already aligned with the re
 
 ### ✅ Ready and aligned with the real backend
 
-- **Order signing** -- the order is signed as EIP-712 "TrueOpen Task Order" v3 (65-byte recoverable signature) and encoded as `SignedOrderV2`; the OpenTask header carries a separate 64-byte secp256k1 signature over `TRUEOPEN_ORDER_V1`.
+- **Order signing** -- the order is signed as EIP-712 "TrueOpen Task Order" v3 (65-byte recoverable signature) and encoded as `SignedOrderV2`. There is no outer order signature: `OpenTaskHeader.signature` and `signature_scheme` are sent empty.
 - **`task_id` derivation** -- `H_FIELDS_V1("TRUEOPEN_TASK_ID_V1", raw32(session_id), u64be(order_sequence))`, anchored to `testdata/v1/task/task_data_plane_v1_golden.json`.
-- **nexus `SDKRequestEnvelope` + per-method `body_digest`** -- the body_digest for `openTask` / `getTaskEvents` / `prepareChallenge` / `subscribeOutput` / `ackOutput` is **byte-for-byte identical** to nexus's.
-- **EVM-style identity and EIP-712** -- the address `bech32(keccak256(uncompressed_XY)[12:32])`, and the type hash, domain separator, hash struct, signing digest and 65-byte signature for the three EIP-712 domains (`Cosmos Web3` / `TrueOpen Task Order` v3 / `TrueOpen Task Data Request` v1), all anchored to wire's
+- **`SDKRequestEnvelopeV2` + per-method `body_digest`** -- the EIP-712 `SDKRequest` (domain separator, hash struct, digest and the exact signature) is anchored to the `sdk_request` / `sdk_request_session` sections of `testdata/v1/shared/account_signing_v1.json`, and the five `TRUEOPEN_SDK_BODY_*_V1` body digests to every base, tamper and replay row of `testdata/v1/task/sdk_request_body_v1.json`.
+- **EVM-style identity and EIP-712** -- the address `bech32(keccak256(uncompressed_XY)[12:32])`, and the type hash, domain separator, hash struct, signing digest and 65-byte signature for the EIP-712 domains (`Cosmos Web3` / `TrueOpen Task Order` v3 / `TrueOpen SDK Request` v1 with `SDKRequest` and `SessionGrant` / `TrueOpen Task Data Request` v2), including every signed row of `request_auth_negative_cases`, all anchored to wire's
   `testdata/v1/shared/account_signing_v1.json`.
 - **Task data plane authentication** -- the two body digests (METADATA / FETCH, V2 domains), together with their preimages, are anchored to `testdata/v1/task/task_data_auth_v1.json`, and illegal object_kind / evidence_kind combinations are refused before hashing; the USER branch's EIP-712 and the CORTEX_SERVICE branch's H_FIELDS_V1 are each cross-checked separately. **Verified against a live chain**: the EIP-712 signature for `GetTaskDataMetadata` was verified by a real nexus, the body digest matched nexus's recomputation, and authorization matched the contract (a User can query OUTPUT but not INPUT).
 
@@ -374,15 +383,46 @@ unchanged to subscribers.
   `requestTtlBlocks` (10), inside nexus's 20-block window.
 - These two methods **do not use `SDKRequestEnvelope`**; they use `TaskDataRequestAuthV1`: the
   body digest binds to one of five domains via `H_FIELDS_V1`, chosen by `requester_kind` --
-  USER uses the EIP-712 `TrueOpen Task Data Request` domain, always 65 bytes; CORTEX_SERVICE
+  USER uses the EIP-712 `TrueOpen Task Data Request` domain version 2, always 65 bytes (with a
+  session, an OUTPUT read is signed by the session key and carries the grant); CORTEX_SERVICE
   uses `TRUEOPEN_TASK_DATA_REQUEST_V1`, always 64 bytes; the length is not sniffed. See
   `src/transport/task-data-signbytes.ts`.
 
-> These two body_digest computations were verified against the nexus main source (2026-09-15,
-> main@b19f6206): `subscribeOutputBodyDigest` = `(session_id, task_id)`, with `resume_after_seq`
-> excluded from the signature; `ackOutputBodyDigest` = `(session_id, task_id, output_id)`, where
-> **`output_id`, although deprecated, is still part of the signature** (even an empty string
-> occupies a field), and `last_seq` is excluded from the signature.
+> `subscribeOutput` signs `resume_after_seq` by presence (unset is absent, a set 0 is present 0)
+> and `ackOutput` signs `last_seq`; the deprecated `output_id` is not in the body.
+
+### Wallets and session grants
+
+`TrueOpenClientConfig.wallet` is a `TypedDataSigner`. Three ship with the SDK:
+
+| Signer | Where | Notes |
+|---|---|---|
+| `privateKeyTypedDataSigner(privkey)` | CLI, servers, tests | computes the EIP-712 digest and signs it (RFC 6979, low S) |
+| `keplrTypedDataSigner({ keplr, chainId, signer })` | Keplr | `signEthereum(chainId, signer, JSON, EthSignType.EIP712)`; works directly with the account key of the chain |
+| `eip1193TypedDataSigner({ provider, address })` | MetaMask and other EIP-1193 wallets | `eth_signTypedData_v4` |
+
+Every signature is recovered and checked against `userAddress` before it is sent
+(`SDK_LOCAL_SIGNER_ADDRESS_MISMATCH` otherwise).
+
+- **Keplr** works today: it signs with the chain's account key and needs no EVM network.
+- **MetaMask (EIP-1193)** refuses typed data whose domain `chainId` differs from its active
+  network, and every domain here uses the chain's `evm_chain_id`. It therefore needs a network
+  whose RPC answers `eth_chainId` with that ID. **No such RPC endpoint is available yet**, so
+  MetaMask cannot be used until one is.
+
+**Session grants (opt-in).** With `session: { maxGrantBlocks }` in the config, the wallet signs
+one `SessionGrant` for an in-memory session key, and that key signs `SubscribeOutput`,
+`AckOutput`, `GetTaskEvents`, `PrepareChallenge`, and `GetTaskDataMetadata` / `FetchTaskData`
+of an OUTPUT object: one wallet prompt per grant instead of one per request. `OpenTask` and
+everything else is always wallet-signed. `maxGrantBlocks` must be the Builders'
+`max_session_grant_blocks`; the grant is renewed with a fresh key before it expires, and once
+more when a Builder reports it expired (`SDK_AUTH_SESSION_GRANT_EXPIRED` /
+`DATA_ACCESS_SESSION_GRANT_EXPIRED`). The session key is never persisted and never derived from
+a signature. Without `session`, the default, every request is signed by the wallet directly,
+which is what the CLI and raw-key clients do.
+
+A client built by hand for another Builder should share the signing context:
+`new IngressClient(transport, client.ingressAuth())`.
 
 ### ✅ On-chain writes: direct ethsecp256k1 signing (`EthSecp256k1DirectSigner`)
 

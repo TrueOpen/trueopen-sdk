@@ -21,7 +21,8 @@ program
   .option('--auto', 'discover the endpoint on chain when nexus is not specified')
   .option('--chain-id <id>', 'chain ID')
   .option('--prefix <p>', 'bech32 address prefix', undefined)
-  .option('--gas-price <p>', 'gas price, e.g. 0.025utrueopen')
+  .option('--fee-denom <denom>', 'optional check on the order fee denom; the chain business_denom is used, and a different value is refused')
+  .option('--gas-price <p>', 'gas price amount (e.g. 0.025); the denom defaults to the chain business_denom, and any other denom is refused')
   .option('--key-file <path>', 'path to the mnemonic file')
   .option('--json', 'JSON output')
   .option('--verbose', 'print stack trace');
@@ -94,19 +95,19 @@ output
   .command('get')
   .argument('<session>')
   .argument('<task>')
-  .argument('<task-hash>', 'the on-chain accepted_task_hash, canonical lowercase 64-hex')
-  .argument('<output-hash>', 'the on-chain InferReceipt.output_hash (MMR root), canonical lowercase 64-hex')
-  .description('retrieve the output body (GetTaskDataMetadata + FetchTaskData, recompute the MMR root from chunk_lengths to verify; requires --auto)')
-  .action((s: string, t: string, th: string, oh: string) => run((cfg, m) => cmdOutputGet(cfg, m, s, t, th, oh)));
+  .argument('[task-hash]', 'override: the accepted_task_hash (64-hex); read from chain by default')
+  .argument('[output-hash]', 'override: the InferReceipt.output_hash (64-hex); read from chain by default')
+  .description('retrieve the output body (GetTaskDataMetadata + ranged FetchTaskData, verified against the on-chain receipt; requires --auto)')
+  .action((s: string, t: string, th?: string, oh?: string) => run((cfg, m) => cmdOutputGet(cfg, m, s, t, th, oh)));
 output
   .command('stream')
   .argument('<session>')
   .argument('<task>')
-  .argument('<task-hash>', 'the on-chain accepted_task_hash, canonical lowercase 64-hex')
-  .argument('<worker-pubkey>', 'the service public key of the selected Worker (33-byte compressed, hex)')
+  .argument('[task-hash]', 'override: the accepted_task_hash (64-hex); read from chain by default')
+  .argument('[worker-pubkey]', 'override: the winner Worker service key (33-byte compressed, hex); read from chain by default')
   .option('--no-ack', 'do not report local delivery progress')
   .description('stream-subscribe to output (SubscribeOutput, verify per-frame signatures + the MMR root)')
-  .action((s: string, t: string, th: string, wp: string, a: { ack?: boolean }) =>
+  .action((s: string, t: string, th: string | undefined, wp: string | undefined, a: { ack?: boolean }) =>
     run((cfg, m) => cmdOutputStream(cfg, m, s, t, th, wp, a.ack !== false)),
   );
 

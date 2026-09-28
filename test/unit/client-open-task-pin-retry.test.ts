@@ -76,6 +76,8 @@ function makeHub(afterReread: string) {
     getParameterBucket: async (kind: string): Promise<ParameterBucketView> => ({
       bucketKind: kind, bucketKey: 'default', version: 1n, currentVersion: 1n, effectiveHeight: 0n,
     }),
+    getBusinessDenom: async (): Promise<string> => 'utrueopen',
+    getProfile: async () => ({ pricing: { minOrderValue: 0n, verifyRatioBps: 0n, initialOutputPrice: 0n } }),
     getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => {
       reads[id] = (reads[id] ?? 0) + 1;
       const hash = reads[id] === 1 ? STALE : afterReread;

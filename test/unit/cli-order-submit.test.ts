@@ -35,8 +35,7 @@ writeFileSync(
   JSON.stringify({
     modelId: '5555555555555555555555555555555555555555555555555555555555555555', profileVersion: 1, taskType: 'TEXT_GENERATION',
     inputBucket: 1, outputBudgetBucket: 1, maxOutputTokens: 128, maxOutputDurationMs: 60_000,
-    inferInputUnitPriceBid: '2', inferOutputUnitPriceBid: '3', verifyUnitPriceBid: '4',
-    maxFee: '1000', inferFeeCap: '600', verifyFeeCap: '300',
+    priceBid: '100000', maxFee: '1000', assignmentPriorityFee: '0', txFeeReserve: '0',
     earliestSubmitHeight: '100', orderExpireHeight: '50100',
     latencyClass: 'STANDARD',
   }),

@@ -4,71 +4,118 @@ import type { CliConfig } from '../config';
 import type { TaskOrderIntent } from '../../order/task-order-input';
 import { defaultGenerationParams } from '../../order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../order/task-order';
+import { TrueOpenError } from '../../errors/errors';
 
-/** Fields in the order file that are parsed as uint64 (JSON numbers don't have enough precision, so we always use BigInt). */
-const U64_FIELDS = ['earliestSubmitHeight', 'orderExpireHeight'] as const;
-/** Fields in the order file that are parsed as uint32. */
-const U32_FIELDS = ['profileVersion', 'inputBucket', 'outputBudgetBucket'] as const;
 const AMOUNT_FIELDS = ['priceBid', 'maxFee', 'assignmentPriorityFee', 'txFeeReserve'] as const;
+
+/**
+ * Every field the order file has. All of them are required and nothing else is accepted: each one
+ * goes into task_hash, so a default would sign something the user never wrote, and an unknown key is
+ * usually a field from an older order format that would otherwise be dropped without a word.
+ */
+export const ORDER_FILE_FIELDS = [
+  'modelId',
+  'profileVersion',
+  'taskType',
+  'inputBucket',
+  'outputBudgetBucket',
+  'maxOutputTokens',
+  'maxOutputDurationMs',
+  ...AMOUNT_FIELDS,
+  'earliestSubmitHeight',
+  'orderExpireHeight',
+  'latencyClass',
+] as const;
+
+function orderFileError(message: string): TrueOpenError {
+  return new TrueOpenError('SDK_LOCAL', 'CLI_ORDER_FILE_INVALID', `order file: ${message}`);
+}
+
+/** A non-negative integer given as a JSON number or a decimal string. */
+function uint(key: string, value: unknown): bigint {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) return BigInt(value);
+  throw orderFileError(`field ${key} must be a non-negative integer, got ${JSON.stringify(value)}`);
+}
+
+function uint32(key: string, value: unknown): number {
+  const n = uint(key, value);
+  if (n > 0xffff_ffffn) throw orderFileError(`field ${key} does not fit in uint32`);
+  return Number(n);
+}
+
+/** Required positive uint64 (no default: it goes into task_hash). */
+function positive(key: string, value: unknown): bigint {
+  const n = uint(key, value);
+  if (n === 0n) throw orderFileError(`field ${key} must be a positive integer, got ${JSON.stringify(value)}`);
+  return n;
+}
+
+/** An enum given by name or numeric value; UNSPECIFIED and unknown values are refused. */
+function enumValue(key: string, table: Record<string, number>, value: unknown): number {
+  const known = Object.entries(table).filter(([name]) => name !== 'UNSPECIFIED');
+  const hit =
+    typeof value === 'string' && !/^[0-9]+$/.test(value)
+      ? known.find(([name]) => name === value)
+      : known.find(([, n]) => BigInt(n) === uint(key, value));
+  if (hit === undefined) {
+    throw orderFileError(`field ${key} must be one of ${known.map(([name]) => name).join(' | ')}, got ${JSON.stringify(value)}`);
+  }
+  return hit[1];
+}
 
 /**
  * Read order-file JSON -> TaskOrderIntent.
  *
  * Since TaskOrderV3 was frozen, the order no longer carries reward_bucket / profile_resource_tier /
  * order_value / infer_timeout_blocks -- all of these are now derived by the Keeper, and submitting them
- * is rejected. Fee fields are now Amount (decimal text atomic units).
+ * is rejected. Fee fields are Amount (decimal text atomic units).
  */
-/** Required uint64 fields in the order file: missing or non-positive values error out immediately; no default is filled in. */
-function reqU64(key: string, value: unknown): bigint {
-  if (value === undefined || value === null || value === '') {
-    throw new Error(`order file field ${key} is required (it goes into task_hash; the SDK will not fill in a default value for you)`);
-  }
-  const n = BigInt(String(value));
-  if (n <= 0n) throw new Error(`order file field ${key} must be a positive integer, got ${String(value)}`);
-  return n;
-}
-
 export function parseOrderFile(path: string, payload: Uint8Array): TaskOrderIntent {
-  const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-  const num = (k: string, v: unknown): number => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < 0) throw new Error(`order file field ${k} must be a non-negative integer`);
-    return n;
-  };
-  const amountOf = (k: (typeof AMOUNT_FIELDS)[number]): { atomicUnits: string } => ({
-    atomicUnits: String(raw[k] ?? '0'),
-  });
-  const amounts: TaskOrderIntent['amounts'] = {
-    priceBid: amountOf('priceBid'),
-    maxFee: amountOf('maxFee'),
-    assignmentPriorityFee: amountOf('assignmentPriorityFee'),
-    txFeeReserve: amountOf('txFeeReserve'),
-  };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new TrueOpenError('SDK_LOCAL', 'CLI_ORDER_FILE_INVALID', `order file ${path} is not readable JSON`, { cause: e });
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw orderFileError('must be a JSON object');
+  const o = raw as Record<string, unknown>;
+  const allowed = new Set<string>(ORDER_FILE_FIELDS);
+  const unknown = Object.keys(o).filter((k) => !allowed.has(k));
+  if (unknown.length > 0) {
+    throw orderFileError(`unknown field(s) ${unknown.join(', ')}; accepted fields are ${ORDER_FILE_FIELDS.join(', ')}`);
+  }
+  const missing = ORDER_FILE_FIELDS.filter((k) => o[k] === undefined || o[k] === null || o[k] === '');
+  if (missing.length > 0) {
+    throw orderFileError(`missing required field(s) ${missing.join(', ')} (each goes into task_hash; the SDK will not fill in a default for you)`);
+  }
 
-  const taskType = raw['taskType'];
-  const latency = raw['latencyClass'];
+  const modelId = o['modelId'];
+  if (typeof modelId !== 'string') throw orderFileError('field modelId must be a 64-hex string');
+  const amountOf = (k: (typeof AMOUNT_FIELDS)[number]): { atomicUnits: string } => ({ atomicUnits: uint(k, o[k]).toString() });
+
   return {
-    modelId: String(raw['modelId'] ?? ''),
-    profileVersion: num('profileVersion', raw['profileVersion'] ?? 1),
-    taskType: typeof taskType === 'string' ? (TASK_TYPE[taskType as keyof typeof TASK_TYPE] ?? 0) : num('taskType', taskType ?? TASK_TYPE.TEXT_GENERATION),
+    modelId,
+    profileVersion: uint32('profileVersion', o['profileVersion']),
+    taskType: enumValue('taskType', TASK_TYPE, o['taskType']),
     payload,
-    inputBucket: num('inputBucket', raw['inputBucket'] ?? 1),
-    outputBudgetBucket: num('outputBudgetBucket', raw['outputBudgetBucket'] ?? 1),
-    // No default here: these two values go into GenerationParamsV1 -> task_hash, so silently filling in
-    // a default would mean signing the user up for a parameter they never saw (same rationale as in
-    // task-order-input.ts). Also, if maxOutputTokens is too small, the response gets cut off mid-sentence
-    // and the user has no way of knowing what limit they signed.
+    inputBucket: uint32('inputBucket', o['inputBucket']),
+    outputBudgetBucket: uint32('outputBudgetBucket', o['outputBudgetBucket']),
+    // These two go into GenerationParamsV1 -> task_hash. If maxOutputTokens is too small, the
+    // response gets cut off mid-sentence and the user has no way of knowing what limit they signed.
     generationParams: defaultGenerationParams(
-      reqU64('maxOutputTokens', raw['maxOutputTokens']),
-      reqU64('maxOutputDurationMs', raw['maxOutputDurationMs']),
+      positive('maxOutputTokens', o['maxOutputTokens']),
+      positive('maxOutputDurationMs', o['maxOutputDurationMs']),
     ),
-    amounts,
-    earliestSubmitHeight: BigInt(String(raw['earliestSubmitHeight'] ?? 0)),
-    orderExpireHeight: BigInt(String(raw['orderExpireHeight'] ?? 0)),
-    latencyClass:
-      typeof latency === 'string'
-        ? (DEADLINE_LATENCY_CLASS[latency as keyof typeof DEADLINE_LATENCY_CLASS] ?? DEADLINE_LATENCY_CLASS.STANDARD)
-        : num('latencyClass', latency ?? DEADLINE_LATENCY_CLASS.STANDARD),
+    amounts: {
+      priceBid: amountOf('priceBid'),
+      maxFee: amountOf('maxFee'),
+      assignmentPriorityFee: amountOf('assignmentPriorityFee'),
+      txFeeReserve: amountOf('txFeeReserve'),
+    },
+    earliestSubmitHeight: positive('earliestSubmitHeight', o['earliestSubmitHeight']),
+    orderExpireHeight: positive('orderExpireHeight', o['orderExpireHeight']),
+    latencyClass: enumValue('latencyClass', DEADLINE_LATENCY_CLASS, o['latencyClass']),
   };
 }
 

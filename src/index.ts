@@ -284,9 +284,14 @@ export type {
   OutputFrameAcceptance,
 } from './output/output-commitment';
 
-export { TrueOpenClient } from './client';
+export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES } from './client';
+export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,
+  FacadeHubReader,
+  OutputTaskReader,
+  OutputTrustAnchors,
+  OpenTaskBuilderResult,
   OpenTaskParams,
   OpenTaskResult,
   OutputStreamSource,

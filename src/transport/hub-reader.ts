@@ -150,9 +150,26 @@ export class HubReader {
    * app/account_ante.go).
    */
   async getEvmChainId(): Promise<bigint> {
+    return u64(await this.getPhase0Params(), 'evm_chain_id');
+  }
+
+  /**
+   * The chain's business denomination (`params.phase0.business_denom`).
+   *
+   * The order's EIP-712 `feeDenom` must equal it: the Keeper rebuilds the digest with this
+   * value, so an order signed with any other denom passes nexus and is then rejected on chain,
+   * after which the task silently disappears. It is also the only denom the chain accepts for
+   * tx fees. Read it, never assume it.
+   */
+  async getBusinessDenom(): Promise<string> {
+    const denom = str(await this.getPhase0Params(), 'business_denom');
+    if (denom === '') throw malformed('field business_denom (empty)');
+    return denom;
+  }
+
+  private async getPhase0Params(): Promise<Record<string, unknown>> {
     const body = await this.getJson('/TrueOpen/hub/v1/params');
-    const phase0 = asObject(asObject(body['params'])['phase0']);
-    return u64(phase0, 'evm_chain_id');
+    return asObject(asObject(body['params'])['phase0']);
   }
 
   /**

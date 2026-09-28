@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveConfig, loadMnemonic } from '../../src/cli/config';
+import { resolveConfig, loadMnemonic, resolveGasPrice } from '../../src/cli/config';
 import { writeFileSync, rmSync } from 'node:fs';
 
 describe('cli config', () => {
@@ -7,8 +7,21 @@ describe('cli config', () => {
     const cfg = resolveConfig({ restUrl: 'http://flag' }, { TRUEOPEN_REST_URL: 'http://env', TRUEOPEN_ADDR_PREFIX: 'cosmos' });
     expect(cfg.restUrl).toBe('http://flag');
     expect(cfg.prefix).toBe('cosmos');
-    expect(cfg.gasPrice).toBe('0.025uusdc');
+    // No hard-coded denom: both the fee denom and the gas price denom come from the chain.
+    expect(cfg.gasPrice).toBeUndefined();
+    expect(cfg.feeDenom).toBeUndefined();
     expect(cfg.auto).toBe(false);
+  });
+  it('gas price takes the chain business_denom and refuses any other denom', () => {
+    expect(resolveGasPrice(undefined, 'uchain')).toBe('0.025uchain');
+    expect(resolveGasPrice('0.5', 'uchain')).toBe('0.5uchain');
+    expect(resolveGasPrice('0.5uchain', 'uchain')).toBe('0.5uchain');
+    expect(() => resolveGasPrice('0.025uusdc', 'uchain')).toThrowError(/business_denom/);
+    expect(() => resolveGasPrice('cheap', 'uchain')).toThrowError(/amount/);
+  });
+  it('--fee-denom / TRUEOPEN_FEE_DENOM is an optional override', () => {
+    expect(resolveConfig({ feeDenom: 'ua' }, { TRUEOPEN_FEE_DENOM: 'ub' }).feeDenom).toBe('ua');
+    expect(resolveConfig({}, { TRUEOPEN_FEE_DENOM: 'ub' }).feeDenom).toBe('ub');
   });
   it('falls back to env + default prefix', () => {
     const cfg = resolveConfig({}, { TRUEOPEN_REST_URL: 'http://env' });

@@ -4,9 +4,11 @@
  * the SDK's pinned transport is exercised as in production.
  *
  * It implements the five RPCs the SDK's user flow calls and verifies every request with the
- * SDK-independent checks in independent.ts: the request envelope and body digest, the outer
- * order signature, task id derivation, Task Builder selection, the input commitment, and the
- * EIP-712 task-data request auth. Behaviour can be degraded per instance to simulate faults.
+ * SDK-independent checks in independent.ts: the EIP-712 request envelope and its five-step
+ * check order (format, session method set, session grant, request signature, expiry and
+ * replay), the body digests, task id derivation and task_hash recomputed from the order, Task
+ * Builder selection, the input commitment, and the EIP-712 Task data request auth.
+ * Behaviour can be degraded per instance to simulate faults.
  */
 import { createServer } from 'node:https';
 import type { Server } from 'node:https';
@@ -32,6 +34,7 @@ import type {
   FetchTaskDataRequest,
   FetchTaskDataResponse,
   TaskDataObjectRefV1,
+  TaskDataRequestAuthV1,
 } from '../../../src/gen/nexus/v1/ingress_pb.js';
 import { SignedOrderV2Schema } from '../../../src/gen/task/v1/msg_assignment_pb.js';
 import * as v from './independent';
@@ -47,8 +50,15 @@ export const TLS_PUBKEY_HASH = readFileSync(new URL('pubkey_sha256.txt', TLS_DIR
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 const unhex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, 'hex'));
 const MAX_CHUNK_BYTES = 256 * 1024;
-/** Request window for height expiries (nexus RequestTTLBlocks default). */
+/** OpenTask's height-expiry window (the Builder's request_ttl_blocks). */
 const REQUEST_TTL_BLOCKS = 20n;
+/**
+ * The Task data request window (max_service_material_expiry_blocks). Deliberately not 20, so a
+ * test cannot pass by assuming OpenTask's window here.
+ */
+export const MAX_SERVICE_MATERIAL_EXPIRY_BLOCKS = 100n;
+/** max_session_grant_blocks: off-chain Builder configuration, the same on every Builder. */
+export const MAX_SESSION_GRANT_BLOCKS = 400n;
 
 /** One task's OUTPUT as a Worker produced it (see fixtures/output-stream.json). */
 export interface OutputStreamFixture {
@@ -108,6 +118,13 @@ export class FakeNexus {
   readonly calls: string[] = [];
   /** Each request's independent verification outcome ("ok" or the failure). */
   readonly verifications: { method: string; outcome: string }[] = [];
+  /** Who signed each accepted request: the wallet, or a session key (its 0x-less hex). */
+  readonly signers: { method: string; sessionKey?: string }[] = [];
+  /** task_hash recomputed from each accepted OpenTask order. */
+  readonly taskHashes: string[] = [];
+  /** How far this Builder's view of the chain is ahead of the node the SDK reads. */
+  heightAhead = 0n;
+  maxSessionGrantBlocks = MAX_SESSION_GRANT_BLOCKS;
   private readonly nonces = new Set<string>();
 
   constructor(
@@ -144,24 +161,45 @@ export class FakeNexus {
     if (e !== undefined) this.fail(method, e.code, e.message);
   }
 
-  /** Runs an independent check, turning a VerifyError into the nexus error it stands for. */
+  /** Runs an independent check, turning a VerifyError into the error it stands for. */
   private check<T>(method: string, run: () => T): T {
     try {
       return run();
     } catch (e) {
       if (!(e instanceof v.VerifyError)) throw e;
-      const code = e.code.startsWith('SDK_AUTH_EXPIRED') || e.code === 'NEXUS_DATA_EXPIRED'
-        ? Code.DeadlineExceeded
-        : e.code.startsWith('SDK_AUTH') ? Code.Unauthenticated
-        : e.code === 'NEXUS_DATA_UNAUTHORIZED' ? Code.PermissionDenied
+      const c = e.code;
+      const code = c.endsWith('_EXPIRED') ? Code.DeadlineExceeded
+        : c.endsWith('_METHOD_NOT_ALLOWED') || c === 'DATA_ACCESS_DENIED' || c.endsWith('_UNAUTHORIZED') ? Code.PermissionDenied
+        : c.startsWith('SDK_AUTH') || c.startsWith('DATA_ACCESS') ? Code.Unauthenticated
+        : c === 'NEXUS_INGRESS_CONTRACT_NOT_FROZEN' ? Code.FailedPrecondition
         : Code.InvalidArgument;
       return this.fail(method, code, e.message);
     }
   }
 
+  /** What this Builder knows: the chain facts, its own height view and its replay records. */
+  private ctx(): v.AuthContext {
+    return {
+      chainId: w.CHAIN_ID,
+      evmChainId: w.EVM_CHAIN_ID,
+      height: this.node.height + this.heightAhead,
+      nowMs: BigInt(Date.now()),
+      maxSessionGrantBlocks: this.maxSessionGrantBlocks,
+      requestTtlBlocks: REQUEST_TTL_BLOCKS,
+      accountPubKey: (address) => this.node.accounts.get(address)?.pubKey,
+      seenNonces: this.nonces,
+    };
+  }
+
+  private accepted(method: string, grant: { sessionKey: Uint8Array } | undefined): void {
+    this.verifications.push({ method, outcome: 'ok' });
+    this.signers.push(grant === undefined ? { method } : { method, sessionKey: hex(grant.sessionKey) });
+  }
+
   private routes(router: ConnectRouter): void {
     router.service(IngressAPI, {
       openTask: async (reqs: AsyncIterable<OpenTaskRequest>) => this.openTask(reqs),
+      confirmOpenTask: () => this.fail('ConfirmOpenTask', Code.FailedPrecondition, 'NEXUS_INGRESS_CONTRACT_NOT_FROZEN: ConfirmOpenTask is not callable in V1'),
       subscribeOutput: (req: SubscribeOutputRequest) => this.subscribeOutput(req),
       ackOutput: async (req: AckOutputRequest) => this.ackOutput(req),
       getTaskDataMetadata: async (req: GetTaskDataMetadataRequest) => this.getTaskDataMetadata(req),
@@ -186,32 +224,30 @@ export class FakeNexus {
     }
     this.injected(M);
 
+    // No outer order signature exists: both deprecated fields must be empty.
+    if (h.signature.length !== 0 || h.signatureScheme !== '') this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask signature and signature_scheme must be empty');
     if (h.sessionId === '' || h.userAddress === '' || h.inputSizeBytes === 0n || h.inputHash === '' || h.inputMediaType === '' ||
-      h.payloadRef === '' || h.orderEnvelope.length === 0 || h.signature.length !== 64 || h.signatureScheme !== 'secp256k1') {
-      this.fail(M, Code.InvalidArgument, 'NEXUS_DATA_MALFORMED: OpenTask header');
+      h.orderEnvelope.length === 0) {
+      this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask header');
     }
     const signed = fromBinary(SignedOrderV2Schema, h.orderEnvelope);
     const order = signed.order;
-    if (order === undefined) return this.fail(M, Code.InvalidArgument, 'NEXUS_DATA_MALFORMED: order envelope has no order');
-    const taskId = v.deriveTaskId(h.sessionId, h.orderSequence);
+    if (order === undefined) return this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: order envelope has no order');
     // The order and the header must describe the same task.
     if (order.chainId !== w.CHAIN_ID || order.userAddress !== h.userAddress || hex(order.sessionId) !== h.sessionId ||
       order.orderSequence !== h.orderSequence || hex(order.inputHash) !== h.inputHash || order.inputSizeBytes !== h.inputSizeBytes) {
-      this.fail(M, Code.InvalidArgument, 'NEXUS_DATA_MALFORMED: order envelope disagrees with the header');
+      this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: order envelope disagrees with the header');
     }
-    if (h.payloadRef !== `nexus://sha256/${h.inputHash}`) this.fail(M, Code.InvalidArgument, 'NEXUS_DATA_MALFORMED: OpenTask input commitment');
+    // payload_ref is not signed, but it must be derived from the signed input_hash.
+    if (h.payloadRef !== `nexus://sha256/${h.inputHash}`) this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask payload_ref');
+    // task_hash is recomputed from the order, never taken from the caller.
+    const taskHash = this.check(M, () => v.taskOrderHash(order));
     const env = h.requestEnvelope;
-    const requester = this.check(M, () => v.verifySdkEnvelope(env, {
-      chainId: w.CHAIN_ID, method: M, sessionId: h.sessionId, taskId, body: v.openTaskBodyDigest(h),
-      prefix: w.PREFIX, allowHeightExpiry: true, nowMs: BigInt(Date.now()),
-    }));
-    if (requester !== h.userAddress) this.fail(M, Code.PermissionDenied, 'NEXUS_DATA_UNAUTHORIZED: requester is not the order user');
-    const expiry = env!.expiryHeightOrTime;
-    if (expiry <= 0n || expiry >= v.HEIGHT_EXPIRY_THRESHOLD) this.fail(M, Code.DeadlineExceeded, 'NEXUS_DATA_EXPIRED: OpenTask expiry must be a chain height');
-    if (expiry < this.node.height || expiry > this.node.height + REQUEST_TTL_BLOCKS) this.fail(M, Code.DeadlineExceeded, 'NEXUS_DATA_EXPIRED: expiry outside the request window');
-    const outerOk = v.verifySha256Sig(env!.signerPubkey,
-      v.orderSigningBytes(w.CHAIN_ID, h.userAddress, h.sessionId, h.orderSequence, hex(h.orderEnvelope)), h.signature);
-    if (!outerOk || v.addressFromPubKey(w.PREFIX, env!.signerPubkey) !== h.userAddress) this.fail(M, Code.PermissionDenied, 'NEXUS_DATA_UNAUTHORIZED: outer order signature');
+    const taskId = env?.taskId ?? '';
+    const requester = this.check(M, () => v.verifySdkRequest(env, {
+      method: M, sessionId: h.sessionId, taskId, body: () => v.openTaskBody(h, taskHash), openTaskSequence: h.orderSequence,
+    }, this.ctx()));
+    if (requester !== h.userAddress) this.fail(M, Code.PermissionDenied, 'SDK_AUTH_INVALID_SIGNATURE: the request signer is not the order user');
 
     // The order's anchor must be real, and this Builder must be one the order selects.
     const anchor = order.sessionAnchorHeight;
@@ -228,7 +264,8 @@ export class FakeNexus {
     if (BigInt(payload.length) !== h.inputSizeBytes || hex(sha256(payload)) !== h.inputHash) {
       this.fail(M, Code.DataLoss, 'NEXUS_DATA_HASH_MISMATCH: OpenTask input does not match its commitment');
     }
-    this.verifications.push({ method: M, outcome: 'ok' });
+    this.accepted(M, undefined);
+    this.taskHashes.push(hex(taskHash));
     this.opened.push({ taskId, requester, idempotencyKey: h.idempotencyKey, chunkCount: chunks.length, payload: Uint8Array.from(payload) });
     return {
       sessionId: h.sessionId,
@@ -253,16 +290,15 @@ export class FakeNexus {
     const M = 'SubscribeOutput';
     this.calls.push(M);
     this.subscribes.push(req.resumeAfterSeq !== undefined ? { resumeAfterSeq: req.resumeAfterSeq } : {});
-    const requester = this.check(M, () => v.verifySdkEnvelope(req.requestEnvelope, {
-      chainId: w.CHAIN_ID, method: M, sessionId: req.sessionId, taskId: req.taskId,
-      body: v.sdkBodyDigest(new TextEncoder().encode(req.sessionId), new TextEncoder().encode(req.taskId)),
-      prefix: w.PREFIX, allowHeightExpiry: false, nowMs: BigInt(Date.now()), seenNonces: this.nonces,
-    }));
+    const requester = this.check(M, () => v.verifySdkRequest(req.requestEnvelope, {
+      method: M, sessionId: req.sessionId, taskId: req.taskId,
+      body: () => v.subscribeOutputBody(req.sessionId, req.taskId, req.resumeAfterSeq),
+    }, this.ctx()));
     this.injected(M);
     if (requester !== this.owner(req.sessionId)) this.fail(M, Code.PermissionDenied, 'NEXUS_OUTPUT_UNAUTHORIZED: only the task owner may subscribe');
     const out = this.outputs.get(req.taskId);
     if (out === undefined || this.stream === 'not-found') this.fail(M, Code.NotFound, 'task not found');
-    this.verifications.push({ method: M, outcome: 'ok' });
+    this.accepted(M, req.requestEnvelope?.sessionGrant);
 
     const after = req.resumeAfterSeq;
     const chunk = (f: OutputStreamFixture['frames'][number]): SubscribeOutputResponse => ({
@@ -289,16 +325,14 @@ export class FakeNexus {
   private ackOutput(req: AckOutputRequest) {
     const M = 'AckOutput';
     this.calls.push(M);
-    const enc = new TextEncoder();
-    const requester = this.check(M, () => v.verifySdkEnvelope(req.requestEnvelope, {
-      chainId: w.CHAIN_ID, method: M, sessionId: req.sessionId, taskId: req.taskId,
-      // output_id stays in the digest even though it is deprecated and empty.
-      body: v.sdkBodyDigest(enc.encode(req.sessionId), enc.encode(req.taskId), enc.encode(req.outputId)),
-      prefix: w.PREFIX, allowHeightExpiry: false, nowMs: BigInt(Date.now()), seenNonces: this.nonces,
-    }));
+    // last_seq is in the body; the deprecated output_id is not.
+    const requester = this.check(M, () => v.verifySdkRequest(req.requestEnvelope, {
+      method: M, sessionId: req.sessionId, taskId: req.taskId,
+      body: () => v.ackOutputBody(req.sessionId, req.taskId, req.lastSeq),
+    }, this.ctx()));
     this.injected(M);
     if (requester !== this.owner(req.sessionId)) this.fail(M, Code.PermissionDenied, 'NEXUS_OUTPUT_UNAUTHORIZED: only the task owner may ack');
-    this.verifications.push({ method: M, outcome: 'ok' });
+    this.accepted(M, req.requestEnvelope?.sessionGrant);
     this.acks.push({ lastSeq: req.lastSeq, outputId: req.outputId });
     return { acked: true, alreadyAcked: false, ackedAt: BigInt(Date.now()) };
   }
@@ -306,7 +340,7 @@ export class FakeNexus {
   // ------------------------------------------------------------------ task data plane
 
   private refOf(ref: TaskDataObjectRefV1 | undefined): v.ObjectRefLike {
-    if (ref === undefined) throw new v.VerifyError('NEXUS_DATA_MALFORMED', 'object_ref required');
+    if (ref === undefined) throw new v.VerifyError('NEXUS_INGRESS_MALFORMED', 'object_ref required');
     return {
       taskHash: ref.taskHash, sessionId: ref.sessionId, taskId: ref.taskId, objectKind: ref.objectKind,
       contentHash: ref.contentHash, evidenceProducerKind: ref.evidenceProducerKind, verifyRound: ref.verifyRound,
@@ -315,19 +349,19 @@ export class FakeNexus {
   }
 
   /** Authorizes a USER read of an OUTPUT object and returns the stored output it names. */
-  private authorizeRead(M: string, rpcMethod: string, refPb: TaskDataObjectRefV1 | undefined, body: (ref: v.ObjectRefLike) => Uint8Array, auth: Parameters<typeof v.verifyUserTaskDataAuth>[0]): OutputStreamFixture {
+  private authorizeRead(M: string, rpcMethod: string, refPb: TaskDataObjectRefV1 | undefined, body: (ref: v.ObjectRefLike) => Uint8Array, auth: TaskDataRequestAuthV1 | undefined): OutputStreamFixture {
     const ref = this.check(M, () => this.refOf(refPb));
     const requester = this.check(M, () => v.verifyUserTaskDataAuth(auth, {
-      chainId: w.CHAIN_ID, evmChainId: w.EVM_CHAIN_ID, builder: this.builder.address, rpcMethod,
-      body: body(ref), prefix: w.PREFIX, minHeight: this.node.height, maxHeight: this.node.height + REQUEST_TTL_BLOCKS,
-    }));
+      builder: this.builder.address, rpcMethod, body: body(ref), objectKind: ref.objectKind, maxServiceMaterialExpiryBlocks: MAX_SERVICE_MATERIAL_EXPIRY_BLOCKS,
+    }, this.ctx()));
     this.injected(M);
     // A user may read only the OUTPUT of their own task.
-    if (ref.objectKind !== 2 || requester !== this.owner(ref.sessionId)) this.fail(M, Code.PermissionDenied, 'NEXUS_DATA_UNAUTHORIZED: user may read only their own OUTPUT');
+    if (ref.objectKind !== 2 || requester !== this.owner(ref.sessionId)) this.fail(M, Code.PermissionDenied, 'DATA_ACCESS_DENIED: user may read only their own OUTPUT');
     const out = this.outputs.get(ref.taskId);
     if (out === undefined || out.task_hash !== ref.taskHash || out.output_hash !== ref.contentHash || out.session_id !== ref.sessionId) {
       this.fail(M, Code.NotFound, 'NEXUS_DATA_NOT_FOUND: no such OUTPUT object');
     }
+    this.signers.push(auth?.sessionGrant === undefined ? { method: M } : { method: M, sessionKey: hex(auth.sessionGrant.sessionKey) });
     return out!;
   }
 

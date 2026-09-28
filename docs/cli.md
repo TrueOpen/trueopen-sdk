@@ -208,7 +208,7 @@ trueopen session get 1a50a587...2e3f --rest-url http://<rest-host>:1317
 ### `trueopen order submit`
 
 Places an order via **OpenTask**: reads on-chain context -> builds the frozen
-`TaskOrderV3` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams
+`TaskOrderV3` -> signs the order and the request envelope (EIP-712, the account key) -> selects Task Builders by `task_builder_seed` -> streams
 the submission to every selected endpoint, succeeding as soon as one accepts.
 
 | Parameter | Required | Description |
@@ -316,7 +316,7 @@ from `task/{task_id}`, and the output hash, size and leaf count from the accepte
 `task/{task_id}/infer_receipt`. The metadata must match the receipt. The optional positional
 arguments override the two hashes. Until the receipt is on chain the command fails with the
 retriable `OUTPUT_TRUST_ANCHOR_PENDING`; run it again later. A size-0 output is not fetched at all.
-Each request expires at the latest height + 10 blocks, inside nexus's 20-block window.
+Each request expires at the latest height + 10 blocks, which must fit the Builders' `max_service_material_expiry_blocks`.
 
 **`--auto` is required**: nexus compares the `builder_operator_address` in the request against
 its own configuration byte-for-byte, and a manually given `--nexus-url` has no on-chain
@@ -500,7 +500,8 @@ rm -f /tmp/trueopen-key.txt
 | `CLI_WRITE_REQUIRES_RPC` | this command writes to the chain and needs `--rpc-url` and a key |
 | `NEXUS_DATA_CONFLICT: object key already committed` | this `(session, seq)` was already submitted before. Use a different `--seq` or create a new session (a chain reset can reproduce an old `session_id`) |
 | `NEXUS_DATA_EXPIRED: request height` | the request envelope's expiry window has passed. The SDK defaults to "current height + 10 blocks", and nexus's default cap is 20 blocks; if the chain is producing blocks slowly or the local clock is behind, just retry |
-| `SDK_LOCAL_ORDER_SIGNER_REQUIRED` | the inner order signature needs a raw-digest signer. The CLI wires this up automatically, so seeing this is a bug |
+| `SDK_AUTH_INVALID_SIGNATURE` on `order submit` | the Builder could not match the request signature to the account's stored public key. The account needs its key on chain first: run `trueopen session create` (MsgCreateSession) before the first order |
+| `SDK_LOCAL_SIGNER_ADDRESS_MISMATCH` | a signature did not recover to the configured address (wrong key for the address). The CLI derives both from the same mnemonic, so seeing this is a bug |
 | `task not found` (single endpoint) | `--nexus-url` pointed at an endpoint that does not have this task. Use `--auto` to search across endpoints instead |
 
 Suggested troubleshooting order: `trueopen builders` (are the on-chain endpoints healthy) ->

@@ -1,8 +1,9 @@
-import { canonicalFrameBytes, canonicalHashBytes, uint32BE, uint64BE, enumBE } from '../codec/domain-hash';
+import { canonicalFrameBytes, canonicalHashBytes, optionalV1, uint32BE, uint64BE, enumBE } from '../codec/domain-hash';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { eip712Digest } from '../codec/eip712';
+import { typedDataDigest } from '../signer/typed-data-signer';
+import type { TypedData } from '../signer/typed-data-signer';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
-import { concatBytes, fromHex, toHex } from '../util/bytes';
+import { fromHex, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
@@ -17,7 +18,7 @@ import { TrueOpenError } from '../errors/errors';
  *      only ever uses METADATA and FETCH.
  *   2. outer signature -- **routed by requester_kind, never sniffed by
  *      length**:
- *        USER            EIP-712 "TrueOpen Task Data Request" v1, exactly 65 bytes R‖S‖V
+ *        USER            EIP-712 "TrueOpen Task Data Request" v2, exactly 65 bytes R‖S‖V
  *        CORTEX_SERVICE  the H_FIELDS_V1 digest of TRUEOPEN_TASK_DATA_REQUEST_V1, exactly 64 bytes
  *      USER must also carry service_authorization_nonce = 0.
  *
@@ -44,9 +45,12 @@ export const TASK_DATA_BODY_DOMAIN = {
 /** The outer signature domain for the CORTEX_SERVICE branch; the USER branch doesn't use it (it uses EIP-712 instead). */
 export const TASK_DATA_REQUEST_DOMAIN = 'TRUEOPEN_TASK_DATA_REQUEST_V1';
 
-/** EIP-712 domain for the USER branch; the values are frozen by account_signing_v1.json. */
+/**
+ * EIP-712 domain for the USER branch; the values are frozen by account_signing_v1.json. Version 2
+ * adds sessionGrantHash; a version 1 signature is no longer accepted.
+ */
 export const TASK_DATA_EIP712_DOMAIN_NAME = 'TrueOpen Task Data Request';
-export const TASK_DATA_EIP712_DOMAIN_VERSION = '1';
+export const TASK_DATA_EIP712_DOMAIN_VERSION = '2';
 
 /** rpc_method must be byte-for-byte equal to the fully qualified name of the actual call, not a bare method name. */
 export const TASK_DATA_RPC_METHOD = {
@@ -92,18 +96,6 @@ function hash32(field: string, hex: string): Uint8Array {
     throw malformed(`${field} must be canonical lowercase 64-hex Hash32, got ${JSON.stringify(hex)}`);
   }
   return fromHex(hex);
-}
-
-/**
- * Encoding for an optional field: absent is a **single byte 0x00**; present
- * is 0x01 followed by a length-prefixed frame of the value. A "read the
- * whole object" request must sign an absent range (0x00), and must not be
- * rewritten as a present form with offset=0/length=total -- the two produce
- * different preimages.
- */
-function optionalField(value: Uint8Array | undefined): Uint8Array {
-  if (value === undefined) return new Uint8Array([0x00]);
-  return concatBytes(new Uint8Array([0x01]), canonicalFrameBytes(value));
 }
 
 /** SDK view of nexus.v1.TaskDataObjectRefV1 (Hash32 as canonical lowercase hex). */
@@ -186,7 +178,7 @@ export function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array {
     hash32('content_hash', ref.contentHash),
     enumBE(ref.evidenceProducerKind ?? EVIDENCE_PRODUCER_KIND.UNSPECIFIED),
     uint32BE(ref.verifyRound ?? 0),
-    optionalField(
+    optionalV1(
       ref.producerOperator === undefined
         ? undefined
         : canonicalOperatorAddressBytes('producer_operator', ref.producerOperator),
@@ -208,7 +200,7 @@ export interface ByteRange {
 
 /** body digest for FetchTaskData. An absent vs. present range produces two different preimages. */
 export function taskDataFetchBodyDigest(ref: TaskDataObjectRef, range?: ByteRange): Uint8Array {
-  const rangeField = optionalField(
+  const rangeField = optionalV1(
     range === undefined ? undefined : canonicalFrameBytes(uint64BE(range.offset), uint64BE(range.length)),
   );
   return canonicalHashBytes(
@@ -271,19 +263,23 @@ export const TASK_DATA_EIP712_TYPES: Eip712Types = {
     { name: 'serviceAuthorizationNonce', type: 'uint64' },
     { name: 'requestNonce', type: 'bytes32' },
     { name: 'expiryHeight', type: 'uint64' },
+    { name: 'sessionGrantHash', type: 'bytes32' },
   ],
 };
 
 /**
- * Signature digest for the USER branch (EIP-712, keccak). The signature is 65
- * bytes R‖S‖V. evmChainId is the numeric chain ID in the EIP-712 domain, and
- * is a different thing from the cosmos chain-ID string in fields.chainId.
+ * The USER branch as EIP-712 typed data, for a TypedDataSigner (a wallet signs this). evmChainId
+ * is the numeric chain ID in the EIP-712 domain, a different thing from the cosmos chain-ID
+ * string in fields.chainId. sessionGrantHash is 32 zero bytes when the wallet signs directly,
+ * and hashStruct(SessionGrant) when a session key signs under that grant.
  */
-export function taskDataRequestEip712Digest(
+export function taskDataRequestTypedData(
   f: TaskDataRequestAuthFields,
   evmChainId: bigint | number | string,
-): Uint8Array {
+  sessionGrantHash: Uint8Array = new Uint8Array(HASH32),
+): TypedData {
   validateAuthFields(f);
+  if (sessionGrantHash.length !== HASH32) throw malformed('sessionGrantHash must be 32 bytes');
   const message: Eip712Struct = {
     schemaVersion: f.schemaVersion,
     chainId: f.chainId,
@@ -295,17 +291,27 @@ export function taskDataRequestEip712Digest(
     serviceAuthorizationNonce: f.serviceAuthorizationNonce,
     requestNonce: f.requestNonce,
     expiryHeight: f.expiryHeight,
+    sessionGrantHash,
   };
-  return eip712Digest(
-    TASK_DATA_EIP712_TYPES,
-    {
+  return {
+    types: TASK_DATA_EIP712_TYPES,
+    primaryType: 'TaskDataRequest',
+    domain: {
       name: TASK_DATA_EIP712_DOMAIN_NAME,
       version: TASK_DATA_EIP712_DOMAIN_VERSION,
-      chainId: typeof evmChainId === 'number' ? BigInt(evmChainId) : evmChainId,
+      chainId: BigInt(evmChainId),
     },
-    'TaskDataRequest',
     message,
-  );
+  };
+}
+
+/** Signature digest for the USER branch (EIP-712, keccak). The signature is 65 bytes R‖S‖V. */
+export function taskDataRequestEip712Digest(
+  f: TaskDataRequestAuthFields,
+  evmChainId: bigint | number | string,
+  sessionGrantHash?: Uint8Array,
+): Uint8Array {
+  return typedDataDigest(taskDataRequestTypedData(f, evmChainId, sessionGrantHash));
 }
 
 /**

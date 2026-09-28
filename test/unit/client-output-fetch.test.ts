@@ -14,8 +14,9 @@ import type { OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
 import type { ChainTaskSnapshot, InferReceiptView } from '../../src/types/node';
 import type { ServiceKeyBinding } from '../../src/types/hub';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import {
   OUTPUT_MMR_DOMAIN,
@@ -141,9 +142,9 @@ function dataTransport(
 
 function makeClient(transport: Transport, reader: OutputTaskReader | null = taskReader(), h: unknown = hub()): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: CHAIN_ID, userAddress: 'trueopen1u', signerPubKey: secp256k1PublicKey(PRIV), signer: privKeySecp256k1Signer(PRIV),
-    chain: fakeChain, ingressTransport: transport,
-    orderSigner: privKeyEip712Signer(PRIV), evmChainId: 424242n,
+    chainId: CHAIN_ID, userAddress: ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen'),
+    wallet: privateKeyTypedDataSigner(PRIV),
+    chain: fakeChain, ingressTransport: transport, evmChainId: 424242n,
     nonce: () => new Uint8Array(32).fill(7),
     ...(reader !== null ? { taskReader: reader } : {}),
     hub: h as never,

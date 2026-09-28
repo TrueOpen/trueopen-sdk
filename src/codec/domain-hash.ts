@@ -48,6 +48,19 @@ export function canonicalHashBytes(...parts: Uint8Array[]): Uint8Array {
   return sha256(canonicalFrameBytes(...parts));
 }
 
+/**
+ * OPTIONAL_V1: absent is the single byte 0x00; present is 0x01 || FRAME_V1(value). An absent
+ * field and a present empty or zero value are different preimages.
+ */
+export function optionalV1(value: Uint8Array | undefined): Uint8Array {
+  if (value === undefined) return new Uint8Array([0x00]);
+  const framed = canonicalFrameBytes(value);
+  const out = new Uint8Array(1 + framed.length);
+  out[0] = 0x01;
+  out.set(framed, 1);
+  return out;
+}
+
 /** node shared.Uint32BE: the 4-byte big-endian encoding of a uint32. */
 export function uint32BE(value: number): Uint8Array {
   const out = new Uint8Array(4);

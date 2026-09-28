@@ -1,44 +1,138 @@
 import { describe, it, expect } from 'vitest';
 import {
-  sdkRequestSignBytes,
+  SDK_REQUEST_DOMAIN,
+  SDK_REQUEST_EIP712_TYPES,
+  sdkRequestEip712Domain,
+  sdkRequestTypedData,
+  sdkRequestEip712Digest,
   signSdkRequestEnvelope,
 } from '../../src/transport/sdk-request-envelope';
-import { toHex, fromHex } from '../../src/util/bytes';
-import { sha256 } from '../../src/codec/hash';
-import { privKeySecp256k1Signer, secp256k1PublicKey, verifyCosmosSecp256k1 } from '../../src/signer/secp256k1';
+import type { SdkRequestFields } from '../../src/transport/sdk-request-envelope';
+import { eip712DomainSeparator, eip712EncodeType, eip712HashStruct, eip712TypeHash } from '../../src/codec/eip712';
+import { privateKeyTypedDataSigner, typedDataDigest } from '../../src/signer/typed-data-signer';
+import { recoverEip712PubKey, ethAddressBytes } from '../../src/signer/eth-secp256k1';
+import { fromHex, toHex } from '../../src/util/bytes';
+import { TrueOpenError } from '../../src/errors/errors';
+import { ACCOUNT_SIGNING, fixtureKey, fixtureTypedData, section } from '../helpers/account-signing';
 
-// Golden values produced by an independent Python oracle (faithful to the nexus internal/sdkauth source).
-// The body digest is an opaque 32-byte input here; the per-method digests are pinned in ingress-methods.test.ts.
-const GOLDEN_BODY_DIGEST = '2f90d677ec27b7feb69699b46da15dd7d2fa45a1973de80739d312ec1fa4fe31';
-const GOLDEN_SIGN_BYTES =
-  '00000017545255454f50454e5f53444b5f524551554553545f563100000011747275656f70656e2d6465766e65742d310000000b5375626d69744f72646572000000202f6e657875732e76312e496e67726573734150492f5375626d69744f7264657200000006736573732d31000000067461736b2d3100000003aabbcc00000008000001b8dac5b400000000202f90d677ec27b7feb69699b46da15dd7d2fa45a1973de80739d312ec1fa4fe31';
+const V = section('sdk_request');
+const EVM = BigInt(V.domain.chain_id);
+const USER = ACCOUNT_SIGNING.account.account_bech32 as string;
+const wallet = privateKeyTypedDataSigner(fixtureKey('account'));
 
-describe('SDKRequestEnvelope / body_digest (independent nexus oracle golden)', () => {
-  const bodyDigest = fromHex(GOLDEN_BODY_DIGEST);
-  const fields = {
-    chainId: 'trueopen-devnet-1',
-    method: 'SubmitOrder',
-    endpoint: '/nexus.v1.IngressAPI/SubmitOrder',
-    sessionId: 'sess-1',
-    taskId: 'task-1',
-    requestNonce: new Uint8Array([0xaa, 0xbb, 0xcc]),
-    expiryHeightOrTime: 1893456000000n,
-    bodyDigest,
-  };
+const fields: SdkRequestFields = {
+  chainId: V.message.chainId!,
+  method: V.message.method!,
+  sessionId: V.message.sessionId!,
+  taskId: V.message.taskId!,
+  requestNonce: fromHex(V.message.requestNonce!),
+  expiryHeightOrTime: BigInt(V.message.expiryHeightOrTime!),
+  bodyDigest: fromHex(V.message.bodyDigest!),
+};
 
-  it('sdkRequestSignBytes matches the oracle byte-for-byte (4-byte frames)', () => {
-    expect(toHex(sdkRequestSignBytes(fields))).toBe(GOLDEN_SIGN_BYTES);
+const recover = (digest: string, sig: string): string => toHex(ethAddressBytes(recoverEip712PubKey(fromHex(digest), fromHex(sig))));
+
+describe('SDKRequest EIP-712 (account_signing_v1.json sdk_request)', () => {
+  it('domain: encode_type, type_hash and domain separator', () => {
+    expect(eip712EncodeType('EIP712Domain', SDK_REQUEST_EIP712_TYPES)).toBe(V.domain.encode_type);
+    expect(toHex(eip712TypeHash('EIP712Domain', SDK_REQUEST_EIP712_TYPES))).toBe(V.domain.type_hash);
+    expect(toHex(eip712DomainSeparator(SDK_REQUEST_EIP712_TYPES, sdkRequestEip712Domain(EVM)))).toBe(V.domain.domain_separator);
   });
 
-  it('signed envelope: secp256k1(sha256(SignBytes)) verifies correctly in nexus style', async () => {
-    const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-    const pub = secp256k1PublicKey(PRIV);
-    const env = await signSdkRequestEnvelope(fields, 'trueopen1testuser', pub, privKeySecp256k1Signer(PRIV));
-    expect(env.signature).toHaveLength(64);
-    expect(env.signerPubKey).toEqual(pub);
-    // nexus VerifySig verifies using sha256(SignBytes) + secp256k1
-    const sb = sdkRequestSignBytes(fields);
-    expect(verifyCosmosSecp256k1(sb, env.signature, pub)).toBe(true);
-    expect(toHex(sha256(sb))).toBe('80b90b60ced8c8c78609dfcdb70f5a8137c73407cdd71d371914d46a92b0bb96');
+  it('SDKRequest encode_type, type_hash and hash_struct', () => {
+    expect(eip712EncodeType('SDKRequest', SDK_REQUEST_EIP712_TYPES)).toBe(V.encode_type);
+    expect(toHex(eip712TypeHash('SDKRequest', SDK_REQUEST_EIP712_TYPES))).toBe(V.type_hash);
+    const data = sdkRequestTypedData(fields, EVM);
+    expect(toHex(eip712HashStruct('SDKRequest', SDK_REQUEST_EIP712_TYPES, data.message))).toBe(V.hash_struct);
+  });
+
+  it('the SDK projection equals the fixture typed data', () => {
+    expect(toHex(sdkRequestEip712Digest(fields, EVM))).toBe(V.signing_digest);
+    expect(toHex(typedDataDigest(fixtureTypedData(V)))).toBe(V.signing_digest);
+  });
+
+  it('signs the exact fixture signature, which recovers to the account', async () => {
+    const env = await signSdkRequestEnvelope(fields, { signerAddress: USER, signer: wallet, evmChainId: EVM });
+    expect(toHex(env.signature)).toBe(V.signature_65);
+    expect(recover(V.signing_digest, V.signature_65)).toBe(V.recovered_address);
+    expect(env.requestDomain).toBe(SDK_REQUEST_DOMAIN);
+    expect(env.requestDomain).toBe(ACCOUNT_SIGNING.sdk_request.envelope.request_domain);
+    expect(env.endpoint).toBe(V.message.endpoint);
+    expect(env.signerAddress).toBe(ACCOUNT_SIGNING.sdk_request.envelope.signer_address);
+    expect('signerPubKey' in env).toBe(false);
+  });
+
+  it('refuses to sign as an address the wallet does not hold', async () => {
+    const other = privateKeyTypedDataSigner(fixtureKey('wrong_key'));
+    await expect(signSdkRequestEnvelope(fields, { signerAddress: USER, signer: other, evmChainId: EVM })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
+    });
+  });
+});
+
+/** Negative rows based on sdk_request: every published digest, signature and recovery. */
+describe('request_auth_negative_cases on sdk_request', () => {
+  type Row = {
+    name: string;
+    base: string;
+    error?: string;
+    signed?: { signer?: string; message?: Record<string, string> };
+    verified?: { message?: Record<string, string>; domain?: { chain_id?: string; version?: string } };
+    signing_digest?: string;
+    signature_65?: string;
+    recovered_address?: string;
+    transport?: Record<string, string>;
+  };
+  const rows = (ACCOUNT_SIGNING.request_auth_negative_cases as Row[]).filter((r) => r.base === 'sdk_request');
+
+  it('the rows this file covers', () => {
+    expect(rows.map((r) => r.name).sort()).toEqual([
+      'expiry_negative',
+      'open_task_task_id_not_derived',
+      'open_task_with_session_grant',
+      'sdk_request_expiry_zero',
+      'sdk_request_grant_hash_without_grant',
+      'sdk_request_other_chain_id',
+      'sdk_request_other_evm_chain_id',
+      'sdk_request_signed_by_wrong_key',
+    ]);
+  });
+
+  for (const r of rows.filter((x) => x.signing_digest !== undefined)) {
+    it(`${r.name}: signature and verifier digest`, async () => {
+      if (r.signed !== undefined) {
+        const signedData = fixtureTypedData(V, { message: r.signed.message ?? {} });
+        const sig = await privateKeyTypedDataSigner(fixtureKey(r.signed.signer ?? 'account')).signTypedData(signedData);
+        expect(toHex(sig)).toBe(r.signature_65);
+      }
+      const verified = fixtureTypedData(V, { message: r.verified?.message ?? {}, domain: r.verified?.domain ?? {} });
+      expect(toHex(typedDataDigest(verified))).toBe(r.signing_digest);
+      expect(recover(r.signing_digest!, r.signature_65 ?? V.signature_65)).toBe(r.recovered_address);
+    });
+  }
+
+  const refuse = (change: Partial<SdkRequestFields>): void => {
+    expect(() => sdkRequestTypedData({ ...fields, ...change }, EVM)).toThrow(TrueOpenError);
+  };
+
+  it('sdk_request_expiry_zero and expiry_negative: the SDK refuses to build them', () => {
+    refuse({ expiryHeightOrTime: 0n });
+    refuse({ expiryHeightOrTime: -1n });
+    refuse({ expiryHeightOrTime: 1n << 63n });
+  });
+
+  it('the transport rows of sdk_request_session: the SDK refuses to build them', () => {
+    refuse({ sessionId: V.message.sessionId!.toUpperCase() });
+    refuse({ taskId: `0x${V.message.taskId}` });
+    refuse({ requestNonce: fromHex('202122232425262728292a2b2c2d2e2f') });
+  });
+
+  it('sdk_request_grant_hash_without_grant: the SDK signs 32 zero bytes without a grant', () => {
+    expect(toHex(sdkRequestTypedData(fields, EVM).message['sessionGrantHash'] as Uint8Array)).toBe('00'.repeat(32));
+  });
+
+  it('method and endpoint cannot disagree: the endpoint is derived', () => {
+    expect(sdkRequestTypedData({ ...fields, method: 'AckOutput' }, EVM).message['endpoint']).toBe('/nexus.v1.IngressAPI/AckOutput');
+    expect(() => sdkRequestTypedData({ ...fields, method: '/nexus.v1.IngressAPI/OpenTask' }, EVM)).toThrow(TrueOpenError);
   });
 });

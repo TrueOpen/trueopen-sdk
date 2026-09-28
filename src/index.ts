@@ -74,6 +74,22 @@ export type {
 
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
+export {
+  SessionKeyManager,
+  SESSION_GRANT_EIP712_TYPES,
+  SESSION_SDK_METHODS,
+  SESSION_TASK_DATA_METHODS,
+  sessionGrantTypedData,
+  sessionGrantHash,
+  sessionGrantMessage,
+} from './session/session-grant';
+export type {
+  SessionGrantFields,
+  SignedSessionGrant,
+  ActiveSession,
+  SessionAuthority,
+  SessionKeyManagerOptions,
+} from './session/session-grant';
 
 export {
   validateModelId,
@@ -121,6 +137,7 @@ export {
   encodeSignedOrder,
   decodeSignedOrder,
   taskOrderEip712Digest,
+  taskOrderTypedData,
   SIGNATURE_SCHEME,
   ORDER_EIP712_TYPES,
   ORDER_EIP712_DOMAIN_NAME,
@@ -140,13 +157,16 @@ export {
   uint64BE,
   boolByte,
   enumBE,
+  optionalV1,
 } from './codec/domain-hash';
-export { canonicalOperatorAddressBytes } from './codec/address';
-export { SIGN_DOMAINS } from './codec/domains';
 export {
-  orderEnvelopeSigningBytes,
-  deriveTaskId,
-} from './order/order-signing';
+  canonicalOperatorAddressBytes,
+  canonicalAccountAddressBytes,
+  toAccountAddress,
+  ACCOUNT_ADDRESS_PREFIX,
+} from './codec/address';
+export { SIGN_DOMAINS } from './codec/domains';
+export { deriveTaskId } from './order/order-signing';
 
 // ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme) ----
 export {
@@ -164,13 +184,21 @@ export {
   ethAddress0x,
   ethSecp256k1Address,
   ethSecp256k1AddressMatches,
-  privKeyEip712Signer,
   recoverEip712PubKey,
   recoverEip712Address,
   verifyEip712,
   TRUEOPEN_HD_PATH,
 } from './signer/eth-secp256k1';
-export type { Eip712Signer } from './signer/eth-secp256k1';
+export {
+  privateKeyTypedDataSigner,
+  eip1193TypedDataSigner,
+  keplrTypedDataSigner,
+  typedDataDigest,
+  typedDataJson,
+  normalizeWalletSignature,
+  signTypedDataAs,
+} from './signer/typed-data-signer';
+export type { TypedData, TypedDataSigner, Eip1193Provider, KeplrEthereumSigner } from './signer/typed-data-signer';
 export {
   EthSecp256k1DirectSigner,
   ethSecp256k1SignerFromMnemonic,
@@ -180,32 +208,43 @@ export {
 } from './signer/eth-direct-signer';
 
 export {
-  privKeySecp256k1Signer,
   privKeySecp256k1DigestSigner,
   secp256k1PublicKey,
-  verifyCosmosSecp256k1,
   verifySecp256k1Digest,
 } from './signer/secp256k1';
-export type { CosmosSecp256k1Signer, Secp256k1DigestSigner } from './signer/secp256k1';
+export type { Secp256k1DigestSigner } from './signer/secp256k1';
 
-export { frame4, i64be, u64be } from './codec/frame';
 export {
   SDK_REQUEST_DOMAIN,
-  sdkRequestSignBytes,
-  bodyDigest,
+  SDK_REQUEST_EIP712_DOMAIN_NAME,
+  SDK_REQUEST_EIP712_DOMAIN_VERSION,
+  SDK_REQUEST_EIP712_TYPES,
+  INGRESS_SERVICE_PATH,
+  sdkRequestEip712Domain,
+  sdkRequestTypedData,
+  sdkRequestEip712Digest,
+  signSdkRequestEnvelope,
+  ingressEndpoint,
+  strictHash32,
+} from './transport/sdk-request-envelope';
+export {
+  SDK_BODY_DOMAIN,
   openTaskBodyDigest,
-  getTaskEventsBodyDigest,
-  prepareChallengeBodyDigest,
+  openTaskPayloadRef,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
-  signSdkRequestEnvelope,
-} from './transport/sdk-request-envelope';
-export type { SdkRequestEnvelopeFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
+  getTaskEventsBodyDigest,
+  parseFromCursor,
+  prepareChallengeBodyDigest,
+} from './transport/sdk-request-body';
+export type { OpenTaskBody } from './transport/sdk-request-body';
+export type { SdkRequestFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
 
-export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES } from './transport/ingress-client';
+export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES, envelopeMessage, isSessionGrantExpired } from './transport/ingress-client';
 export {
   taskDataRequestSignBytes,
   taskDataRequestEip712Digest,
+  taskDataRequestTypedData,
   taskDataMetadataBodyDigest,
   taskDataFetchBodyDigest,
   canonicalObjectRefFrame,
@@ -274,7 +313,7 @@ export type {
   OutputFrameAcceptance,
 } from './output/output-commitment';
 
-export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES } from './client';
+export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,

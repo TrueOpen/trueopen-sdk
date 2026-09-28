@@ -1,21 +1,21 @@
 import { toHex } from '../util/bytes';
 import { sha256 } from '../codec/hash';
 import { TrueOpenError } from '../errors/errors';
-import { signAndEncodeOrder, OPEN_TASK_HEADER_SIGNATURE_SCHEME } from './signed-order';
+import { signAndEncodeOrder } from './signed-order';
 import type { OrderEip712Context } from './signed-order';
-import { payloadRefFor } from './task-order-input';
-import { orderEnvelopeSigningBytes } from './order-signing';
-import { openTaskBodyDigest, signSdkRequestEnvelope } from '../transport/sdk-request-envelope';
+import { deriveTaskId } from './order-signing';
+import { canonicalAccountAddressBytes } from '../codec/address';
+import { signSdkRequestEnvelope, ingressEndpoint, HEIGHT_EXPIRY_THRESHOLD } from '../transport/sdk-request-envelope';
+import { openTaskBodyDigest, openTaskPayloadRef } from '../transport/sdk-request-body';
 import type { TaskOrderV3 } from './task-order';
 import type { OpenTaskInput } from '../transport/ingress-client';
-import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
-import type { Eip712Signer } from '../signer/eth-secp256k1';
+import type { TypedDataSigner } from '../signer/typed-data-signer';
 
 /** OpenTask's Connect procedure path (goes into the SDKRequestEnvelope's endpoint field). */
-export const OPEN_TASK_ENDPOINT = '/nexus.v1.IngressAPI/OpenTask';
+export const OPEN_TASK_ENDPOINT = ingressEndpoint('OpenTask');
 
-/** nexus's threshold for distinguishing expiry values: >= 1e12 is treated as a unix millisecond timestamp; OpenTask only accepts a chain height. */
-export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
+/** Values >= 1e12 are Unix milliseconds; OpenTask is signed with a chain height below it. */
+export { HEIGHT_EXPIRY_THRESHOLD };
 
 const DEFAULT_MEDIA_TYPE = 'application/octet-stream';
 
@@ -26,35 +26,38 @@ export interface BuildOpenTaskInput {
   readonly orderEip712: OrderEip712Context;
   /** The plaintext input payload itself; must match order.inputHash / inputSizeBytes. */
   readonly payload: Uint8Array;
-  /** The session the order belongs to, canonical lowercase 64-hex. */
+  /** The session the order belongs to, canonical lowercase 64-hex; must be the order's. */
   readonly sessionId: string;
+  /** Must be TRUEOPEN_TASK_ID_V1(session_id, order_sequence) (deriveTaskId). */
   readonly taskId: string;
   /**
-   * The request_envelope's expiry **chain height** (not a timestamp). nexus requires
-   * 0 < expiry < 1e12, otherwise it is interpreted as a unix millisecond timestamp and rejected.
+   * The request_envelope's expiry **chain height** (not a timestamp): 0 < expiry < 1e12. A value
+   * of 1e12 or more is Unix milliseconds, which OpenTask does not accept.
    */
   readonly expiryHeight: bigint;
   readonly requestNonce: Uint8Array;
   /** Required; must stay identical across retries. */
   readonly idempotencyKey: string;
   readonly inputMediaType?: string;
-  /** The signer that signs the order's EIP-712 digest (the user's identity; the Keeper recovers the address from the recoverable signature). */
-  readonly orderSigner: Eip712Signer;
-  /** The "hash-then-sign" signer that signs the outer order envelope and the request envelope (verified by nexus). */
-  readonly signer: CosmosSecp256k1Signer;
-  readonly signerPubKey: Uint8Array;
-  /** The request envelope's identity; defaults back to the order's user. */
-  readonly sdkSigner?: CosmosSecp256k1Signer;
-  readonly sdkSignerPubKey?: Uint8Array;
-  readonly sdkSignerAddress?: string;
+  /**
+   * The user's wallet. Signs the order's EIP-712 digest and the request envelope, both as
+   * order.userAddress (the Keeper and the Builder recover the address from the signature).
+   * Never a session key: OpenTask does not accept a session grant.
+   */
+  readonly wallet: TypedDataSigner;
   readonly chunkSizeBytes?: number;
+  /**
+   * The configured chain ID. When given, an order (and so an envelope) for another chain is
+   * refused locally with SDK_LOCAL_CHAIN_ID_MISMATCH.
+   */
+  readonly chainId?: string;
 }
 
 export interface BuildOpenTaskResult {
   readonly input: OpenTaskInput;
   /** canonical task_hash (lowercase 64-hex), covered as a bytes32 field by the inner EIP-712 signature. */
   readonly taskHash: string;
-  /** Hex of the SignedOrderV2 bytes -- this exact text is what the outer signature covers. */
+  /** Hex of the SignedOrderV2 bytes sent as order_envelope. */
   readonly orderEnvelopeHex: string;
 }
 
@@ -62,23 +65,18 @@ export interface BuildOpenTaskResult {
  * End-to-end assembly of a single OpenTask order submission, producing input that can be
  * passed directly to IngressClient.openTask.
  *
- * A single order submission involves **two user signatures**, over different byte
- * encodings and hash schemes -- this is the easiest part of the flow to get wrong:
+ * The wallet signs twice, both EIP-712 typed data recovering to the order user:
  *
- *  1. Inner SignedOrderV2.user_signature -- signs the digest of the EIP-712
- *     "TrueOpen Task Order" v2 domain (keccak, 65-byte R||S||V); task_hash is one
- *     bytes32 field of that message. Uses orderSigner.
- *  2. Outer OpenTaskHeader.signature -- signs
- *     domainHash("TRUEOPEN_ORDER_V1", chain_id, user, session_id, dec(order_sequence),
- *     hex(SignedOrderV2 bytes)), sha256 scheme, 64 bytes. Note that the 5th field is
- *     the **hex text** of the order bytes, because on the nexus side
- *     order.OrderEnvelope = hex.EncodeToString(raw). Uses signer.
+ *  1. SignedOrderV2.user_signature -- the "TrueOpen Task Order" v3 digest, with task_hash as one
+ *     bytes32 field. This alone authorizes the order; the Keeper verifies it.
+ *  2. The request envelope -- the "TrueOpen SDK Request" SDKRequest, whose bodyDigest is
+ *     TRUEOPEN_SDK_BODY_OPEN_TASK_V1(task_hash, session_id, order_sequence, user_address,
+ *     input_size_bytes, input_hash, input_media_type, idempotency_key). Never a session key.
  *
- * The two differ in hash function (keccak vs sha256), signature length (65 vs 64),
- * and signed object, and are not interchangeable.
- *
- * The third signature is the request envelope (SDKRequestEnvelopeV1), whose identity
- * can be separate from the user's.
+ * There is no outer order signature: OpenTaskHeader.signature and signature_scheme stay
+ * empty. payload_ref is not signed but must be "nexus://sha256/" || lowercase_hex(input_hash).
+ * The Builder also requires the user's account to hold its public key on chain already (the
+ * user has submitted MsgCreateSession).
  */
 export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<BuildOpenTaskResult> {
   if (input.payload.length === 0) {
@@ -107,77 +105,69 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       `OpenTask expiry must be a chain height in (0, ${HEIGHT_EXPIRY_THRESHOLD}); got ${input.expiryHeight}`,
     );
   }
+  if (input.chainId !== undefined && input.order.chainId !== input.chainId) {
+    throw local('SDK_LOCAL_CHAIN_ID_MISMATCH', `order chain_id ${input.order.chainId} is not the configured chain ${input.chainId}`);
+  }
+  // user_address: canonical lowercase Bech32 with the account prefix, 20 bytes.
+  canonicalAccountAddressBytes('user_address', input.order.userAddress);
   if (input.idempotencyKey === '') {
     throw local('SDK_LOCAL_IDEMPOTENCY_KEY_REQUIRED', 'idempotency_key is required');
   }
+  // The Builder rejects an OpenTask whose task_id is not derived from the order's own session
+  // and sequence; so does the SDK, before anything is signed.
+  if (toHex(input.order.sessionId) !== input.sessionId) {
+    throw local('SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH', `session_id ${input.sessionId} is not the order's ${toHex(input.order.sessionId)}`);
+  }
+  const derived = deriveTaskId(input.sessionId, input.order.orderSequence);
+  if (input.taskId !== derived) {
+    throw local('SDK_LOCAL_OPEN_TASK_ID_NOT_DERIVED', `task_id ${input.taskId} is not TRUEOPEN_TASK_ID_V1(session_id, order_sequence) = ${derived}`);
+  }
 
-  // (1) Inner: sign the order's EIP-712 digest (task_hash is one of its fields), encode as SignedOrderV2.
-  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.orderSigner);
+  // (1) The order's EIP-712 signature (task_hash is one of its fields), encoded as SignedOrderV2.
+  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.wallet);
   const orderEnvelopeHex = toHex(signed.bytes);
 
-  // (2) Outer: on the nexus side, order_envelope is fed into domainHash as hex text.
-  // This matches nexus main's validateOpenTaskHeader (checked 2026-09-15, main@b19f6206):
-  //   signer.VerifySig(requestEnvelope.signer_pubkey,
-  //     nodecontract.CurrentOrderSigningBytes(chain_id, user, session_id, order_sequence,
-  //                                           order.OrderEnvelope),
-  //     header.signature)
-  // i.e. **sha256 scheme, 64 bytes**, and header.signature_scheme is hard-checked to be
-  // "secp256k1". The order itself switched to EIP-712, but this outer signature did not
-  // change -- the two must not be mixed up.
-  const outerFull = await input.signer(
-    orderEnvelopeSigningBytes(
-      input.order.chainId,
-      input.order.userAddress,
-      input.sessionId,
-      input.order.orderSequence,
-      orderEnvelopeHex,
-    ),
-  );
-  const outerSignature = outerFull.length === 65 ? outerFull.subarray(0, 64) : outerFull;
-
-  const payloadRef = payloadRefFor(input.payload);
+  const payloadRef = openTaskPayloadRef(payloadHashHex);
   const inputMediaType = input.inputMediaType ?? DEFAULT_MEDIA_TYPE;
 
   const bodyDigest = openTaskBodyDigest({
-    orderEnvelope: signed.bytes,
-    payloadRef,
-    signature: outerSignature,
+    taskHash: signed.taskHash,
     sessionId: input.sessionId,
     orderSequence: input.order.orderSequence,
     userAddress: input.order.userAddress,
-    signatureScheme: OPEN_TASK_HEADER_SIGNATURE_SCHEME,
     inputSizeBytes: BigInt(input.payload.length),
     inputHash: payloadHashHex,
     inputMediaType,
+    idempotencyKey: input.idempotencyKey,
   });
 
-  // (3) Request envelope: identity can be separate from the user, defaulting back to the user.
+  // (2) Request envelope: EIP-712 SDKRequest, wallet-signed as the order user, never a session key.
   const requestEnvelope = await signSdkRequestEnvelope(
     {
       chainId: input.order.chainId,
       method: 'OpenTask',
-      endpoint: OPEN_TASK_ENDPOINT,
       sessionId: input.sessionId,
       taskId: input.taskId,
       requestNonce: input.requestNonce,
       expiryHeightOrTime: input.expiryHeight,
       bodyDigest,
     },
-    input.sdkSignerAddress ?? input.order.userAddress,
-    input.sdkSignerPubKey ?? input.signerPubKey,
-    input.sdkSigner ?? input.signer,
+    {
+      signerAddress: input.order.userAddress,
+      signer: input.wallet,
+      evmChainId: BigInt(input.orderEip712.evmChainId),
+      ...(input.chainId !== undefined ? { chainId: input.chainId } : {}),
+    },
   );
 
   return {
     input: {
       orderEnvelope: signed.bytes,
       payloadRef,
-      signature: outerSignature,
       requestEnvelope,
       sessionId: input.sessionId,
       orderSequence: input.order.orderSequence,
       userAddress: input.order.userAddress,
-      signatureScheme: OPEN_TASK_HEADER_SIGNATURE_SCHEME,
       inputHash: payloadHashHex,
       inputMediaType,
       idempotencyKey: input.idempotencyKey,

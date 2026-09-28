@@ -6,7 +6,7 @@ plugins:
       - target=ts
       - import_extension=js
 inputs:
-  # The wire contract (submodule, commit 86ed1c4, after v0.3.3; see README). Only the transitive closure the SDK needs is generated,
+  # The wire contract (submodule, tag v0.4.0; see README). Only the transitive closure the SDK needs is generated,
   # which deliberately excludes cortex.v1: wire withholds that package, so its fields are not frozen
   # and generating types from it now would bake in a shape wire has already said it will break.
   # not all of wire's files. The first 13 are the import closure computed from two roots (ingress /

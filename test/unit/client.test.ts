@@ -12,11 +12,12 @@ import type {
 } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { TrueOpenClient } from '../../src/client';
 import { sha256 } from '../../src/codec/hash';
 import type { ChainClient } from '../../src/transport/chain-client';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outputFinSigningDigest } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
@@ -24,15 +25,14 @@ import { TrueOpenError } from '../../src/errors/errors';
 
 // deriveTaskId requires canonical 64-hex (raw Hash32 goes into the preimage).
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+/** Request bodies decode task_id strictly as a lowercase Hash32. */
+const TASK = 'e4'.repeat(32);
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-const signer = privKeySecp256k1Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 
-// A separate SDK request-signing identity (a different private key from the user's).
-const SDK_PRIV = fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021');
-const sdkSigner = privKeySecp256k1Signer(SDK_PRIV);
-const sdkPub = secp256k1PublicKey(SDK_PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
+const USER = ethSecp256k1Address(pub, 'trueopen');
 
 const PAYLOAD = new TextEncoder().encode('trueopen-input');
 
@@ -43,7 +43,7 @@ function fakeChain(cap: { cancel?: unknown } = {}): ChainClient {
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
     async createSession() { return { sessionId: SESSION, owner: 'trueopen1u', nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
-    async cancelOrder(i) { cap.cancel = i; return { taskId: 'task-1', cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
+    async cancelOrder(i) { cap.cancel = i; return { taskId: TASK, cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
   };
 }
 
@@ -141,9 +141,9 @@ function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: un
 
 function makeClient(chainCap = {}, ingressCap = {}): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-devnet-1', userAddress: 'trueopen1u', signerPubKey: pub, signer,
+    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, evmChainId: 424242n,
     chain: fakeChain(chainCap), ingressTransport: fakeTransport(ingressCap),
-    nonce: () => new Uint8Array([1, 2, 3]), expiry: () => 1893456000000n,
+    nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
   });
 }
 
@@ -170,22 +170,22 @@ function scriptedStreamTransport(
 
 function makeClientWithTransport(transport: Transport): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-devnet-1', userAddress: 'trueopen1u', signerPubKey: pub, signer,
+    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, evmChainId: 424242n,
     chain: fakeChain(), ingressTransport: transport,
-    nonce: () => new Uint8Array([1, 2, 3]), expiry: () => 1893456000000n,
+    nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
   });
 }
 
 describe('TrueOpenClient facade', () => {
   it('watchTask streams events', async () => {
     const events = [];
-    for await (const ev of makeClient().watchTask(SESSION, 'task-1', '0')) events.push(ev);
+    for await (const ev of makeClient().watchTask(SESSION, TASK, '0')) events.push(ev);
     expect(events).toHaveLength(1);
     expect(events[0]?.eventCode).toBe('OPEN_VERIFY_ACCEPTED');
   });
 
   it('prepareChallenge returns a plan', async () => {
-    const res = await makeClient().prepareChallenge(SESSION, 'task-1', 'USER_REVALIDATION');
+    const res = await makeClient().prepareChallenge(SESSION, TASK, 'USER_REVALIDATION');
     expect(res.challengeOpen).toBe(true);
     expect(res.estimatedBond?.amount).toBe('5');
   });
@@ -200,13 +200,13 @@ describe('TrueOpenClient facade', () => {
     const cap: { subscribe?: SubscribeOutputRequest; ack?: AckOutputRequest } = {};
     const got: string[] = [];
     for await (const f of makeClient({}, cap).streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
     })) {
       if (f.kind === 'chunk') got.push(f.text);
     }
     expect(got).toEqual(['hello ', 'final ', 'output']);
     expect(got.join('')).toBe(OUTPUT_TEXT);
-    expect(cap.subscribe?.taskId).toBe('task-1');
+    expect(cap.subscribe?.taskId).toBe(TASK);
     // last_seq is the sequence number of the last locally verified segment, not the frame count.
     expect(cap.ack?.lastSeq).toBe(2n);
   });
@@ -237,7 +237,7 @@ describe('TrueOpenClient facade', () => {
   const drain = async (c: TrueOpenClient, extra: Record<string, unknown> = {}): Promise<string> => {
     let out = '';
     for await (const f of c.streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
     })) { if (f.kind === 'chunk') out += f.text; }
     return out;
@@ -256,7 +256,7 @@ describe('TrueOpenClient facade', () => {
     const kinds: string[] = [];
     await expect((async () => {
       for await (const e of c.streamOutput({
-        sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
+        sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
       })) kinds.push(e.kind);
     })()).rejects.toMatchObject({
       code: 'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED',
@@ -271,7 +271,7 @@ describe('TrueOpenClient facade', () => {
     const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1), cap));
     const events = [];
     for await (const e of c.streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
     })) events.push(e);
     expect(events.at(-1)).toEqual({ kind: 'fin', attested: true, finishReason: 1 });
     expect(cap.ack?.lastSeq).toBe(2n);
@@ -347,7 +347,7 @@ describe('TrueOpenClient facade', () => {
     let finishReason: FinishReasonV1 | undefined;
     let attested: boolean | undefined;
     for await (const e of c.streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
     })) {
       kinds.push(e.kind);
@@ -381,7 +381,7 @@ describe('TrueOpenClient facade', () => {
     const events = [];
     // ack is left at its default (true): an unattested Fin must still not be acked.
     for await (const e of c.streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
       maxAttempts: 1, finSignaturePolicy: 'accept-unsigned',
     })) events.push(e);
     expect(events.map((e) => e.kind)).toEqual(['chunk', 'chunk', 'chunk', 'fin']);
@@ -393,7 +393,7 @@ describe('TrueOpenClient facade', () => {
     const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 2), cap));
     for await (const e of c.streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
       maxAttempts: 1, finSignaturePolicy: 'accept-unsigned',
     })) {
       if (e.kind === 'fin') expect(e).toEqual({ kind: 'fin', attested: true, finishReason: 2 });
@@ -407,7 +407,7 @@ describe('TrueOpenClient facade', () => {
     const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1), cap));
     for await (const e of c.streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, maxAttempts: 1,
     })) {
       if (e.kind === 'fin') break;
@@ -418,7 +418,7 @@ describe('TrueOpenClient facade', () => {
   it('streamOutput does not report progress when ack:false', async () => {
     const cap: { ack?: AckOutputRequest } = {};
     for await (const _ of makeClient({}, cap).streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, ack: false,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, ack: false,
     })) { /* just drain */ }
     expect(cap.ack).toBeUndefined();
   });
@@ -426,7 +426,7 @@ describe('TrueOpenClient facade', () => {
   it('streamOutput rejects a bare resumeAfterSeq that has no verifier checkpoint', async () => {
     const cap: { subscribe?: SubscribeOutputRequest } = {};
     const iterator = makeClient({}, cap).streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, resumeAfterSeq: 1n,
     })[Symbol.asyncIterator]();
     await expect(iterator.next()).rejects.toThrow(/checkpoint/);
@@ -454,7 +454,7 @@ describe('TrueOpenClient facade', () => {
 
     for await (const frame of a.streamOutput({
       sessionId: SESSION,
-      taskId: 'task-1',
+      taskId: TASK,
       taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB,
       sources: [{ id: 'builder-a', ingress: a.ingress }, { id: 'builder-b', ingress: b.ingress }],
@@ -488,7 +488,7 @@ describe('TrueOpenClient facade', () => {
 
     for await (const frame of a.streamOutput({
       sessionId: SESSION,
-      taskId: 'task-1',
+      taskId: TASK,
       taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB,
       sources: [{ id: 'gap-builder', ingress: a.ingress }, { id: 'good-builder', ingress: b.ingress }],
@@ -521,7 +521,7 @@ describe('TrueOpenClient facade', () => {
     const got: string[] = [];
     for await (const frame of client.streamOutput({
       sessionId: SESSION,
-      taskId: 'task-1',
+      taskId: TASK,
       taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB,
       checkpoint: verifier.checkpoint(),
@@ -548,11 +548,11 @@ describe('TrueOpenClient facade', () => {
     }
     const size = OUTPUT_CHUNKS.reduce((total, chunk) => total + BigInt(chunk.length), 0n);
     const event = makeClient().confirmOutput({
-      taskId: 'task-1',
+      taskId: TASK,
       taskHash: TASK_HASH,
       checkpoint: verifier.checkpoint(),
       receipt: {
-        taskId: 'task-1',
+        taskId: TASK,
         winnerWorker: 'trueopen1worker',
         inferReceiptHash: 'd'.repeat(64),
         outputHash: toHex(frames[frames.length - 1]!.mmrRoot),
@@ -561,45 +561,36 @@ describe('TrueOpenClient facade', () => {
       },
     });
     expect(event).toMatchObject({
-      type: 'confirmed', taskId: 'task-1', outputLeafCount: 3n, outputSizeBytes: size,
+      type: 'confirmed', taskId: TASK, outputLeafCount: 3n, outputSizeBytes: size,
     });
   });
 
   it('a different Worker public key fails frame signature verification', async () => {
     const other = secp256k1PublicKey(fromHex('0402030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'));
     const it = makeClient({}, {}).streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: other,
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: other,
     })[Symbol.asyncIterator]();
     await expect(it.next()).rejects.toThrow(/signature invalid/);
   });
 
   it('flipping one bit in task_hash changes the frame digest and fails signature verification', async () => {
     const it = makeClient({}, {}).streamOutput({
-      sessionId: SESSION, taskId: 'task-1', taskHash: 'd' + TASK_HASH.slice(1), workerServicePubKey: WORKER_PUB,
+      sessionId: SESSION, taskId: TASK, taskHash: 'd' + TASK_HASH.slice(1), workerServicePubKey: WORKER_PUB,
     })[Symbol.asyncIterator]();
     await expect(it.next()).rejects.toThrow(/signature invalid/);
   });
 
-  it('addressPrefix: construction throws when signer_address does not match the pubkey', () => {
-    expect(
-      () =>
-        new TrueOpenClient({
-          chainId: 'trueopen-devnet-1', userAddress: 'trueopen1u', signerPubKey: pub, signer,
-          chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',
-        }),
-    ).toThrowError(/ADDRESS_PUBKEY_MISMATCH|does not match/);
-  });
-
-  it('addressPrefix: construction succeeds when the address is derived from the pubkey', () => {
-    expect(
-      () =>
-        new TrueOpenClient({
-          chainId: 'trueopen-devnet-1',
-          // The address is keccak-derived; the derivation rule itself is anchored against the official vectors in eth-secp256k1.test.ts.
-          userAddress: ethSecp256k1Address(pub, 'trueopen'),
-          signerPubKey: pub, signer,
-          chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',
-        }),
-    ).not.toThrow();
+  it('a wallet that does not hold userAddress is refused before a request is sent', async () => {
+    const cap: { ack?: AckOutputRequest } = {};
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-devnet-1', userAddress: USER, evmChainId: 424242n,
+      wallet: privateKeyTypedDataSigner(fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021')),
+      chain: fakeChain(), ingressTransport: scriptedStreamTransport(async function* () {}, cap),
+      expiry: () => 1893456000000n,
+    });
+    await expect(client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
+    });
+    expect(cap.ack).toBeUndefined();
   });
 });

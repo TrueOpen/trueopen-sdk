@@ -1,10 +1,10 @@
 import type { Transport } from '@connectrpc/connect';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
-import type { CosmosSecp256k1Signer } from './signer/secp256k1';
-import type { Eip712Signer } from './signer/eth-secp256k1';
-import { ethSecp256k1AddressMatches } from './signer/eth-secp256k1';
+import type { TypedDataSigner } from './signer/typed-data-signer';
 import { IngressClient } from './transport/ingress-client';
-import type { OpenTaskAck, TaskStatusView } from './transport/ingress-client';
+import type { OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
+import { SessionKeyManager } from './session/session-grant';
+import { toAccountAddress } from './codec/address';
 import type {
   PrepareChallengeResponse,
   GetTaskEventsResponse,
@@ -42,28 +42,24 @@ import { bytesEqual } from './util/bytes';
 
 export interface TrueOpenClientConfig {
   readonly chainId: string;
+  /**
+   * The user's account address: the order user and the signer of every request. Canonical
+   * lowercase Bech32 with the account prefix `trueopen` (20 bytes), or a 0x EVM address, which
+   * is converted to that Bech32 form.
+   */
   readonly userAddress: string;
-  readonly signerPubKey: Uint8Array; // 33-byte compressed public key
-  readonly signer: CosmosSecp256k1Signer;
+  /**
+   * The user's wallet (see TypedDataSigner): signs the order, the OpenTask request envelope,
+   * and every other request to Builder Ingress, all as EIP-712 typed data (65-byte R||S||V).
+   * Each signature is recovered and checked against userAddress before it is sent.
+   *
+   * privateKeyTypedDataSigner (CLI, servers), eip1193TypedDataSigner (browser wallets) or
+   * keplrTypedDataSigner (Keplr).
+   */
+  readonly wallet: TypedDataSigner;
   readonly chain: ChainClient; // chain read+write (createTrueOpenChainClient)
   readonly ingressTransport: Transport; // nexus IngressAPI Connect transport
-  /**
-   * Two separate identities: the signing identity for the nexus request envelope
-   * (SDKRequestEnvelopeV1) is independent of the user identity that signs the
-   * OrderEnvelope. Both default to falling back to the user identity, matching
-   * the old byte-for-byte behavior (backward compatible).
-   */
-  readonly sdkSigner?: CosmosSecp256k1Signer; // default = signer (user)
-  readonly sdkSignerPubKey?: Uint8Array; // default = signerPubKey
-  readonly sdkSignerAddress?: string; // default = userAddress
-  /**
-   * If provided, checks at construction time that the SDK request signing
-   * identity is self-consistent:
-   * signer_address == bech32(addressPrefix, keccak256(uncompressed_XY)[12:32]).
-   * nexus enforces this constraint; a mismatch returns SDK_AUTH_INVALID_SIGNATURE.
-   */
-  readonly addressPrefix?: string;
-  /** Request nonce generator; defaults to 16 random bytes from the platform's secure RNG. */
+  /** Request nonce generator; must return exactly 32 bytes. Defaults to 32 bytes from the platform's secure RNG. */
   readonly nonce?: () => Uint8Array;
   /** Request expiry (Unix ms) generator; defaults to now + requestTtlMs. */
   readonly expiry?: () => bigint;
@@ -72,26 +68,43 @@ export interface TrueOpenClientConfig {
   /**
    * The OpenTask request envelope's expiry window, in **blocks** (default 10).
    *
-   * nexus applies two constraints to OpenTask:
-   *  1. expiry must be a block height, not a timestamp (0 < expiry < 1e12, ingress/taskdata.go:221);
-   *  2. it must also fall within [currentHeight, currentHeight + RequestTTLBlocks]
-   *     (taskdata/authorizer.go:327-329), where RequestTTLBlocks defaults to **20**
-   *     (nexus internal/config, overridable via NEXUS_TASK_DATA_REQUEST_TTL_BLOCKS).
-   * Picking too large a window risks NEXUS_DATA_EXPIRED, so the default is 10 to leave block-production margin.
+   * OpenTask is the only request whose expiry is a block height (0 < expiry < 1e12), and the
+   * Builder accepts it only within [currentHeight, currentHeight + its request TTL in blocks]
+   * (20 by default). Picking too large a window risks NEXUS_DATA_EXPIRED, so the default is 10
+   * to leave block-production margin.
    */
   readonly requestTtlBlocks?: number;
   /**
-   * Signer for the order's EIP-712 digest (SignedOrderV2.user_signature, a 65-byte R||S||V signature).
-   * **Cannot** reuse signer: that one produces a 64-byte sha256-based Cosmos signature, while this one
-   * needs a keccak-based recoverable signature -- the two are incompatible. Required for openTask.
+   * The Task data request (GetTaskDataMetadata / FetchTaskData) expiry window, in **blocks**
+   * (default 10). The Builder accepts current_height <= expiry_height <= current_height +
+   * max_service_material_expiry_blocks, a different window from OpenTask's request TTL; keep this
+   * at or below the Builders' max_service_material_expiry_blocks. An expired request answers
+   * NEXUS_DATA_EXPIRED, which the SDK re-signs and retries on the same Builder.
    */
-  readonly orderSigner?: Eip712Signer;
+  readonly taskDataExpiryBlocks?: number;
   /**
-   * The chainId inside the EIP-712 domain is the **numeric EVM chain ID** (424242 in the golden
-   * vectors), which is a different thing from the cosmos string chainId above -- both go into the
-   * order signature. Required for openTask.
+   * The chain's numeric EVM chain ID (`params.phase0.evm_chain_id`): the chainId of every
+   * EIP-712 domain (order, SDK request, Task data request, session grant), a different thing
+   * from the cosmos chainId string above. Defaults to reading it once from `hub.getEvmChainId()`.
    */
   readonly evmChainId?: bigint | number | string;
+  /**
+   * Opt-in session grants, off by default. When set, the wallet signs one SessionGrant for an
+   * in-memory session key, and that key signs SubscribeOutput, AckOutput, GetTaskEvents,
+   * PrepareChallenge and the OUTPUT GetTaskDataMetadata / FetchTaskData requests, so a browser
+   * wallet prompts once per grant instead of once per request. OpenTask is always signed by
+   * the wallet. The grant is renewed before it expires (and once more if a Builder reports it
+   * expired). The key is never persisted.
+   *
+   * `maxGrantBlocks` must be the Builders' max_session_grant_blocks (off-chain configuration,
+   * the same on every Task Builder); see SessionKeyManagerOptions for the other two. Needs
+   * `hub` (the grant expiry is a block height).
+   */
+  readonly session?: {
+    readonly maxGrantBlocks: number;
+    readonly grantBlocks?: number;
+    readonly renewBeforeBlocks?: number;
+  };
   /**
    * Optional override for the order's EIP-712 feeDenom.
    *
@@ -140,6 +153,8 @@ export type FacadeHubReader = TaskBuilderReader &
     getCurrentServiceKey?(participantType: ParticipantTypeName, operatorAddress: string): Promise<ServiceKeyBinding>;
     /** Latest height, for the task-data request expiry. */
     getLatestHeight(): Promise<bigint>;
+    /** params.phase0.evm_chain_id, when config.evmChainId is not given. */
+    getEvmChainId?(): Promise<bigint>;
   };
 
 /** On-chain task reads needed to derive the output trust anchors (RestChainReader satisfies it). */
@@ -375,51 +390,74 @@ export class TrueOpenClient {
   private readonly sessionManager: SessionManager;
   readonly ingress: IngressClient;
 
+  /** The session key and its grant, when config.session is set. */
+  readonly sessionGrants: SessionKeyManager | undefined;
+  private evmChainIdPromise: Promise<bigint> | undefined;
+
   constructor(cfg: TrueOpenClientConfig) {
-    this.cfg = cfg;
-    if (cfg.addressPrefix !== undefined) {
-      const addr = cfg.sdkSignerAddress ?? cfg.userAddress;
-      const pk = cfg.sdkSignerPubKey ?? cfg.signerPubKey;
-      // Accounts are EVM-style (keccak(uncompressed XY)[12:32]), no longer ripemd160.
-      if (!ethSecp256k1AddressMatches(addr, pk, cfg.addressPrefix)) {
-        throw new TrueOpenError(
-          'SDK_LOCAL',
-          'SDK_LOCAL_ADDRESS_PUBKEY_MISMATCH',
-          `SDK request signer_address ${addr} does not match pubkey-derived address (prefix ${cfg.addressPrefix}); nexus will reject with SDK_AUTH_INVALID_SIGNATURE`,
-        );
-      }
-    }
+    // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
+    // address; anything else must already be canonical with the account prefix.
+    this.cfg = { ...cfg, userAddress: toAccountAddress(cfg.userAddress) };
+    cfg = this.cfg;
     this.sessionManager = new SessionManager(cfg.chain);
-    // The ingress request envelope uses the "effective SDK identity" (defaults to falling back
-    // to user); the order signature still uses the user signer.
-    this.ingress = new IngressClient(cfg.ingressTransport, {
-      chainId: cfg.chainId,
-      userAddress: this.effectiveSdkSignerAddress,
-      signerPubKey: this.effectiveSdkSignerPubKey,
-      signer: this.effectiveSdkSigner,
+    this.sessionGrants =
+      cfg.session === undefined
+        ? undefined
+        : new SessionKeyManager({
+            chainId: cfg.chainId,
+            userAddress: cfg.userAddress,
+            wallet: cfg.wallet,
+            evmChainId: () => this.resolveEvmChainId(),
+            latestHeight: () => this.latestHeight('a session grant expiry'),
+            ...cfg.session,
+          });
+    this.ingress = new IngressClient(cfg.ingressTransport, this.ingressAuth());
+  }
+
+  /**
+   * The signing context for Builder Ingress requests. A client built by the caller for another
+   * Builder (for example an OutputStreamSource) should use this, so that it shares the wallet,
+   * the nonce source and the session grant.
+   */
+  ingressAuth(): IngressAuth {
+    return {
+      chainId: this.cfg.chainId,
+      userAddress: this.cfg.userAddress,
+      wallet: this.cfg.wallet,
+      evmChainId: () => this.resolveEvmChainId(),
       nonce: () => this.nextNonce(),
       expiry: () => this.nextExpiry(),
-      // The USER branch of the task data plane uses EIP-712; if it isn't configured, methods on
-      // that plane fail with an explicit error instead of silently falling back to a 64-byte
-      // signature that nexus would reject anyway.
-      ...(cfg.orderSigner !== undefined ? { eip712Signer: cfg.orderSigner } : {}),
-      ...(cfg.evmChainId !== undefined ? { evmChainId: cfg.evmChainId } : {}),
+      ...(this.sessionGrants !== undefined ? { session: this.sessionGrants } : {}),
+    };
+  }
+
+  private async latestHeight(what: string): Promise<bigint> {
+    const hub = this.cfg.hub;
+    if (hub === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_HEIGHT_UNCONFIGURED', `${what} is a block height: config.hub is required`);
+    }
+    return hub.getLatestHeight();
+  }
+
+  /**
+   * The chain's EVM chain ID: config.evmChainId, else read once from the hub. It never changes
+   * for a chain, so the first successful read is kept.
+   */
+  async resolveEvmChainId(): Promise<bigint> {
+    if (this.cfg.evmChainId !== undefined) return BigInt(this.cfg.evmChainId);
+    const read = this.cfg.hub?.getEvmChainId;
+    if (read === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_EVM_CHAIN_ID_UNCONFIGURED',
+        'the EVM chain ID feeds every EIP-712 signature: set config.evmChainId or a hub reader with getEvmChainId',
+      );
+    }
+    this.evmChainIdPromise ??= read.call(this.cfg.hub).catch((e: unknown) => {
+      this.evmChainIdPromise = undefined;
+      throw e;
     });
-  }
-
-  /** Effective SDK request signer: falls back to the user signer by default. */
-  private get effectiveSdkSigner(): CosmosSecp256k1Signer {
-    return this.cfg.sdkSigner ?? this.cfg.signer;
-  }
-
-  /** Effective SDK request public key: falls back to the user signerPubKey by default. */
-  private get effectiveSdkSignerPubKey(): Uint8Array {
-    return this.cfg.sdkSignerPubKey ?? this.cfg.signerPubKey;
-  }
-
-  /** Effective SDK request address: falls back to userAddress by default. */
-  private get effectiveSdkSignerAddress(): string {
-    return this.cfg.sdkSignerAddress ?? this.cfg.userAddress;
+    return this.evmChainIdPromise;
   }
 
   createSession(label?: string): Promise<SessionHandle> {
@@ -434,18 +472,18 @@ export class TrueOpenClient {
    * Place an order through OpenTask, the order-placement entry point.
    *
    * Full flow: read the on-chain context -> assemble the frozen TaskOrderV3 -> sign the order's
-   * inner EIP-712 digest, sign the outer order envelope, then sign the request envelope -> select
+   * EIP-712 digest, then the request envelope (no outer order signature) -> select
    * Task Builders via task_builder_seed -> submit concurrently to all selected endpoints,
    * succeeding as soon as any one is accepted.
    *
-   * Requires config to provide orderSigner (a digest signer for the raw task_hash), hub, and
-   * ingressTransportFactory.
+   * Requires config.hub and config.ingressTransportFactory. The order and the request envelope
+   * are both signed by config.wallet; OpenTask never uses a session key.
    *
    * Hard rule unchanged: an ingress ack is only local acceptance; the on-chain query/event is the
    * source of truth for final state.
    */
   async openTask(params: OpenTaskParams): Promise<OpenTaskResult> {
-    const { hub, ingressTransportFactory, orderSigner } = this.cfg;
+    const { hub, ingressTransportFactory } = this.cfg;
     if (!hub || !ingressTransportFactory) {
       throw new TrueOpenError(
         'SDK_LOCAL',
@@ -453,21 +491,7 @@ export class TrueOpenClient {
         'openTask requires config.hub and config.ingressTransportFactory',
       );
     }
-    if (!orderSigner) {
-      throw new TrueOpenError(
-        'SDK_LOCAL',
-        'SDK_LOCAL_ORDER_SIGNER_REQUIRED',
-        'openTask requires config.orderSigner: SignedOrderV2.user_signature signs the EIP-712 digest (keccak, ' +
-          '65-byte R||S||V), which cannot use the sha256-based CosmosSecp256k1Signer',
-      );
-    }
-    if (this.cfg.evmChainId === undefined) {
-      throw new TrueOpenError(
-        'SDK_LOCAL',
-        'SDK_LOCAL_ORDER_EIP712_UNCONFIGURED',
-        'openTask requires config.evmChainId: it goes into the order EIP-712 signature and cannot be guessed',
-      );
-    }
+    const evmChainId = await this.resolveEvmChainId();
     // Both go into the signature or decide whether the chain accepts the order, and a
     // mistake in either only surfaces after nexus accepted the order: the task just vanishes.
     const feeDenom = await this.resolveFeeDenom();
@@ -497,15 +521,11 @@ export class TrueOpenClient {
       expiryHeight,
       requestNonce: this.nextNonce(),
       idempotencyKey: params.idempotencyKey,
-      orderSigner,
-      orderEip712: { evmChainId: this.cfg.evmChainId, feeDenom },
-      signer: this.cfg.signer,
-      signerPubKey: this.cfg.signerPubKey,
+      wallet: this.cfg.wallet,
+      orderEip712: { evmChainId, feeDenom },
+      chainId: this.cfg.chainId,
       ...(params.inputMediaType !== undefined ? { inputMediaType: params.inputMediaType } : {}),
       ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),
-      ...(this.cfg.sdkSigner !== undefined ? { sdkSigner: this.cfg.sdkSigner } : {}),
-      ...(this.cfg.sdkSignerPubKey !== undefined ? { sdkSignerPubKey: this.cfg.sdkSignerPubKey } : {}),
-      ...(this.cfg.sdkSignerAddress !== undefined ? { sdkSignerAddress: this.cfg.sdkSignerAddress } : {}),
     });
 
     // The selection seed and the candidate pool must use the same BuilderSet / anchor that was
@@ -721,8 +741,8 @@ export class TrueOpenClient {
    *
    * builderAddress must be the operator address of the Builder being queried (nexus compares
    * it against its own configuration; openTask returns it per Builder). expiresAtHeight is a
-   * block height and defaults to latest height + requestTtlBlocks (10), inside nexus's
-   * 20-block request window.
+   * block height and defaults to latest height + taskDataExpiryBlocks (10), which must fit the
+   * Builders' max_service_material_expiry_blocks.
    */
   async fetchTaskOutput(p: {
     sessionId: string;
@@ -842,7 +862,7 @@ export class TrueOpenClient {
     };
   }
 
-  /** Task-data request expiry: latest height + requestTtlBlocks (default 10), inside nexus's 20-block window. */
+  /** Task-data request expiry: latest height + taskDataExpiryBlocks (default 10). */
   private async defaultTaskDataExpiry(): Promise<bigint> {
     const hub = this.cfg.hub;
     if (hub === undefined) {
@@ -852,7 +872,7 @@ export class TrueOpenClient {
         'expiresAtHeight is required when config.hub is not set (it is a block height)',
       );
     }
-    return (await hub.getLatestHeight()) + BigInt(this.cfg.requestTtlBlocks ?? 10);
+    return (await hub.getLatestHeight()) + BigInt(this.cfg.taskDataExpiryBlocks ?? DEFAULT_TASK_DATA_EXPIRY_BLOCKS);
   }
 
   /**
@@ -1081,18 +1101,16 @@ export class TrueOpenClient {
   }
 
   /**
-   * A fresh 16-byte request nonce.
+   * A fresh 32-byte request nonce.
    *
-   * Reading `globalThis.crypto` directly is not enough: Node only exposes it unflagged from
-   * v19, while this package supports node >=18, so openTask threw SDK_LOCAL_NO_CRYPTO on the
-   * minimum supported runtime unless the caller supplied `config.nonce`. noble's randomBytes
-   * resolves to `node:crypto`'s webcrypto under Node and to `globalThis.crypto` in browsers,
-   * which covers both without importing a Node built-in into the browser bundle.
+   * noble's randomBytes resolves to `node:crypto`'s webcrypto under Node (Node 18 has no
+   * unflagged `globalThis.crypto`) and to `globalThis.crypto` in browsers, which covers both
+   * without importing a Node built-in into the browser bundle.
    */
   private nextNonce(): Uint8Array {
     if (this.cfg.nonce) return this.cfg.nonce();
     try {
-      return randomBytes(16);
+      return randomBytes(32);
     } catch (cause) {
       throw new TrueOpenError(
         'SDK_LOCAL',
@@ -1137,6 +1155,12 @@ function splitByChunkLengths(bytes: Uint8Array, lengths: readonly number[]): Uin
   }
   return out;
 }
+
+/**
+ * Default Task data request lifetime in blocks. Small on purpose: it has to fit inside every
+ * Builder's max_service_material_expiry_blocks, whose value the SDK cannot read.
+ */
+export const DEFAULT_TASK_DATA_EXPIRY_BLOCKS = 10;
 
 /** nexus's default max range (task_data.max_range_bytes); a larger single read is refused. */
 export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;

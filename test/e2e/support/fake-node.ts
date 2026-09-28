@@ -135,6 +135,10 @@ export class FakeNode {
 
   /** Puts a session on chain directly, as if MsgCreateSession had landed. */
   seedSession(owner: string): string {
+    // A session exists only after MsgCreateSession, whose ante handler stores the account's
+    // public key; a seeded session stands in for that, so the key is stored here too.
+    const acct = this.accounts.get(owner);
+    if (acct !== undefined && acct.pubKey === undefined && owner === w.USER.address) acct.pubKey = w.USER.pubKey;
     const nonce = this.sessionNonces.get(owner) ?? 0n;
     const sessionId = w.sessionIdFor(owner, nonce);
     this.sessionNonces.set(owner, nonce + 1n);

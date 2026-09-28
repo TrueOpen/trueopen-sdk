@@ -10,28 +10,15 @@ import type {
 import type { TaskOrderV3 } from './task-order';
 import { taskOrderHash } from './task-order';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
-import { eip712Digest } from '../codec/eip712';
-import type { Eip712Signer } from '../signer/eth-secp256k1';
-import { TrueOpenError } from '../errors/errors';
+import type { TypedData, TypedDataSigner } from '../signer/typed-data-signer';
+import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
+import { canonicalAccountAddressBytes } from '../codec/address';
 
 /**
- * The **inner** SignedOrderV2.signature_scheme: only this lowercase literal is accepted.
- * It describes the order's EIP-712 recoverable signature (65 bytes), verified by the Keeper.
+ * SignedOrderV2.signature_scheme: only this lowercase literal is accepted. It describes the
+ * order's EIP-712 recoverable signature (65 bytes), verified by the Keeper.
  */
 export const SIGNATURE_SCHEME = 'eip712';
-
-/**
- * The **outer** OpenTaskHeader.signature_scheme: still "secp256k1" - don't confuse it with the one above.
- *
- * It describes header.signature - the 64-byte signature nexus verifies with
- * CurrentOrderSigningBytes + VerifySig (sha256-based), which is a completely separate
- * signature from the order's EIP-712 signature. nexus main's
- * internal/ingress/taskdata.go:validateOpenTaskHeader hard-validates this literal
- * (`header.GetSignatureScheme() != "secp256k1"` is treated as malformed), and it also
- * feeds into field 7 of openTaskBodyDigest - getting it wrong breaks both "header
- * validation" and "envelope signature verification" at once.
- */
-export const OPEN_TASK_HEADER_SIGNATURE_SCHEME = 'secp256k1';
 
 /** EIP-712 order domain; values are frozen by task_order.domain in account_signing_v1.json. */
 export const ORDER_EIP712_DOMAIN_NAME = 'TrueOpen Task Order';
@@ -77,8 +64,8 @@ export interface OrderEip712Context {
   readonly feeDenom: string;
 }
 
-/** The order's EIP-712 signing digest (32 bytes). */
-export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Context): Uint8Array {
+/** The order's EIP-712 typed data, as a wallet signs it. */
+export function taskOrderTypedData(order: TaskOrderV3, ctx: OrderEip712Context): TypedData {
   const message: Eip712Struct = {
     chainId: order.chainId,
     user: order.userAddress,
@@ -92,16 +79,21 @@ export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Contex
     orderExpireHeight: order.orderExpireHeight,
     taskHash: taskOrderHash(order),
   };
-  return eip712Digest(
-    ORDER_EIP712_TYPES,
-    {
+  return {
+    types: ORDER_EIP712_TYPES,
+    primaryType: 'TaskOrder',
+    domain: {
       name: ORDER_EIP712_DOMAIN_NAME,
       version: ORDER_EIP712_DOMAIN_VERSION,
-      chainId: typeof ctx.evmChainId === 'number' ? BigInt(ctx.evmChainId) : ctx.evmChainId,
+      chainId: BigInt(ctx.evmChainId),
     },
-    'TaskOrder',
     message,
-  );
+  };
+}
+
+/** The order's EIP-712 signing digest (32 bytes). */
+export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Context): Uint8Array {
+  return typedDataDigest(taskOrderTypedData(order, ctx));
 }
 
 /**
@@ -163,7 +155,7 @@ function toProtoTaskOrder(order: TaskOrderV3): ProtoTaskOrderV3 {
   });
 }
 
-/** SignedOrderV2's protobuf bytes, plus derived values that the outer signature can reuse. */
+/** SignedOrderV2's protobuf bytes, plus derived values the OpenTask body reuses. */
 export interface EncodedSignedOrder {
   /** SignedOrderV2's protobuf-serialized bytes, submitted directly as the order_envelope. */
   readonly bytes: Uint8Array;
@@ -184,26 +176,20 @@ export interface EncodedSignedOrder {
  * a **65-byte R||S||V** (V in {27,28}, low-S); the chain recovers the address from the
  * recoverable signature and no longer needs the public key passed in.
  *
- * Note the distinction from the **outer** signature: OpenTaskHeader.signature signs
- * nexus's SDK request envelope domain, which uses a different signing object and hash
- * function (keccak vs sha256) from the order signature here. Placing an order produces
- * two separate signatures.
+ * This signature alone authorizes the order: OpenTask has no outer order signature. The
+ * OpenTask request envelope is a second EIP-712 signature by the same wallet, under the SDK
+ * Request domain.
  */
 export async function signAndEncodeOrder(
   order: TaskOrderV3,
   ctx: OrderEip712Context,
-  signer: Eip712Signer,
+  signer: TypedDataSigner,
 ): Promise<EncodedSignedOrder> {
   const taskHash = taskOrderHash(order);
-  const signingDigest = taskOrderEip712Digest(order, ctx);
-  const userSignature = await signer(signingDigest);
-  if (userSignature.length !== 65) {
-    throw new TrueOpenError(
-      'SDK_LOCAL',
-      'SDK_LOCAL_BAD_SIGNATURE_LEN',
-      `user_signature must be 65 bytes R||S||V, got ${userSignature.length}`,
-    );
-  }
+  const data = taskOrderTypedData(order, ctx);
+  const signingDigest = typedDataDigest(data);
+  // The Keeper recovers the order user from this signature; check it here, not on chain.
+  const userSignature = await signTypedDataAs(signer, data, canonicalAccountAddressBytes('user_address', order.userAddress));
   const signed = create(SignedOrderV2Schema, {
     order: toProtoTaskOrder(order),
     signatureScheme: SIGNATURE_SCHEME,

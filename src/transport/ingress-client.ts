@@ -6,7 +6,7 @@ import {
   IngressAPI,
   OpenTaskHeaderSchema,
   OpenTaskRequestSchema,
-  SDKRequestEnvelopeV1Schema,
+  SDKRequestEnvelopeV2Schema,
   GetTaskStatusRequestSchema,
   PrepareChallengeRequestSchema,
   GetTaskEventsRequestSchema,
@@ -20,6 +20,7 @@ import {
 } from '../gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest,
+  TaskDataRequestAuthV1,
   TaskDataObjectMetadataV1,
   PrepareChallengeResponse,
   GetTaskEventsResponse,
@@ -27,25 +28,28 @@ import type {
   AckOutputResponse,
 } from '../gen/nexus/v1/ingress_pb.js';
 import { TrueOpenError } from '../errors/errors';
-import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
-import type { Eip712Signer } from '../signer/eth-secp256k1';
-import { sha256 } from '../codec/hash';
+import type { TypedDataSigner } from '../signer/typed-data-signer';
+import { signTypedDataAs } from '../signer/typed-data-signer';
+import { canonicalAccountAddressBytes } from '../codec/address';
+import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD, SESSION_SDK_METHODS } from './sdk-request-envelope';
+import { sessionGrantMessage, SESSION_TASK_DATA_METHODS } from '../session/session-grant';
+import type { SessionAuthority, SignedSessionGrant } from '../session/session-grant';
 import {
-  signSdkRequestEnvelope,
   getTaskEventsBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
-} from './sdk-request-envelope';
+} from './sdk-request-body';
 import type { SignedSdkRequestEnvelope } from './sdk-request-envelope';
 import {
-  taskDataRequestEip712Digest,
+  taskDataRequestTypedData,
   taskDataMetadataBodyDigest,
   taskDataFetchBodyDigest,
   bodyDigestHex,
   TASK_DATA_RPC_METHOD,
   TASK_DATA_REQUESTER_KIND,
   EVIDENCE_PRODUCER_KIND,
+  TASK_DATA_OBJECT_KIND,
 } from './task-data-signbytes';
 import type { TaskDataObjectRef, ByteRange } from './task-data-signbytes';
 
@@ -60,14 +64,13 @@ export const DEFAULT_OPEN_TASK_CHUNK_BYTES = 64 * 1024;
 export interface OpenTaskInput {
   /** Protobuf bytes of the frozen SignedOrderV2. */
   readonly orderEnvelope: Uint8Array;
+  /** "nexus://sha256/" || lowercase_hex(input_hash). Not signed, but checked by the Builder. */
   readonly payloadRef: string;
-  /** The outer user order signature, 64 raw bytes. */
-  readonly signature: Uint8Array;
+  /** Wallet-signed by the order user; never carries a session grant. */
   readonly requestEnvelope: SignedSdkRequestEnvelope;
   readonly sessionId: string;
   readonly orderSequence: bigint;
   readonly userAddress: string;
-  readonly signatureScheme: string;
   /** Canonical lowercase 64-hex = hex(sha256(payload)). */
   readonly inputHash: string;
   readonly inputMediaType: string;
@@ -96,22 +99,50 @@ export interface TaskStatusView {
   readonly updatedAt: bigint;
 }
 
-/** Signing context: methods that need an SDKRequestEnvelope (all except GetTaskStatus) sign internally with this. */
+/**
+ * Signing context for the requests the user signs: every method except GetTaskStatus and
+ * OpenTask (whose envelope is signed while the order is built, see buildOpenTaskRequest).
+ */
 export interface IngressAuth {
   readonly chainId: string;
+  /** The user's canonical Bech32 address: signer_address, requester_address. */
   readonly userAddress: string;
-  readonly signerPubKey: Uint8Array;
-  readonly signer: CosmosSecp256k1Signer;
+  /** The user's wallet: signs EIP-712 typed data (65 bytes R||S||V) as userAddress. */
+  readonly wallet: TypedDataSigner;
+  /**
+   * The chain's EVM chain ID (`params.phase0.evm_chain_id`), the chainId of every EIP-712
+   * domain. A function is called for each request, so the caller decides how to cache it.
+   */
+  readonly evmChainId: bigint | (() => Promise<bigint>);
+  /** Exactly 32 bytes from a CSPRNG per call. */
   readonly nonce: () => Uint8Array;
+  /** Request expiry as Unix milliseconds (at or above 10^12). */
   readonly expiry: () => bigint;
   /**
-   * EIP-712 signer for the task data plane (USER branch), producing a 65-byte R||S||V
-   * signature. Not interchangeable with `signer`: that one produces a 64-byte Cosmos
-   * signature over a sha256 digest.
+   * Opt-in session grants. When present, the session-allowed requests (SubscribeOutput,
+   * AckOutput, GetTaskEvents, PrepareChallenge, and GetTaskDataMetadata / FetchTaskData of an
+   * OUTPUT object) are signed by the session key and carry the grant; everything else is still
+   * signed by the wallet. A grant the Builder reports as expired is renewed and the request is
+   * sent once more.
    */
-  readonly eip712Signer?: Eip712Signer;
-  /** The numeric EVM chain ID used in the EIP-712 domain; distinct from the cosmos chainId string. */
-  readonly evmChainId?: bigint | number | string;
+  readonly session?: SessionAuthority;
+}
+
+/** The Builder refused the attached session grant as outside its height window. */
+export function isSessionGrantExpired(e: unknown): boolean {
+  return e instanceof TrueOpenError && (e.code === 'SDK_AUTH_SESSION_GRANT_EXPIRED' || e.code === 'DATA_ACCESS_SESSION_GRANT_EXPIRED');
+}
+
+async function resolveEvmChainId(auth: IngressAuth): Promise<bigint> {
+  return typeof auth.evmChainId === 'function' ? auth.evmChainId() : auth.evmChainId;
+}
+
+function nonce32(auth: IngressAuth): Uint8Array {
+  const n = auth.nonce();
+  if (n.length !== 32) {
+    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_MALFORMED', `request nonce must be exactly 32 bytes, got ${n.length}`);
+  }
+  return n;
 }
 
 /**
@@ -139,14 +170,17 @@ export class IngressClient {
    * non-empty and within the server's chunk size cap, 256 KiB by default -- see nexus
    * internal/config chunk_size_bytes).
    *
-   * Key differences from the deprecated SubmitOrder:
+   * Key points:
    *  - order_envelope must be the frozen SignedOrderV2 protobuf bytes (no longer canonical JSON);
    *  - the input body goes over chunk frames and is not part of body_digest;
-   *  - request_envelope's expiry **must be a block height** (nexus taskdata.go:221-224
-   *    requires 0 < expiry < 1e12; anything above that is treated as a unix millisecond
-   *    timestamp and rejected). Callers must pass expiryHeight.
+   *  - request_envelope's expiry **must be a block height** (0 < expiry < 1e12; anything above
+   *    that is Unix milliseconds, which OpenTask does not accept);
+   *  - the envelope is wallet-signed and never carries a session grant.
    */
   async openTask(req: OpenTaskInput): Promise<OpenTaskAck> {
+    if (req.requestEnvelope.sessionGrant !== undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_MALFORMED', 'OpenTask must be signed by the wallet, never under a session grant');
+    }
     const chunkSize = req.chunkSizeBytes ?? DEFAULT_OPEN_TASK_CHUNK_BYTES;
     if (chunkSize <= 0) {
       throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_CHUNK_SIZE_INVALID', 'chunkSizeBytes must be positive');
@@ -157,12 +191,11 @@ export class IngressClient {
     const header = create(OpenTaskHeaderSchema, {
       orderEnvelope: req.orderEnvelope,
       payloadRef: req.payloadRef,
-      signature: req.signature,
-      requestEnvelope: this.envelopeMsg(req.requestEnvelope),
+      // signature and signature_scheme (deprecated) stay empty: there is no outer order signature.
+      requestEnvelope: envelopeMessage(req.requestEnvelope),
       sessionId: req.sessionId,
       orderSequence: req.orderSequence,
       userAddress: req.userAddress,
-      signatureScheme: req.signatureScheme,
       inputSizeBytes: BigInt(req.payload.length),
       inputHash: req.inputHash,
       inputMediaType: req.inputMediaType,
@@ -204,15 +237,16 @@ export class IngressClient {
   }): Promise<PrepareChallengeResponse> {
     const led = p.localEvidenceDigest ?? new Uint8Array();
     const bd = prepareChallengeBodyDigest(p.sessionId, p.taskId, p.challengeKind, led);
-    const env = await this.signEnvelope('PrepareChallenge', p.sessionId, p.taskId, bd);
-    return this.client.prepareChallenge(
-      create(PrepareChallengeRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        challengeKind: p.challengeKind,
-        localEvidenceDigest: led,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
+    return this.signedCall('PrepareChallenge', p.sessionId, p.taskId, bd, (env) =>
+      this.client.prepareChallenge(
+        create(PrepareChallengeRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          challengeKind: p.challengeKind,
+          localEvidenceDigest: led,
+          requestEnvelope: envelopeMessage(env),
+        }),
+      ),
     );
   }
 
@@ -224,16 +258,16 @@ export class IngressClient {
   }): AsyncIterable<GetTaskEventsResponse> {
     const cursor = p.fromCursor ?? '';
     const bd = getTaskEventsBodyDigest(p.sessionId, p.taskId, cursor);
-    const env = await this.signEnvelope('GetTaskEvents', p.sessionId, p.taskId, bd);
-    const stream = this.client.getTaskEvents(
-      create(GetTaskEventsRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        fromCursor: cursor,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
+    yield* this.signedStream('GetTaskEvents', p.sessionId, p.taskId, bd, (env) =>
+      this.client.getTaskEvents(
+        create(GetTaskEventsRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          fromCursor: cursor,
+          requestEnvelope: envelopeMessage(env),
+        }),
+      ),
     );
-    for await (const ev of stream) yield ev;
   }
 
   /**
@@ -255,26 +289,25 @@ export class IngressClient {
      */
     signal?: AbortSignal;
   }): AsyncIterable<SubscribeOutputResponse> {
-    const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId);
-    const env = await this.signEnvelope('SubscribeOutput', p.sessionId, p.taskId, bd);
-    const stream = this.client.subscribeOutput(
-      create(SubscribeOutputRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        requestEnvelope: this.envelopeMsg(env),
-        ...(p.resumeAfterSeq !== undefined ? { resumeAfterSeq: p.resumeAfterSeq } : {}),
-      }),
-      p.signal !== undefined ? { signal: p.signal } : undefined,
+    const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq);
+    yield* this.signedStream('SubscribeOutput', p.sessionId, p.taskId, bd, (env) =>
+      this.client.subscribeOutput(
+        create(SubscribeOutputRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          requestEnvelope: envelopeMessage(env),
+          ...(p.resumeAfterSeq !== undefined ? { resumeAfterSeq: p.resumeAfterSeq } : {}),
+        }),
+        p.signal !== undefined ? { signal: p.signal } : undefined,
+      ),
     );
-    for await (const msg of stream) yield msg;
   }
-
 
   /**
    * Fetches task data metadata. Unlike the other methods, this one
-   * doesn't take an SDKRequestEnvelope -- it takes a TaskDataRequestAuthV1 instead, domain
-   * TRUEOPEN_TASK_DATA_REQUEST_V1, signing bytes defined in task-data-signbytes.ts. nexus
-   * hashes with sha256 before verifying, so use an auth.signer that hashes first.
+   * doesn't take an SDKRequestEnvelope -- it takes a TaskDataRequestAuthV1 instead: the USER
+   * branch, EIP-712 typed data under the "TrueOpen Task Data Request" domain
+   * (task-data-signbytes.ts), signed by the wallet.
    *
    * builderAddress must be the operator address of **the specific Builder being queried**:
    * nexus compares it byte-for-byte against its own configuration, and a mismatch is an
@@ -287,18 +320,27 @@ export class IngressClient {
     expiresAtHeight: bigint;
   }): Promise<TaskDataObjectMetadataV1 | undefined> {
     const auth = this.requireAuth('GetTaskDataMetadata');
-    const requestAuth = await this.signTaskDataRequest(auth, {
-      builderAddress: p.builderAddress,
-      expiresAtHeight: p.expiresAtHeight,
-      rpcMethod: TASK_DATA_RPC_METHOD.GetTaskDataMetadata,
-      bodyDigest: taskDataMetadataBodyDigest(p.objectRef),
-    });
-    const res = await this.client.getTaskDataMetadata(
-      create(GetTaskDataMetadataRequestSchema, {
-        objectRef: toProtoObjectRef(p.objectRef),
-        requestAuth,
-      }),
-    );
+    const sign = (): Promise<SignedTaskDataAuth> =>
+      this.signTaskDataRequest(auth, {
+        builderAddress: p.builderAddress,
+        expiresAtHeight: p.expiresAtHeight,
+        rpcMethod: TASK_DATA_RPC_METHOD.GetTaskDataMetadata,
+        bodyDigest: taskDataMetadataBodyDigest(p.objectRef),
+        objectKind: p.objectRef.objectKind,
+      });
+    const send = (signed: SignedTaskDataAuth) =>
+      this.client.getTaskDataMetadata(
+        create(GetTaskDataMetadataRequestSchema, { objectRef: toProtoObjectRef(p.objectRef), requestAuth: signed.requestAuth }),
+      );
+    const first = await sign();
+    let res;
+    try {
+      res = await send(first);
+    } catch (e) {
+      if (first.grant === undefined || !isSessionGrantExpired(e)) throw e;
+      auth.session?.expired(first.grant);
+      res = await send(await sign());
+    }
     return res.metadata;
   }
 
@@ -341,21 +383,25 @@ export class IngressClient {
     range?: ByteRange;
   }): Promise<{ bytes: Uint8Array; totalSizeBytes: bigint; servedRange: ByteRange; mediaType: string }> {
     const auth = this.requireAuth('FetchTaskData');
-    const requestAuth = await this.signTaskDataRequest(auth, {
-      builderAddress: p.builderAddress,
-      expiresAtHeight: p.expiresAtHeight,
-      rpcMethod: TASK_DATA_RPC_METHOD.FetchTaskData,
-      bodyDigest: taskDataFetchBodyDigest(p.objectRef, p.range),
-    });
-    const stream = this.client.fetchTaskData(
-      create(FetchTaskDataRequestSchema, {
-        objectRef: toProtoObjectRef(p.objectRef),
-        ...(p.range !== undefined
-          ? { range: create(ByteRangeV1Schema, { offset: p.range.offset, length: p.range.length }) }
-          : {}),
-        requestAuth,
-      }),
-    );
+    const sign = (): Promise<SignedTaskDataAuth> =>
+      this.signTaskDataRequest(auth, {
+        builderAddress: p.builderAddress,
+        expiresAtHeight: p.expiresAtHeight,
+        rpcMethod: TASK_DATA_RPC_METHOD.FetchTaskData,
+        bodyDigest: taskDataFetchBodyDigest(p.objectRef, p.range),
+        objectKind: p.objectRef.objectKind,
+      });
+    const open = (signed: SignedTaskDataAuth) =>
+      this.client.fetchTaskData(
+        create(FetchTaskDataRequestSchema, {
+          objectRef: toProtoObjectRef(p.objectRef),
+          ...(p.range !== undefined
+            ? { range: create(ByteRangeV1Schema, { offset: p.range.offset, length: p.range.length }) }
+            : {}),
+          requestAuth: signed.requestAuth,
+        }),
+      );
+    const stream = retryExpiredGrantOnce(auth, sign, open);
 
     // The peer answered with bytes other than the ones asked for: do not trust it again.
     const bad = (message: string): TrueOpenError =>
@@ -442,9 +488,7 @@ export class IngressClient {
    * The contract is explicit that "signature length is not sniffed, and the caller's public
    * key is not trusted": requester_kind alone determines the verification path, and USER
    * always means EIP-712 plus a 65-byte signature, with service_authorization_nonce fixed
-   * at 0. So there is no fallback to `signer` here -- if eip712Signer isn't configured, this
-   * throws immediately rather than producing a 64-byte signature that would be silently
-   * rejected.
+   * at 0. The signature is checked to recover to requester_address before it is sent.
    */
   private async signTaskDataRequest(
     auth: IngressAuth,
@@ -453,15 +497,9 @@ export class IngressClient {
       expiresAtHeight: bigint;
       rpcMethod: string;
       bodyDigest: Uint8Array;
+      objectKind: number;
     },
-  ): Promise<ReturnType<typeof create<typeof TaskDataRequestAuthV1Schema>>> {
-    if (auth.eip712Signer === undefined || auth.evmChainId === undefined) {
-      throw new TrueOpenError(
-        'SDK_AUTH',
-        'SDK_AUTH_NO_EIP712_SIGNER',
-        'the USER branch of the task data plane requires IngressAuth.eip712Signer and evmChainId (EIP-712, 65-byte signature)',
-      );
-    }
+  ): Promise<SignedTaskDataAuth> {
     const fields = {
       schemaVersion: TASK_DATA_AUTH_SCHEMA_VERSION,
       chainId: auth.chainId,
@@ -471,11 +509,30 @@ export class IngressClient {
       requesterKind: TASK_DATA_REQUESTER_KIND.USER,
       requesterAddress: auth.userAddress,
       serviceAuthorizationNonce: 0n,
-      requestNonce: requestNonce32(auth.nonce()),
+      requestNonce: nonce32(auth),
       expiryHeight: p.expiresAtHeight,
     };
-    const signature = await auth.eip712Signer(taskDataRequestEip712Digest(fields, auth.evmChainId));
-    return create(TaskDataRequestAuthV1Schema, {
+    // A session key may read only an OUTPUT object; everything else is wallet-signed.
+    const session =
+      auth.session !== undefined &&
+      SESSION_TASK_DATA_METHODS.includes(p.rpcMethod) &&
+      p.objectKind === TASK_DATA_OBJECT_KIND.OUTPUT
+        ? await auth.session.current()
+        : undefined;
+    if (session !== undefined && session.grant.user !== auth.userAddress) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_REQUEST_MALFORMED',
+        `the session grant is for ${session.grant.user}, not ${auth.userAddress}`,
+      );
+    }
+    const evmChainId = await resolveEvmChainId(auth);
+    const data = taskDataRequestTypedData(fields, evmChainId, session?.grantHash);
+    const signature =
+      session === undefined
+        ? await signTypedDataAs(auth.wallet, data, canonicalAccountAddressBytes('requester_address', auth.userAddress))
+        : await signTypedDataAs(session.key, data, session.grant.sessionKey);
+    const requestAuth = create(TaskDataRequestAuthV1Schema, {
       schemaVersion: fields.schemaVersion,
       chainId: fields.chainId,
       builderOperatorAddress: fields.builderOperatorAddress,
@@ -487,7 +544,9 @@ export class IngressClient {
       requestNonce: fields.requestNonce,
       expiryHeight: fields.expiryHeight,
       signature,
+      ...(session !== undefined ? { sessionGrant: sessionGrantMessage(session.grant) } : {}),
     });
+    return session === undefined ? { requestAuth } : { requestAuth, grant: session.grant };
   }
 
   private requireAuth(method: string): IngressAuth {
@@ -499,18 +558,53 @@ export class IngressClient {
 
   /** Confirms plaintext output has been durably saved (idempotent; only the original order placer). */
   async ackOutput(p: { sessionId: string; taskId: string; lastSeq: bigint }): Promise<AckOutputResponse> {
-    const bd = ackOutputBodyDigest(p.sessionId, p.taskId);
-    const env = await this.signEnvelope('AckOutput', p.sessionId, p.taskId, bd);
-    return this.client.ackOutput(
-      create(AckOutputRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        lastSeq: p.lastSeq,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
+    const bd = ackOutputBodyDigest(p.sessionId, p.taskId, p.lastSeq);
+    return this.signedCall('AckOutput', p.sessionId, p.taskId, bd, (env) =>
+      this.client.ackOutput(
+        create(AckOutputRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          lastSeq: p.lastSeq,
+          requestEnvelope: envelopeMessage(env),
+        }),
+      ),
     );
   }
 
+
+  /**
+   * Signs and sends a unary request. When a session key signed it and the Builder answers that
+   * the grant expired, the grant is renewed and the request is signed and sent once more.
+   */
+  private async signedCall<T>(
+    method: string,
+    sessionId: string,
+    taskId: string,
+    bodyDigest: Uint8Array,
+    send: (env: SignedSdkRequestEnvelope) => Promise<T>,
+  ): Promise<T> {
+    const env = await this.signEnvelope(method, sessionId, taskId, bodyDigest);
+    try {
+      return await send(env);
+    } catch (e) {
+      if (env.sessionGrant === undefined || !isSessionGrantExpired(e)) throw e;
+      this.auth?.session?.expired(env.sessionGrant);
+      return send(await this.signEnvelope(method, sessionId, taskId, bodyDigest));
+    }
+  }
+
+  /** Same as signedCall for a server stream: retried only when the stream failed before its first message. */
+  private signedStream<T>(
+    method: string,
+    sessionId: string,
+    taskId: string,
+    bodyDigest: Uint8Array,
+    open: (env: SignedSdkRequestEnvelope) => AsyncIterable<T>,
+  ): AsyncGenerator<T> {
+    const env = (): Promise<SignedSdkRequestEnvelope & { readonly grant?: SignedSessionGrant }> =>
+      this.signEnvelope(method, sessionId, taskId, bodyDigest).then((e) => (e.sessionGrant !== undefined ? { ...e, grant: e.sessionGrant } : e));
+    return retryExpiredGrantOnce(this.requireAuth(method), env, open);
+  }
 
   private async signEnvelope(
     method: string,
@@ -518,57 +612,82 @@ export class IngressClient {
     taskId: string,
     bodyDigest: Uint8Array,
   ): Promise<SignedSdkRequestEnvelope> {
-    if (!this.auth) {
-      throw new TrueOpenError('SDK_AUTH', 'SDK_AUTH_NO_SIGNER', `${method} requires IngressClient auth context`);
+    const a = this.requireAuth(method);
+    const expiry = a.expiry();
+    // Only OpenTask may use a chain-height expiry; everything else is Unix milliseconds.
+    if (expiry < HEIGHT_EXPIRY_THRESHOLD) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_EXPIRY_NOT_TIME',
+        `${method} expiry must be Unix milliseconds (>= ${HEIGHT_EXPIRY_THRESHOLD}), got ${expiry}`,
+      );
     }
-    const a = this.auth;
+    const session = a.session !== undefined && SESSION_SDK_METHODS.includes(method) ? await a.session.current() : undefined;
     return signSdkRequestEnvelope(
+      { chainId: a.chainId, method, sessionId, taskId, requestNonce: nonce32(a), expiryHeightOrTime: expiry, bodyDigest },
       {
+        signerAddress: a.userAddress,
+        signer: a.wallet,
+        evmChainId: await resolveEvmChainId(a),
         chainId: a.chainId,
-        method,
-        endpoint: `/nexus.v1.IngressAPI/${method}`,
-        sessionId,
-        taskId,
-        requestNonce: a.nonce(),
-        expiryHeightOrTime: a.expiry(),
-        bodyDigest,
+        ...(session !== undefined ? { session } : {}),
       },
-      a.userAddress,
-      a.signerPubKey,
-      a.signer,
     );
   }
+}
 
-  private envelopeMsg(e: SignedSdkRequestEnvelope) {
-    return create(SDKRequestEnvelopeV1Schema, {
-      requestDomain: e.requestDomain,
-      chainId: e.chainId,
-      method: e.method,
-      endpoint: e.endpoint,
-      sessionId: e.sessionId,
-      taskId: e.taskId,
-      requestNonce: e.requestNonce,
-      expiryHeightOrTime: e.expiryHeightOrTime,
-      bodyDigest: e.bodyDigest,
-      signerAddress: e.signerAddress,
-      signature: e.signature,
-      signerPubkey: e.signerPubKey,
-    });
+/** SDKRequestEnvelopeV2 on the wire. signer_pubkey (deprecated, ignored) is never sent. */
+export function envelopeMessage(e: SignedSdkRequestEnvelope) {
+  return create(SDKRequestEnvelopeV2Schema, {
+    requestDomain: e.requestDomain,
+    chainId: e.chainId,
+    method: e.method,
+    endpoint: e.endpoint,
+    sessionId: e.sessionId,
+    taskId: e.taskId,
+    requestNonce: e.requestNonce,
+    expiryHeightOrTime: e.expiryHeightOrTime,
+    bodyDigest: e.bodyDigest,
+    signerAddress: e.signerAddress,
+    signature: e.signature,
+    ...(e.sessionGrant !== undefined ? { sessionGrant: sessionGrantMessage(e.sessionGrant) } : {}),
+  });
+}
+
+/** A signed TaskDataRequestAuthV1, and the grant it carries when a session key signed it. */
+interface SignedTaskDataAuth {
+  readonly requestAuth: TaskDataRequestAuthV1;
+  readonly grant?: SignedSessionGrant;
+}
+
+/**
+ * Opens a server stream; when a session key signed the request and the stream fails with an
+ * expired grant before its first message, renews the grant and opens it once more.
+ */
+async function* retryExpiredGrantOnce<A extends { readonly grant?: SignedSessionGrant }, T>(
+  auth: IngressAuth,
+  sign: () => Promise<A>,
+  open: (signed: A) => AsyncIterable<T>,
+): AsyncGenerator<T> {
+  let signed = await sign();
+  for (let attempt = 0; ; attempt += 1) {
+    let received = false;
+    try {
+      for await (const msg of open(signed)) {
+        received = true;
+        yield msg;
+      }
+      return;
+    } catch (e) {
+      if (received || attempt > 0 || signed.grant === undefined || !isSessionGrantExpired(e)) throw e;
+      auth.session?.expired(signed.grant);
+      signed = await sign();
+    }
   }
 }
 
 /** The only value currently accepted for TaskDataRequestAuthV1.schema_version. */
 const TASK_DATA_AUTH_SCHEMA_VERSION = 1;
-
-/**
- * request_nonce must be **exactly 32 bytes** (an earlier revision only required >= 16).
- * IngressAuth.nonce() is a generic nonce source whose length isn't guaranteed to comply,
- * so this normalizes it to 32 bytes: if it's shorter, pad it out with sha256 (preserving
- * entropy rather than truncating); if it's longer, also collapse it with sha256.
- */
-function requestNonce32(nonce: Uint8Array): Uint8Array {
-  return nonce.length === 32 ? nonce : sha256(nonce);
-}
 
 /** TaskDataObjectRefV1: the SDK view uses canonical lowercase hex, and the proto also uses string. */
 function toProtoObjectRef(ref: TaskDataObjectRef): ReturnType<typeof create<typeof TaskDataObjectRefV1Schema>> {
@@ -584,16 +703,6 @@ function toProtoObjectRef(ref: TaskDataObjectRef): ReturnType<typeof create<type
     // Sent and signed as the same value: the body digest binds evidence_kind.
     evidenceKind: ref.evidenceKind ?? 0,
   });
-}
-
-/** nexus only accepts a 64-byte R||S; the signer may return 65 bytes (with a recovery id). */
-async function sig64(signer: CosmosSecp256k1Signer, bytes: Uint8Array): Promise<Uint8Array> {
-  const full = await signer(bytes);
-  const sig = full.length === 65 ? full.subarray(0, 64) : full;
-  if (sig.length !== 64) {
-    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BAD_SIGNATURE_LEN', `signature must be 64 bytes R||S, got ${sig.length}`);
-  }
-  return sig;
 }
 
 /**

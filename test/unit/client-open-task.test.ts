@@ -11,15 +11,14 @@ import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
 import { deriveTaskId } from '../../src/order/order-signing';
 import {
-  privKeySecp256k1Signer,
     secp256k1PublicKey,
 } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer, ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-const signer = privKeySecp256k1Signer(PRIV);
-const orderSigner = privKeyEip712Signer(PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
 
@@ -105,15 +104,14 @@ function acceptTransport(seen: { calls: number; frames: OpenTaskRequest[] }): Tr
   });
 }
 
-function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }, opts: { orderSigner?: unknown } = {}): TrueOpenClient {
+function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }, opts: { noEvmChainId?: boolean } = {}): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer,
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
     chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
     hub, ingressTransportFactory: () => acceptTransport(seen),
-    nonce: () => new Uint8Array([1, 2, 3]),
-    evmChainId: 424242n,
+    nonce: () => new Uint8Array(32).fill(1),
+    ...(opts.noEvmChainId === true ? {} : { evmChainId: 424242n }),
     feeDenom: 'utrueopen',
-    ...('orderSigner' in opts ? { orderSigner: opts.orderSigner as never } : { orderSigner }),
   });
 }
 
@@ -154,7 +152,7 @@ describe('TrueOpenClient.openTask', () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const contacted: string[] = [];
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n, feeDenom: 'utrueopen',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub: rotatingHub,
@@ -162,7 +160,7 @@ describe('TrueOpenClient.openTask', () => {
         contacted.push(uri);
         return acceptTransport(seen);
       },
-      nonce: () => new Uint8Array([1, 2, 3]),
+      nonce: () => new Uint8Array(32).fill(1),
     });
     const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
 
@@ -201,45 +199,67 @@ describe('TrueOpenClient.openTask', () => {
     expect(again.taskHash).not.toBe(first.taskHash);
   });
 
-  // Two identities kept separate: the request envelope can be signed by an independent SDK identity, while the order still belongs to the user.
-  it('sdkSigner configured: the SDK identity goes into the request envelope, user_address stays the user', async () => {
+  it('one wallet signs the order and the request envelope, both as the order user', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
-    const sdkPriv = fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021');
-    const sdkPub = secp256k1PublicKey(sdkPriv);
-    const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
-      evmChainId: 424242n, feeDenom: 'utrueopen',
-      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
-      hub, ingressTransportFactory: () => acceptTransport(seen),
-      nonce: () => new Uint8Array([1, 2, 3]),
-      sdkSigner: privKeySecp256k1Signer(sdkPriv),
-      sdkSignerPubKey: sdkPub,
-      sdkSignerAddress: ethSecp256k1Address(sdkPub, 'trueopen'),
-    });
-    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    await makeClient(seen).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
     const header = seen.frames.find((f) => f.frame.case === 'header')?.frame.value as {
       userAddress: string;
-      requestEnvelope?: { signerAddress: string };
+      requestEnvelope?: { signerAddress: string; signature: Uint8Array; signerPubkey: Uint8Array; requestDomain: string };
     };
-    expect(header.requestEnvelope?.signerAddress).toBe(ethSecp256k1Address(sdkPub, 'trueopen'));
+    expect(header.requestEnvelope?.signerAddress).toBe(USER);
+    expect(header.requestEnvelope?.requestDomain).toBe('TRUEOPEN_SDK_REQUEST_V2');
+    expect(header.requestEnvelope?.signature).toHaveLength(65);
+    expect(header.requestEnvelope?.signerPubkey).toHaveLength(0);
     expect(header.userAddress).toBe(USER);
   });
 
-  it('errors clearly when orderSigner is not configured (a hash-first signer cannot stand in for it)', async () => {
+  it('the envelope chain_id is always the configured chain: a context for another chain is refused', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = makeClient(seen);
+    const ok = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    const header = seen.frames.find((f) => f.frame.case === 'header')?.frame.value as { requestEnvelope?: { chainId: string } };
+    expect(header.requestEnvelope?.chainId).toBe('trueopen-localnet-1');
+    const calls = seen.calls;
+    await expect(
+      client.openTask({ sessionId: SESSION, orderSequence: 4n, order, idempotencyKey: 'idem-2', context: { ...ok.context, chainId: 'trueopen-other-1' } }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_CHAIN_ID_MISMATCH' });
+    expect(seen.calls).toBe(calls);
+  });
+
+  it('a wallet holding another account is refused before anything is sent', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER,
+      wallet: privateKeyTypedDataSigner(fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021')),
+      evmChainId: 424242n, feeDenom: 'utrueopen',
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+    });
+    await expect(client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
+    });
+    expect(seen.calls).toBe(0);
+  });
+
+  it('the EVM chain ID defaults to the hub, and without either source openTask refuses to sign', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     await expect(
-      makeClient(seen, { orderSigner: undefined }).openTask({
-        sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1',
-      }),
-    ).rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_SIGNER_REQUIRED' });
+      makeClient(seen, { noEvmChainId: true }).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_EVM_CHAIN_ID_UNCONFIGURED' });
+    const fromHub = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet, feeDenom: 'utrueopen',
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub: Object.assign(Object.create(hub) as object, { getEvmChainId: async () => 424242n }) as never, ingressTransportFactory: () => acceptTransport(seen),
+    });
+    expect(await fromHub.resolveEvmChainId()).toBe(424242n);
   });
 
   it('throws when hub/transportFactory is not configured', async () => {
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n, feeDenom: 'utrueopen',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
-      nonce: () => new Uint8Array([1, 2, 3]),
+      nonce: () => new Uint8Array(32).fill(1),
     });
     await expect(
       client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
@@ -258,12 +278,12 @@ describe('TrueOpenClient.openTask', () => {
       } as any);
     });
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub,
       ingressTransportFactory: (uri) => (uri.includes(ADDRS[1]!) ? rejecting : acceptTransport(seen)),
-      nonce: () => new Uint8Array([1, 2, 3]),
+      nonce: () => new Uint8Array(32).fill(1),
     });
     const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
 
@@ -288,12 +308,12 @@ describe('TrueOpenClient.openTask', () => {
   it('signs the chain business_denom when no override is configured', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub: { ...(hub as object), getBusinessDenom: async () => 'uchain' } as never,
       ingressTransportFactory: () => acceptTransport(seen),
-      nonce: () => new Uint8Array([1, 2, 3]),
+      nonce: () => new Uint8Array(32).fill(1),
     });
     const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
     expect(res.feeDenom).toBe('uchain');
@@ -302,11 +322,11 @@ describe('TrueOpenClient.openTask', () => {
   it('refuses locally when the feeDenom override disagrees with the chain business_denom', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n, feeDenom: 'uusdc',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub, ingressTransportFactory: () => acceptTransport(seen),
-      nonce: () => new Uint8Array([1, 2, 3]),
+      nonce: () => new Uint8Array(32).fill(1),
     });
     await expect(
       client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
@@ -317,7 +337,7 @@ describe('TrueOpenClient.openTask', () => {
   it('runs the profile pricing checks before signing (min order value and max fee)', async () => {
     const withPricing = (minOrderValue: bigint, verifyRatioBps: bigint): TrueOpenClient =>
       new TrueOpenClient({
-        chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+        chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
         evmChainId: 424242n,
         chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
         hub: {
@@ -325,7 +345,7 @@ describe('TrueOpenClient.openTask', () => {
           getProfile: async () => ({ pricing: { minOrderValue, verifyRatioBps, initialOutputPrice: 0n } }),
         } as never,
         ingressTransportFactory: () => { throw new Error('must not send'); },
-        nonce: () => new Uint8Array([1, 2, 3]),
+        nonce: () => new Uint8Array(32).fill(1),
       });
     // worker = floor(128 x 100000 / 1e6) = 12
     await expect(
@@ -342,11 +362,11 @@ describe('TrueOpenClient.openTask', () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const { getProfile: _drop, ...noProfile } = hub as unknown as Record<string, unknown>;
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub: noProfile as never, ingressTransportFactory: () => acceptTransport(seen),
-      nonce: () => new Uint8Array([1, 2, 3]),
+      nonce: () => new Uint8Array(32).fill(1),
     });
     await expect(
       client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
@@ -369,10 +389,10 @@ describe('request nonce without globalThis.crypto (node 18)', () => {
   it('still signs a request, using the platform secure RNG rather than only WebCrypto', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const client = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer,
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub, ingressTransportFactory: () => acceptTransport(seen),
-      evmChainId: 424242n, feeDenom: 'utrueopen', orderSigner,
+      evmChainId: 424242n, feeDenom: 'utrueopen',
       // No `nonce`: the SDK has to find its own random source.
     });
 

@@ -1,34 +1,9 @@
-import { domainHash, canonicalHashBytes, uint64BE } from '../codec/domain-hash';
+import { canonicalHashBytes, uint64BE } from '../codec/domain-hash';
 import { SIGN_DOMAINS } from '../codec/domains';
 import { TrueOpenError } from '../errors/errors';
 import { toHex, fromHex } from '../util/bytes';
 
 const enc = new TextEncoder();
-
-/**
- * The bytes covered by the outer OpenTask header signature (nexus-side):
- *   domainHash("TRUEOPEN_ORDER_V1", chain_id, owner_address, session_id,
- *              dec(order_sequence), order_envelope)
- * Returns 32 bytes; the caller signs it with secp256k1 (64-byte R||S). owner_address /
- * session_id / order_sequence are bound so a signature cannot be replayed onto another
- * slot. This is separate from the order's own EIP-712 signature.
- */
-export function orderEnvelopeSigningBytes(
-  chainId: string,
-  ownerAddress: string,
-  sessionId: string,
-  orderSequence: bigint,
-  canonicalOrderEnvelopeJson: string,
-): Uint8Array {
-  return domainHash(
-    SIGN_DOMAINS.order,
-    chainId,
-    ownerAddress,
-    sessionId,
-    orderSequence.toString(),
-    canonicalOrderEnvelopeJson,
-  );
-}
 
 /**
  * task_id = hex(H_FIELDS_V1("TRUEOPEN_TASK_ID_V1", raw32(session_id), u64be(order_sequence))).

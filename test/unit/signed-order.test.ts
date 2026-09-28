@@ -1,3 +1,6 @@
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { sha256 } from '../../src/codec/hash';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { describe, it, expect } from 'vitest';
 import { bech32 } from '@scure/base';
 import { toBinary } from '@bufbuild/protobuf';
@@ -17,11 +20,10 @@ import {
   PAYLOAD_MODE,
 } from '../../src/order/task-order';
 import type { TaskOrderV3, AmountV1 } from '../../src/order/task-order';
+import { taskOrderHash } from '../../src/order/task-order';
 import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import {
-  privKeySecp256k1Signer,
   secp256k1PublicKey,
-  verifyCosmosSecp256k1,
 } from '../../src/signer/secp256k1';
 import {
   privKeyEip712Signer,
@@ -33,7 +35,9 @@ import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const signer = privKeyEip712Signer(PRIV);
-const hashingSigner = privKeySecp256k1Signer(PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
+/** The fixture order placed by the PRIV account. */
+const ownOrder = () => ({ ...fixture(), userAddress: ethSecp256k1Address(pub, 'trueopen') });
 const pub = secp256k1PublicKey(PRIV);
 
 const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fill(byte);
@@ -169,9 +173,10 @@ describe('SignedOrderV2 encoding', () => {
   });
 
   it("signAndEncodeOrder: the inner signature is a 65-byte recoverable signature over the order's EIP-712 digest", async () => {
-    const order = fixture();
-    const r = await signAndEncodeOrder(order, ORDER_EIP712, signer);
-    expect(toHex(r.taskHash)).toBe(GOLDEN);
+    // The wallet must be the order user: signAndEncodeOrder checks the signature recovers to it.
+    const order = ownOrder();
+    const r = await signAndEncodeOrder(order, ORDER_EIP712, wallet);
+    expect(toHex(r.taskHash)).toBe(toHex(taskOrderHash(order)));
     expect(r.userSignature.length).toBe(65);
     // What's signed is the EIP-712 digest, not the raw task_hash; task_hash is covered as one of its bytes32 fields.
     expect(toHex(r.signingDigest)).toBe(toHex(taskOrderEip712Digest(order, ORDER_EIP712)));
@@ -183,20 +188,23 @@ describe('SignedOrderV2 encoding', () => {
     expect(toHex(decodeSignedOrder(r.bytes).userSignature)).toBe(toHex(r.userSignature));
   });
 
-  // Regression guard: the two signing conventions (keccak/EIP-712's 65 bytes vs sha256's 64-byte Cosmos signature)
-  // must never verify against each other. Mixing them up even once shows up on chain as "invalid signature", with no local symptom at all.
-  it('the two signing conventions never verify against each other', async () => {
+  it('signAndEncodeOrder refuses a wallet that is not the order user', async () => {
+    await expect(signAndEncodeOrder(fixture(), ORDER_EIP712, wallet)).rejects.toMatchObject({ code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH' });
+  });
+
+  // Regression guard: a signature over sha256(digest) (a hash-then-sign signer, or a double hash)
+  // never verifies as the EIP-712 signature, even with a valid recovery byte.
+  it('a signature over a re-hashed digest never verifies', async () => {
     const digest = taskOrderEip712Digest(fixture(), ORDER_EIP712);
-    const cosmosSig = await hashingSigner(digest);
-    expect(verifyEip712(digest, cosmosSig, ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(false);
-    // Conversely: an EIP-712 65-byte signature does not satisfy the "sha256 first, then verify" convention.
-    const eip712Sig = await signer(digest);
-    expect(verifyCosmosSecp256k1(digest, eip712Sig, pub)).toBe(false);
+    const rehashed = secp256k1.sign(sha256(digest), PRIV);
+    const sig65 = Uint8Array.from([...rehashed.toCompactRawBytes(), 27 + rehashed.recovery!]);
+    expect(verifyEip712(digest, sig65, ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(false);
+    expect(verifyEip712(digest, await signer(digest), ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(true);
   });
 
   it('changing any field of the order changes both the encoded bytes and the task_hash', async () => {
-    const a = await signAndEncodeOrder(fixture(), ORDER_EIP712, signer);
-    const b = await signAndEncodeOrder({ ...fixture(), orderSequence: 8n }, ORDER_EIP712, signer);
+    const a = await signAndEncodeOrder(ownOrder(), ORDER_EIP712, wallet);
+    const b = await signAndEncodeOrder({ ...ownOrder(), orderSequence: 8n }, ORDER_EIP712, wallet);
     expect(toHex(b.taskHash)).not.toBe(toHex(a.taskHash));
     expect(toHex(b.bytes)).not.toBe(toHex(a.bytes));
   });

@@ -10,8 +10,9 @@ import type { TaskOrderIntent } from '../../src/order/task-order-input';
 import { defaultGenerationParams } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
-import { privKeySecp256k1Signer, privKeySecp256k1DigestSigner, secp256k1PublicKey } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer, ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { privKeySecp256k1DigestSigner, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex, toHex } from '../../src/util/bytes';
 
 // After a Builder rotates its certificate, the new fingerprint goes on-chain, but the
@@ -20,8 +21,7 @@ import { fromHex, toHex } from '../../src/util/bytes';
 // the new fingerprint - only once.
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-const signer = privKeySecp256k1Signer(PRIV);
-const orderSigner = privKeyEip712Signer(PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
 const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
@@ -120,12 +120,12 @@ function pinAwareFactory(seen: { pins: string[] }) {
 function makeClient(hub: unknown, seen: { pins: string[] }): TrueOpenClient {
   const factory = pinAwareFactory(seen);
   return new TrueOpenClient({
-    chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       evmChainId: 424242n, feeDenom: 'utrueopen',
     // The default transport used for construction is not counted in seen: openTask only goes through ingressTransportFactory.
     chain: fakeChain(), ingressTransport: pinAwareFactory({ pins: [] })('unused', FRESH),
     hub: hub as never, ingressTransportFactory: factory,
-    nonce: () => new Uint8Array([1, 2, 3]),
+    nonce: () => new Uint8Array(32).fill(1),
   });
 }
 

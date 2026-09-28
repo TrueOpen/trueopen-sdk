@@ -14,44 +14,47 @@ import {
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
-} from '../../src/transport/sdk-request-envelope';
+} from '../../src/transport/sdk-request-body';
 import { toHex, fromHex } from '../../src/util/bytes';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
+import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
+import { recoverEip712Address } from '../../src/signer/eth-secp256k1';
 
-// Independent Python oracle golden values (per-method field order for nexus body_digest)
+// Base vectors of wire testdata/v1/task/sdk_request_body_v1.json and its replay rows
+// (sdk-request-body.test.ts reproduces the whole file; these pin what the client sends).
+const S = '77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
+const T = 'bce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
+const EVIDENCE = fromHex('77'.repeat(32));
 const G = {
-  events: '1b778156e522d5f03f85fe3f5fb32966585408a9cab40e1887815ab9cfd332d8',
-  prepare: 'ba8ef5c4f10b559d8e67e2bc2c0786e48b5b9305eb72b6335ae15b2fbd9b70ea',
-  subscribe: '2e2aed93c4a53d587cec600418f365a52a2be80a2e99694a08e0be1c39ed321f',
-  // Three fields (session_id, task_id, output_id). output_id is deprecated but still goes into
-  // the signature, matching nexus main's ackOutputStream. Over the streaming path the SDK sends
-  // an empty string, so the golden value uses the empty-string variant; the variant with a value
-  // is listed separately as ackWithOutputId, to prove the third field really is part of the digest.
-  ack: '6214a0124e3da6b4fde3b93072394d7a88e3c8adeb8089b59acf654074b8a074',
-  ackWithOutputId: 'cbe324c92c2eb5b9d2230f81af050e7704a98058d5c2d4a1f460d4718d270ec8',
+  events: '2fd7bcf6e3f290484b0dc8b81c8d0614f6d5c63d67af639fd9b7c394e29c0bc1',
+  events42: '508b01f226f6eb039409c3d6ee689d4d6e5eb24328ca6ea9cc43022dd87a1347',
+  prepare: '0a0495f67bf1ca40f83d34ad2fe2a538095f31580ba3c592c4e270b66d1eaa7c',
+  subscribe: 'e319c6b85eeacab31efcaa60691628f0fbf232d6be43191b253d93c94e1d868a',
+  subscribeResume17: '7b230a93c7f5fc5cb6360eb6177c072c75c4e16c7c1070d94b8a0107271ca128',
+  ack17: '219f5f4df140e7bb3de73f7c09277c7b75cda76186ddd5cdd691cefa370e11fa',
 };
 
-describe('body_digest builders (nexus oracle golden)', () => {
-  it('every method\'s field order matches byte-for-byte', () => {
-    expect(toHex(getTaskEventsBodyDigest('sess-1', 'task-1', '42'))).toBe(G.events);
-    expect(toHex(prepareChallengeBodyDigest('sess-1', 'task-1', 'USER_REVALIDATION', new Uint8Array([0xde, 0xad])))).toBe(G.prepare);
-    expect(toHex(subscribeOutputBodyDigest('sess-1', 'task-1'))).toBe(G.subscribe);
-    expect(toHex(ackOutputBodyDigest('sess-1', 'task-1'))).toBe(G.ack);
-    // output_id defaults to an empty string; a value changes the digest - proving the third field really does participate.
-    expect(toHex(ackOutputBodyDigest('sess-1', 'task-1', ''))).toBe(G.ack);
-    expect(toHex(ackOutputBodyDigest('sess-1', 'task-1', 'out-1'))).toBe(G.ackWithOutputId);
-    // An empty third field is not the same as "this field is absent": under length-prefixed framing, it has 4 extra bytes of zero-length prefix compared to the two-field version.
-    expect(G.ack).not.toBe(G.subscribe);
+describe('body_digest builders (wire vectors)', () => {
+  it('every method matches its vector', () => {
+    expect(toHex(getTaskEventsBodyDigest(S, T, ''))).toBe(G.events);
+    expect(toHex(getTaskEventsBodyDigest(S, T, '42'))).toBe(G.events42);
+    expect(toHex(prepareChallengeBodyDigest(S, T, 'USER_DISPUTE', EVIDENCE))).toBe(G.prepare);
+    expect(toHex(subscribeOutputBodyDigest(S, T))).toBe(G.subscribe);
+    expect(toHex(subscribeOutputBodyDigest(S, T, 17n))).toBe(G.subscribeResume17);
+    expect(toHex(ackOutputBodyDigest(S, T, 17n))).toBe(G.ack17);
   });
 });
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
+const USER = ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen');
 const auth: IngressAuth = {
   chainId: 'trueopen-devnet-1',
-  userAddress: 'trueopen1u',
-  signerPubKey: secp256k1PublicKey(PRIV),
-  signer: privKeySecp256k1Signer(PRIV),
-  nonce: () => new Uint8Array([1, 2, 3]),
+  userAddress: USER,
+  wallet: privateKeyTypedDataSigner(PRIV),
+  evmChainId: 424242n,
+  nonce: () => new Uint8Array(32).fill(3),
   expiry: () => 1893456000000n,
 };
 
@@ -90,7 +93,7 @@ function client(cap: Captured, withAuth = true): IngressClient {
 describe('IngressClient signed methods (router transport)', () => {
   it('prepareChallenge maps the request and returns a plan', async () => {
     const cap: Captured = {};
-    const res = await client(cap).prepareChallenge({ sessionId: 'sess-1', taskId: 'task-1', challengeKind: 'USER_REVALIDATION', localEvidenceDigest: new Uint8Array([0xde, 0xad]) });
+    const res = await client(cap).prepareChallenge({ sessionId: S, taskId: T, challengeKind: 'USER_DISPUTE', localEvidenceDigest: EVIDENCE });
     expect(toHex(cap.prepare?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.prepare);
     expect(res.challengeOpen).toBe(true);
     expect(res.estimatedBond?.amount).toBe('5');
@@ -99,34 +102,55 @@ describe('IngressClient signed methods (router transport)', () => {
   it('getTaskEvents streams + body_digest', async () => {
     const cap: Captured = {};
     const events = [];
-    for await (const ev of client(cap).getTaskEvents({ sessionId: 'sess-1', taskId: 'task-1', fromCursor: '42' })) {
+    for await (const ev of client(cap).getTaskEvents({ sessionId: S, taskId: T, fromCursor: '42' })) {
       events.push(ev);
     }
     expect(events).toHaveLength(1);
     expect(events[0]?.eventCode).toBe('OPEN_VERIFY_ACCEPTED');
-    expect(toHex(cap.events?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.events);
+    expect(toHex(cap.events?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.events42);
   });
 
   it('subscribeOutput signs + body_digest + yields frame by frame', async () => {
     const cap: Captured = {};
     let n = 0;
-    for await (const _ of client(cap).subscribeOutput({ sessionId: 'sess-1', taskId: 'task-1' })) n += 1;
+    for await (const _ of client(cap).subscribeOutput({ sessionId: S, taskId: T, resumeAfterSeq: 17n })) n += 1;
     expect(n).toBeGreaterThan(0);
     expect(cap.subscribe?.requestEnvelope?.method).toBe('SubscribeOutput');
-    expect(toHex(cap.subscribe?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.subscribe);
+    expect(toHex(cap.subscribe?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.subscribeResume17);
+    expect(cap.subscribe?.resumeAfterSeq).toBe(17n);
   });
 
   it('ackOutput signs + body_digest', async () => {
     const cap: Captured = {};
-    const res = await client(cap).ackOutput({ sessionId: 'sess-1', taskId: 'task-1', lastSeq: 2n });
+    const res = await client(cap).ackOutput({ sessionId: S, taskId: T, lastSeq: 17n });
     expect(res.acked).toBe(true);
     expect(cap.ack?.requestEnvelope?.method).toBe('AckOutput');
-    expect(toHex(cap.ack?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.ack);
+    expect(toHex(cap.ack?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.ack17);
+    expect(cap.ack?.lastSeq).toBe(17n);
+    const env = cap.ack!.requestEnvelope!;
+    expect(env.requestDomain).toBe('TRUEOPEN_SDK_REQUEST_V2');
+    expect(env.endpoint).toBe('/nexus.v1.IngressAPI/AckOutput');
+    expect(env.signerAddress).toBe(USER);
+    expect(env.signerPubkey).toHaveLength(0);
+    expect(env.signature).toHaveLength(65);
+    const digest = sdkRequestEip712Digest({
+      chainId: env.chainId, method: env.method, sessionId: env.sessionId, taskId: env.taskId,
+      requestNonce: env.requestNonce, expiryHeightOrTime: BigInt(env.expiryHeightOrTime), bodyDigest: env.bodyDigest,
+    }, 424242n);
+    expect(recoverEip712Address(digest, env.signature, 'trueopen')).toBe(USER);
+  });
+
+  it('a nonce that is not 32 bytes, or a height expiry, is refused before signing', async () => {
+    const transport = createRouterTransport(() => {});
+    const short = new IngressClient(transport, { ...auth, nonce: () => new Uint8Array(16) });
+    await expect(short.ackOutput({ sessionId: S, taskId: T, lastSeq: 1n })).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+    const height = new IngressClient(transport, { ...auth, expiry: () => 1000n });
+    await expect(height.ackOutput({ sessionId: S, taskId: T, lastSeq: 1n })).rejects.toMatchObject({ code: 'SDK_LOCAL_EXPIRY_NOT_TIME' });
   });
 
   it('a signed method throws when there is no auth', async () => {
     await expect(
-      client({}, false).prepareChallenge({ sessionId: 's', taskId: 't', challengeKind: 'USER_REVALIDATION' }),
+      client({}, false).prepareChallenge({ sessionId: S, taskId: T, challengeKind: 'USER_DISPUTE' }),
     ).rejects.toThrow(/auth/);
   });
 });

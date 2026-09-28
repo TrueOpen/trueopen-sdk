@@ -10,8 +10,10 @@ import { TASK_DATA_OBJECT_KIND } from '../../src/transport/task-data-signbytes';
 import type { OpenTaskInput } from '../../src/transport/ingress-client';
 import { resolveTaskOrderContext, buildTaskOrder } from '../../src/order/task-order-input';
 import { buildOpenTaskRequest } from '../../src/order/build-open-task';
-import { privKeySecp256k1Signer } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
+import { sdkRequestTypedData } from '../../src/transport/sdk-request-envelope';
+import { ackOutputBodyDigest } from '../../src/transport/sdk-request-body';
+import { envelopeMessage } from '../../src/transport/ingress-client';
 import { startWorld, acceptOnChain, drawWinner, landReceipt, outputText, STREAM, REFERENCE_STREAM } from './support/harness';
 import type { World } from './support/harness';
 import * as w from './support/world';
@@ -266,13 +268,16 @@ describe('e2e failures: nexus error codes map to typed categories', () => {
     });
   }
 
-  it('a real nexus-side rejection: an envelope whose signer address does not match its key', async () => {
+  it('a real nexus-side rejection: an envelope signed by a key other than signer_address', async () => {
     acceptOnChain(world);
-    // Without addressPrefix the SDK does not catch the mismatch locally; nexus does.
-    const client = world.client(0, { addressPrefix: undefined, sdkSignerAddress: w.BUILDERS[5]!.address } as never);
-    const e = await caught(client.ingress.ackOutput({ sessionId, taskId: STREAM.task_id, lastSeq: 0n }));
+    // The SDK refuses to send this itself (it recovers every signature first), so it is sent raw.
+    const body = ackOutputBodyDigest(sessionId, STREAM.task_id, 0n);
+    const fields = { chainId: w.CHAIN_ID, method: 'AckOutput', sessionId, taskId: STREAM.task_id, requestNonce: new Uint8Array(32).fill(5), expiryHeightOrTime: BigInt(Date.now() + 60_000), bodyDigest: body };
+    const signature = await privateKeyTypedDataSigner(w.BUILDERS[5]!.privKey).signTypedData(sdkRequestTypedData(fields, w.EVM_CHAIN_ID));
+    const env = envelopeMessage({ ...fields, requestDomain: 'TRUEOPEN_SDK_REQUEST_V2', endpoint: '/nexus.v1.IngressAPI/AckOutput', signerAddress: w.USER.address, signature });
+    const e = await caught(world.client(0).ingress.raw.ackOutput({ sessionId, taskId: STREAM.task_id, lastSeq: 0n, requestEnvelope: env }));
     expect(e).toMatchObject({ family: 'SDK_AUTH', code: 'SDK_AUTH_INVALID_SIGNATURE', category: 'auth', retriable: false });
-    expect(world.nexus[0]!.verifications.at(-1)?.outcome).toContain('signer_address does not match');
+    expect(world.nexus[0]!.verifications.at(-1)?.outcome).toContain('does not recover to signer_address');
   });
 
   it('a real nexus-side rejection: an expired envelope', async () => {
@@ -319,9 +324,8 @@ describe('e2e: the fake nexus checks are not vacuous', () => {
     const order = buildTaskOrder(ctx, { ...w.orderIntent(), userAddress: w.USER.address, sessionId, orderSequence: 0n }, undefined);
     const built = await buildOpenTaskRequest({
       order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
-      requestNonce: new Uint8Array(16).fill(7), idempotencyKey: 'k',
-      orderSigner: privKeyEip712Signer(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
-      signer: privKeySecp256k1Signer(w.USER.privKey), signerPubKey: w.USER.pubKey,
+      requestNonce: new Uint8Array(32).fill(7), idempotencyKey: 'k',
+      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
     });
     return built.input;
   }
@@ -332,10 +336,12 @@ describe('e2e: the fake nexus checks are not vacuous', () => {
   });
 
   const tamper: [string, (i: OpenTaskInput) => OpenTaskInput, string][] = [
-    ['a header field outside the order (media type)', (i) => ({ ...i, inputMediaType: 'text/plain' }), 'body_digest mismatch'],
+    // Every body field is signed: a change moves the rebuilt digest, so the signature no longer recovers.
+    ['a header field outside the order (media type)', (i) => ({ ...i, inputMediaType: 'text/plain' }), 'SDK_AUTH_INVALID_SIGNATURE'],
+    ['the idempotency key', (i) => ({ ...i, idempotencyKey: 'other' }), 'SDK_AUTH_INVALID_SIGNATURE'],
+    ['the payload_ref (not signed, but derived)', (i) => ({ ...i, payloadRef: `nexus://sha256/${'00'.repeat(32)}` }), 'payload_ref'],
     ['the payload bytes', (i) => ({ ...i, payload: Uint8Array.from(i.payload, (b, n) => (n === 0 ? b ^ 1 : b)) }), 'NEXUS_DATA_HASH_MISMATCH'],
-    ['the outer order signature', (i) => ({ ...i, signature: Uint8Array.from(i.signature, (b, n) => (n === 5 ? b ^ 1 : b)) }), 'body_digest mismatch'],
-    ['the envelope signature', (i) => ({ ...i, requestEnvelope: { ...i.requestEnvelope, signature: Uint8Array.from(i.requestEnvelope.signature, (b, n) => (n === 5 ? b ^ 1 : b)) } }), 'envelope signature'],
+    ['the envelope signature', (i) => ({ ...i, requestEnvelope: { ...i.requestEnvelope, signature: Uint8Array.from(i.requestEnvelope.signature, (b, n) => (n === 5 ? b ^ 1 : b)) } }), 'SDK_AUTH_INVALID_SIGNATURE'],
   ];
   for (const [what, change, want] of tamper) {
     it(`rejects a request whose ${what} changed after signing`, async () => {

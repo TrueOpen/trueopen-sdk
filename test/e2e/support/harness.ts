@@ -12,8 +12,7 @@ import type { FetchLike } from '../../../src/transport/rest-chain-reader';
 import { connectTrueOpenChainClient } from '../../../src/transport/trueopen-chain-client';
 import { EthSecp256k1DirectSigner } from '../../../src/signer/eth-direct-signer';
 import { nexusIngressTransport } from '../../../src/transport/nexus-tls';
-import { privKeySecp256k1Signer } from '../../../src/signer/secp256k1';
-import { privKeyEip712Signer } from '../../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../../src/signer/typed-data-signer';
 import type { ChainClient } from '../../../src/transport/chain-client';
 import { FakeNode } from './fake-node';
 import { FakeNexus, TLS_PUBKEY_HASH, loadStream } from './fake-nexus';
@@ -62,11 +61,8 @@ export async function startWorld(): Promise<World> {
     new TrueOpenClient({
       chainId: w.CHAIN_ID,
       userAddress: w.USER.address,
-      signerPubKey: w.USER.pubKey,
-      signer: privKeySecp256k1Signer(w.USER.privKey),
-      orderSigner: privKeyEip712Signer(w.USER.privKey),
+      wallet: privateKeyTypedDataSigner(w.USER.privKey),
       evmChainId: w.EVM_CHAIN_ID,
-      addressPrefix: w.PREFIX,
       chain: readOnlyChain,
       hub,
       taskReader,

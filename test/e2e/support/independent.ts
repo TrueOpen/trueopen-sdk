@@ -69,15 +69,18 @@ function raw32(field: string, value: string, code = 'NEXUS_INGRESS_MALFORMED'): 
   if (!/^[0-9a-f]{64}$/.test(value)) throw new VerifyError(code, `${field} is not 64-character lowercase hex`);
   return unhex(value);
 }
-/** The 20 address bytes of a canonical Bech32 address. */
+/** The chain's account prefix: every account address the contract signs uses it. */
+export const ACCOUNT_PREFIX = 'trueopen';
+
+/** The 20 address bytes of a canonical lowercase Bech32 account address with the account prefix. */
 export function addressBytes(field: string, address: string, code = 'NEXUS_INGRESS_MALFORMED'): Uint8Array {
   try {
     const d = bech32.decode(address as `${string}1${string}`);
     const raw = Uint8Array.from(bech32.fromWords(d.words));
-    if (bech32.encode(d.prefix, bech32.toWords(raw)) !== address || raw.length !== 20) throw new Error('not canonical');
+    if (d.prefix !== ACCOUNT_PREFIX || bech32.encode(d.prefix, bech32.toWords(raw)) !== address || raw.length !== 20) throw new Error('not canonical');
     return raw;
   } catch {
-    throw new VerifyError(code, `${field} is not a canonical Bech32 address`);
+    throw new VerifyError(code, `${field} is not a canonical ${ACCOUNT_PREFIX} account address`);
   }
 }
 
@@ -460,6 +463,7 @@ export function verifySdkRequest(
   if (e.expiryHeightOrTime <= 0n) malformed('expiry must be above zero');
   const heightExpiry = e.expiryHeightOrTime < HEIGHT_EXPIRY_THRESHOLD;
   if (heightExpiry && want.openTaskSequence === undefined) malformed('a height expiry is accepted only for OpenTask');
+  if (!heightExpiry && want.openTaskSequence !== undefined) malformed('OpenTask expiry must be a chain height, not Unix milliseconds');
   if (want.openTaskSequence !== undefined && e.taskId !== deriveTaskId(e.sessionId, want.openTaskSequence)) malformed('OpenTask task_id is not derived');
   addressBytes('signer_address', e.signerAddress);
   const body = want.body();
@@ -584,7 +588,7 @@ export function userTaskDataDigest(a: RequestAuthLike, chainId: string, evmChain
  */
 export function verifyUserTaskDataAuth(
   a: RequestAuthLike | undefined,
-  want: { builder: string; rpcMethod: string; body: Uint8Array; objectKind: number; requestTtlBlocks: bigint },
+  want: { builder: string; rpcMethod: string; body: Uint8Array; objectKind: number; maxServiceMaterialExpiryBlocks: bigint },
   ctx: AuthContext,
 ): string {
   const malformed = (why: string): never => { throw new VerifyError('NEXUS_INGRESS_MALFORMED', why); };
@@ -606,7 +610,8 @@ export function verifyUserTaskDataAuth(
   if (rec === undefined || hex(rec.address20) !== hex(expected)) {
     throw new VerifyError('DATA_ACCESS_INVALID_SIGNATURE', 'the signature does not recover to the expected signer');
   }
-  if (a.expiryHeight < ctx.height || a.expiryHeight > ctx.height + want.requestTtlBlocks) {
+  // The Task data window is max_service_material_expiry_blocks, not OpenTask's request TTL.
+  if (a.expiryHeight < ctx.height || a.expiryHeight > ctx.height + want.maxServiceMaterialExpiryBlocks) {
     throw new VerifyError('NEXUS_DATA_EXPIRED', 'expiry height outside window');
   }
   const key = `task-data\u0000${a.chainId}\u0000${a.builderOperatorAddress}\u0000${a.requesterAddress}\u0000${hex(a.requestNonce)}`;

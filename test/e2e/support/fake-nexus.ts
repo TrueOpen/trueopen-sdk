@@ -50,8 +50,13 @@ export const TLS_PUBKEY_HASH = readFileSync(new URL('pubkey_sha256.txt', TLS_DIR
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 const unhex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, 'hex'));
 const MAX_CHUNK_BYTES = 256 * 1024;
-/** Request window for height expiries (the Builder's request TTL in blocks). */
+/** OpenTask's height-expiry window (the Builder's request_ttl_blocks). */
 const REQUEST_TTL_BLOCKS = 20n;
+/**
+ * The Task data request window (max_service_material_expiry_blocks). Deliberately not 20, so a
+ * test cannot pass by assuming OpenTask's window here.
+ */
+export const MAX_SERVICE_MATERIAL_EXPIRY_BLOCKS = 100n;
 /** max_session_grant_blocks: off-chain Builder configuration, the same on every Builder. */
 export const MAX_SESSION_GRANT_BLOCKS = 400n;
 
@@ -347,7 +352,7 @@ export class FakeNexus {
   private authorizeRead(M: string, rpcMethod: string, refPb: TaskDataObjectRefV1 | undefined, body: (ref: v.ObjectRefLike) => Uint8Array, auth: TaskDataRequestAuthV1 | undefined): OutputStreamFixture {
     const ref = this.check(M, () => this.refOf(refPb));
     const requester = this.check(M, () => v.verifyUserTaskDataAuth(auth, {
-      builder: this.builder.address, rpcMethod, body: body(ref), objectKind: ref.objectKind, requestTtlBlocks: REQUEST_TTL_BLOCKS,
+      builder: this.builder.address, rpcMethod, body: body(ref), objectKind: ref.objectKind, maxServiceMaterialExpiryBlocks: MAX_SERVICE_MATERIAL_EXPIRY_BLOCKS,
     }, this.ctx()));
     this.injected(M);
     // A user may read only the OUTPUT of their own task.

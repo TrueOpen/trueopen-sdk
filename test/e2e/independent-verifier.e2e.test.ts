@@ -150,7 +150,7 @@ function taskAuth(name: 'task_data_request' | 'task_data_request_session', over:
 
 function verifyTaskData(a: v.RequestAuthLike, c: v.AuthContext, objectKind = 2): string {
   return v.verifyUserTaskDataAuth(a, {
-    builder: a.builderOperatorAddress, rpcMethod: a.rpcMethod, body: unhex(a.bodyDigest), objectKind, requestTtlBlocks: 1000n,
+    builder: a.builderOperatorAddress, rpcMethod: a.rpcMethod, body: unhex(a.bodyDigest), objectKind, maxServiceMaterialExpiryBlocks: 1000n,
   }, c);
 }
 

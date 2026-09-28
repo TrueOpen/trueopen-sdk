@@ -144,9 +144,9 @@ const CHAT = has('--chat');
 // Overrides the chat system message (default "trueopen e2e chat"); the dedup timestamp is
 // still appended so the content hash stays unique.
 const SYSTEM_PROMPT = flag('--system-prompt', undefined);
-// Full chat `messages` array (JSON) to send verbatim, for multi-turn history. A dedup
-// system message is prepended so the content hash stays unique; the given messages are kept
-// exactly as passed.
+// Full chat `messages` array (JSON) to send verbatim, for multi-turn history. No extra
+// message is injected; the dedup timestamp is a top-level `_dedup` field that cortex ignores
+// (it only reads `messages`), so the content hash stays unique without polluting the input.
 const MESSAGES_JSON = flag('--messages-json', undefined);
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
@@ -332,9 +332,7 @@ if (MESSAGES_JSON !== undefined) {
     console.error('--messages-json must be a JSON array or an object with a messages array');
     process.exit(2);
   }
-  payload = new TextEncoder().encode(JSON.stringify({
-    messages: [{ role: 'system', content: `trueopen e2e multi-turn @ ${ts}` }, ...msgs],
-  }));
+  payload = new TextEncoder().encode(JSON.stringify({ messages: msgs, _dedup: ts }));
 } else if (CHAT) {
   payload = new TextEncoder().encode(JSON.stringify({
     messages: [

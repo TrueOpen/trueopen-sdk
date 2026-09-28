@@ -172,4 +172,25 @@ describe('IngressClient Task data requests with a session', () => {
     expect(Array.from(got.bytes)).toEqual([7]);
     expect(fetches).toHaveLength(2);
   });
+
+  it('refuses a session grant whose user is not the requester', async () => {
+    // The session key manager is bound to USER; the auth context claims a different user. The
+    // grant must be rejected before anything is signed, mirroring signSdkRequestEnvelope.
+    const session = new SessionKeyManager({
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet, evmChainId: async () => EVM,
+      latestHeight: async () => 1000n, maxGrantBlocks: 400,
+    });
+    const auth: IngressAuth = {
+      chainId: 'trueopen-golden-1', userAddress: 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man', wallet, evmChainId: EVM,
+      nonce: () => new Uint8Array(32).fill(9), expiry: () => 1_790_000_000_000n, session,
+    };
+    const transport = createRouterTransport(({ service }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      service(IngressAPI, { getTaskDataMetadata: () => ({}) } as any);
+    });
+    const client = new IngressClient(transport, auth);
+    await expect(
+      client.getTaskDataMetadata({ objectRef: ref(TASK_DATA_OBJECT_KIND.OUTPUT), builderAddress: BUILDER, expiresAtHeight: 1010n }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+  });
 });

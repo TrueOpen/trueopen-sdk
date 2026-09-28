@@ -519,6 +519,13 @@ export class IngressClient {
       p.objectKind === TASK_DATA_OBJECT_KIND.OUTPUT
         ? await auth.session.current()
         : undefined;
+    if (session !== undefined && session.grant.user !== auth.userAddress) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_REQUEST_MALFORMED',
+        `the session grant is for ${session.grant.user}, not ${auth.userAddress}`,
+      );
+    }
     const evmChainId = await resolveEvmChainId(auth);
     const data = taskDataRequestTypedData(fields, evmChainId, session?.grantHash);
     const signature =

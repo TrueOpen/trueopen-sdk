@@ -183,3 +183,6 @@
 - The CLI order file rejects a zero `profileVersion` / `outputBudgetBucket` by name. Both are
   refused on chain and by `validateTaskOrderScalarScope`, which reported them as the field-less
   "task order scalar scope is invalid".
+- `classifyBroadcastError` recognizes a CheckTx failure by shape alone. It also required a class
+  name, which a bundler renames when it minifies, so `CHAIN_TX_REJECTED` and the retriable
+  sequence-mismatch would have been lost in a minified consumer build.

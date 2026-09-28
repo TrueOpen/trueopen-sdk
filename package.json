@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:examples": "tsc -p examples/tsconfig.json",
     "test": "vitest run",
+    "test:examples": "TRUEOPEN_E2E_EXAMPLES=1 vitest run test/e2e/examples.e2e.test.ts",
     "test:watch": "vitest",
     "generate": "buf generate",
     "e2e:open-task": "node scripts/e2e-open-task.mjs"

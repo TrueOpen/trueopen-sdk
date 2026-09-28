@@ -54,6 +54,13 @@ jobs:
       - name: Typecheck examples
         run: npm run typecheck:examples
 
+      # Runs the examples for real against the in-process fake node and nexus. It has to
+      # come after Build because the examples import dist, which is also why it cannot be
+      # part of `npm test`: that runs before anything is built. Without this step the
+      # suite is gated on an env var nothing sets, so it would never run and only rot.
+      - name: Test examples against the simulated network
+        run: npm run test:examples
+
   # Separate from the matrix: this checks the generator against the submodule,
   # which has nothing to do with the Node version, and it reaches buf.build for
   # the cosmos modules -- keeping it apart means a registry outage reads as a

@@ -156,7 +156,7 @@ const bucketBody = (kind: string) => ({
 describe('resolveTaskOrderContext', () => {
   it('anchor uses latest-lag, gets block_hash from beacon and the current effective version from bucket', async () => {
     const hub = readerFor(1000, {
-      'builder_set/by_height/1000': SET_BODY,
+      'builder_set/by_height/998': SET_BODY,
       'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14), randomness_hex: hexOf(0x01), source_tag: 'proposer_vrf_v1', verified: true } },
       'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
     });
@@ -169,9 +169,25 @@ describe('resolveTaskOrderContext', () => {
     expect(c.timeoutBucketVersion).toBe(1n);
   });
 
+  it('reads the BuilderSet at the anchor height, not the latest height, when the set changes in between', async () => {
+    const hub = readerFor(1000, {
+      // A new set took effect at 999: after the anchor, before the latest height.
+      'builder_set/by_height/1000': {
+        set: { ...SET_BODY.set, builder_set_id: 'rotation-2', builder_set_version: '2', effective_height: '999', builder_set_hash: hexOf(0x99) },
+      },
+      'builder_set/by_height/998': SET_BODY,
+      'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14) } },
+      'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
+    });
+    const c = await resolveTaskOrderContext(hub, 'trueopen-localnet-1');
+    expect(c.sessionAnchorHeight).toBe(998n);
+    expect(c.builderSetId).toBe('genesis-1');
+    expect(c.builderSetHash).toBe(hexOf(0x15));
+  });
+
   it('anchor earlier than the builder set effective height → blocked locally', async () => {
     const hub = readerFor(1000, {
-      'builder_set/by_height/1000': {
+      'builder_set/by_height/998': {
         set: { ...SET_BODY.set, effective_height: '9999' },
       },
       'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14) } },

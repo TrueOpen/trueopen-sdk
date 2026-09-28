@@ -48,7 +48,7 @@ export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } fro
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
 export { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from './transport/fan-out-submit';
-export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, PlaintextFallbackAgent, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, isPlaintextServerError, tlsPubkeyHashRequiredByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
+export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, tlsPubkeyHashRequiredByEnv, insecureHttpAllowedByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
 export type { NexusTransportPolicy } from './transport/nexus-tls';
 export type { NexusTransportOptions } from './transport/nexus-tls';
 export type { EndpointLike, AcceptedLike, FanOutResult, FanOutResultItem } from './transport/fan-out-submit';

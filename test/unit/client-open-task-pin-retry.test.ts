@@ -65,7 +65,7 @@ function makeHub(afterReread: string) {
   const reads: Record<string, number> = {};
   const hub = {
     getLatestHeight: async (): Promise<bigint> => 1_000n,
-    getActiveBuilderSet: async (): Promise<BuilderSetSnapshot> => snapshot,
+    getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
     getBeacon: async (height: bigint): Promise<BeaconView> => ({
       height, blockHash: hexOf(0x14), randomnessHex: hexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
     }),

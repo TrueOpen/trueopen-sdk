@@ -45,7 +45,7 @@ const snapshot: BuilderSetSnapshot = {
 /** Satisfies both TaskBuilderReader and TaskOrderContextReader. */
 const hub = {
   getLatestHeight: async (): Promise<bigint> => 1_000n,
-  getActiveBuilderSet: async (): Promise<BuilderSetSnapshot> => snapshot,
+  getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
   getBeacon: async (height: bigint): Promise<BeaconView> => ({
     height, blockHash: ANCHOR, randomnessHex: hexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
   }),
@@ -135,6 +135,42 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.context.timeoutBucketVersion).toBe(1n);
     // anchor is latestHeight - 2.
     expect(res.context.sessionAnchorHeight).toBe(998n);
+  });
+
+  it('a BuilderSet change between the anchor and the latest height: signs and routes by the anchor-height set', async () => {
+    // A new set with a single member takes effect at 999, after the anchor (998) but by the latest height (1000).
+    const rotated: BuilderSetSnapshot = {
+      builderSetId: 'rotation-2', builderSetVersion: 2n, effectiveHeight: 999n, builders: ADDRS[0]!, setHash: hexOf(0x99),
+    };
+    const heights: bigint[] = [];
+    const rotatingHub = {
+      ...(hub as object),
+      getBuilderSetAtHeight: async (h: bigint): Promise<BuilderSetSnapshot> => {
+        heights.push(h);
+        return h >= 999n ? rotated : snapshot;
+      },
+    } as never;
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const contacted: string[] = [];
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      evmChainId: 424242n, feeDenom: 'utrueopen',
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub: rotatingHub,
+      ingressTransportFactory: (uri) => {
+        contacted.push(uri);
+        return acceptTransport(seen);
+      },
+      nonce: () => new Uint8Array([1, 2, 3]),
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+
+    // Every BuilderSet read, for signing and for routing, is at the anchor height.
+    expect(heights).toEqual([998n, 998n]);
+    expect(res.context.builderSetId).toBe('genesis-1');
+    expect(res.context.builderSetHash).toBe(SET_HASH);
+    // The Builders contacted are the anchor-height set's members, not the latest set's single member.
+    expect(contacted.sort()).toEqual(ADDRS.map((a) => `grpc://${a}:8080`).sort());
   });
 
   it('expiry uses block height rather than a timestamp (nexus only accepts block height for OpenTask)', async () => {

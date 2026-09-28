@@ -6,8 +6,8 @@ import { TrueOpenError } from '../errors/errors';
 
 /** Minimal reader capability needed by resolveTaskBuilderEndpoints (for easy test injection). */
 export interface TaskBuilderReader {
-  /** The builder set of the currently active term (term_id + members + set_hash). */
-  getActiveBuilderSet(): Promise<BuilderSetSnapshot>;
+  /** The BuilderSet in effect at `height` (node `builder_set/by_height/{height}`). */
+  getBuilderSetAtHeight(height: bigint): Promise<BuilderSetSnapshot>;
   /** A builder's service descriptor (#41: inlined endpoints). */
   getServiceDescriptor(operatorAddress: string, participantType?: string): Promise<ServiceDescriptorRef>;
 }
@@ -24,7 +24,13 @@ export interface ResolveTaskBuilderInput {
    */
   readonly builderSetHash: string;
   readonly sessionAnchorBlockHash: string;
-  /** Defaults to reader.getActiveBuilderSet() (its active_builders is the candidate pool). */
+  /**
+   * The session_anchor_height signed into the order. The candidate pool is the BuilderSet in
+   * effect at this height -- the same set the chain checks the order against -- never the
+   * latest one.
+   */
+  readonly sessionAnchorHeight: bigint;
+  /** Defaults to the active_builders of the BuilderSet at sessionAnchorHeight. */
   readonly members?: readonly BuilderSetMember[];
   readonly buildersPerTask?: number;
 }
@@ -59,9 +65,19 @@ export async function resolveTaskBuilderEndpoints(
   reader: TaskBuilderReader,
   input: ResolveTaskBuilderInput,
 ): Promise<ResolveTaskBuilderResult> {
-  const snapshot = await reader.getActiveBuilderSet();
-  // The active_builders returned by the by_height snapshot is the candidate pool for the
-  // current term; when node actually selects, it filters once more by **live** status
+  const snapshot = await reader.getBuilderSetAtHeight(input.sessionAnchorHeight);
+  // The signed set and the set whose members get contacted must be the same one; if the chain
+  // disagrees at the anchor height, the order would be sent to Builders that were never selected.
+  if (snapshot.setHash !== input.builderSetHash.toLowerCase()) {
+    throw new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_BUILDER_SET_MISMATCH',
+      `builder set ${snapshot.builderSetId} at anchor height ${input.sessionAnchorHeight} has hash ${snapshot.setHash}, ` +
+        `but the order signs ${input.builderSetHash}`,
+    );
+  }
+  // The active_builders returned by the by_height snapshot is the candidate pool at the
+  // anchor height; when node actually selects, it filters once more by **live** status
   // (slashed members must be excluded from new tasks), but the snapshot cannot read live
   // status. So this treats all of them as ACTIVE; callers needing strict consistency can
   // pass members explicitly.

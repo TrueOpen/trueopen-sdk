@@ -113,10 +113,11 @@ const client = new TrueOpenClient({
   // Required for openTask: reads on-chain context + picks an endpoint by task_builder_seed
   hub,
   // nexus endpoints verify their certificate against the on-chain descriptor's tls_pubkey_hash:
-  // an https endpoint with a fingerprint registered on-chain is checked against
-  // that fingerprint, no downgrade allowed; an https endpoint without a registered fingerprint
-  // falls back to http with a WARN during the transition period if the peer offers no TLS, or
-  // is rejected if NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 is set.
+  // an https endpoint with a fingerprint registered on-chain is checked against that
+  // fingerprint; one without a registered fingerprint gets standard CA verification (or is
+  // rejected if NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 is set). https is never downgraded to http.
+  // Plaintext http:// / grpc:// endpoints are refused unless you opt in for a localnet with
+  // nexusIngressTransport(url, hash, { allowInsecureHttp: true }) or TRUEOPEN_ALLOW_INSECURE_HTTP=1.
   ingressTransportFactory: (url, tlsPubkeyHash) => nexusIngressTransport(url, tlsPubkeyHash),
   // Optional: nonce / requestTtlBlocks (OpenTask's expiry is a block height, default +10 blocks)
 });
@@ -239,17 +240,20 @@ different `output_hash`.
 - `OutputFinV1` carries `finish_reason` and `worker_signature`: the
   digest is `H_FIELDS_V1(TRUEOPEN_OUTPUT_FIN_V1, chain_id, task_hash, final_seq,
   output_mmr_root, finish_reason)`, with `finish_reason` encoded in the frame as a **uint32_be
-  enum value**, accepting only 1..4 (UNSPECIFIED / unknown values are rejected before the digest
+  enum value**, accepting only 1..6 (UNSPECIFIED / unknown values are rejected before the digest
   is even computed). The authoritative settlement commitment is still the on-chain
   `InferReceipt.output_hash`; a signed Fin lets the receiver verify the terminal state before the
   Receipt arrives, and gives them a Worker-authenticated finish reason.
-- **`finSignaturePolicy`** (a `streamOutput` parameter): `'accept-unsigned'` (default -- verifies
-  a signature if present, passes through if absent) / `'require'` (must carry a valid reason and
-  a verifiable signature). The default is relaxed because the signed Fin is an additive field, and until
-  nexus forwards signed Fins, live chains still emit the old, unsigned Fin;
-  unconditionally failing closed would make the SDK unusable against the current network today.
-  The switch only relaxes "whether a signature must be present" -- **a Fin with a bad signature
-  is never accepted under any policy**.
+- **`finSignaturePolicy`** (a `streamOutput` parameter): `'require'` (default) -- the stream is
+  complete, and acked, only once a Fin with a valid reason and a `worker_signature` that verifies
+  against `workerServicePubKey` arrives. An unsigned Fin only proves the prefix received so far is
+  self-consistent, so a Builder could otherwise end the stream early and truncate the output.
+  nexus stores and replays the Worker-signed Fin as received.
+  `'accept-unsigned'` is an explicit opt-in for peers that still send the old, unsigned Fin: the
+  stream ends with a `fin` event carrying `attested: false` and `finishReason: undefined`, and
+  the SDK **never acks it**. **A Fin with a bad signature is never accepted under any policy**.
+- The terminal event is `{ kind: 'fin', attested: true, finishReason }` for a signed Fin, or
+  `{ kind: 'fin', attested: false, finishReason: undefined }` under the opt-in.
 - Phase 0 requires `attachment` / `attachment_signature` to be empty; a non-empty value fails closed.
 - `workerServicePubKey` must be supplied by the caller; the SDK has no switch to skip this check
   -- accepting output without verifying it discards all of the streamed-output guarantees. To obtain it:
@@ -335,13 +339,10 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.
 
-The SDK already implements the digest and signature
-verification for `TRUEOPEN_OUTPUT_FIN_V1` (anchored to the official `fin_signing` vectors) and
-wires it into `streamOutput`. But **the live chain does not yet produce a signed Fin**: nexus's
-side of verifying/storing/forwarding it has not shipped, so the current network still
-emits the old, unsigned Fin, and `finSignaturePolicy` defaults to `'accept-unsigned'`. Once
-that ships, it can switch to `'require'` and complete cross-repo live-chain acceptance for
-Cortex -> Nexus -> SDK -> OpenAI SSE.
+The SDK implements the digest and signature verification for `TRUEOPEN_OUTPUT_FIN_V1`
+(anchored to the official `fin_signing` vectors) and requires it in `streamOutput` by default.
+nexus verifies the Worker's Fin signature on receipt, stores the signed Fin and replays it
+unchanged to subscribers.
 
 **Full package**: `client.fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })`
 

@@ -29,6 +29,23 @@
 
 ### Changed
 
+- **Breaking:** `streamOutput` requires a Worker-signed Fin by default
+  (`finSignaturePolicy: 'require'`). An unsigned Fin no longer ends the stream, since a Builder
+  could send one after any verified prefix and truncate the output. The `fin` event now carries
+  `attested`. Under the explicit `'accept-unsigned'` opt-in an unsigned Fin ends the stream as
+  `attested: false`, and it is never acked.
+- **Breaking:** the nexus transport never downgrades https to plaintext. An https endpoint
+  without a registered fingerprint is verified through the standard CA chain, and a handshake
+  failure is an error. `PlaintextFallbackAgent`, `isPlaintextServerError` and the
+  `plaintext-fallback` policy are removed. Plaintext `http://` / `grpc://` endpoints are refused
+  unless the caller opts in with `allowInsecureHttp: true` or `TRUEOPEN_ALLOW_INSECURE_HTTP=1`
+  (localnet only), which logs a warning.
+- **Breaking:** `openTask` reads the BuilderSet at the order's `session_anchor_height`, both for
+  the signed `builder_set_id` / `builder_set_hash` and for routing, matching the chain's check.
+  `TaskOrderContextReader` and `TaskBuilderReader` need `getBuilderSetAtHeight` instead of
+  `getActiveBuilderSet`, `resolveTaskBuilderEndpoints` takes a required `sessionAnchorHeight`,
+  and routing fails with `SDK_LOCAL_BUILDER_SET_MISMATCH` if the set at that height does not
+  match the signed hash.
 - **Breaking (wire v0.3.3):** orders are `TaskOrderV3`.
   - `model_id` is a raw Hash32. `TaskOrderRequest.modelId` is lowercase 64-hex, and legacy text
     slugs are rejected.
@@ -60,8 +77,3 @@
   `HubReader.listProfiles` and the reference bucket query; wire defines none of these routes.
 - **Breaking:** `signCancelOrder`, `cancelOrderSigningBytes`, the `DOMAINS` table and the unused
   builder stage domains.
-
-### Known limitations
-
-- Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked until
-  the Worker runtime and nexus produce and forward signed Fins.

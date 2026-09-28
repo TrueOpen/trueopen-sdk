@@ -32,6 +32,7 @@
  * Usage:
  *   TRUEOPEN_MNEMONIC="word1 ... word24" node scripts/e2e-open-task.mjs
  *   node scripts/e2e-open-task.mjs --key-file /tmp/trueopen-mnemonic.txt
+ *   (a localnet whose nexus endpoints are plaintext grpc:// also needs TRUEOPEN_ALLOW_INSECURE_HTTP=1)
  *
  * Optional flags:
  *   --key-file <path>     mnemonic file (otherwise falls back to TRUEOPEN_MNEMONIC)
@@ -229,7 +230,8 @@ if (!activeModel) { console.error(`Model lookup returned 200 without a model fie
 // ---- wire up dependencies ----
 // On-chain endpoints may be grpc:// or https://; normalization happens inside the SDK.
 // For https endpoints, the nexus certificate's public key is checked against the
-// tls_pubkey_hash registered on chain -- https is never downgraded to http.
+// tls_pubkey_hash registered on chain -- https is never downgraded to http. Plaintext
+// grpc:// / http:// endpoints (a localnet) need TRUEOPEN_ALLOW_INSECURE_HTTP=1.
 const nexusTransport = (url, tlsPubkeyHash = '') => nexusIngressTransport(url, tlsPubkeyHash);
 const hub = new HubReader({ baseUrl: REST, fetch: (u) => fetch(u) });
 // On-chain params.phase0.evm_chain_id feeds the EIP-712 domain separator; --evm-chain-id
@@ -515,7 +517,7 @@ async function startStream(winnerWorker) {
   // Record the actual resubscription that carries a non-empty checkpoint, as evidence
   // that this path was exercised.
   let resumedFromSeq = null;
-  // From the terminating fin; stays undefined when the peer sends an unsigned Fin.
+  // From the terminating fin, which streamOutput requires to be Worker-signed by default.
   let finishReason;
 
   while (Date.now() < overallDeadline) {
@@ -560,9 +562,8 @@ async function startStream(winnerWorker) {
           }
           if (step.done) break;
           const f = step.value;
-          // The stream ends with one fin carrying the termination reason; only chunks
-          // are frames. undefined means the peer sent an unsigned Fin, so it is reported
-          // as unattested rather than defaulted to something that looks like an answer.
+          // The stream ends with one fin carrying the signature-verified termination
+          // reason; only chunks are frames.
           if (f.kind === 'fin') {
             finishReason = f.finishReason;
             continue;
@@ -589,9 +590,8 @@ async function startStream(winnerWorker) {
           // actually exercised: subsequent frames continue from the verified seq
           // instead of restarting from scratch.
           resumed_from_seq: resumedFromSeq,
-          // The signature-verified termination reason, or null when the peer sent an
-          // unsigned Fin. Null means "not attested", not "ended normally"; and it never
-          // says tool_calls -- cortex normalises that to EOS.
+          // The signature-verified termination reason. It never says tool_calls --
+          // cortex normalises that to EOS.
           finish_reason: finishReason === undefined ? null : finishReason,
           // Reaching here means streamOutput received fin, and fin's root matches the
           // root computed frame by frame.

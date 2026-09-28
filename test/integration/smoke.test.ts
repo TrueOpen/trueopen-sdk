@@ -61,7 +61,7 @@ const order: TaskOrderIntent = {
 /** Fake Hub that satisfies both TaskBuilderReader and TaskOrderContextReader. */
 const hub = {
   getLatestHeight: async (): Promise<bigint> => 1_000n,
-  getActiveBuilderSet: async (): Promise<BuilderSetSnapshot> => ({
+  getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => ({
     builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: [
       'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl',
       'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg',

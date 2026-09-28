@@ -32,7 +32,7 @@ const descRef = (id: string, withNexus = true): ServiceDescriptorRef => ({
 });
 
 const reader = {
-  getActiveBuilderSet: async (): Promise<BuilderSetSnapshot> => SNAP,
+  getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => SNAP,
   getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => descRef(id),
 };
 
@@ -41,6 +41,7 @@ const input = {
   taskId: TASK,
   builderSetHash: SET_HASH,
   sessionAnchorBlockHash: ANCHOR,
+  sessionAnchorHeight: 100n,
 };
 
 describe('resolveTaskBuilderEndpoints', () => {
@@ -71,12 +72,37 @@ describe('resolveTaskBuilderEndpoints', () => {
 
   it('records an error when a builder\'s descriptor has no NEXUS_GRPC endpoint, without blocking the rest', async () => {
     const noNexusForA = {
-      getActiveBuilderSet: async (): Promise<BuilderSetSnapshot> => SNAP,
+      getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => SNAP,
       getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => descRef(id, id !== A),
     };
     const { endpoints, errors } = await resolveTaskBuilderEndpoints(noNexusForA, input);
     expect(endpoints).toHaveLength(2);
     expect(errors.map((e: { address: string }) => e.address)).toEqual([A]);
+  });
+
+  it('reads the candidate pool at the signed anchor height, not the latest height', async () => {
+    // The set changed after the anchor: the latest set has different members and hash.
+    const NEW_SNAP: BuilderSetSnapshot = {
+      builderSetId: 'rotation-2', builderSetVersion: 2n, effectiveHeight: 150n, builders: A, setHash: hexOf(0x99),
+    };
+    const heights: bigint[] = [];
+    const rotated = {
+      getBuilderSetAtHeight: async (h: bigint): Promise<BuilderSetSnapshot> => {
+        heights.push(h);
+        return h >= 150n ? NEW_SNAP : SNAP;
+      },
+      getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => descRef(id),
+    };
+    const { endpoints, builderSetId } = await resolveTaskBuilderEndpoints(rotated, input);
+    expect(heights).toEqual([100n]);
+    expect(builderSetId).toBe('genesis-1');
+    expect(endpoints.map((e) => e.address).sort()).toEqual([A, B, C].sort());
+  });
+
+  it('refuses to route when the set at the anchor height does not match the signed builder_set_hash', async () => {
+    await expect(resolveTaskBuilderEndpoints(reader, { ...input, builderSetHash: hexOf(0x99) })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_BUILDER_SET_MISMATCH',
+    });
   });
 
   it('does not depend on the snapshot\'s member list when members is passed explicitly', async () => {

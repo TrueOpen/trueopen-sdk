@@ -174,24 +174,30 @@ export interface StreamOutputParams {
   readonly idleTimeoutMs?: number;
   /** Called after each new frame is accepted; can be used to persist a defensive checkpoint. */
   readonly onCheckpoint?: (checkpoint: OutputStreamVerifierCheckpoint) => void | Promise<void>;
-  /** Whether to report local delivery progress after finishing, default true. This is only local progress; it plays no part in settlement or fault attribution. */
+  /**
+   * Whether to report local delivery progress after finishing, default true. This is only local
+   * progress; it plays no part in settlement or fault attribution. Only a Worker-signed Fin is
+   * ever acked: an unattested Fin (see `finSignaturePolicy`) is never acked, whatever this says.
+   */
   readonly ack?: boolean;
   /**
    * Signature-verification policy for the trailing frame (`OutputFinV1`).
    *
-   * - `'require'`: Fin must carry a valid `finish_reason` and a verifiable `worker_signature`,
-   *   otherwise an error is thrown. **This is the protocol's target state**, but it requires the
-   *   peer to already produce a signed Fin.
-   * - `'accept-unsigned'` (default): if Fin carries a signature it is verified; if not, it is let through.
+   * - `'require'` (default): Fin must carry a valid `finish_reason` and a `worker_signature` that
+   *   verifies against `workerServicePubKey` (the Worker's current service key) before the stream
+   *   is treated as complete or acked. A Fin that fails this is treated like a bad frame: the
+   *   stream moves on to the next source, and fails once attempts run out.
+   * - `'accept-unsigned'`: an explicit opt-in for peers that still send the old, unsigned Fin. A
+   *   Fin that does carry a signature is still verified. An unsigned Fin ends the stream, but it is
+   *   surfaced as `attested: false` and is **never acked**.
    *
-   * Why the default isn't `'require'`: the signed Fin only **adds fields** -- an old Fin decodes with
-   * `finish_reason=0` and an empty `worker_signature`. Until nexus forwards signed Fins, every live chain sends old-style Fins -- defaulting to fail-closed would make the SDK
-   * immediately unusable against the whole network. The wire CHANGELOG also requires an explicit
-   * consumer replay policy for pre-activation streams.
+   * Why the default is `'require'`: an unsigned Fin only proves that the prefix received so far is
+   * self-consistent. Nothing stops a Builder from sending one after any verified prefix, so
+   * accepting it would let the Builder truncate the output silently. The Worker's signature over
+   * `final_seq` and `output_mmr_root` is what says the output ends here; nexus stores and replays
+   * the signed Fin byte for byte.
    *
-   * Note this switch only relaxes **whether a signature is required to be present**; once a Fin does
-   * carry a signature, either policy must verify it before accepting it -- a Fin with a bad signature
-   * is never trusted under any policy.
+   * A Fin with a bad signature is never trusted under any policy.
    */
   readonly finSignaturePolicy?: 'require' | 'accept-unsigned';
 }
@@ -215,19 +221,28 @@ export type OutputStreamEvent =
     }
   | {
       readonly kind: 'fin';
+      /** The Fin carried a Worker signature that verified: the output really ends here. */
+      readonly attested: true;
       /**
-       * The termination reason from a signature-verified `OutputFinV1`.
-       *
-       * `undefined` when the peer sent an unsigned Fin -- the default
-       * `finSignaturePolicy: 'accept-unsigned'` lets those through, so absence means "not
-       * attested", never "ended normally".
+       * The termination reason from the signature-verified `OutputFinV1`.
        *
        * **This cannot tell you the model made a tool call.** Cortex normalises vLLM's
        * `finish_reason: "tool_calls"` to EOS so that the chat path reuses the raw-text
        * resolver, so a turn that ended in a tool call arrives here as an ordinary EOS.
        * Detecting a tool call means parsing the committed text.
        */
-      readonly finishReason: FinishReasonV1 | undefined;
+      readonly finishReason: FinishReasonV1;
+    }
+  | {
+      readonly kind: 'fin';
+      /**
+       * The peer sent an unsigned Fin and the caller opted in with
+       * `finSignaturePolicy: 'accept-unsigned'`. Nothing attests that the output is complete: a
+       * Builder could have cut it short. The SDK does not ack it; only the on-chain
+       * `InferReceipt.output_hash` can confirm the text.
+       */
+      readonly attested: false;
+      readonly finishReason: undefined;
     };
 
 export interface ConfirmOutputParams {
@@ -392,12 +407,14 @@ export class TrueOpenClient {
       ...(this.cfg.sdkSignerAddress !== undefined ? { sdkSignerAddress: this.cfg.sdkSignerAddress } : {}),
     });
 
-    // The selection seed must use the same builder_set_hash / anchor that was signed into the order.
+    // The selection seed and the candidate pool must use the same BuilderSet / anchor that was
+    // signed into the order: the set in effect at session_anchor_height.
     const { endpoints, errors } = await resolveTaskBuilderEndpoints(hub, {
       chainId: this.cfg.chainId,
       taskId,
       builderSetHash: ctx.builderSetHash,
       sessionAnchorBlockHash: ctx.sessionAnchorBlockHash,
+      sessionAnchorHeight: ctx.sessionAnchorHeight,
     });
     if (endpoints.length === 0) {
       throw new TrueOpenError(
@@ -572,10 +589,9 @@ export class TrueOpenClient {
    * idle timeout, bad frame, or sequence gap; duplicate frames are fully re-verified but not
    * re-delivered to the caller.
    *
-   * OutputFinV1 carries no signature -- the authoritative final commitment is the on-chain
-   * InferReceipt.output_hash, and the root in fin only lets the receiver catch a discrepancy
-   * earlier. So this only raises an error when fin disagrees with the locally computed root; it is
-   * never treated as the commitment itself.
+   * The stream is complete only once a Fin arrives whose `final_seq` and `output_mmr_root` match
+   * the locally verified prefix and whose Worker signature verifies (see `finSignaturePolicy`).
+   * The on-chain InferReceipt.output_hash remains the authoritative final commitment.
    */
   async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent> {
     const verifier = new OutputStreamVerifier({
@@ -613,8 +629,8 @@ export class TrueOpenClient {
 
     const failures: string[] = [];
     let finSource: OutputStreamSource | undefined;
-    // The termination reason declared by a signature-verified Fin; stays undefined if the peer never sends a signed Fin.
-    let finishReason: number | undefined;
+    // The termination reason declared by a signature-verified Fin; stays undefined for an unattested Fin.
+    let finishReason: FinishReasonV1 | undefined;
     for (let attempt = 0; attempt < maxAttempts && finSource === undefined; attempt += 1) {
       const source = sources[attempt % sources.length]!;
       const cursor = verifier.leafCount > 0n ? verifier.resumeAfterSeq : undefined;
@@ -678,8 +694,8 @@ export class TrueOpenClient {
               throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `fin root does not match the locally computed root for task ${p.taskId}`);
             }
             // Fin carries finish_reason + worker_signature.
-            // If present it must verify; if absent, finSignaturePolicy decides whether to accept or reject.
-            const policy = p.finSignaturePolicy ?? 'accept-unsigned';
+            // If present it must verify; if absent, the stream only ends under an explicit 'accept-unsigned'.
+            const policy = p.finSignaturePolicy ?? 'require';
             const signed = f.workerSignature.length > 0;
             if (!signed && policy === 'require') {
               throw dataError(
@@ -701,7 +717,7 @@ export class TrueOpenClient {
                   `fin signature for task ${p.taskId} did not verify (finish_reason=${f.finishReason})`,
                 );
               }
-              finishReason = Number(f.finishReason);
+              finishReason = f.finishReason;
             }
             sawFin = true;
             finSource = source;
@@ -734,13 +750,19 @@ export class TrueOpenClient {
         { retriable: true },
       );
     }
+    if (finishReason === undefined) {
+      // Unattested Fin (only reachable under an explicit 'accept-unsigned'): nothing says the
+      // output is complete, so report no delivery progress for it.
+      yield { kind: 'fin', attested: false, finishReason: undefined };
+      return;
+    }
     if (p.ack !== false && verifier.leafCount > 0n) {
       await finSource.ingress.ackOutput({ sessionId: p.sessionId, taskId: p.taskId, lastSeq: verifier.resumeAfterSeq });
     }
     // After the ack, not before: `break`ing on the fin event runs the generator's cleanup
     // path, so anything left after the yield never executes. Acking first makes the caller's
     // loop shape irrelevant to whether delivery progress is reported.
-    yield { kind: 'fin', finishReason };
+    yield { kind: 'fin', attested: true, finishReason };
   }
 
   /** Upgrade a locally verified output to confirmed, using the root/count/size from the on-chain InferReceipt. */

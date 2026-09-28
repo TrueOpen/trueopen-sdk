@@ -64,10 +64,10 @@ export async function fetchDescriptorBytes(url: string): Promise<Uint8Array> {
  * accepts an http(s) base URL; the normalization happens inside nexusIngressTransport.
  *
  * For https endpoints, the server certificate's public key is checked against the tls_pubkey_hash
- * registered on chain (transport/nexus-tls). When **no** hash is registered on chain, it falls back to
- * nexusTransportOptions's default transitional policy (`plaintext-fallback`: falls back to http and logs
- * a WARN only when the peer doesn't speak TLS at all; an untrusted certificate is never downgraded).
- * Setting `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` makes it reject unconditionally instead.
+ * registered on chain (transport/nexus-tls). When **no** hash is registered on chain, the certificate
+ * is verified through the standard CA chain; https is never downgraded to http. Setting
+ * `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` makes it reject unconditionally instead. Plaintext `http://` /
+ * `grpc://` endpoints are refused unless `TRUEOPEN_ALLOW_INSECURE_HTTP=1` is set (localnet only).
  *
  * The normalization lives here (rather than at each call site) so that the --auto single-endpoint path
  * and deterministic routing follow the same rules.

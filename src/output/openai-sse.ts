@@ -11,9 +11,9 @@ export interface VerifiedOutputChunkEvent {
 }
 
 /**
- * A verified termination event. The current SDK cannot yet produce it from a live stream:
- * callers must wait until signed Fin reasons are available end to end before
- * converting a real stream into this event.
+ * A verified termination event. Build it only from an attested `streamOutput` fin
+ * (`attested: true`), whose finish_reason the Worker signed; an unattested fin must never be
+ * converted into this event.
  */
 export interface VerifiedOutputFinEvent {
   readonly type: 'fin';

@@ -71,12 +71,12 @@ describe('tls_pubkey_hash from the descriptor is plumbed all the way to the conn
     };
     const { endpoints } = await resolveTaskBuilderEndpoints(
       {
-        getActiveBuilderSet: async () => ({
+        getBuilderSetAtHeight: async () => ({
           builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDR, setHash: '11'.repeat(32),
         }),
         getServiceDescriptor: async () => descRef,
       },
-      { chainId: 'trueopen', taskId: 'ab'.repeat(32), builderSetHash: '11'.repeat(32), sessionAnchorBlockHash: '22'.repeat(32), buildersPerTask: 1 },
+      { chainId: 'trueopen', taskId: 'ab'.repeat(32), builderSetHash: '11'.repeat(32), sessionAnchorBlockHash: '22'.repeat(32), sessionAnchorHeight: 10n, buildersPerTask: 1 },
     );
     expect(endpoints).toHaveLength(1);
     expect(endpoints[0]?.tlsPubkeyHash).toBe(HASH_HEX);

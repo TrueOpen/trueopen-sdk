@@ -125,8 +125,8 @@ export async function cmdOutputStream(
     const sources = clients.map(({ ep, client }) => ({ id: ep.serviceEndpoint, ingress: client.ingress }));
     const frames: { seq: string; text: string }[] = [];
     let text = '';
-    // undefined when the peer sent an unsigned Fin: reported as such rather than guessed,
-    // and it never says "tool_calls" -- see OutputStreamEvent.
+    // From the Worker-signed Fin (streamOutput requires one by default). It never says
+    // "tool_calls" -- see OutputStreamEvent.
     let finishReason: FinishReasonV1 | undefined;
     for await (const e of first.client.streamOutput({
       sessionId: session,

@@ -36,6 +36,7 @@ All global options go **before the subcommand**. Priority: `flag` > environment 
 | `--nexus-url <url>` | `TRUEOPEN_NEXUS_URL` | - | explicitly targets a single nexus IngressAPI endpoint |
 | `--nexus-tls-pubkey-hash <hex>` | `TRUEOPEN_NEXUS_TLS_PUBKEY_HASH` | - | used with `--nexus-url`: verifies the nexus certificate against this certificate's public key sha256 (64-hex) |
 | `--auto` | - | off | discovers endpoints on-chain when `--nexus-url` is not given |
+| - | `TRUEOPEN_ALLOW_INSECURE_HTTP` | off | `1` allows plaintext `http://` / `grpc://` nexus endpoints; localnet only, logs a warning per endpoint |
 | `--chain-id <id>` | `TRUEOPEN_CHAIN_ID` | - | chain ID; required for any command that signs |
 | `--prefix <p>` | `TRUEOPEN_ADDR_PREFIX` | `trueopen` | bech32 address prefix |
 | `--gas-price <p>` | `TRUEOPEN_GAS_PRICE` | `0.025utrueopen` | gas price (only used for on-chain writes) |
@@ -67,10 +68,12 @@ A Builder's nexus terminates TLS itself with a **self-signed** certificate, and 
 
 - **`--auto` (on-chain discovery)**: the fingerprint is read from the descriptor; `https`
   endpoints are automatically checked against it, and a mismatch disconnects before a single
-  request byte is sent. If the descriptor has no registered fingerprint, the transitional policy
-  applies: it falls back to `http` with a WARN only if the peer offers no TLS at all; an
-  untrusted certificate does **not** get downgraded. Set `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` to
-  reject in all such cases instead.
+  request byte is sent. If the descriptor has no registered fingerprint, the certificate is
+  verified through the standard CA chain, and a handshake failure is an error: `https` is
+  **never** downgraded to `http`. Set `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` to reject such
+  endpoints outright instead.
+- **Plaintext `http://` / `grpc://` endpoints** are refused by default. For a localnet only, set
+  `TRUEOPEN_ALLOW_INSECURE_HTTP=1`; every plaintext endpoint then logs a warning.
 - **`--nexus-url` (manually specified)**: there is no on-chain descriptor to look up, so you must
   supply the fingerprint yourself. **An `https` endpoint should also be given
   `--nexus-tls-pubkey-hash`** -- the certificate is self-signed, so without a fingerprint the

@@ -4,6 +4,7 @@ import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
 import { canonicalOperatorAddressBytes } from '../codec/address';
 import { fromHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
+import type { ActiveSession, SignedSessionGrant } from '../session/session-grant';
 
 /**
  * SDKRequestEnvelopeV2: how a user request to Builder Ingress is authenticated (OpenTask,
@@ -29,6 +30,9 @@ export const SDK_REQUEST_EIP712_DOMAIN_VERSION = '1';
 
 /** The service every endpoint belongs to: endpoint = `${INGRESS_SERVICE_PATH}/<Method>`. */
 export const INGRESS_SERVICE_PATH = '/nexus.v1.IngressAPI';
+
+/** Bare method names a session key may sign on SDKRequestEnvelopeV2. OpenTask is never one. */
+export const SESSION_SDK_METHODS: readonly string[] = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 
 /** Values of 10^12 and above are Unix milliseconds; smaller values are a chain height (OpenTask only). */
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
@@ -131,28 +135,49 @@ export function sdkRequestEip712Digest(f: SdkRequestFields, evmChainId: bigint, 
 export interface SignedSdkRequestEnvelope extends SdkRequestFields {
   readonly requestDomain: typeof SDK_REQUEST_DOMAIN;
   readonly endpoint: string;
-  /** The user's canonical Bech32 address. */
+  /** The user's canonical Bech32 address (the granting user when a session key signed). */
   readonly signerAddress: string;
   /** 65 bytes R||S||V. */
   readonly signature: Uint8Array;
+  /** Present when a session key signed: the grant that authorizes it. */
+  readonly sessionGrant?: SignedSessionGrant;
 }
 
 /**
- * Signs an SDK request with the user's wallet (no session grant). The signature must recover to
- * `signerAddress`; that is checked before the envelope is returned.
+ * Signs an SDK request.
+ *
+ * Without `session`, the wallet signs with sessionGrantHash = 32 zero bytes and the signature
+ * must recover to `signerAddress`. With `session`, the session key signs with
+ * sessionGrantHash = hashStruct(grant), the signature must recover to grant.sessionKey, and the
+ * grant travels in the envelope; only the session-allowed methods accept that (never OpenTask).
  */
 export async function signSdkRequestEnvelope(
   fields: SdkRequestFields,
-  opts: { readonly signerAddress: string; readonly signer: TypedDataSigner; readonly evmChainId: bigint },
+  opts: {
+    readonly signerAddress: string;
+    readonly signer: TypedDataSigner;
+    readonly evmChainId: bigint;
+    readonly session?: ActiveSession;
+  },
 ): Promise<SignedSdkRequestEnvelope> {
-  const data = sdkRequestTypedData(fields, opts.evmChainId);
-  const expected = canonicalOperatorAddressBytes('signer_address', opts.signerAddress);
-  const signature = await signTypedDataAs(opts.signer, data, expected);
+  const s = opts.session;
+  if (s !== undefined && !SESSION_SDK_METHODS.includes(fields.method)) {
+    throw malformed(`${fields.method} must be signed by the wallet; a session key may not sign it`);
+  }
+  if (s !== undefined && s.grant.user !== opts.signerAddress) {
+    throw malformed(`the session grant is for ${s.grant.user}, not ${opts.signerAddress}`);
+  }
+  const data = sdkRequestTypedData(fields, opts.evmChainId, s?.grantHash);
+  const signature =
+    s === undefined
+      ? await signTypedDataAs(opts.signer, data, canonicalOperatorAddressBytes('signer_address', opts.signerAddress))
+      : await signTypedDataAs(s.key, data, s.grant.sessionKey);
   return {
     requestDomain: SDK_REQUEST_DOMAIN,
     ...fields,
     endpoint: ingressEndpoint(fields.method),
     signerAddress: opts.signerAddress,
     signature,
+    ...(s !== undefined ? { sessionGrant: s.grant } : {}),
   };
 }

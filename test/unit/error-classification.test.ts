@@ -37,6 +37,16 @@ describe('classifyNexusError', () => {
       [new ConnectError('NEXUS_DATA_RANGE_INVALID', Code.OutOfRange), 'NEXUS_DATA_RANGE_INVALID', 'invalid', false, false],
       [new ConnectError('NEXUS_DATA_CONFLICT: object key already committed', Code.AlreadyExists), 'NEXUS_DATA_CONFLICT', 'conflict', false, false],
       [new ConnectError('NEXUS_INGRESS_NOT_SELECTED_BUILDER', Code.PermissionDenied), 'NEXUS_INGRESS_NOT_SELECTED_BUILDER', 'not-found', false, true],
+      // Session grants and the Task data auth path.
+      [new ConnectError('SDK_AUTH_SESSION_GRANT_INVALID: user signature', Code.Unauthenticated), 'SDK_AUTH_SESSION_GRANT_INVALID', 'auth', false, false],
+      [new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: window', Code.Unauthenticated), 'SDK_AUTH_SESSION_GRANT_EXPIRED', 'expired', true, false],
+      [new ConnectError('SDK_AUTH_SESSION_METHOD_NOT_ALLOWED: OpenTask', Code.PermissionDenied), 'SDK_AUTH_SESSION_METHOD_NOT_ALLOWED', 'auth', false, false],
+      [new ConnectError('DATA_ACCESS_INVALID_SIGNATURE: recovered', Code.Unauthenticated), 'DATA_ACCESS_INVALID_SIGNATURE', 'auth', false, false],
+      [new ConnectError('DATA_ACCESS_SESSION_GRANT_INVALID: chain', Code.Unauthenticated), 'DATA_ACCESS_SESSION_GRANT_INVALID', 'auth', false, false],
+      [new ConnectError('DATA_ACCESS_SESSION_GRANT_EXPIRED: window', Code.Unauthenticated), 'DATA_ACCESS_SESSION_GRANT_EXPIRED', 'expired', true, false],
+      [new ConnectError('DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED: INPUT', Code.PermissionDenied), 'DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED', 'auth', false, false],
+      [new ConnectError('NEXUS_INGRESS_CONTRACT_NOT_FROZEN: ConfirmOpenTask', Code.FailedPrecondition), 'NEXUS_INGRESS_CONTRACT_NOT_FROZEN', 'invalid', false, false],
+      [new ConnectError('NEXUS_INGRESS_METHOD_RETIRED: SubmitOrder', Code.Unimplemented), 'NEXUS_INGRESS_METHOD_RETIRED', 'invalid', false, false],
     ];
     for (const [err, code, category, retriable, switchSource] of cases) {
       const c = classify(err);
@@ -88,6 +98,8 @@ describe('classifyNexusError', () => {
     expect(classifyNexusError(plain)).toBe(plain);
     expect(nexusErrorCode('[not_found] NEXUS_DATA_NOT_FOUND: x')).toBe('NEXUS_DATA_NOT_FOUND');
     expect(nexusErrorCode('something else')).toBeUndefined();
+    expect(nexusErrorCode('DATA_ACCESS_SESSION_GRANT_EXPIRED: x')).toBe('DATA_ACCESS_SESSION_GRANT_EXPIRED');
+    expect(nexusErrorCode('DATA_ACCESS_DENIED')).toBe('DATA_ACCESS_DENIED');
   });
 
   it('IngressClient throws classified errors for unary and streaming calls', async () => {

@@ -3,7 +3,8 @@ import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { CosmosSecp256k1Signer } from './signer/secp256k1';
 import type { TypedDataSigner } from './signer/typed-data-signer';
 import { IngressClient } from './transport/ingress-client';
-import type { OpenTaskAck, TaskStatusView } from './transport/ingress-client';
+import type { OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
+import { SessionKeyManager } from './session/session-grant';
 import type {
   PrepareChallengeResponse,
   GetTaskEventsResponse,
@@ -77,6 +78,23 @@ export interface TrueOpenClientConfig {
    * from the cosmos chainId string above. Defaults to reading it once from `hub.getEvmChainId()`.
    */
   readonly evmChainId?: bigint | number | string;
+  /**
+   * Opt-in session grants, off by default. When set, the wallet signs one SessionGrant for an
+   * in-memory session key, and that key signs SubscribeOutput, AckOutput, GetTaskEvents,
+   * PrepareChallenge and the OUTPUT GetTaskDataMetadata / FetchTaskData requests, so a browser
+   * wallet prompts once per grant instead of once per request. OpenTask is always signed by
+   * the wallet. The grant is renewed before it expires (and once more if a Builder reports it
+   * expired). The key is never persisted.
+   *
+   * `maxGrantBlocks` must be the Builders' max_session_grant_blocks (off-chain configuration,
+   * the same on every Task Builder); see SessionKeyManagerOptions for the other two. Needs
+   * `hub` (the grant expiry is a block height).
+   */
+  readonly session?: {
+    readonly maxGrantBlocks: number;
+    readonly grantBlocks?: number;
+    readonly renewBeforeBlocks?: number;
+  };
   /**
    * Optional override for the order's EIP-712 feeDenom.
    *
@@ -362,19 +380,50 @@ export class TrueOpenClient {
   private readonly sessionManager: SessionManager;
   readonly ingress: IngressClient;
 
+  /** The session key and its grant, when config.session is set. */
+  readonly sessionGrants: SessionKeyManager | undefined;
   private evmChainIdPromise: Promise<bigint> | undefined;
 
   constructor(cfg: TrueOpenClientConfig) {
     this.cfg = cfg;
     this.sessionManager = new SessionManager(cfg.chain);
-    this.ingress = new IngressClient(cfg.ingressTransport, {
-      chainId: cfg.chainId,
-      userAddress: cfg.userAddress,
-      wallet: cfg.wallet,
+    this.sessionGrants =
+      cfg.session === undefined
+        ? undefined
+        : new SessionKeyManager({
+            chainId: cfg.chainId,
+            userAddress: cfg.userAddress,
+            wallet: cfg.wallet,
+            evmChainId: () => this.resolveEvmChainId(),
+            latestHeight: () => this.latestHeight('a session grant expiry'),
+            ...cfg.session,
+          });
+    this.ingress = new IngressClient(cfg.ingressTransport, this.ingressAuth());
+  }
+
+  /**
+   * The signing context for Builder Ingress requests. A client built by the caller for another
+   * Builder (for example an OutputStreamSource) should use this, so that it shares the wallet,
+   * the nonce source and the session grant.
+   */
+  ingressAuth(): IngressAuth {
+    return {
+      chainId: this.cfg.chainId,
+      userAddress: this.cfg.userAddress,
+      wallet: this.cfg.wallet,
       evmChainId: () => this.resolveEvmChainId(),
       nonce: () => this.nextNonce(),
       expiry: () => this.nextExpiry(),
-    });
+      ...(this.sessionGrants !== undefined ? { session: this.sessionGrants } : {}),
+    };
+  }
+
+  private async latestHeight(what: string): Promise<bigint> {
+    const hub = this.cfg.hub;
+    if (hub === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_HEIGHT_UNCONFIGURED', `${what} is a block height: config.hub is required`);
+    }
+    return hub.getLatestHeight();
   }
 
   /**

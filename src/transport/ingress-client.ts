@@ -30,7 +30,9 @@ import { TrueOpenError } from '../errors/errors';
 import type { TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs } from '../signer/typed-data-signer';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD } from './sdk-request-envelope';
+import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD, SESSION_SDK_METHODS } from './sdk-request-envelope';
+import { sessionGrantMessage } from '../session/session-grant';
+import type { SessionAuthority } from '../session/session-grant';
 import {
   getTaskEventsBodyDigest,
   prepareChallengeBodyDigest,
@@ -115,6 +117,19 @@ export interface IngressAuth {
   readonly nonce: () => Uint8Array;
   /** Request expiry as Unix milliseconds (at or above 10^12). */
   readonly expiry: () => bigint;
+  /**
+   * Opt-in session grants. When present, the session-allowed requests (SubscribeOutput,
+   * AckOutput, GetTaskEvents, PrepareChallenge, and GetTaskDataMetadata / FetchTaskData of an
+   * OUTPUT object) are signed by the session key and carry the grant; everything else is still
+   * signed by the wallet. A grant the Builder reports as expired is renewed and the request is
+   * sent once more.
+   */
+  readonly session?: SessionAuthority;
+}
+
+/** The Builder refused the attached session grant as outside its height window. */
+export function isSessionGrantExpired(e: unknown): boolean {
+  return e instanceof TrueOpenError && (e.code === 'SDK_AUTH_SESSION_GRANT_EXPIRED' || e.code === 'DATA_ACCESS_SESSION_GRANT_EXPIRED');
 }
 
 async function resolveEvmChainId(auth: IngressAuth): Promise<bigint> {
@@ -173,7 +188,7 @@ export class IngressClient {
       orderEnvelope: req.orderEnvelope,
       payloadRef: req.payloadRef,
       signature: req.signature,
-      requestEnvelope: this.envelopeMsg(req.requestEnvelope),
+      requestEnvelope: envelopeMessage(req.requestEnvelope),
       sessionId: req.sessionId,
       orderSequence: req.orderSequence,
       userAddress: req.userAddress,
@@ -219,15 +234,16 @@ export class IngressClient {
   }): Promise<PrepareChallengeResponse> {
     const led = p.localEvidenceDigest ?? new Uint8Array();
     const bd = prepareChallengeBodyDigest(p.sessionId, p.taskId, p.challengeKind, led);
-    const env = await this.signEnvelope('PrepareChallenge', p.sessionId, p.taskId, bd);
-    return this.client.prepareChallenge(
-      create(PrepareChallengeRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        challengeKind: p.challengeKind,
-        localEvidenceDigest: led,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
+    return this.signedCall('PrepareChallenge', p.sessionId, p.taskId, bd, (env) =>
+      this.client.prepareChallenge(
+        create(PrepareChallengeRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          challengeKind: p.challengeKind,
+          localEvidenceDigest: led,
+          requestEnvelope: envelopeMessage(env),
+        }),
+      ),
     );
   }
 
@@ -239,16 +255,16 @@ export class IngressClient {
   }): AsyncIterable<GetTaskEventsResponse> {
     const cursor = p.fromCursor ?? '';
     const bd = getTaskEventsBodyDigest(p.sessionId, p.taskId, cursor);
-    const env = await this.signEnvelope('GetTaskEvents', p.sessionId, p.taskId, bd);
-    const stream = this.client.getTaskEvents(
-      create(GetTaskEventsRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        fromCursor: cursor,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
+    yield* this.signedStream('GetTaskEvents', p.sessionId, p.taskId, bd, (env) =>
+      this.client.getTaskEvents(
+        create(GetTaskEventsRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          fromCursor: cursor,
+          requestEnvelope: envelopeMessage(env),
+        }),
+      ),
     );
-    for await (const ev of stream) yield ev;
   }
 
   /**
@@ -271,17 +287,17 @@ export class IngressClient {
     signal?: AbortSignal;
   }): AsyncIterable<SubscribeOutputResponse> {
     const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq);
-    const env = await this.signEnvelope('SubscribeOutput', p.sessionId, p.taskId, bd);
-    const stream = this.client.subscribeOutput(
-      create(SubscribeOutputRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        requestEnvelope: this.envelopeMsg(env),
-        ...(p.resumeAfterSeq !== undefined ? { resumeAfterSeq: p.resumeAfterSeq } : {}),
-      }),
-      p.signal !== undefined ? { signal: p.signal } : undefined,
+    yield* this.signedStream('SubscribeOutput', p.sessionId, p.taskId, bd, (env) =>
+      this.client.subscribeOutput(
+        create(SubscribeOutputRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          requestEnvelope: envelopeMessage(env),
+          ...(p.resumeAfterSeq !== undefined ? { resumeAfterSeq: p.resumeAfterSeq } : {}),
+        }),
+        p.signal !== undefined ? { signal: p.signal } : undefined,
+      ),
     );
-    for await (const msg of stream) yield msg;
   }
 
   /**
@@ -510,17 +526,64 @@ export class IngressClient {
   /** Confirms plaintext output has been durably saved (idempotent; only the original order placer). */
   async ackOutput(p: { sessionId: string; taskId: string; lastSeq: bigint }): Promise<AckOutputResponse> {
     const bd = ackOutputBodyDigest(p.sessionId, p.taskId, p.lastSeq);
-    const env = await this.signEnvelope('AckOutput', p.sessionId, p.taskId, bd);
-    return this.client.ackOutput(
-      create(AckOutputRequestSchema, {
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        lastSeq: p.lastSeq,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
+    return this.signedCall('AckOutput', p.sessionId, p.taskId, bd, (env) =>
+      this.client.ackOutput(
+        create(AckOutputRequestSchema, {
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          lastSeq: p.lastSeq,
+          requestEnvelope: envelopeMessage(env),
+        }),
+      ),
     );
   }
 
+
+  /**
+   * Signs and sends a unary request. When a session key signed it and the Builder answers that
+   * the grant expired, the grant is renewed and the request is signed and sent once more.
+   */
+  private async signedCall<T>(
+    method: string,
+    sessionId: string,
+    taskId: string,
+    bodyDigest: Uint8Array,
+    send: (env: SignedSdkRequestEnvelope) => Promise<T>,
+  ): Promise<T> {
+    const env = await this.signEnvelope(method, sessionId, taskId, bodyDigest);
+    try {
+      return await send(env);
+    } catch (e) {
+      if (env.sessionGrant === undefined || !isSessionGrantExpired(e)) throw e;
+      this.auth?.session?.expired(env.sessionGrant);
+      return send(await this.signEnvelope(method, sessionId, taskId, bodyDigest));
+    }
+  }
+
+  /** Same as signedCall for a server stream: retried only when the stream failed before its first message. */
+  private async *signedStream<T>(
+    method: string,
+    sessionId: string,
+    taskId: string,
+    bodyDigest: Uint8Array,
+    open: (env: SignedSdkRequestEnvelope) => AsyncIterable<T>,
+  ): AsyncGenerator<T> {
+    let env = await this.signEnvelope(method, sessionId, taskId, bodyDigest);
+    for (let attempt = 0; ; attempt += 1) {
+      let received = false;
+      try {
+        for await (const msg of open(env)) {
+          received = true;
+          yield msg;
+        }
+        return;
+      } catch (e) {
+        if (received || attempt > 0 || env.sessionGrant === undefined || !isSessionGrantExpired(e)) throw e;
+        this.auth?.session?.expired(env.sessionGrant);
+        env = await this.signEnvelope(method, sessionId, taskId, bodyDigest);
+      }
+    }
+  }
 
   private async signEnvelope(
     method: string,
@@ -538,14 +601,16 @@ export class IngressClient {
         `${method} expiry must be Unix milliseconds (>= ${HEIGHT_EXPIRY_THRESHOLD}), got ${expiry}`,
       );
     }
+    const session = a.session !== undefined && SESSION_SDK_METHODS.includes(method) ? await a.session.current() : undefined;
     return signSdkRequestEnvelope(
       { chainId: a.chainId, method, sessionId, taskId, requestNonce: nonce32(a), expiryHeightOrTime: expiry, bodyDigest },
-      { signerAddress: a.userAddress, signer: a.wallet, evmChainId: await resolveEvmChainId(a) },
+      {
+        signerAddress: a.userAddress,
+        signer: a.wallet,
+        evmChainId: await resolveEvmChainId(a),
+        ...(session !== undefined ? { session } : {}),
+      },
     );
-  }
-
-  private envelopeMsg(e: SignedSdkRequestEnvelope) {
-    return envelopeMessage(e);
   }
 }
 
@@ -563,6 +628,7 @@ export function envelopeMessage(e: SignedSdkRequestEnvelope) {
     bodyDigest: e.bodyDigest,
     signerAddress: e.signerAddress,
     signature: e.signature,
+    ...(e.sessionGrant !== undefined ? { sessionGrant: sessionGrantMessage(e.sessionGrant) } : {}),
   });
 }
 

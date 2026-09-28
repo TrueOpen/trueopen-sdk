@@ -74,6 +74,22 @@ export type {
 
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
+export {
+  SessionKeyManager,
+  SESSION_GRANT_EIP712_TYPES,
+  SESSION_SDK_METHODS,
+  SESSION_TASK_DATA_METHODS,
+  sessionGrantTypedData,
+  sessionGrantHash,
+  sessionGrantMessage,
+} from './session/session-grant';
+export type {
+  SessionGrantFields,
+  SignedSessionGrant,
+  ActiveSession,
+  SessionAuthority,
+  SessionKeyManagerOptions,
+} from './session/session-grant';
 
 export {
   validateModelId,
@@ -226,7 +242,7 @@ export {
 export type { OpenTaskBody } from './transport/sdk-request-body';
 export type { SdkRequestFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
 
-export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES, envelopeMessage } from './transport/ingress-client';
+export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES, envelopeMessage, isSessionGrantExpired } from './transport/ingress-client';
 export {
   taskDataRequestSignBytes,
   taskDataRequestEip712Digest,

@@ -30,7 +30,7 @@ import type {
 import { TrueOpenError } from '../errors/errors';
 import type { TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs } from '../signer/typed-data-signer';
-import { canonicalOperatorAddressBytes } from '../codec/address';
+import { canonicalAccountAddressBytes } from '../codec/address';
 import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD, SESSION_SDK_METHODS } from './sdk-request-envelope';
 import { sessionGrantMessage, SESSION_TASK_DATA_METHODS } from '../session/session-grant';
 import type { SessionAuthority, SignedSessionGrant } from '../session/session-grant';
@@ -523,7 +523,7 @@ export class IngressClient {
     const data = taskDataRequestTypedData(fields, evmChainId, session?.grantHash);
     const signature =
       session === undefined
-        ? await signTypedDataAs(auth.wallet, data, canonicalOperatorAddressBytes('requester_address', auth.userAddress))
+        ? await signTypedDataAs(auth.wallet, data, canonicalAccountAddressBytes('requester_address', auth.userAddress))
         : await signTypedDataAs(session.key, data, session.grant.sessionKey);
     const requestAuth = create(TaskDataRequestAuthV1Schema, {
       schemaVersion: fields.schemaVersion,
@@ -622,6 +622,7 @@ export class IngressClient {
         signerAddress: a.userAddress,
         signer: a.wallet,
         evmChainId: await resolveEvmChainId(a),
+        chainId: a.chainId,
         ...(session !== undefined ? { session } : {}),
       },
     );

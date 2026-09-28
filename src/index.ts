@@ -159,7 +159,12 @@ export {
   enumBE,
   optionalV1,
 } from './codec/domain-hash';
-export { canonicalOperatorAddressBytes } from './codec/address';
+export {
+  canonicalOperatorAddressBytes,
+  canonicalAccountAddressBytes,
+  toAccountAddress,
+  ACCOUNT_ADDRESS_PREFIX,
+} from './codec/address';
 export { SIGN_DOMAINS } from './codec/domains';
 export { deriveTaskId } from './order/order-signing';
 
@@ -308,7 +313,7 @@ export type {
   OutputFrameAcceptance,
 } from './output/output-commitment';
 
-export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES } from './client';
+export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,

@@ -36,7 +36,10 @@ const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
   NEXUS_INGRESS_METHOD_RETIRED: rule('invalid', false, false),
   NEXUS_DATA_UNAUTHORIZED: rule('auth', false, false),
   NEXUS_OUTPUT_UNAUTHORIZED: rule('auth', false, false),
+  // The Task data request's own expiry height passed: re-sign and retry on the same Builder.
   NEXUS_DATA_EXPIRED: rule('expired', true, false),
+  // The object's retention passed on this Builder: another Builder may still hold it.
+  DATA_EXPIRED: rule('data-unavailable', false, true),
   NEXUS_DATA_NOT_FOUND: rule('not-found', false, true),
   // This Builder was not selected for the task; the selected ones have it.
   NEXUS_INGRESS_NOT_SELECTED_BUILDER: rule('not-found', false, true),
@@ -127,9 +130,9 @@ function clientSideRule(err: ConnectError): Rule {
   return rule('transport', true, true);
 }
 
-/** The leading `NEXUS_*` / `SDK_*` / `DATA_ACCESS_*` code of a nexus error message, if any. */
+/** The leading `NEXUS_*` / `SDK_*` / `DATA_*` code of a nexus error message, if any. */
 export function nexusErrorCode(message: string): string | undefined {
-  const m = /^(?:\[[a-z_]+\]\s*)?((?:NEXUS|SDK|DATA_ACCESS)_[A-Z0-9_]+)(?::|$|\s)/.exec(message);
+  const m = /^(?:\[[a-z_]+\]\s*)?((?:NEXUS|SDK|DATA)_[A-Z0-9_]+)(?::|$|\s)/.exec(message);
   return m?.[1];
 }
 

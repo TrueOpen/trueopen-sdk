@@ -12,7 +12,7 @@ import { taskOrderHash } from './task-order';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
 import type { TypedData, TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
-import { canonicalOperatorAddressBytes } from '../codec/address';
+import { canonicalAccountAddressBytes } from '../codec/address';
 
 /**
  * SignedOrderV2.signature_scheme: only this lowercase literal is accepted. It describes the
@@ -189,7 +189,7 @@ export async function signAndEncodeOrder(
   const data = taskOrderTypedData(order, ctx);
   const signingDigest = typedDataDigest(data);
   // The Keeper recovers the order user from this signature; check it here, not on chain.
-  const userSignature = await signTypedDataAs(signer, data, canonicalOperatorAddressBytes('user_address', order.userAddress));
+  const userSignature = await signTypedDataAs(signer, data, canonicalAccountAddressBytes('user_address', order.userAddress));
   const signed = create(SignedOrderV2Schema, {
     order: toProtoTaskOrder(order),
     signatureScheme: SIGNATURE_SCHEME,

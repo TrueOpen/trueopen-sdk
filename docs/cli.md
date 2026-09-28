@@ -316,7 +316,7 @@ from `task/{task_id}`, and the output hash, size and leaf count from the accepte
 `task/{task_id}/infer_receipt`. The metadata must match the receipt. The optional positional
 arguments override the two hashes. Until the receipt is on chain the command fails with the
 retriable `OUTPUT_TRUST_ANCHOR_PENDING`; run it again later. A size-0 output is not fetched at all.
-Each request expires at the latest height + 10 blocks, inside nexus's 20-block window.
+Each request expires at the latest height + 10 blocks, which must fit the Builders' `max_service_material_expiry_blocks`.
 
 **`--auto` is required**: nexus compares the `builder_operator_address` in the request against
 its own configuration byte-for-byte, and a manually given `--nexus-url` has no on-chain

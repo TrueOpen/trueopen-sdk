@@ -35,6 +35,16 @@ round.
   refuses a `taskId` not derived from the order's session and sequence.
 - **Breaking:** the USER Task data request signs "TrueOpen Task Data Request" **version 2**,
   whose struct ends with `sessionGrantHash`. Version 1 signatures are no longer accepted.
+- **Breaking:** account addresses (`userAddress`, the OpenTask `user_address`, `signer_address`)
+  must be canonical lowercase Bech32 with the account prefix `trueopen`, decoding to exactly 20
+  bytes; anything else is refused locally. A 0x address, as an EIP-1193 wallet reports it, is
+  converted (`toAccountAddress`). New: `canonicalAccountAddressBytes`,
+  `ACCOUNT_ADDRESS_PREFIX`.
+- **Breaking:** the envelope `chain_id` is always the configured chain; a request or an order
+  context for another chain is refused locally (`SDK_LOCAL_CHAIN_ID_MISMATCH`).
+- **Changed:** the Task data request expiry has its own window, `taskDataExpiryBlocks`
+  (default 10, `DEFAULT_TASK_DATA_EXPIRY_BLOCKS`), which must fit the Builders'
+  `max_service_material_expiry_blocks`; it no longer follows `requestTtlBlocks`.
 - **Breaking:** the request nonce is 32 CSPRNG bytes (was 16), and a configured `nonce()` must
   return exactly 32 bytes.
 - **Breaking, removed:** `frame4`, `i64be`, `u64be`, `sdkRequestSignBytes`, `bodyDigest`,
@@ -60,6 +70,8 @@ round.
   `DATA_ACCESS_SESSION_*`, `NEXUS_INGRESS_CONTRACT_NOT_FROZEN` and
   `NEXUS_INGRESS_METHOD_RETIRED` are classified; `DATA_ACCESS_*` codes are now read from the
   message. An expired grant is retriable (renew and resend); the rest are not.
+  `NEXUS_DATA_EXPIRED` (the request's own expiry) is re-signed and retried on the same Builder,
+  while `DATA_EXPIRED` (retention passed) moves to another Builder.
 - **Tests:** every positive EIP-712 section of `account_signing_v1.json` (domain separator,
   hash struct, digest and the exact signature from the fixture keys), every signed row of
   `request_auth_negative_cases`, and every base, tamper and replay row of

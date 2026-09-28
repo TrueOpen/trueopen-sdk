@@ -213,6 +213,19 @@ describe('TrueOpenClient.openTask', () => {
     expect(header.userAddress).toBe(USER);
   });
 
+  it('the envelope chain_id is always the configured chain: a context for another chain is refused', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = makeClient(seen);
+    const ok = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    const header = seen.frames.find((f) => f.frame.case === 'header')?.frame.value as { requestEnvelope?: { chainId: string } };
+    expect(header.requestEnvelope?.chainId).toBe('trueopen-localnet-1');
+    const calls = seen.calls;
+    await expect(
+      client.openTask({ sessionId: SESSION, orderSequence: 4n, order, idempotencyKey: 'idem-2', context: { ...ok.context, chainId: 'trueopen-other-1' } }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_CHAIN_ID_MISMATCH' });
+    expect(seen.calls).toBe(calls);
+  });
+
   it('a wallet holding another account is refused before anything is sent', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const client = new TrueOpenClient({

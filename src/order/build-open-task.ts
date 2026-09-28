@@ -4,6 +4,7 @@ import { TrueOpenError } from '../errors/errors';
 import { signAndEncodeOrder } from './signed-order';
 import type { OrderEip712Context } from './signed-order';
 import { deriveTaskId } from './order-signing';
+import { canonicalAccountAddressBytes } from '../codec/address';
 import { signSdkRequestEnvelope, ingressEndpoint, HEIGHT_EXPIRY_THRESHOLD } from '../transport/sdk-request-envelope';
 import { openTaskBodyDigest, openTaskPayloadRef } from '../transport/sdk-request-body';
 import type { TaskOrderV3 } from './task-order';
@@ -45,6 +46,11 @@ export interface BuildOpenTaskInput {
    */
   readonly wallet: TypedDataSigner;
   readonly chunkSizeBytes?: number;
+  /**
+   * The configured chain ID. When given, an order (and so an envelope) for another chain is
+   * refused locally with SDK_LOCAL_CHAIN_ID_MISMATCH.
+   */
+  readonly chainId?: string;
 }
 
 export interface BuildOpenTaskResult {
@@ -99,6 +105,11 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       `OpenTask expiry must be a chain height in (0, ${HEIGHT_EXPIRY_THRESHOLD}); got ${input.expiryHeight}`,
     );
   }
+  if (input.chainId !== undefined && input.order.chainId !== input.chainId) {
+    throw local('SDK_LOCAL_CHAIN_ID_MISMATCH', `order chain_id ${input.order.chainId} is not the configured chain ${input.chainId}`);
+  }
+  // user_address: canonical lowercase Bech32 with the account prefix, 20 bytes.
+  canonicalAccountAddressBytes('user_address', input.order.userAddress);
   if (input.idempotencyKey === '') {
     throw local('SDK_LOCAL_IDEMPOTENCY_KEY_REQUIRED', 'idempotency_key is required');
   }
@@ -141,7 +152,12 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       expiryHeightOrTime: input.expiryHeight,
       bodyDigest,
     },
-    { signerAddress: input.order.userAddress, signer: input.wallet, evmChainId: BigInt(input.orderEip712.evmChainId) },
+    {
+      signerAddress: input.order.userAddress,
+      signer: input.wallet,
+      evmChainId: BigInt(input.orderEip712.evmChainId),
+      ...(input.chainId !== undefined ? { chainId: input.chainId } : {}),
+    },
   );
 
   return {

@@ -1,7 +1,7 @@
 import type { Eip712Types } from '../codec/eip712';
 import type { TypedData, TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
-import { canonicalOperatorAddressBytes } from '../codec/address';
+import { canonicalAccountAddressBytes } from '../codec/address';
 import { strictHash32 } from '../codec/hash32';
 export { strictHash32 };
 import { TrueOpenError } from '../errors/errors';
@@ -152,8 +152,22 @@ export async function signSdkRequestEnvelope(
     readonly signer: TypedDataSigner;
     readonly evmChainId: bigint;
     readonly session?: ActiveSession;
+    /**
+     * The configured chain. The envelope chain_id must be the chain's own ID; a request built
+     * for another chain is refused here rather than failing as a bad signature at the Builder.
+     */
+    readonly chainId?: string;
   },
 ): Promise<SignedSdkRequestEnvelope> {
+  if (opts.chainId !== undefined && fields.chainId !== opts.chainId) {
+    throw new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_CHAIN_ID_MISMATCH',
+      `request chain_id ${fields.chainId} is not the configured chain ${opts.chainId}`,
+    );
+  }
+  // signer_address: canonical lowercase Bech32, account prefix, 20 bytes; checked on both paths.
+  canonicalAccountAddressBytes('signer_address', opts.signerAddress);
   const s = opts.session;
   if (s !== undefined && !SESSION_SDK_METHODS.includes(fields.method)) {
     throw malformed(`${fields.method} must be signed by the wallet; a session key may not sign it`);
@@ -167,7 +181,7 @@ export async function signSdkRequestEnvelope(
   const data = sdkRequestTypedData(fields, opts.evmChainId, s?.grantHash);
   const signature =
     s === undefined
-      ? await signTypedDataAs(opts.signer, data, canonicalOperatorAddressBytes('signer_address', opts.signerAddress))
+      ? await signTypedDataAs(opts.signer, data, canonicalAccountAddressBytes('signer_address', opts.signerAddress))
       : await signTypedDataAs(s.key, data, s.grant.sessionKey);
   return {
     requestDomain: SDK_REQUEST_DOMAIN,

@@ -380,7 +380,9 @@ unchanged to subscribers.
   compares it byte-for-byte against its own configuration. The object only exists on the Task
   Builder(s) that accepted that order, so you ask them one at a time.
 - `expiresAtHeight` is a **block height**, not a timestamp; it defaults to the latest height +
-  `requestTtlBlocks` (10), inside nexus's 20-block window.
+  `taskDataExpiryBlocks` (10). The Builder's window here is `max_service_material_expiry_blocks`
+  (not OpenTask's request TTL); keep `taskDataExpiryBlocks` at or below it. An expired request
+  (`NEXUS_DATA_EXPIRED`) is re-signed and retried on the same Builder.
 - These two methods **do not use `SDKRequestEnvelope`**; they use `TaskDataRequestAuthV1`: the
   body digest binds to one of five domains via `H_FIELDS_V1`, chosen by `requester_kind` --
   USER uses the EIP-712 `TrueOpen Task Data Request` domain version 2, always 65 bytes (with a

@@ -5,7 +5,7 @@ import { SessionGrantV1Schema } from '../gen/nexus/v1/ingress_pb.js';
 import type { SessionGrantV1 } from '../gen/nexus/v1/ingress_pb.js';
 import { eip712HashStruct } from '../codec/eip712';
 import type { Eip712Types } from '../codec/eip712';
-import { canonicalOperatorAddressBytes } from '../codec/address';
+import { canonicalAccountAddressBytes } from '../codec/address';
 import { SDK_REQUEST_EIP712_TYPES, sdkRequestEip712Domain } from '../transport/sdk-request-envelope';
 export { SESSION_SDK_METHODS } from '../transport/sdk-request-envelope';
 import { privateKeyTypedDataSigner, signTypedDataAs } from '../signer/typed-data-signer';
@@ -217,7 +217,7 @@ export class SessionKeyManager implements SessionAuthority {
     const userSignature = await signTypedDataAs(
       this.opts.wallet,
       data,
-      canonicalOperatorAddressBytes('user', this.opts.userAddress),
+      canonicalAccountAddressBytes('user', this.opts.userAddress),
     );
     const grant: SignedSessionGrant = { ...fields, userSignature };
     const session: ActiveSession = { grant, grantHash: sessionGrantHash(grant), key: privateKeyTypedDataSigner(privKey) };

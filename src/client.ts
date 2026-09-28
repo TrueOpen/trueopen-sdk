@@ -4,6 +4,7 @@ import type { TypedDataSigner } from './signer/typed-data-signer';
 import { IngressClient } from './transport/ingress-client';
 import type { OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
 import { SessionKeyManager } from './session/session-grant';
+import { toAccountAddress } from './codec/address';
 import type {
   PrepareChallengeResponse,
   GetTaskEventsResponse,
@@ -41,7 +42,11 @@ import { bytesEqual } from './util/bytes';
 
 export interface TrueOpenClientConfig {
   readonly chainId: string;
-  /** The user's canonical Bech32 address: the order user and the signer of every request. */
+  /**
+   * The user's account address: the order user and the signer of every request. Canonical
+   * lowercase Bech32 with the account prefix `trueopen` (20 bytes), or a 0x EVM address, which
+   * is converted to that Bech32 form.
+   */
   readonly userAddress: string;
   /**
    * The user's wallet (see TypedDataSigner): signs the order, the OpenTask request envelope,
@@ -69,6 +74,14 @@ export interface TrueOpenClientConfig {
    * to leave block-production margin.
    */
   readonly requestTtlBlocks?: number;
+  /**
+   * The Task data request (GetTaskDataMetadata / FetchTaskData) expiry window, in **blocks**
+   * (default 10). The Builder accepts current_height <= expiry_height <= current_height +
+   * max_service_material_expiry_blocks, a different window from OpenTask's request TTL; keep this
+   * at or below the Builders' max_service_material_expiry_blocks. An expired request answers
+   * NEXUS_DATA_EXPIRED, which the SDK re-signs and retries on the same Builder.
+   */
+  readonly taskDataExpiryBlocks?: number;
   /**
    * The chain's numeric EVM chain ID (`params.phase0.evm_chain_id`): the chainId of every
    * EIP-712 domain (order, SDK request, Task data request, session grant), a different thing
@@ -382,7 +395,10 @@ export class TrueOpenClient {
   private evmChainIdPromise: Promise<bigint> | undefined;
 
   constructor(cfg: TrueOpenClientConfig) {
-    this.cfg = cfg;
+    // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
+    // address; anything else must already be canonical with the account prefix.
+    this.cfg = { ...cfg, userAddress: toAccountAddress(cfg.userAddress) };
+    cfg = this.cfg;
     this.sessionManager = new SessionManager(cfg.chain);
     this.sessionGrants =
       cfg.session === undefined
@@ -507,6 +523,7 @@ export class TrueOpenClient {
       idempotencyKey: params.idempotencyKey,
       wallet: this.cfg.wallet,
       orderEip712: { evmChainId, feeDenom },
+      chainId: this.cfg.chainId,
       ...(params.inputMediaType !== undefined ? { inputMediaType: params.inputMediaType } : {}),
       ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),
     });
@@ -724,8 +741,8 @@ export class TrueOpenClient {
    *
    * builderAddress must be the operator address of the Builder being queried (nexus compares
    * it against its own configuration; openTask returns it per Builder). expiresAtHeight is a
-   * block height and defaults to latest height + requestTtlBlocks (10), inside nexus's
-   * 20-block request window.
+   * block height and defaults to latest height + taskDataExpiryBlocks (10), which must fit the
+   * Builders' max_service_material_expiry_blocks.
    */
   async fetchTaskOutput(p: {
     sessionId: string;
@@ -845,7 +862,7 @@ export class TrueOpenClient {
     };
   }
 
-  /** Task-data request expiry: latest height + requestTtlBlocks (default 10), inside nexus's 20-block window. */
+  /** Task-data request expiry: latest height + taskDataExpiryBlocks (default 10). */
   private async defaultTaskDataExpiry(): Promise<bigint> {
     const hub = this.cfg.hub;
     if (hub === undefined) {
@@ -855,7 +872,7 @@ export class TrueOpenClient {
         'expiresAtHeight is required when config.hub is not set (it is a block height)',
       );
     }
-    return (await hub.getLatestHeight()) + BigInt(this.cfg.requestTtlBlocks ?? 10);
+    return (await hub.getLatestHeight()) + BigInt(this.cfg.taskDataExpiryBlocks ?? DEFAULT_TASK_DATA_EXPIRY_BLOCKS);
   }
 
   /**
@@ -1138,6 +1155,12 @@ function splitByChunkLengths(bytes: Uint8Array, lengths: readonly number[]): Uin
   }
   return out;
 }
+
+/**
+ * Default Task data request lifetime in blocks. Small on purpose: it has to fit inside every
+ * Builder's max_service_material_expiry_blocks, whose value the SDK cannot read.
+ */
+export const DEFAULT_TASK_DATA_EXPIRY_BLOCKS = 10;
 
 /** nexus's default max range (task_data.max_range_bytes); a larger single read is refused. */
 export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;

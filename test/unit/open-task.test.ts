@@ -124,6 +124,12 @@ describe('buildOpenTaskRequest', () => {
     expect(h.requestEnvelope?.sessionGrant).toBeUndefined();
   });
 
+  it('refuses an order (and so an envelope) for a chain other than the configured one', async () => {
+    await expect(buildOpenTaskRequest({ ...base, chainId: 'trueopen-other-1' })).rejects.toMatchObject({ code: 'SDK_LOCAL_CHAIN_ID_MISMATCH' });
+    const r = await buildOpenTaskRequest({ ...base, chainId: order.chainId });
+    expect(r.input.requestEnvelope.chainId).toBe(order.chainId);
+  });
+
   it('refuses a task_id not derived from the order, and a session other than the order\'s', async () => {
     await expect(buildOpenTaskRequest({ ...base, taskId: '11'.repeat(32) })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_ID_NOT_DERIVED' });
     await expect(buildOpenTaskRequest({ ...base, sessionId: hexOf(0x13) })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH' });

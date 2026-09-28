@@ -56,6 +56,13 @@
  *                         the script always appends " @ <ISO timestamp>" because nexus
  *                         dedupes payloads by content hash, so resending the same text
  *                         would be rejected
+ *   --chat                send an OpenAI chat-completions-shaped `messages` object instead
+ *                         of raw text. cortex routes by input shape: a JSON object carrying
+ *                         a `messages` field is served over /v1/chat/completions (messages
+ *                         forwarded verbatim to vLLM, which applies the model's chat
+ *                         template), while anything else is the legacy raw-text inferV0
+ *                         path. The dedup timestamp goes into a system message so the user
+ *                         message stays clean.
  *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
  *                         winner_confirm lands on chain, verify signatures and the MMR
  *                         root frame by frame as output is generated, without waiting
@@ -131,6 +138,16 @@ const POLL_TIMES = Number(flag('--poll', '18'));
 // hash, so resending the same sentence would collide with NEXUS_DATA_CONFLICT.
 // --prompt only changes the prefix, it doesn't remove this constraint.
 const PROMPT = flag('--prompt', 'trueopen e2e open-task');
+// OpenAI chat-completions-shaped input (see --chat in the header): cortex routes a JSON
+// object with a `messages` field to its /v1/chat/completions path instead of inferV0.
+const CHAT = has('--chat');
+// Overrides the chat system message (default "trueopen e2e chat"); the dedup timestamp is
+// still appended so the content hash stays unique.
+const SYSTEM_PROMPT = flag('--system-prompt', undefined);
+// Full chat `messages` array (JSON) to send verbatim, for multi-turn history. A dedup
+// system message is prepended so the content hash stays unique; the given messages are kept
+// exactly as passed.
+const MESSAGES_JSON = flag('--messages-json', undefined);
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
 // get hard-truncated mid-sentence (observed in practice), hence it's tunable.
@@ -304,7 +321,30 @@ const ORDER_SEQ = SEQ_OVERRIDE === undefined ? await client.nextOrderSequence(se
 log(`order_sequence=${ORDER_SEQ}${SEQ_OVERRIDE === undefined ? ' (read from chain)' : ' (overridden by --seq)'}`);
 
 // ---- 2) payload (plaintext V1) ----
-const payload = new TextEncoder().encode(`${PROMPT} @ ${new Date().toISOString()}`);
+// The timestamp keeps every run's content hash unique (nexus dedupes by it). For the chat
+// shapes it goes into a system message so the user's messages stay exactly what was asked.
+const ts = new Date().toISOString();
+let payload;
+if (MESSAGES_JSON !== undefined) {
+  const raw = JSON.parse(MESSAGES_JSON);
+  const msgs = Array.isArray(raw) ? raw : raw.messages;
+  if (!Array.isArray(msgs) || msgs.length === 0) {
+    console.error('--messages-json must be a JSON array or an object with a messages array');
+    process.exit(2);
+  }
+  payload = new TextEncoder().encode(JSON.stringify({
+    messages: [{ role: 'system', content: `trueopen e2e multi-turn @ ${ts}` }, ...msgs],
+  }));
+} else if (CHAT) {
+  payload = new TextEncoder().encode(JSON.stringify({
+    messages: [
+      { role: 'system', content: `${SYSTEM_PROMPT ?? 'trueopen e2e chat'} @ ${ts}` },
+      { role: 'user', content: PROMPT },
+    ],
+  }));
+} else {
+  payload = new TextEncoder().encode(`${PROMPT} @ ${ts}`);
+}
 const payloadHash = hex(sha256(payload));
 
 // ---- 3) on-chain context (anchor / builder set / bucket version, all signed) ----
@@ -853,12 +893,10 @@ const out = {
     order_envelope_bytes: built.input.orderEnvelope.length,
     order_envelope_hex: built.orderEnvelopeHex,
     payload_ref: built.input.payloadRef,
-    user_signature_outer: hex(built.input.signature),
     user_signature_inner_over_task_hash: hex(innerSig),
     session_id: sessionId,
     order_sequence: ORDER_SEQ.toString(),
     user_address: address,
-    signature_scheme: built.input.signatureScheme,
     input_size_bytes: String(payload.length),
     input_hash: built.input.inputHash,
     input_media_type: built.input.inputMediaType,

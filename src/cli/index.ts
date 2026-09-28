@@ -7,7 +7,7 @@ import { cmdSessionCreate, cmdSessionGet } from './commands/session';
 import { cmdOrderSubmit, cmdOrderCancel } from './commands/order';
 import { cmdTaskStatus, cmdTaskWatch } from './commands/task';
 import { cmdOutputRef, cmdOutputStream, cmdOutputGet } from './commands/output';
-import { cmdChallengePrepare, cmdChallengeSubmit } from './commands/challenge';
+import { cmdChallengePrepare } from './commands/challenge';
 
 const program = new Command();
 program
@@ -53,7 +53,7 @@ session.command('get').argument('<sessionId>').description('query a session').ac
 const order = program.command('order');
 order
   .command('submit')
-  .requiredOption('--order-file <f>', 'TaskOrder JSON file (the intent portion of the frozen TaskOrderV1)')
+  .requiredOption('--order-file <f>', 'TaskOrder JSON file (the intent portion of the frozen TaskOrderV3)')
   .requiredOption('--session <id>')
   .option('--seq <n>', 'order_sequence; defaults to reading StreamState.next_expected_sequence on chain, an explicit value is only for RBF resubmission with the same sequence')
   .requiredOption('--payload-file <f>', 'plaintext input body file (the V1 data plane transmits plaintext); the SDK derives input_hash / input_size_bytes / payload_ref from it')
@@ -119,18 +119,6 @@ challenge
   .option('--evidence-file <f>')
   .description('prepare challenge materials')
   .action((s: string, t: string, k: string, a: { evidenceFile?: string }) => run((cfg, m) => cmdChallengePrepare(cfg, m, s, t, k, a.evidenceFile)));
-challenge
-  .command('submit')
-  .requiredOption('--session <id>')
-  .requiredOption('--task <id>')
-  .requiredOption('--settlement <id>')
-  .requiredOption('--kind <k>')
-  .requiredOption('--evidence <hex>')
-  .requiredOption('--bond <amt>')
-  .description('submit an on-chain challenge (locks bond)')
-  .action((a: { session: string; task: string; settlement: string; kind: string; evidence: string; bond: string }) =>
-    run((cfg, m) => cmdChallengeSubmit(cfg, m, a)),
-  );
 
 /** Streaming command: print events line by line, exit cleanly on SIGINT. */
 async function watch(s: string, t: string, fromCursor?: string): Promise<void> {

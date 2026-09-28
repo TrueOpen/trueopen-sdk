@@ -18,7 +18,6 @@ import { fromHex } from '../../src/util/bytes';
  *   TRUEOPEN_REST_URL     gRPC-gateway REST, for example http://localhost:1317
  *   TRUEOPEN_SESSION_ID   (optional) an existing session_id, for the read-only querySession check
  *   TRUEOPEN_QUERY_ADDR   (optional) the address for querySessionNonce; defaults to the wallet address when there is one
- *   TRUEOPEN_TASK_ID      (optional) used with SESSION_ID to query settlement_finality
  *
  * Write part (broadcasts transactions and spends test funds, so it must be enabled explicitly). Also set:
  *   TRUEOPEN_RPC_URL          CometBFT RPC, for example http://localhost:26657
@@ -76,12 +75,6 @@ describe.skipIf(!readEnabled || !restFetch)('node integration: read-only (REST)'
     expect(typeof s.lastActiveHeight).toBe('bigint');
   });
 
-  it.skipIf(!(SESSION_ID && TASK_ID))('querySettlementFinality maps the fields correctly', async () => {
-    const f = await makeReader().querySettlementFinality(SESSION_ID as string, TASK_ID as string);
-    expect(['PENDING', 'CHALLENGED', 'FINAL', 'OVERTURNED']).toContain(f.optimisticFinalityStatus);
-    expect(typeof f.challengeCloseHeight).toBe('bigint');
-    expect(typeof f.taskFinalityHeight).toBe('bigint');
-  });
 });
 
 describe.skipIf(!readEnabled || !restFetch)('node integration: Hub read-only (Builder discovery)', () => {

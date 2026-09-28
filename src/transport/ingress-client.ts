@@ -66,7 +66,7 @@ export const DEFAULT_OPEN_TASK_CHUNK_BYTES = 64 * 1024;
 
 /** OpenTask request (header fields plus the input body to be chunked). */
 export interface OpenTaskInput {
-  /** Protobuf bytes of the frozen SignedOrderV1. */
+  /** Protobuf bytes of the frozen SignedOrderV2. */
   readonly orderEnvelope: Uint8Array;
   readonly payloadRef: string;
   /** The outer user order signature, 64 raw bytes. */
@@ -99,7 +99,7 @@ export interface OpenTaskAck {
  * SubmitOrder request (kept for raw RPC access).
  * @deprecated The contract has moved the order-placement entry point to OpenTask; SubmitOrder
  * is also marked deprecated in the nexus proto. Note that order_envelope must now be the
- * frozen SignedOrderV1 protobuf bytes -- the old canonical JSON envelope can't produce a
+ * frozen SignedOrderV2 protobuf bytes -- the old canonical JSON envelope can't produce a
  * canonical task_hash and can never be broadcast on chain
  * (nexus internal/coordinator/taskfsm.go:151). New code should use openTask().
  */
@@ -192,7 +192,7 @@ export class IngressClient {
    * internal/config chunk_size_bytes).
    *
    * Key differences from the deprecated SubmitOrder:
-   *  - order_envelope must be the frozen SignedOrderV1 protobuf bytes (no longer canonical JSON);
+   *  - order_envelope must be the frozen SignedOrderV2 protobuf bytes (no longer canonical JSON);
    *  - the input body goes over chunk frames and is not part of body_digest;
    *  - request_envelope's expiry **must be a block height** (nexus taskdata.go:221-224
    *    requires 0 < expiry < 1e12; anything above that is treated as a unix millisecond

@@ -36,16 +36,14 @@ const sdkPub = secp256k1PublicKey(SDK_PRIV);
 
 const PAYLOAD = new TextEncoder().encode('trueopen-input');
 
-function fakeChain(cap: { challenge?: unknown; cancel?: unknown } = {}): ChainClient {
+function fakeChain(cap: { cancel?: unknown } = {}): ChainClient {
   return {
     async querySession(id) {
       return { sessionId: id, owner: 'trueopen1u', nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
-    async querySettlementFinality() { throw new Error('n/a'); },
     async createSession() { return { sessionId: SESSION, owner: 'trueopen1u', nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
     async cancelOrder(i) { cap.cancel = i; return { taskId: 'task-1', cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
-    async userChallenge(i) { cap.challenge = i; return { challengeId: 'ch-1', status: 'OPEN', challengeDeadlineHeight: 200n, resolveDeadlineHeight: 250n, bondLockedAmount: 1000n }; },
   };
 }
 
@@ -185,16 +183,7 @@ describe('TrueOpenClient facade', () => {
     expect(res.estimatedBond?.amount).toBe('5');
   });
 
-  it('challenge signs challenger_signature and calls the chain userChallenge', async () => {
-    const chainCap: { challenge?: { challengerSignature: string; kind: string } } = {};
-    const client = makeClient(chainCap);
-    const r = await client.challenge({ sessionId: SESSION, taskId: 'task-1', settlementId: 'st-1', kind: 'USER_REVALIDATION', evidenceDigest: 'evi', bondAmount: 1000n });
-    expect(r.challengeId).toBe('ch-1');
-    expect(chainCap.challenge?.kind).toBe('USER_REVALIDATION');
-    expect(/^[0-9a-f]{128}$/.test(chainCap.challenge?.challengerSignature ?? '')).toBe(true);
-  });
-
-  it('cancelOrder signs owner_signature and calls the chain', async () => {
+  it('cancelOrder calls the chain without a detached owner signature', async () => {
     const chainCap: { cancel?: unknown } = {};
     const r = await makeClient(chainCap).cancelOrder(SESSION, 5n);
     expect(r.nextExpectedSequence).toBe(6n);

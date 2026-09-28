@@ -75,35 +75,6 @@ describe('CosmjsChainWriter', () => {
     expect(bc.last?.messages[0]?.value).not.toHaveProperty('ownerSignature');
   });
 
-  it('userChallenge: for an enabled kind, evidence/sig strings pass through directly', async () => {
-    const respBytes = new ProtoWriter()
-      .string(1, 'ch-1').string(2, 'OPEN').uint64(3, 200n).uint64(4, 250n).uint64(5, 1000n)
-      .finish();
-    const bc = new FakeBroadcaster(indexedTx(TYPE_URL.userChallenge, respBytes));
-    const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    const r = await w.userChallenge({
-      sessionId: 's', taskId: 't', settlementId: 'st', kind: 'USER_REVALIDATION',
-      evidenceDigest: 'evi', bondAmount: 1000n, challengerSignature: 'deadbeef',
-    });
-    expect(r.challengeId).toBe('ch-1');
-    const value = bc.last?.messages[0]?.value as { evidenceDigest: string; challengerSignature: string; requestedEvidence: string[] };
-    expect(value.evidenceDigest).toBe('evi');
-    expect(value.challengerSignature).toBe('deadbeef');
-    expect(value.requestedEvidence).toEqual([]);
-  });
-
-  it('userChallenge: throws immediately for a disabled kind, without broadcasting', async () => {
-    const bc = new FakeBroadcaster(indexedTx(TYPE_URL.userChallenge, new Uint8Array()));
-    const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    await expect(
-      w.userChallenge({
-        sessionId: 's', taskId: 't', settlementId: 'st', kind: 'OBJECTIVE_PROOF',
-        evidenceDigest: 'evi', bondAmount: 1n, challengerSignature: 'sig',
-      }),
-    ).rejects.toThrowError(TrueOpenError);
-    expect(bc.last).toBeUndefined();
-  });
-
   it('throws when the tx was included but the state machine rejected it (code != 0)', async () => {
     const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), 5);
     const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
@@ -114,9 +85,8 @@ describe('CosmjsChainWriter', () => {
   //
   // signAndBroadcast does both behind one call, so a failure cannot say which half failed
   // and the whole thing cannot be retried: re-calling it re-queries the account sequence
-  // and signs a NEW transaction, double-submitting if the first one landed after all. A
-  // duplicate MsgUserChallenge locks a second bond. So the broadcast happens once and only
-  // the lookup repeats.
+  // and signs a NEW transaction, double-submitting if the first one landed after all. So
+  // the broadcast happens once and only the lookup repeats.
 
   it('broadcasts exactly once no matter how long inclusion takes', async () => {
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, new ProtoWriter().bytes(1, fromHex(SESSION_HEX)).uint64(2, 7n).uint64(3, 1n).finish()), 5);

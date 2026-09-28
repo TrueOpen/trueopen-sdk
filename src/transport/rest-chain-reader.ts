@@ -1,8 +1,7 @@
 import { stringToU64, hash32ToHex } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { ChainReader } from './chain-client';
-import type { StreamStateView, SettlementFinalityView, ChainTaskSnapshot, InferReceiptView } from '../types/node';
-import type { OptimisticFinalityStatus } from '../types/challenge';
+import type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from '../types/node';
 
 /** Minimal fetch abstraction, portable across runtimes and easy to mock. */
 export interface FetchResponse {
@@ -77,7 +76,6 @@ export interface RestChainReaderOptions {
 }
 
 const SESSION_STATUS = new Set(['ACTIVE', 'IDLE', 'CLOSED']);
-const FINALITY_STATUS = new Set(['PENDING', 'CHALLENGED', 'FINAL', 'OVERTURNED']);
 
 /**
  * Reads the chain via the node's gRPC-gateway REST/JSON API (task.v1.Query).
@@ -88,8 +86,8 @@ const FINALITY_STATUS = new Set(['PENDING', 'CHALLENGED', 'FINAL', 'OVERTURNED']
  *      open_pending_count) still arrive as a bare JSON number, so every
  *      numeric field goes through u64Field, which accepts both string and
  *      number.
- *   2. **Enums come back with their full name**, e.g. `SESSION_STATUS_IDLE` /
- *      `OPTIMISTIC_FINALITY_STATUS_FINAL`, not the bare short name, so enum
+ *   2. **Enums come back with their full name**, e.g. `SESSION_STATUS_IDLE`,
+ *      not the bare short name, so enum
  *      fields go through enumField, which strips the proto prefix first.
  * Field names are tolerant of both forms: snake_case (the gateway default) is
  * tried first, falling back to camelCase (the proto3 JSON default).
@@ -117,23 +115,6 @@ export class RestChainReader implements ChainReader {
     return { nextSessionNonce: u64Field(body, 'next_session_nonce') };
   }
 
-  async querySettlementFinality(sessionId: string, taskId: string): Promise<SettlementFinalityView> {
-    const body = await this.getJson(
-      `/TrueOpen/task/v1/settlement_finality/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskId)}`,
-    );
-    const status = enumField(body, 'optimistic_finality_status', 'OPTIMISTIC_FINALITY_STATUS_');
-    if (!FINALITY_STATUS.has(status)) {
-      throw malformed(`optimistic_finality_status=${status}`);
-    }
-    return {
-      optimisticFinalityStatus: status as OptimisticFinalityStatus,
-      challengeCloseHeight: u64Field(body, 'challenge_close_height'),
-      maxChallengeResolveDeadlineHeight: u64Field(body, 'max_challenge_resolve_deadline_height'),
-      taskFinalityHeight: u64Field(body, 'task_finality_height'),
-      claimableAfterHeight: u64Field(body, 'claimable_after_height'),
-    };
-  }
-
   /**
    * On-chain task snapshot. Must be read before retrieval to get
    * accepted_task_hash and winner_worker -- the former is the first field of
@@ -148,10 +129,30 @@ export class RestChainReader implements ChainReader {
    *   - before it entered assignment, the whole `assignment` view is absent;
    *   - once assigned but before a winner is drawn, `assignment` is present
    *     and `winner_worker` is absent.
+   *
+   * After cleanup compaction the chain returns the `terminal` arm instead
+   * (TaskTerminalSummaryState); it is mapped, not treated as malformed.
    */
   async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
     const body = await this.getJson(`/TrueOpen/task/v1/task/${encodeURIComponent(taskId)}`);
-    const active = obj(obj(body, 'task'), 'active');
+    const view = obj(body, 'task');
+    const terminal = optObj(view, 'terminal');
+    if (terminal !== undefined) {
+      // The summary carries no input hash, receipt status or assignment status. Leaving
+      // them undefined rather than "" is what keeps a caller written against the active
+      // arm from reading a compacted task as a silently empty one.
+      return {
+        view: 'terminal',
+        terminalPhase: enumField(terminal, 'terminal_phase', 'TASK_PHASE_'),
+        taskId: field(terminal, 'task_id'),
+        acceptedTaskHash: field(terminal, 'task_hash'),
+        winnerWorker: pendingField(terminal, 'winner_worker'),
+        modelId: hash32Field(terminal, 'model_id'),
+        profileVersion: u64Field(terminal, 'profile_version'),
+        orderSequence: u64Field(terminal, 'order_sequence'),
+      };
+    }
+    const active = obj(view, 'active');
     const core = obj(active, 'core');
     // TaskActiveBundleV1 marks core `(gogoproto.nullable) = false` but leaves
     // assignment nullable: "assignment appears once the Task entered
@@ -160,6 +161,7 @@ export class RestChainReader implements ChainReader {
     // observes.
     const assignment = optObj(active, 'assignment');
     return {
+      view: 'active',
       // task_id is carried by the assignment view, so it is unavailable until
       // assignment exists. The caller already knows which id it asked for.
       taskId: assignment === undefined ? taskId : field(assignment, 'task_id'),

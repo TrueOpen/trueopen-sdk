@@ -4,10 +4,8 @@ import {
   TYPE_URL,
   encodeMsgCreateSession,
   encodeMsgCancelOrder,
-  encodeMsgUserChallenge,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
-  decodeMsgUserChallengeResponse,
 } from '../../src/transport/task-msgs';
 import { toHex, fromHex } from '../../src/util/bytes';
 
@@ -19,7 +17,7 @@ describe('typeUrls', () => {
   it('matches the proto package names', () => {
     expect(TYPE_URL.createSession).toBe('/task.v1.MsgCreateSession');
     expect(TYPE_URL.cancelOrder).toBe('/task.v1.MsgCancelOrder');
-    expect(TYPE_URL.userChallenge).toBe('/task.v1.MsgUserChallenge');
+    expect(Object.keys(TYPE_URL)).toEqual(['createSession', 'cancelOrder']);
   });
 });
 
@@ -45,40 +43,6 @@ describe('encode Msg (verify field layout using the reader)', () => {
     expect(r.eof).toBe(true);
   });
 
-  it('MsgUserChallenge: empty requested_evidence is omitted, bond=0 is omitted', () => {
-    const bytes = encodeMsgUserChallenge({
-      signer: 'trueopen1u', sessionId: 's', taskId: 't', settlementId: 'st',
-      challengeKind: 'USER_REVALIDATION', evidenceDigest: 'dig', bondAmount: 0n,
-      requestedEvidence: [], challengerSignature: 'csig',
-    });
-    const r = new ProtoReader(bytes);
-    const seen: number[] = [];
-    while (!r.eof) {
-      const { field, wire } = r.tag();
-      seen.push(field);
-      if (wire === 0) r.uint64();
-      else r.string();
-    }
-    // 1..6, 9 present; 7(bond=0) and 8(empty repeated) omitted
-    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 9]);
-  });
-
-  it('MsgUserChallenge: bond>0 appears in field 7', () => {
-    const bytes = encodeMsgUserChallenge({
-      signer: 'u', sessionId: 's', taskId: 't', settlementId: 'st',
-      challengeKind: 'USER_REVALIDATION', evidenceDigest: 'd', bondAmount: 1000n,
-      requestedEvidence: [], challengerSignature: 'c',
-    });
-    const r = new ProtoReader(bytes);
-    const fields: number[] = [];
-    while (!r.eof) {
-      const { field, wire } = r.tag();
-      fields.push(field);
-      if (wire === 0) r.uint64();
-      else r.string();
-    }
-    expect(fields).toContain(7);
-  });
 });
 
 describe('decode responses (build response bytes with the writer, then decode)', () => {
@@ -110,13 +74,4 @@ describe('decode responses (build response bytes with the writer, then decode)',
     });
   });
 
-  it('MsgUserChallengeResponse', () => {
-    const bytes = new ProtoWriter()
-      .string(1, 'ch-1').string(2, 'OPEN').uint64(3, 200n).uint64(4, 250n).uint64(5, 1000n)
-      .finish();
-    expect(decodeMsgUserChallengeResponse(bytes)).toEqual({
-      challengeId: 'ch-1', status: 'OPEN', challengeDeadlineHeight: 200n,
-      resolveDeadlineHeight: 250n, bondLockedAmount: 1000n,
-    });
-  });
 });

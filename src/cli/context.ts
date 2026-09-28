@@ -144,10 +144,8 @@ function readOnlyChain(restUrl: string): ChainClient {
   return {
     querySession: (id) => reader.querySession(id),
     querySessionNonce: (a) => reader.querySessionNonce(a),
-    querySettlementFinality: (s, t) => reader.querySettlementFinality(s, t),
     createSession: die,
     cancelOrder: die,
-    userChallenge: die,
   };
 }
 

@@ -1,5 +1,4 @@
-import type { StreamStateView, SettlementFinalityView } from '../types/node';
-import type { ChallengeKind } from '../types/challenge';
+import type { StreamStateView } from '../types/node';
 
 /**
  * Read port: node task.v1 Query (the authoritative snapshot).
@@ -8,7 +7,6 @@ import type { ChallengeKind } from '../types/challenge';
 export interface ChainReader {
   querySession(sessionId: string): Promise<StreamStateView>;
   querySessionNonce(address: string): Promise<{ nextSessionNonce: bigint }>;
-  querySettlementFinality(sessionId: string, taskId: string): Promise<SettlementFinalityView>;
 }
 
 /**
@@ -18,7 +16,6 @@ export interface ChainReader {
 export interface ChainClient extends ChainReader {
   createSession(): Promise<CreateSessionResult>;
   cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult>;
-  userChallenge(input: UserChallengeInput): Promise<UserChallengeResult>;
 }
 
 export interface CreateSessionResult {
@@ -50,23 +47,4 @@ export interface CancelOrderResult {
   readonly nextExpectedSequence: bigint;
   /** Enum name from hub.v1.MutationStatusV1. */
   readonly status: string;
-}
-
-export interface UserChallengeInput {
-  readonly sessionId: string;
-  readonly taskId: string;
-  readonly settlementId: string;
-  readonly kind: ChallengeKind; // must pass isChallengeKindEnabled at runtime
-  /** Opaque string, passed through unchanged into the Msg and the signing bytes. */
-  readonly evidenceDigest: string;
-  readonly bondAmount: bigint;
-  /** Hex secp256k1 detached signature (see signUserChallenge). */
-  readonly challengerSignature: string;
-}
-export interface UserChallengeResult {
-  readonly challengeId: string;
-  readonly status: string;
-  readonly challengeDeadlineHeight: bigint;
-  readonly resolveDeadlineHeight: bigint;
-  readonly bondLockedAmount: bigint;
 }

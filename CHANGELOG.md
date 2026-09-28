@@ -47,11 +47,30 @@
 - **Breaking:** task data body digests use the V2 domains. The object ref frame gained
   `evidence_kind`, and `producer_operator` enters the preimage as address bytes.
 - `FinishReasonV1` accepts `USER_STOP` (5) and `STOP_TOKEN` (6). Both map to OpenAI `stop`.
+- Task data object refs with an illegal object_kind / evidence_kind combination are refused
+  before any body digest is computed.
+- **Breaking:** `queryTask` maps the compacted `terminal` arm of `TaskViewV1`
+  (`view: 'terminal'`) instead of throwing. `acceptedInputHash`, `receiptStatus` and
+  `assignmentStatus` are optional and absent on that arm, so callers must branch on `view`;
+  reporting `""` would let code written against the active arm read a compacted task as one
+  with an empty input hash and no receipt.
+- `cancelOrder` no longer computes an owner signature: `MsgCancelOrder` is authorized by the
+  account signature alone.
 
 - The CLI now rotates across discovered Builder endpoints instead of hanging indefinitely on the
   first endpoint without output.
 - Confirmed-only SSE delivery has a 16 MiB default memory limit, supports `AbortSignal`, propagates
   stream cancellation, and avoids upstream prefetch until consumer demand.
+
+### Removed
+
+- **Breaking:** `MsgUserChallenge` (encoding, registry entry, `client.challenge()`, the CLI
+  `challenge submit` command and the `TRUEOPEN_USER_CHALLENGE_V1` signing bytes). Wire has no
+  such Msg. On-chain challenges (`MsgOpenChallengeRound`) are not supported yet.
+- **Breaking:** `querySettlementFinality`, `settlementFinalityToChainView`,
+  `HubReader.listProfiles` and the reference bucket query; wire defines none of these routes.
+- **Breaking:** `signCancelOrder`, `cancelOrderSigningBytes`, the `DOMAINS` table and the unused
+  builder stage domains.
 
 ### Fixed
 
@@ -72,9 +91,11 @@
   `maxEntries * MAX_MANIFEST_BYTES` (256 MiB at the defaults).
 - The projection check compares `task_types` element by element. Joining on `","` made `["A,B"]`
   and `["A","B"]` compare equal and hid a length difference.
+- `RestChainReader.queryTask` decodes the terminal arm's `model_id` as a Hash32 as well.
+- An evidence object with no producer kind reports that, instead of the unhelpful
+  "evidence_kind 0 is not a data-plane evidence kind for producer kind 0".
 
 ### Known limitations
 
-- Exact optional `resume_after_seq` presence remains blocked on TrueOpen/wire#28.
 - Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked until
   the Worker runtime and nexus produce and forward signed Fins.

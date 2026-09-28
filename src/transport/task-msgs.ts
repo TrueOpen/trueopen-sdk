@@ -7,15 +7,7 @@ import { toHex, fromHex } from '../util/bytes';
  * submodule) proto/task/v1/msg_session.proto: MsgCreateSession / MsgCancelOrder and their
  * responses have been checked field-by-field against the pinned wire release.
  *
- * Warning: MsgUserChallenge is an exception -- wire's msg_challenge.proto has
- * **entirely deleted** it ("V1 has NO public challenge or proof Msg"; the challenge
- * design is still open, and neither the type URL nor the field numbers are kept, not even as
- * reserved). So the encodeMsgUserChallenge below and `/task.v1.MsgUserChallenge` are
- * guaranteed to be rejected on the current chain. This code is kept only as a reference
- * for when the contract is re-frozen -- don't treat it as a usable path.
- * Note: owner_signature / challenger_signature / evidence_digest are `string` in the
- * proto; the bytes-to-string encoding (hex vs base64) is a chain-side convention and an
- * integration test concern -- this layer only handles the proto wire format.
+ * The challenge Msg in wire is MsgOpenChallengeRound, which the SDK does not support yet.
  *
  * Hash32 representation convention: on the node side, session_id / task_id are `bytes`
  * in the proto (raw 32 bytes), while nexus's IngressAPI requires canonical lowercase
@@ -39,7 +31,6 @@ function mutationStatus(value: bigint): string {
 export const TYPE_URL = {
   createSession: '/task.v1.MsgCreateSession',
   cancelOrder: '/task.v1.MsgCancelOrder',
-  userChallenge: '/task.v1.MsgUserChallenge',
 } as const;
 
 // ---- MsgCreateSession (signer=1) ----
@@ -130,57 +121,4 @@ export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderR
     }
   }
   return { taskId, cancelledSequence, nextExpectedSequence, status };
-}
-
-// ---- MsgUserChallenge (1..9, see file header) ----
-export interface MsgUserChallenge {
-  readonly signer: string;
-  readonly sessionId: string;
-  readonly taskId: string;
-  readonly settlementId: string;
-  readonly challengeKind: string;
-  readonly evidenceDigest: string;
-  readonly bondAmount: bigint;
-  readonly requestedEvidence: readonly string[];
-  readonly challengerSignature: string;
-}
-export function encodeMsgUserChallenge(m: MsgUserChallenge): Uint8Array {
-  return new ProtoWriter()
-    .string(1, m.signer)
-    .string(2, m.sessionId)
-    .string(3, m.taskId)
-    .string(4, m.settlementId)
-    .string(5, m.challengeKind)
-    .string(6, m.evidenceDigest)
-    .uint64(7, m.bondAmount)
-    .repeatedString(8, m.requestedEvidence)
-    .string(9, m.challengerSignature)
-    .finish();
-}
-export interface MsgUserChallengeResponse {
-  readonly challengeId: string;
-  readonly status: string;
-  readonly challengeDeadlineHeight: bigint;
-  readonly resolveDeadlineHeight: bigint;
-  readonly bondLockedAmount: bigint;
-}
-export function decodeMsgUserChallengeResponse(bytes: Uint8Array): MsgUserChallengeResponse {
-  const r = new ProtoReader(bytes);
-  let challengeId = '';
-  let status = '';
-  let challengeDeadlineHeight = 0n;
-  let resolveDeadlineHeight = 0n;
-  let bondLockedAmount = 0n;
-  while (!r.eof) {
-    const { field, wire } = r.tag();
-    switch (field) {
-      case 1: challengeId = r.string(); break;
-      case 2: status = r.string(); break;
-      case 3: challengeDeadlineHeight = r.uint64(); break;
-      case 4: resolveDeadlineHeight = r.uint64(); break;
-      case 5: bondLockedAmount = r.uint64(); break;
-      default: r.skip(wire);
-    }
-  }
-  return { challengeId, status, challengeDeadlineHeight, resolveDeadlineHeight, bondLockedAmount };
 }

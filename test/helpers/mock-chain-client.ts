@@ -1,8 +1,7 @@
 import type {
   ChainClient, CreateSessionResult, CancelOrderInput, CancelOrderResult,
-  UserChallengeInput, UserChallengeResult,
 } from '../../src/transport/chain-client';
-import type { StreamStateView, SettlementFinalityView } from '../../src/types/node';
+import type { StreamStateView } from '../../src/types/node';
 
 /** In-memory ChainClient test double: session state and the createSession result can be seeded. */
 export class MockChainClient implements ChainClient {
@@ -19,9 +18,6 @@ export class MockChainClient implements ChainClient {
   async querySessionNonce(): Promise<{ nextSessionNonce: bigint }> {
     return { nextSessionNonce: 0n };
   }
-  async querySettlementFinality(): Promise<SettlementFinalityView> {
-    throw new Error('not used in these tests');
-  }
   async createSession(): Promise<CreateSessionResult> {
     const r = this.nextCreate;
     this.sessions.set(r.sessionId, {
@@ -31,9 +27,6 @@ export class MockChainClient implements ChainClient {
     return r;
   }
   async cancelOrder(_i: CancelOrderInput): Promise<CancelOrderResult> {
-    throw new Error('not used');
-  }
-  async userChallenge(_i: UserChallengeInput): Promise<UserChallengeResult> {
     throw new Error('not used');
   }
 }

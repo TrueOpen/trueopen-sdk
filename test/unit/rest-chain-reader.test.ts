@@ -202,6 +202,76 @@ describe('RestChainReader', () => {
     expect(snap.taskId).toBe(TASK_ID);
   });
 
+  // After cleanup compaction the chain answers with the terminal arm of
+  // TaskViewV1 (TaskTerminalSummaryState). It must map, not throw.
+  it('queryTask maps the terminal arm of a compacted task', async () => {
+    const snap = await readTask({
+      task: {
+        terminal: {
+          task_id: TASK_ID,
+          session_id: '33'.repeat(32),
+          order_sequence: '4',
+          task_hash: '22'.repeat(32),
+          terminal_phase: 'TASK_PHASE_SETTLED',
+          model_id: '55'.repeat(32),
+          profile_version: 2,
+          winner_worker: 'trueopen1worker',
+        },
+      },
+    });
+    expect(snap).toMatchObject({
+      view: 'terminal',
+      terminalPhase: 'SETTLED',
+      taskId: TASK_ID,
+      acceptedTaskHash: '22'.repeat(32),
+      winnerWorker: 'trueopen1worker',
+      modelId: '55'.repeat(32),
+      profileVersion: 2n,
+      orderSequence: 4n,
+    });
+    // The summary carries none of these. Reporting "" would read, to a caller written
+    // against the active arm, as a real empty input hash and a task with no receipt.
+    expect(snap.acceptedInputHash).toBeUndefined();
+    expect(snap.receiptStatus).toBeUndefined();
+    expect(snap.assignmentStatus).toBeUndefined();
+  });
+
+  it('queryTask maps a terminal task that never had a winner', async () => {
+    const snap = await readTask({
+      task: {
+        terminal: {
+          task_id: TASK_ID, order_sequence: '0', task_hash: '22'.repeat(32),
+          terminal_phase: 'TASK_PHASE_FAILED', model_id: '55'.repeat(32), profile_version: 1,
+        },
+      },
+    });
+    expect(snap).toMatchObject({ view: 'terminal', winnerWorker: '', terminalPhase: 'FAILED' });
+  });
+
+  it('queryTask reports the active arm with all three fields present', async () => {
+    const snap = await readTask(pendingTask(null));
+    expect(snap.view).toBe('active');
+    expect(snap.acceptedInputHash).toBe('44'.repeat(32));
+    expect(snap.receiptStatus).toBe('NONE');
+    expect(snap.assignmentStatus).toBe('PENDING');
+  });
+
+  it('queryTask decodes the terminal arm model_id as a Hash32 too', async () => {
+    const terminal = {
+      task_id: TASK_ID, order_sequence: '0', task_hash: '22'.repeat(32),
+      terminal_phase: 'TASK_PHASE_SETTLED', model_id: bytesToBase64(fromHex(MODEL_ID)), profile_version: 1,
+    };
+    expect((await readTask({ task: { terminal } })).modelId).toBe(MODEL_ID);
+  });
+
+  it('queryTask reports the active arm', async () => {
+    expect((await readTask(pendingTask(null))).view).toBe('active');
+  });
+
+  it('queryTask rejects a view with neither arm', async () => {
+    await expect(readTask({ task: {} })).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+  });
+
   it('queryTask still rejects a present winner_worker of the wrong type', async () => {
     await expect(readTask(pendingTask({ task_id: TASK_ID, winner_worker: 42 })))
       .rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
@@ -219,25 +289,6 @@ describe('RestChainReader', () => {
     const r = new RestChainReader({ baseUrl: 'http://n', fetch });
     expect((await r.querySessionNonce('trueopen1o')).nextSessionNonce).toBe(5n);
     expect(lastUrl()).toBe('http://n/TrueOpen/task/v1/session_nonce/trueopen1o');
-  });
-
-  it('querySettlementFinality mapping (enum returns full name, prefix must be stripped)', async () => {
-    const { fetch, lastUrl } = stubFetch(
-      okJson({
-        optimistic_finality_status: 'OPTIMISTIC_FINALITY_STATUS_CHALLENGED',
-        challenge_close_height: '200',
-        max_challenge_resolve_deadline_height: '250',
-        task_finality_height: '0',
-        claimable_after_height: '0',
-        challenge_refs_hash: 'abc',
-      }),
-    );
-    const r = new RestChainReader({ baseUrl: 'http://n', fetch });
-    const f = await r.querySettlementFinality('s', 't');
-    expect(lastUrl()).toBe('http://n/TrueOpen/task/v1/settlement_finality/s/t');
-    expect(f.optimisticFinalityStatus).toBe('CHALLENGED');
-    expect(f.challengeCloseHeight).toBe(200n);
-    expect(f.maxChallengeResolveDeadlineHeight).toBe(250n);
   });
 
   it('404 → CHAIN_QUERY_NOT_FOUND (not retriable)', async () => {

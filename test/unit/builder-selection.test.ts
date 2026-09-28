@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { bech32 } from '@scure/base';
 import {
   selectTaskBuilders,
@@ -10,47 +11,62 @@ import {
 } from '../../src/hub/builder-selection';
 import type { BuilderSetMember } from '../../src/hub/builder-selection';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { canonicalFrameBytes } from '../../src/codec/domain-hash';
 
 /**
- * Cross-language fixture published by node:
- *   x/task/types/testdata/task_builder_rank_v1.json
- *   { schema_version: "trueopen-task-builder-rank-v1",
- *     domain: "TRUEOPEN_TASK_BUILDER_RANK_V1",
- *     sort: "rank_bytes_asc_then_address_codec_bytes_asc", vectors: [...] }
- * Asserted by TestTaskBuilderRankCrossLanguageFixture. The SDK must reproduce the same
- * vectors, otherwise it would send orders to the wrong set of Builders. Do not edit the
- * expected values in place — first confirm what changed on the node side.
+ * wire testdata/v1/task/task_builder_rank_v1.json, read from the submodule: every vector
+ * pins both the preimage (field order) and the rank. The SDK must reproduce them, or it
+ * would send orders to the wrong Builders.
  */
-const RANK_VECTORS = [
-  {
-    seedHex: '3132330000000000000000000000000000000000000000000000000000000000',
-    addressCodecHex: '4141414141414141414141414141414141414141',
-    expectedRankHex: '2215fbe71a020f4624a48f6c8649516b7b6937017c023ff4744a7486ca61e1a1',
-  },
-] as const;
+interface RankVector {
+  readonly name: string;
+  readonly digest_hex: string;
+  readonly preimage_hex: string;
+  readonly fields: readonly { readonly name: string; readonly hex: string; readonly bech32?: string }[];
+}
+const RANK = JSON.parse(readFileSync('third_party/wire/testdata/v1/task/task_builder_rank_v1.json', 'utf8')) as {
+  domain: string;
+  vectors: RankVector[];
+};
+const RANK_VECTORS = RANK.vectors.map((v) => ({
+  name: v.name,
+  seedHex: v.fields.find((f) => f.name === 'task_builder_seed')!.hex,
+  addressCodecHex: v.fields.find((f) => f.name === 'builder_operator_address')!.hex,
+  bech32: v.fields.find((f) => f.name === 'builder_operator_address')!.bech32,
+  preimageHex: v.preimage_hex,
+  expectedRankHex: v.digest_hex,
+}));
 
 const addrOf = (codecHex: string): string => bech32.encode('trueopen', bech32.toWords(fromHex(codecHex)));
 const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
 
 describe('taskBuilderRank (cross-language fixture gate)', () => {
-  it.each(RANK_VECTORS)('reproduces the rank vectors published by node', (v) => {
-    // The fixture provides address codec bytes; the node side likewise bech32-encodes first, then decodes back to codec bytes.
+  it('covers all four published vectors', () => {
+    expect(RANK_VECTORS).toHaveLength(4);
+    expect(RANK.domain).toBe(DOMAIN_TASK_BUILDER_RANK_V1);
+  });
+
+  it.each(RANK_VECTORS)('$name: preimage and rank match', (v) => {
+    const preimage = canonicalFrameBytes(new TextEncoder().encode(DOMAIN_TASK_BUILDER_RANK_V1), fromHex(v.seedHex), fromHex(v.addressCodecHex));
+    expect(toHex(preimage)).toBe(v.preimageHex);
+    // The bech32 column is a decoder self-check.
+    expect(addrOf(v.addressCodecHex)).toBe(v.bech32);
     expect(toHex(taskBuilderRank(fromHex(v.seedHex), addrOf(v.addressCodecHex)))).toBe(v.expectedRankHex);
   });
 
   it('hrp is not part of the preimage - changing the prefix does not change the rank', () => {
-    const v = RANK_VECTORS[0];
+    const v = RANK_VECTORS[0]!;
     const other = bech32.encode('cosmos', bech32.toWords(fromHex(v.addressCodecHex)));
     expect(toHex(taskBuilderRank(fromHex(v.seedHex), other))).toBe(v.expectedRankHex);
   });
 
-  it('domain constants match the node registry', () => {
+  it('domain constants match the wire registry', () => {
     expect(DOMAIN_TASK_BUILDERS_V1).toBe('TRUEOPEN_TASK_BUILDERS_V1');
     expect(DOMAIN_TASK_BUILDER_RANK_V1).toBe('TRUEOPEN_TASK_BUILDER_RANK_V1');
   });
 
   it('rejects a seed that is not 32 bytes', () => {
-    expect(() => taskBuilderRank(new Uint8Array(31), addrOf(RANK_VECTORS[0].addressCodecHex))).toThrowError(/32 bytes/);
+    expect(() => taskBuilderRank(new Uint8Array(31), addrOf(RANK_VECTORS[0]!.addressCodecHex))).toThrowError(/32 bytes/);
   });
 });
 

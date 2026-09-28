@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { sha256 } from '../../src/codec/hash';
-import { DOMAINS } from '../../src/codec/domains';
+import { SIGN_DOMAINS } from '../../src/codec/domains';
 import { toHex } from '../../src/util/bytes';
 
 describe('sha256', () => {
@@ -16,10 +16,8 @@ describe('sha256', () => {
   });
 });
 
-describe('DOMAINS', () => {
+describe('SIGN_DOMAINS', () => {
   it('fixed domain separator constants', () => {
-    expect(DOMAINS.session).toBe('TRUEOPEN_SESSION_V1');
-    expect(DOMAINS.sealedKey).toBe('TRUEOPEN_SEALED_KEY_V1');
-    expect(DOMAINS.credential).toBe('TRUEOPEN_OBJECT_CREDENTIAL_V1');
+    expect(SIGN_DOMAINS).toEqual({ order: 'TRUEOPEN_ORDER_V1', taskId: 'TRUEOPEN_TASK_ID_V1' });
   });
 });

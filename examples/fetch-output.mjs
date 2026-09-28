@@ -13,8 +13,8 @@ const id = await deriveIdentity(env('TRUEOPEN_MNEMONIC'), prefix);
 // fetchOutput only needs nexus plus a signing identity and never touches the chain, so a minimal stub stands in for it.
 const die = async () => { throw new Error('chain not used by fetchOutput'); };
 const stubChain = {
-  querySession: die, querySessionNonce: die, querySettlementFinality: die,
-  createSession: die, cancelOrder: die, userChallenge: die,
+  querySession: die, querySessionNonce: die,
+  createSession: die, cancelOrder: die,
 };
 
 const client = new TrueOpenClient({

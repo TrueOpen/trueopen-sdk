@@ -54,8 +54,9 @@ describe('HubReader Models/Profiles discovery queries', () => {
     expect(seen).toContain('/hub/v1/models?status=ACTIVE');
   });
 
-  it('listProfiles parses the trimmed ProfileInfo + task_types array', async () => {
-    const r = await readerFor({ '/hub/v1/profiles': PROFILES }).listProfiles({ modelId: 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b' });
+  it('getProfile parses the trimmed ProfileInfo + task_types array', async () => {
+    const one = { profile: (PROFILES as { profiles: unknown[] }).profiles[0] };
+    const r = [await readerFor({ '/hub/v1/profile/': one }).getProfile('ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b', 1n)];
     expect(r[0]?.profileVersion).toBe(1n);
     expect(r[0]?.resourceTier).toBe(1n);
     expect(r[0]?.requiredTopK).toBe(20n);

@@ -18,8 +18,7 @@ export { phaseToState } from './task/phase-map';
 
 export { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from './codec/wire';
 
-export type { TaskFailureClass, StreamStateView, SettlementFinalityView, SettlementView, ChainTaskSnapshot, InferReceiptView } from './types/node';
-export { CHAIN_ENABLED_CHALLENGE_KINDS, isChallengeKindEnabled } from './types/node';
+export type { TaskFailureClass, StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 
 export type {
   ChainReader,
@@ -27,8 +26,6 @@ export type {
   CreateSessionResult,
   CancelOrderInput,
   CancelOrderResult,
-  UserChallengeInput,
-  UserChallengeResult,
 } from './transport/chain-client';
 export { RestChainReader, withQueryRetry, DEFAULT_QUERY_RETRY } from './transport/rest-chain-reader';
 export type { FetchLike, FetchResponse, RestChainReaderOptions, QueryRetryPolicy } from './transport/rest-chain-reader';
@@ -61,18 +58,14 @@ export {
   TYPE_URL,
   encodeMsgCreateSession,
   encodeMsgCancelOrder,
-  encodeMsgUserChallenge,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
-  decodeMsgUserChallengeResponse,
 } from './transport/task-msgs';
 export type {
   MsgCreateSession,
   MsgCreateSessionResponse,
   MsgCancelOrder,
   MsgCancelOrderResponse,
-  MsgUserChallenge,
-  MsgUserChallengeResponse,
 } from './transport/task-msgs';
 
 export { taskRegistry } from './transport/cosmjs-registry';
@@ -90,7 +83,6 @@ export { reduce, initialState } from './state/local-state';
 export type { LocalTaskState, TaskEvent, AttentionIssue } from './state/local-state';
 export { reconcile } from './state/reconcile';
 export type { ChainTaskView } from './state/reconcile';
-export { settlementFinalityToChainView } from './state/finality-map';
 
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
@@ -166,8 +158,6 @@ export { SIGN_DOMAINS } from './codec/domains';
 export {
   orderEnvelopeSigningBytes,
   deriveTaskId,
-  cancelOrderSigningBytes,
-  userChallengeSigningBytes,
 } from './order/order-signing';
 
 // ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme) ----
@@ -211,7 +201,7 @@ export {
   secp256k1AddressMatches,
 } from './signer/secp256k1';
 export type { CosmosSecp256k1Signer, Secp256k1DigestSigner } from './signer/secp256k1';
-export { signDetached, signOrderEnvelope, signCancelOrder, signUserChallenge } from './signer/order-signer';
+export { signDetached, signOrderEnvelope } from './signer/order-signer';
 
 export { frame4, i64be, u64be } from './codec/frame';
 export {
@@ -307,7 +297,6 @@ export type {
   TrueOpenClientConfig,
   OpenTaskParams,
   OpenTaskResult,
-  ChallengeParams,
   OutputStreamSource,
   StreamOutputParams,
   OutputStreamEvent,

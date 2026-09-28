@@ -57,9 +57,8 @@ export function secp256k1Address(pubKey: Uint8Array, prefix: string): string {
  *   "verifies ECDSA directly over an already-derived Hash32. Cosmos SDK's
  *    PubKey.VerifySignature hashes its input again, so it must not be used for
  *    contracts that explicitly say 'sign SIGN_DIGEST'."
- * SignedOrderV1.user_signature is exactly this case (the keeper's
- * msg_server_worker_handraises.go:386 verifies against taskHash[:] using
- * VerifyDigestSignature).
+ * Signing an already-derived digest (for example an EIP-712 signing digest) is
+ * exactly this case.
  *
  * Note: most hardware wallets / browser wallets only expose a "hash then
  * sign" interface and can't sign an arbitrary digest directly, so this

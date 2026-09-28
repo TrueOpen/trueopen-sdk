@@ -92,10 +92,67 @@ describe('body digest (H_FIELDS_V1)', () => {
     const base = toHex(taskDataMetadataBodyDigest(REF));
     expect(toHex(taskDataMetadataBodyDigest({ ...REF, objectKind: TASK_DATA_OBJECT_KIND.INPUT }))).not.toBe(base);
     expect(toHex(taskDataMetadataBodyDigest({ ...REF, verifyRound: 1 }))).not.toBe(base);
-    expect(toHex(taskDataMetadataBodyDigest({ ...REF, evidenceKind: EVIDENCE_KIND.WORKER_VALUE_OPENING }))).not.toBe(base);
     // A present producer_operator is distinct from an omitted one, and must be a real address.
     expect(toHex(taskDataMetadataBodyDigest({ ...REF, producerOperator: OPERATOR }))).not.toBe(base);
     expect(() => taskDataMetadataBodyDigest({ ...REF, producerOperator: '' })).toThrow();
+  });
+
+  // The fixture's evidence_kind mutation rows are reject_before_hash: each +1 lands on a
+  // kind that is illegal for that object, so the SDK must refuse it before hashing.
+  it('refuses every reject_before_hash evidence_kind row the SDK computes a body for', () => {
+    const rows = (auth.vectors as { name: string; mutations?: { expect: string; field_path: string }[] }[])
+      .flatMap((v) => (v.mutations ?? []).map((m) => ({ vector: v.name, ...m })))
+      .filter((m) => m.expect === 'reject_before_hash');
+    expect(rows.map((r) => r.vector).sort()).toEqual([
+      'task_data_fetch_body_v2',
+      'task_data_finalize_result_body_v2',
+      'task_data_metadata_body_v2',
+      'task_data_upload_body_v2',
+    ]);
+    // metadata / fetch: evidence_kind 0 -> 1 on an OUTPUT object.
+    const onOutput = { ...REF, evidenceKind: EVIDENCE_KIND.WORKER_VALUE_OPENING };
+    expect(() => taskDataMetadataBodyDigest(onOutput)).toThrow(/non-evidence/);
+    expect(() => taskDataFetchBodyDigest(onOutput)).toThrow(/non-evidence/);
+    // upload: a Verifier evidence ref, evidence_kind 2 -> 3 (settlement root opening).
+    const verifierRef: TaskDataObjectRef = {
+      ...REF,
+      objectKind: TASK_DATA_OBJECT_KIND.EVIDENCE_MANIFEST,
+      evidenceProducerKind: 2,
+      verifyRound: 2,
+      producerOperator: OPERATOR,
+      evidenceKind: EVIDENCE_KIND.VERIFIER_VALUE_OPENING,
+    };
+    expect(() => canonicalObjectRefFrame(verifierRef)).not.toThrow();
+    expect(() => canonicalObjectRefFrame({ ...verifierRef, evidenceKind: EVIDENCE_KIND.SETTLEMENT_ROOT_OPENING })).toThrow(/data-plane/);
+    // finalize_result is a Worker-side body the SDK does not build; its row is listed above only.
+  });
+
+  it('evidence objects need a kind their producer can produce', () => {
+    const worker: TaskDataObjectRef = {
+      ...REF, objectKind: TASK_DATA_OBJECT_KIND.EVIDENCE_ARTIFACT, evidenceProducerKind: 1, producerOperator: OPERATOR,
+      evidenceKind: EVIDENCE_KIND.WORKER_TOKEN_OPENING,
+    };
+    expect(() => canonicalObjectRefFrame(worker)).not.toThrow();
+    expect(() => canonicalObjectRefFrame({ ...worker, evidenceKind: EVIDENCE_KIND.WORKER_VALUE_OPENING })).not.toThrow();
+    expect(() => canonicalObjectRefFrame({ ...worker, evidenceKind: EVIDENCE_KIND.VERIFIER_VALUE_OPENING })).toThrow();
+    expect(() => canonicalObjectRefFrame({ ...worker, evidenceKind: EVIDENCE_KIND.UNSPECIFIED })).toThrow();
+    expect(() => canonicalObjectRefFrame({ ...worker, evidenceProducerKind: 0 })).toThrow();
+  });
+
+  // "no producer kind" and "wrong kind for this producer" are different mistakes; folding
+  // them together produced "evidence_kind 0 is not a data-plane evidence kind for producer
+  // kind 0", which names neither.
+  it('names the missing producer kind separately from a wrong evidence kind', () => {
+    const evidence: TaskDataObjectRef = {
+      ...REF, objectKind: TASK_DATA_OBJECT_KIND.EVIDENCE_ARTIFACT, producerOperator: OPERATOR,
+      evidenceKind: EVIDENCE_KIND.WORKER_TOKEN_OPENING,
+    };
+    expect(() => canonicalObjectRefFrame({ ...evidence, evidenceProducerKind: 0 })).toThrow(
+      /needs evidence_producer_kind WORKER or VERIFIER/,
+    );
+    expect(() => canonicalObjectRefFrame({ ...evidence, evidenceProducerKind: 2 })).toThrow(
+      /is not a data-plane evidence kind for producer kind 2/,
+    );
   });
 
   it('Hash32 must be canonical lowercase 64-hex', () => {

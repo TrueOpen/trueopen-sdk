@@ -70,6 +70,15 @@ export function nexusTransport(url, tlsPubkeyHash = '') {
 }
 
 /**
+ * Default ingress transport for a client that must not call nexus directly.
+ * @type {import('@connectrpc/connect').Transport}
+ */
+const noDefaultNexus = {
+  unary: () => Promise.reject(new Error('this client has no default nexus endpoint; use clientFor(serviceEndpoint, tlsPubkeyHash)')),
+  stream: () => Promise.reject(new Error('this client has no default nexus endpoint; use clientFor(serviceEndpoint, tlsPubkeyHash)')),
+};
+
+/**
  * Everything the examples need, built once:
  * - chain reads (task, session) and hub reads (params, Builders, profiles) over REST;
  * - optionally chain writes over RPC, with fees in the chain business_denom;
@@ -131,8 +140,11 @@ export async function setup(opts = {}) {
       ingressTransportFactory: nexusTransport,
       addressPrefix: prefix,
     });
-  // openTask routes by itself (ingressTransportFactory), so its default transport is never used.
-  const client = makeClient(nexusTransport('http://nexus.unused.invalid'));
+  // openTask routes by itself (ingressTransportFactory) and per-Builder calls go through
+  // clientFor, so this client has no default nexus. A placeholder that fails if it is ever used,
+  // rather than a real transport to a made-up http:// address, which the SDK would refuse unless
+  // insecure http were allowed.
+  const client = makeClient(noDefaultNexus);
   /**
    * A client whose calls go to one Builder's nexus endpoint.
    * @param {string} serviceEndpoint

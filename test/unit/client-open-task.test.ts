@@ -270,7 +270,8 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.accepted).toBe(true);
     expect(res.sessionId).toBe(SESSION);
     expect(res.builders.map((b) => b.address).sort()).toEqual([...ADDRS].sort());
-    expect(res.builders.map((b) => b.rank)).toEqual([...res.builders.map((b) => b.rank)].sort((a, b) => a - b));
+    // Ranks are 1-based, in selection order.
+    expect(res.builders.map((b) => b.rank)).toEqual([1, 2, 3]);
     for (const b of res.builders) {
       expect(b.serviceEndpoint).toBe(`grpc://${b.address}:8080`);
       if (b.address === ADDRS[1]) {

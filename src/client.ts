@@ -170,7 +170,7 @@ export interface OutputTrustAnchors {
 export interface OpenTaskBuilderResult {
   /** Builder operator address; this is the builderAddress for task-data requests to it. */
   readonly address: string;
-  /** Rank in the task_builder_seed selection (0 = first). */
+  /** Rank in the task_builder_seed selection, 1-based (1 = first). */
   readonly rank: number;
   /** The nexus endpoint the order was actually sent to (after any certificate re-read). */
   readonly serviceEndpoint: string;

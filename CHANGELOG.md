@@ -139,3 +139,8 @@
 - `RestChainReader.queryTask` decodes the terminal arm's `model_id` as a Hash32 as well.
 - An evidence object with no producer kind reports that, instead of the unhelpful
   "evidence_kind 0 is not a data-plane evidence kind for producer kind 0".
+- A ranged output fetch backs off between retries. `Unavailable` and `ResourceExhausted` mean the
+  peer is already past what it can serve, and the retry was immediate.
+- The CLI order file rejects a zero `profileVersion` / `outputBudgetBucket` by name. Both are
+  refused on chain and by `validateTaskOrderScalarScope`, which reported them as the field-less
+  "task order scalar scope is invalid".

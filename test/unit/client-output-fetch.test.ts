@@ -232,11 +232,15 @@ describe('fetchTaskOutput', () => {
 
   it('retries a range that failed on transport without refetching earlier ranges', async () => {
     const log = newLog();
+    const started = Date.now();
     const got = await makeClient(dataTransport(BYTES, [6, 6, 6], log, { failOnce: 7n })).fetchTaskOutput({
       sessionId: SESSION, taskId: TASK, builderAddress: BUILDER, maxRangeBytes: 7,
     });
     expect(got.text).toBe('hello final output');
     expect(log.ranges.map((r) => r.offset)).toEqual([0n, 7n, 7n, 14n]);
+    // Unavailable and ResourceExhausted mean the peer is already past what it can serve, so the
+    // retry waits instead of adding another request to the same overload.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
   });
 
   it('refuses a served_range or chunk offset other than the one requested', async () => {

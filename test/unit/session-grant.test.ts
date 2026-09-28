@@ -95,6 +95,12 @@ describe('session-signed SDKRequest (account_signing_v1.json sdk_request_session
     expect(env.sessionGrant).toBe(grant);
   });
 
+  it('refuses a grant made for another chain', async () => {
+    await expect(
+      signSdkRequestEnvelope({ ...reqFields, chainId: 'trueopen-golden-2' }, { signerAddress: USER, signer: wallet, evmChainId: EVM, session: fixtureSession }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+  });
+
   it('refuses to session-sign OpenTask or a grant for another user', async () => {
     await expect(
       signSdkRequestEnvelope({ ...reqFields, method: 'OpenTask' }, { signerAddress: USER, signer: wallet, evmChainId: EVM, session: fixtureSession }),
@@ -197,6 +203,19 @@ describe('SessionKeyManager', () => {
     m.expired(renewed.grant);
     expect(await m.current()).not.toBe(renewed);
     expect(w.prompts).toHaveLength(3);
+  });
+
+  it('a refused early renewal keeps the old grant while it is still valid', async () => {
+    const height = { h: 1000n };
+    let refuse = false;
+    const w: TypedDataSigner = { signTypedData: async (d) => { if (refuse) throw new Error('user rejected'); return wallet.signTypedData(d); } };
+    const m = manager(height, w, { grantBlocks: 100, renewBeforeBlocks: 10 });
+    const first = await m.current();
+    refuse = true;
+    height.h = 1095n;
+    expect(await m.current()).toBe(first);
+    height.h = 1101n;
+    await expect(m.current()).rejects.toThrow(/user rejected/);
   });
 
   it('two managers never share a key (not derived from any signature)', async () => {

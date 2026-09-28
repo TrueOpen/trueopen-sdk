@@ -84,6 +84,16 @@ describe('EIP712Domain', () => {
   });
 });
 
+describe('integer range', () => {
+  const T: Eip712Types = { ...SHORT_DOMAIN, X: [{ name: 'a', type: 'uint64' }, { name: 'b', type: 'int8' }] };
+  it('a uintN or intN value must fit N bits', () => {
+    expect(() => eip712HashStruct('X', T, { a: (1n << 64n) - 1n, b: -128 })).not.toThrow();
+    expect(() => eip712HashStruct('X', T, { a: 1n << 64n, b: 0 })).toThrow(/does not fit 64 bits/);
+    expect(() => eip712HashStruct('X', T, { a: 0n, b: 128 })).toThrow(/does not fit 8 bits/);
+    expect(() => eip712HashStruct('X', T, { a: 0n, b: -129 })).toThrow(/does not fit 8 bits/);
+  });
+});
+
 describe('TrueOpen Task Order', () => {
   const TYPES: Eip712Types = {
     ...SHORT_DOMAIN,

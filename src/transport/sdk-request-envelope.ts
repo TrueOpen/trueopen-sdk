@@ -2,7 +2,8 @@ import type { Eip712Types } from '../codec/eip712';
 import type { TypedData, TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { fromHex } from '../util/bytes';
+import { strictHash32 } from '../codec/hash32';
+export { strictHash32 };
 import { TrueOpenError } from '../errors/errors';
 import type { ActiveSession, SignedSessionGrant } from '../session/session-grant';
 
@@ -85,13 +86,6 @@ function malformed(what: string): TrueOpenError {
   return new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_MALFORMED', `SDK request: ${what}`);
 }
 
-/** Strict Hash32 decode: 64 lowercase hex characters, no 0x. Anything else is not projectable. */
-export function strictHash32(field: string, hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw malformed(`${field} must be 64-character lowercase hex without 0x, got ${JSON.stringify(hex)}`);
-  }
-  return fromHex(hex);
-}
 
 /** `/nexus.v1.IngressAPI/<Method>` for a bare method name. */
 export function ingressEndpoint(method: string): string {
@@ -166,6 +160,9 @@ export async function signSdkRequestEnvelope(
   }
   if (s !== undefined && s.grant.user !== opts.signerAddress) {
     throw malformed(`the session grant is for ${s.grant.user}, not ${opts.signerAddress}`);
+  }
+  if (s !== undefined && s.grant.chainId !== fields.chainId) {
+    throw malformed(`the session grant is for chain ${s.grant.chainId}, not ${fields.chainId}`);
   }
   const data = sdkRequestTypedData(fields, opts.evmChainId, s?.grantHash);
   const signature =

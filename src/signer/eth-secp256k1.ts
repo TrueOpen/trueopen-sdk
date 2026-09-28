@@ -102,6 +102,10 @@ export function ethSecp256k1AddressMatches(address: string, pubKey: Uint8Array, 
  */
 export type Eip712Signer = (digest: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 
+/**
+ * Signs an EIP-712 digest with a raw key. Internal: applications use privateKeyTypedDataSigner,
+ * which builds the digest itself and fits the same TypedDataSigner interface as the wallets.
+ */
 export function privKeyEip712Signer(privKey: Uint8Array): Eip712Signer {
   return (digest) => {
     if (digest.length !== 32) {

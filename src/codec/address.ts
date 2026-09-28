@@ -40,6 +40,18 @@ export function canonicalOperatorAddressBytes(field: string, value: string): Uin
   return raw;
 }
 
+/**
+ * A user account address: canonical Bech32 that decodes to exactly 20 bytes (the EVM-style
+ * keccak256(pubkey)[12:] address). Used where the contract frames an account as its 20 address
+ * bytes, such as the OpenTask body user_address. When `prefix` is given the HRP must equal it.
+ */
+export function canonicalAccountAddressBytes(field: string, value: string, prefix?: string): Uint8Array {
+  const raw = canonicalOperatorAddressBytes(field, value);
+  if (raw.length !== 20) throw malformed(field, `decodes to ${raw.length} address bytes, not 20`);
+  if (prefix !== undefined && !value.startsWith(`${prefix}1`)) throw malformed(field, `must use the account prefix ${prefix}`);
+  return raw;
+}
+
 function malformed(field: string, why: string, cause?: unknown): TrueOpenError {
   return new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ADDRESS_NOT_CANONICAL', `${field} ${why}`, {
     ...(cause !== undefined ? { cause } : {}),

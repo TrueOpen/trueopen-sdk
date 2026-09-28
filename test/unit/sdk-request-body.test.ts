@@ -167,7 +167,7 @@ describe('SDK request body projection refuses what cannot be projected', () => {
   const T = 'bce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
   const refused = (fn: () => unknown): void => {
     expect(fn).toThrow(TrueOpenError);
-    expect(fn).toThrow(/request body/);
+    expect(fn).toThrow(/request body|64-character lowercase hex/);
   };
 
   it('Hash32 ids: uppercase and 0x-prefixed spellings', () => {
@@ -199,5 +199,8 @@ describe('SDK request body projection refuses what cannot be projected', () => {
     };
     expect(() => openTaskBodyDigest({ ...base, userAddress: 'TRUEOPEN1RFJZ7R3U8T65TEAVH5UTQUJ3KWVSJ983P3JCLZ' })).toThrow(TrueOpenError);
     expect(() => openTaskBodyDigest({ ...base, userAddress: 'trueopen1rfjz7r3u8t65teavh5utquj3kwvsj983p3jclz' })).not.toThrow();
+    // A 32-byte (module-style) address is not an account address.
+    const long = bech32.encode('trueopen', bech32.toWords(new Uint8Array(32).fill(1)));
+    expect(() => openTaskBodyDigest({ ...base, userAddress: long })).toThrow(/not 20/);
   });
 });

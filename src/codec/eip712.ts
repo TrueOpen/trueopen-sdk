@@ -166,12 +166,21 @@ function encodeValue(type: string, value: Eip712Value, types: Eip712Types): Uint
     return out;
   }
 
-  if (/^uint([0-9]+)$/.test(type)) {
+  const uint = /^uint([0-9]+)$/.exec(type);
+  if (uint !== null) {
+    const bits = BigInt(uint[1]!);
     const v = toBigInt(value, type);
     if (v < 0n) throw malformed(`${type} value must not be negative`);
+    if (v >= 1n << bits) throw malformed(`${type} value ${v} does not fit ${bits} bits`);
     return word(v);
   }
-  if (/^int([0-9]+)$/.test(type)) return word(toBigInt(value, type));
+  const int = /^int([0-9]+)$/.exec(type);
+  if (int !== null) {
+    const bits = BigInt(int[1]!);
+    const v = toBigInt(value, type);
+    if (v < -(1n << (bits - 1n)) || v >= 1n << (bits - 1n)) throw malformed(`${type} value ${v} does not fit ${bits} bits`);
+    return word(v);
+  }
 
   throw malformed(`unsupported field type ${type}`);
 }

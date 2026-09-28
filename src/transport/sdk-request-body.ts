@@ -1,6 +1,7 @@
 import { canonicalHashBytes, optionalV1, uint64BE } from '../codec/domain-hash';
-import { canonicalOperatorAddressBytes } from '../codec/address';
-import { fromHex, toHex } from '../util/bytes';
+import { canonicalAccountAddressBytes } from '../codec/address';
+import { strictHash32 } from '../codec/hash32';
+import { toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
@@ -34,13 +35,6 @@ function malformed(what: string): TrueOpenError {
   return new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_BODY_MALFORMED', `request body: ${what}`);
 }
 
-/** Strict Hash32 decode: exactly 64 lowercase hex characters, no 0x. */
-function hash32(field: string, hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw malformed(`${field} must be 64-character lowercase hex without 0x, got ${JSON.stringify(hex)}`);
-  }
-  return fromHex(hex);
-}
 
 function u64(field: string, v: bigint): Uint8Array {
   if (v < 0n || v > U64_MAX) throw malformed(`${field} ${v} is outside uint64`);
@@ -57,7 +51,7 @@ export interface OpenTaskBody {
   readonly taskHash: Uint8Array;
   readonly sessionId: string;
   readonly orderSequence: bigint;
-  /** Canonical Bech32; framed as its 20 address bytes. */
+  /** Canonical Bech32 account address; framed as its 20 address bytes. */
   readonly userAddress: string;
   readonly inputSizeBytes: bigint;
   /** Lowercase 64-hex. */
@@ -79,11 +73,11 @@ export function openTaskBodyDigest(b: OpenTaskBody): Uint8Array {
   return bodyDigest(
     SDK_BODY_DOMAIN.OpenTask,
     b.taskHash,
-    hash32('session_id', b.sessionId),
+    strictHash32('session_id', b.sessionId),
     u64('order_sequence', b.orderSequence),
-    canonicalOperatorAddressBytes('user_address', b.userAddress),
+    canonicalAccountAddressBytes('user_address', b.userAddress),
     u64('input_size_bytes', b.inputSizeBytes),
-    hash32('input_hash', b.inputHash),
+    strictHash32('input_hash', b.inputHash),
     enc.encode(b.inputMediaType),
     enc.encode(b.idempotencyKey),
   );
@@ -91,7 +85,7 @@ export function openTaskBodyDigest(b: OpenTaskBody): Uint8Array {
 
 /** OpenTaskHeader.payload_ref: "nexus://sha256/" || lowercase_hex(input_hash). Not signed, but checked. */
 export function openTaskPayloadRef(inputHash: string): string {
-  return `nexus://sha256/${toHex(hash32('input_hash', inputHash))}`;
+  return `nexus://sha256/${toHex(strictHash32('input_hash', inputHash))}`;
 }
 
 /**
@@ -101,8 +95,8 @@ export function openTaskPayloadRef(inputHash: string): string {
 export function subscribeOutputBodyDigest(sessionId: string, taskId: string, resumeAfterSeq?: bigint): Uint8Array {
   return bodyDigest(
     SDK_BODY_DOMAIN.SubscribeOutput,
-    hash32('session_id', sessionId),
-    hash32('task_id', taskId),
+    strictHash32('session_id', sessionId),
+    strictHash32('task_id', taskId),
     optionalV1(resumeAfterSeq === undefined ? undefined : u64('resume_after_seq', resumeAfterSeq)),
   );
 }
@@ -111,8 +105,8 @@ export function subscribeOutputBodyDigest(sessionId: string, taskId: string, res
 export function ackOutputBodyDigest(sessionId: string, taskId: string, lastSeq: bigint): Uint8Array {
   return bodyDigest(
     SDK_BODY_DOMAIN.AckOutput,
-    hash32('session_id', sessionId),
-    hash32('task_id', taskId),
+    strictHash32('session_id', sessionId),
+    strictHash32('task_id', taskId),
     u64('last_seq', lastSeq),
   );
 }
@@ -136,8 +130,8 @@ export function getTaskEventsBodyDigest(sessionId: string, taskId: string, fromC
   const cursor = parseFromCursor(fromCursor);
   return bodyDigest(
     SDK_BODY_DOMAIN.GetTaskEvents,
-    hash32('session_id', sessionId),
-    hash32('task_id', taskId),
+    strictHash32('session_id', sessionId),
+    strictHash32('task_id', taskId),
     optionalV1(cursor === undefined ? undefined : uint64BE(cursor)),
   );
 }
@@ -158,8 +152,8 @@ export function prepareChallengeBodyDigest(
   }
   return bodyDigest(
     SDK_BODY_DOMAIN.PrepareChallenge,
-    hash32('session_id', sessionId),
-    hash32('task_id', taskId),
+    strictHash32('session_id', sessionId),
+    strictHash32('task_id', taskId),
     enc.encode(challengeKind),
     optionalV1(localEvidenceDigest.length === 0 ? undefined : localEvidenceDigest),
   );

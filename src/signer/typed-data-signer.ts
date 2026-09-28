@@ -115,9 +115,14 @@ export function normalizeWalletSignature(sig: Uint8Array): Uint8Array {
   const out = Uint8Array.from(sig);
   if (out[64] === 0 || out[64] === 1) out[64] = out[64]! + 27;
   if (out[64] !== 27 && out[64] !== 28) throw local('SDK_LOCAL_BAD_SIGNATURE_V', `wallet signature V must be 27 or 28, got ${sig[64]}`);
-  if (secp256k1.Signature.fromCompact(out.subarray(0, 64)).hasHighS()) {
-    throw local('SDK_LOCAL_BAD_SIGNATURE_HIGH_S', 'wallet signature has a high S value');
+  let parsed: ReturnType<typeof secp256k1.Signature.fromCompact>;
+  try {
+    // Refuses r or s of 0 or not below the curve order.
+    parsed = secp256k1.Signature.fromCompact(out.subarray(0, 64));
+  } catch (cause) {
+    throw local('SDK_LOCAL_BAD_SIGNATURE', 'wallet signature R||S is not a valid secp256k1 signature', cause);
   }
+  if (parsed.hasHighS()) throw local('SDK_LOCAL_BAD_SIGNATURE_HIGH_S', 'wallet signature has a high S value');
   return out;
 }
 

@@ -179,13 +179,11 @@ export {
   ethAddress0x,
   ethSecp256k1Address,
   ethSecp256k1AddressMatches,
-  privKeyEip712Signer,
   recoverEip712PubKey,
   recoverEip712Address,
   verifyEip712,
   TRUEOPEN_HD_PATH,
 } from './signer/eth-secp256k1';
-export type { Eip712Signer } from './signer/eth-secp256k1';
 export {
   privateKeyTypedDataSigner,
   eip1193TypedDataSigner,

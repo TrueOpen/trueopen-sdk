@@ -163,6 +163,13 @@ describe('signature shape and recovery checks', () => {
     const flipped = Uint8Array.from([...highS, sig[64] === 27 ? 28 : 27]);
     expect(() => normalizeWalletSignature(flipped)).toThrow(/high S/);
     expect(() => normalizeWalletSignature(sig.subarray(0, 64))).toThrow(/65 bytes/);
+    // r = 0 (and s = 0) is not a signature; the parse error surfaces as a typed error.
+    const zeroR = Uint8Array.from(sig);
+    zeroR.fill(0, 0, 32);
+    expect(() => normalizeWalletSignature(zeroR)).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_BAD_SIGNATURE' }));
+    const zeroS = Uint8Array.from(sig);
+    zeroS.fill(0, 32, 64);
+    expect(() => normalizeWalletSignature(zeroS)).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_BAD_SIGNATURE' }));
   });
 
   it('signTypedDataAs refuses a signature from another account', async () => {

@@ -179,11 +179,17 @@ export class SessionKeyManager implements SessionAuthority {
 
   async current(): Promise<ActiveSession> {
     const active = this.active;
-    if (active !== undefined) {
-      const height = await this.opts.latestHeight();
-      if (height + this.renewBefore < active.grant.expiryHeight) return active;
+    if (active === undefined) return this.renew();
+    const height = await this.opts.latestHeight();
+    if (height + this.renewBefore < active.grant.expiryHeight) return active;
+    try {
+      return await this.renew();
+    } catch (e) {
+      // The wallet refused (or failed) an early renewal: the old grant is still good until its
+      // expiry height, so keep using it and try again on the next request.
+      if (this.active === active && height <= active.grant.expiryHeight) return active;
+      throw e;
     }
-    return this.renew();
   }
 
   expired(grant: SignedSessionGrant): void {

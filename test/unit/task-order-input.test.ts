@@ -39,7 +39,7 @@ const req: TaskOrderRequest = {
   userAddress: USER,
   sessionId: SESSION,
   orderSequence: 1n,
-  modelId: 'hf-ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: PAYLOAD,
@@ -60,7 +60,7 @@ const req: TaskOrderRequest = {
 describe('buildTaskOrder', () => {
   it('builds a complete order from context + intent whose task_hash can be computed', () => {
     const order = buildTaskOrder(ctx, req);
-    expect(order.schemaVersion).toBe(2);
+    expect(order.schemaVersion).toBe(3);
     expect(order.sessionId.length).toBe(32);
     expect(toHex(order.sessionId)).toBe(SESSION);
     // input_hash / input_size_bytes are derived from the payload, not supplied by the caller.

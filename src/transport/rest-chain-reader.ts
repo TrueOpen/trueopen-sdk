@@ -1,4 +1,4 @@
-import { stringToU64 } from '../codec/wire';
+import { stringToU64, hash32ToHex } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { ChainReader } from './chain-client';
 import type { StreamStateView, SettlementFinalityView, ChainTaskSnapshot, InferReceiptView } from '../types/node';
@@ -171,7 +171,10 @@ export class RestChainReader implements ChainReader {
       winnerWorker: assignment === undefined ? '' : pendingField(assignment, 'winner_worker'),
       receiptStatus: enumField(core, 'receipt_status', 'RECEIPT_STATUS_'),
       assignmentStatus: enumField(core, 'assignment_status', 'ASSIGNMENT_STATUS_'),
-      modelId: field(core, 'model_id'),
+      // model_id is a Hash32 as of TaskOrderV3, so it goes through the same decoder
+      // hub.v1's reader uses -- otherwise ChainTaskSnapshot.modelId and
+      // ProfileInfo.modelId could disagree on hex vs base64 and never compare equal.
+      modelId: hash32Field(core, 'model_id'),
       profileVersion: u64Field(core, 'profile_version'),
       orderSequence: u64Field(core, 'order_sequence'),
     };
@@ -295,6 +298,17 @@ function field(o: Record<string, unknown>, snakeKey: string): string {
     throw malformed(`field ${snakeKey}`);
   }
   return v;
+}
+
+/** Hash32 field -> canonical lowercase 64-hex, accepting the gateway's hex or base64. */
+function hash32Field(o: Record<string, unknown>, snakeKey: string): string {
+  const v = field(o, snakeKey);
+  if (v === '') return '';
+  try {
+    return hash32ToHex(v);
+  } catch {
+    throw malformed(`field ${snakeKey}`);
+  }
 }
 
 /**

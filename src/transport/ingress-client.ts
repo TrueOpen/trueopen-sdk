@@ -644,6 +644,8 @@ function toProtoObjectRef(ref: TaskDataObjectRef): ReturnType<typeof create<type
     evidenceProducerKind: ref.evidenceProducerKind ?? EVIDENCE_PRODUCER_KIND.UNSPECIFIED,
     verifyRound: ref.verifyRound ?? 0,
     ...(ref.producerOperator !== undefined ? { producerOperator: ref.producerOperator } : {}),
+    // Sent and signed as the same value: the body digest binds evidence_kind.
+    evidenceKind: ref.evidenceKind ?? 0,
   });
 }
 

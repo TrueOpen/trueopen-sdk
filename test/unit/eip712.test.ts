@@ -9,6 +9,7 @@ import {
 } from '../../src/codec/eip712';
 import type { Eip712Types } from '../../src/codec/eip712';
 import { toHex, fromHex } from '../../src/util/bytes';
+import { ORDER_EIP712_TYPES, ORDER_EIP712_DOMAIN_NAME, ORDER_EIP712_DOMAIN_VERSION } from '../../src/order/signed-order';
 
 /**
  * Anchor: wire's testdata/v1/shared/account_signing_v1.json, a cross-language vector
@@ -90,7 +91,7 @@ describe('TrueOpen Task Order', () => {
       { name: 'user', type: 'string' },
       { name: 'sessionId', type: 'bytes32' },
       { name: 'orderSequence', type: 'uint64' },
-      { name: 'modelId', type: 'string' },
+      { name: 'modelId', type: 'bytes32' },
       { name: 'profileVersion', type: 'uint32' },
       { name: 'maxFee', type: 'string' },
       { name: 'feeDenom', type: 'string' },
@@ -105,7 +106,7 @@ describe('TrueOpen Task Order', () => {
     user: m.user,
     sessionId: fromHex(m.sessionId),
     orderSequence: m.orderSequence,
-    modelId: m.modelId,
+    modelId: fromHex(m.modelId),
     profileVersion: m.profileVersion,
     maxFee: m.maxFee,
     feeDenom: m.feeDenom,
@@ -117,6 +118,11 @@ describe('TrueOpen Task Order', () => {
   it('encode_type', () => expect(eip712EncodeType('TaskOrder', TYPES)).toBe(v.task_order.encode_type));
   it('type_hash', () => expect(toHex(eip712TypeHash('TaskOrder', TYPES))).toBe(v.task_order.type_hash));
   it('hash_struct', () => expect(toHex(eip712HashStruct('TaskOrder', TYPES, message))).toBe(v.task_order.hash_struct));
+  it('the SDK order type table and domain version match the vector (domain v3, bytes32 modelId)', () => {
+    expect(eip712EncodeType('TaskOrder', ORDER_EIP712_TYPES)).toBe(v.task_order.encode_type);
+    expect(ORDER_EIP712_DOMAIN_NAME).toBe(v.task_order.domain.name);
+    expect(ORDER_EIP712_DOMAIN_VERSION).toBe(v.task_order.domain.version);
+  });
   it('signing_digest', () => {
     const d = v.task_order.domain;
     const sep = eip712DomainSeparator(SHORT_DOMAIN, { name: d.name, version: d.version, chainId: d.chain_id });

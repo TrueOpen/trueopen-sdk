@@ -105,7 +105,8 @@ export function verifyOutputChunkSignature(
 export const OUTPUT_FIN_DOMAIN = 'TRUEOPEN_OUTPUT_FIN_V1';
 
 /**
- * The **only four accepted successful-termination values** in FinishReasonV1.
+ * The **only six accepted successful-termination values** in FinishReasonV1
+ * (EOS_TOKEN, STOP_SEQUENCE, MAX_OUTPUT_TOKENS, MAX_OUTPUT_DURATION, USER_STOP, STOP_TOKEN).
  *
  * This is a closed set: UNSPECIFIED(0), unknown enum values, failure, and cancellation never
  * produce a valid Fin, and must be rejected **before** the digest is computed -- otherwise
@@ -113,7 +114,7 @@ export const OUTPUT_FIN_DOMAIN = 'TRUEOPEN_OUTPUT_FIN_V1';
  * verifying its signature afterward would be meaningless. The wire registry's comment on
  * TRUEOPEN_OUTPUT_FIN_V1 explicitly requires failing closed.
  */
-export const ACCEPTED_FINISH_REASONS: readonly number[] = [1, 2, 3, 4];
+export const ACCEPTED_FINISH_REASONS: readonly number[] = [1, 2, 3, 4, 5, 6];
 
 /** Whether this value is a protocol-accepted successful termination reason. */
 export function isAcceptedFinishReason(value: number): boolean {

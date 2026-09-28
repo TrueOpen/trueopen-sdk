@@ -16,7 +16,7 @@ export { ChunkVerifier } from './output/chunk-verifier';
 
 export { phaseToState } from './task/phase-map';
 
-export { u64ToString, stringToU64, bytesToBase64, base64ToBytes } from './codec/wire';
+export { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from './codec/wire';
 
 export type { TaskFailureClass, StreamStateView, SettlementFinalityView, SettlementView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 export { CHAIN_ENABLED_CHALLENGE_KINDS, isChallengeKindEnabled } from './types/node';
@@ -95,20 +95,29 @@ export { settlementFinalityToChainView } from './state/finality-map';
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
 
-export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
+export {
+  validateModelId,
+  isValidModelId,
+  deriveModelId,
+  MODEL_ID_GRAMMAR,
+  MODEL_PROVIDER,
+  DOMAIN_MODEL_ID_V1,
+} from './order/model-id';
+export type { ModelIdInput } from './order/model-id';
 
-// ---- Frozen TaskOrderV2 / SignedOrderV2 ----
+// ---- Frozen TaskOrderV3 / SignedOrderV2 ----
 export {
   taskOrderHash,
   taskOrderHashHex,
-  DOMAIN_TASK_ORDER_V2,
-  TASK_ORDER_SCHEMA_VERSION_V2,
+  DOMAIN_TASK_ORDER_V3,
+  TASK_ORDER_SCHEMA_VERSION_V3,
+  PAYLOAD_MODE,
   GENERATION_PARAMS_SCHEMA_VERSION_V1,
   TASK_TYPE,
   DEADLINE_LATENCY_CLASS,
 } from './order/task-order';
 export type {
-  TaskOrderV2,
+  TaskOrderV3,
   AmountV1,
   GenerationParamsV1,
   DecodingParamsV1,
@@ -304,3 +313,46 @@ export type {
   OutputStreamEvent,
   ConfirmOutputParams,
 } from './client';
+
+// ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----
+export {
+  ManifestSource,
+  MemoryManifestCache,
+  boundedWebFetch,
+} from './manifest/manifest-source';
+export type {
+  ManifestSourceOptions,
+  ManifestFetcher,
+  ManifestFetchLimits,
+  ManifestCache,
+  ProfileManifestReader,
+  ManifestFetchResult,
+  ManifestAttempt,
+  ManifestSourceKind,
+} from './manifest/manifest-source';
+export {
+  verifyManifestBytes,
+  parseModelManifestV4,
+  modelManifestHash,
+  projectionFromManifest,
+  chainProjectionHash,
+  registrationDigest,
+  DOMAIN_MODEL_MANIFEST_V4,
+  DOMAIN_MODEL_CHAIN_PROJECTION_V3,
+  DOMAIN_MODEL_REGISTRATION_DIGEST_V3,
+  MAX_MANIFEST_BYTES,
+} from './manifest/model-manifest';
+export type {
+  ModelManifestV4,
+  ProfileManifestState,
+  ProjectionChainInputs,
+  RegistrationCheck,
+  RegistrationDigestInput,
+  VerifiedManifest,
+} from './manifest/model-manifest';
+export { parseManifestUri, isValidManifestUri, DEFAULT_MAX_MANIFEST_URI_BYTES } from './manifest/manifest-uri';
+export type { ManifestUri } from './manifest/manifest-uri';
+export { isPublicAddress } from './manifest/address-policy';
+export { canonicalJsonBytes, parseStrictJson } from './codec/canonical-json';
+export type { CanonicalJsonValue } from './codec/canonical-json';
+export { framedHashV1, framedV1Preimage } from './codec/domain-hash';

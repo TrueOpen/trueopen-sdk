@@ -335,7 +335,7 @@ export class TrueOpenClient {
   /**
    * Place an order through OpenTask, the order-placement entry point.
    *
-   * Full flow: read the on-chain context -> assemble the frozen TaskOrderV2 -> sign the order's
+   * Full flow: read the on-chain context -> assemble the frozen TaskOrderV3 -> sign the order's
    * inner EIP-712 digest, sign the outer order envelope, then sign the request envelope -> select
    * Task Builders via task_builder_seed -> submit concurrently to all selected endpoints,
    * succeeding as soon as any one is accepted.

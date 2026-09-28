@@ -182,7 +182,7 @@ export interface ParameterBucketView {
 /** SDK view of node hub.v1 BuilderSetSnapshot (a term-frozen snapshot). */
 export interface BuilderSetSnapshot {
   /**
-   * builder_set_id: signed directly into TaskOrderV2 field 24.
+   * builder_set_id: signed directly into TaskOrderV3 field 24.
    *
    * Note it is **not a number**: on-chain values look like
    * `"genesis-1"`. In earlier versions this was a decimal term string, but that term

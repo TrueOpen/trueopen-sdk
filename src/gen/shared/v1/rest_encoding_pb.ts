@@ -63,7 +63,7 @@ export const RESTBytesEncodingSchema: GenEnum<RESTBytesEncoding> = /*@__PURE__*/
 
 /**
  * rest_bytes_encoding declares the REST/JSON projection of one bytes leaf.
- * Extension number 51001 is frozen by §1.1a.
+ * Extension number 51001 is frozen by this contract.
  *
  * @generated from extension: shared.v1.RESTBytesEncoding rest_bytes_encoding = 51001;
  */

@@ -10,6 +10,7 @@ import {
   TASK_DATA_RPC_METHOD,
   TASK_DATA_OBJECT_KIND,
   TASK_DATA_REQUESTER_KIND,
+  EVIDENCE_KIND,
 } from '../../src/transport/task-data-signbytes';
 import type { TaskDataObjectRef } from '../../src/transport/task-data-signbytes';
 import { bech32 } from '@scure/base';
@@ -32,9 +33,27 @@ const REF: TaskDataObjectRef = {
   contentHash: '4444444444444444444444444444444444444444444444444444444444444444',
 };
 
+const OPERATOR = 'trueopen1crqu9s7ychrv0jxfet9uenwwelgdr5knutsmxe';
+
 describe('body digest (H_FIELDS_V1)', () => {
+  it('upload body object ref: evidence ref with an address-encoded producer_operator and evidence_kind', () => {
+    // The upload vector is the only one that exercises the present producer_operator and a non-zero
+    // evidence_kind, so check the object ref frame against its preimage segment.
+    const v = vector('task_data_upload_body_v2') as { preimage_hex?: string; fields: { fields: unknown[] }[] };
+    const ref: TaskDataObjectRef = {
+      ...REF,
+      objectKind: TASK_DATA_OBJECT_KIND.EVIDENCE_MANIFEST,
+      evidenceProducerKind: 2,
+      verifyRound: 2,
+      producerOperator: OPERATOR,
+      evidenceKind: EVIDENCE_KIND.VERIFIER_VALUE_OPENING,
+    };
+    expect(v.fields[0]!.fields).toHaveLength(9);
+    expect(v.preimage_hex).toContain(toHex(canonicalObjectRefFrame(ref)));
+  });
+
   it('GetTaskDataMetadata preimage and digest', () => {
-    const v = vector('task_data_metadata_body_v1');
+    const v = vector('task_data_metadata_body_v2');
     expect(v['domain']).toBe(TASK_DATA_BODY_DOMAIN.METADATA);
     // Compare the preimage first, then the digest: if the digest doesn't match, the preimage pinpoints exactly which segment is wrong.
     const preimage = canonicalFrameBytes(
@@ -46,7 +65,7 @@ describe('body digest (H_FIELDS_V1)', () => {
   });
 
   it('FetchTaskData preimage and digest with a range', () => {
-    const v = vector('task_data_fetch_body_v1');
+    const v = vector('task_data_fetch_body_v2');
     expect(v['domain']).toBe(TASK_DATA_BODY_DOMAIN.FETCH);
     const range = { offset: 64n, length: 128n };
     // present optional = 0x01 followed by a length-prefixed frame of the value itself; that value is in turn
@@ -73,8 +92,10 @@ describe('body digest (H_FIELDS_V1)', () => {
     const base = toHex(taskDataMetadataBodyDigest(REF));
     expect(toHex(taskDataMetadataBodyDigest({ ...REF, objectKind: TASK_DATA_OBJECT_KIND.INPUT }))).not.toBe(base);
     expect(toHex(taskDataMetadataBodyDigest({ ...REF, verifyRound: 1 }))).not.toBe(base);
-    // An empty string for producer_operator is the present form, distinct from omitted -- they must not be treated as the same thing.
-    expect(toHex(taskDataMetadataBodyDigest({ ...REF, producerOperator: '' }))).not.toBe(base);
+    expect(toHex(taskDataMetadataBodyDigest({ ...REF, evidenceKind: EVIDENCE_KIND.WORKER_VALUE_OPENING }))).not.toBe(base);
+    // A present producer_operator is distinct from an omitted one, and must be a real address.
+    expect(toHex(taskDataMetadataBodyDigest({ ...REF, producerOperator: OPERATOR }))).not.toBe(base);
+    expect(() => taskDataMetadataBodyDigest({ ...REF, producerOperator: '' })).toThrow();
   });
 
   it('Hash32 must be canonical lowercase 64-hex', () => {
@@ -169,7 +190,7 @@ describe('USER branch (EIP-712 outer layer)', () => {
 
   it('the vector\'s body_digest is exactly the fetch body one', () => {
     // The vector itself declares this chain: body_digest_source = task_data_fetch_body_v1.
-    expect(m.bodyDigest).toBe(vector('task_data_fetch_body_v1')['digest_hex']);
+    expect(m.bodyDigest).toBe(vector('task_data_fetch_body_v2')['digest_hex']);
     expect(m.rpcMethod).toBe(TASK_DATA_RPC_METHOD.FetchTaskData);
     expect(Number(m.requesterKind)).toBe(TASK_DATA_REQUESTER_KIND.USER);
   });

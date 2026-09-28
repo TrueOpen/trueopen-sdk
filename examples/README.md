@@ -78,3 +78,13 @@ node examples/fetch-output.mjs
   `test/integration/smoke.test.ts` (a fake backend runs the full journey).
 - Assertion-style live-chain verification is in `test/integration/chain.integration.test.ts`
   (env-gated).
+
+### manifest-proxy.mjs -- same-origin manifest proxy for browser apps
+A server-side endpoint, `GET /manifest-proxy?url=<manifest_uri>`, for the recommended browser
+deployment. It accepts only a valid https `manifest_uri` and fetches it with
+`createNodeManifestFetcher()`, which applies the address policy, the pinned connection, TLS,
+redirect and timeout limits, and the 4 MiB cap. It returns the bytes unchanged. The browser
+`ManifestSource` still verifies the hash and canonical bytes.
+```bash
+npm run build && PORT=8787 node examples/manifest-proxy.mjs
+```

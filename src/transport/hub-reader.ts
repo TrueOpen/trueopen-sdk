@@ -1,5 +1,4 @@
-import { stringToU64, base64ToBytes } from '../codec/wire';
-import { toHex } from '../util/bytes';
+import { stringToU64, base64ToBytes, hash32ToHex } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { FetchLike, FetchResponse, QueryRetryPolicy } from './rest-chain-reader';
 import { DEFAULT_QUERY_RETRY, withQueryRetry } from './rest-chain-reader';
@@ -18,21 +17,16 @@ import type {
   ParameterBucketView,
 } from '../types/hub';
 import { BUCKET_KIND, DEFAULT_PARAMETER_BUCKET_KEY } from '../types/hub';
+import type { ProfileManifestState } from '../manifest/model-manifest';
 
 /**
- * Hash32 field -> canonical lowercase hex (builder_set_hash / descriptor_hash / etc).
- *
- * node's gRPC gateway used to output the proto `bytes` field as base64; it now uses
- * canonical lowercase 64-hex instead (matching nexus's `nodecontract.Hash32Bytes`
- * convention). Both are accepted: a value that's already 64-hex is returned as-is,
- * otherwise it's base64-decoded and converted to hex -- base64-decoding a hex string
- * directly would just produce garbage.
+ * Hash32 field -> canonical lowercase hex (model_id / builder_set_hash / descriptor_hash
+ * / etc). The decoding itself lives in codec/wire so task.v1's reader uses the same one.
  */
 function hash32Hex(o: Record<string, unknown>, snakeKey: string): string {
   const v = o[snakeKey] ?? o[camelKey(snakeKey)];
   if (typeof v !== 'string') throw malformed(`field ${snakeKey}`);
-  if (/^[0-9a-f]{64}$/.test(v)) return v;
-  return toHex(base64ToBytes(v));
+  return hash32ToHex(v);
 }
 
 /** Optional 32-byte hash field: returns an empty string when absent or when the bytes are empty. */
@@ -114,6 +108,16 @@ export class HubReader {
     const path = `/TrueOpen/hub/v1/profile/${encodeURIComponent(modelId)}/${profileVersion.toString()}`;
     const body = await this.getJson(path);
     return toProfile(asObject(body['profile'] ?? body));
+  }
+
+  /**
+   * Reads the ProfileState fields a fetched manifest is verified against: manifest_hash,
+   * manifest_uri and the projection fields (ManifestSource's default reader).
+   */
+  async getProfileManifestState(modelId: string, profileVersion: bigint): Promise<ProfileManifestState> {
+    const path = `/TrueOpen/hub/v1/profile/${encodeURIComponent(modelId)}/${profileVersion.toString()}`;
+    const body = await this.getJson(path);
+    return toProfileManifestState(asObject(body['profile'] ?? body));
   }
 
   async listProfiles(opts?: { modelId?: string; status?: string }): Promise<ProfileInfo[]> {
@@ -319,7 +323,7 @@ function toBuilderSet(o: Record<string, unknown>): BuilderSetSnapshot {
     : '';
   if (builders === '') throw malformed('active_builders array');
   const builderSetId = strOpt(o, 'builder_set_id');
-  // This is signed directly into TaskOrderV2; signing the wrong value produces a
+  // This is signed directly into TaskOrderV3; signing the wrong value produces a
   // different task_hash, so it's better to throw here than fall back to a guessed value.
   if (builderSetId === '') throw malformed('builder_set_id');
   return {
@@ -421,7 +425,7 @@ function strOpt(o: Record<string, unknown>, snakeKey: string, fallback = ''): st
 
 function toModel(o: Record<string, unknown>): ModelState {
   return {
-    modelId: str(o, 'model_id'),
+    modelId: hash32Hex(o, 'model_id'),
     proposerAddress: strOpt(o, 'proposer_address'),
     status: str(o, 'status'),
     activeProfileCount: u32(o, 'active_profile_count'),
@@ -437,7 +441,7 @@ function toProfile(o: Record<string, unknown>): ProfileInfo {
   const raw = o['task_types'] ?? o['taskTypes'];
   const taskTypes = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
   return {
-    modelId: str(o, 'model_id'),
+    modelId: hash32Hex(o, 'model_id'),
     profileVersion: u32(o, 'profile_version'),
     status: strOpt(o, 'status'),
     runtimeClass: strOpt(o, 'runtime_class'),
@@ -446,6 +450,52 @@ function toProfile(o: Record<string, unknown>): ProfileInfo {
     taskTypes,
     generationType: strOpt(o, 'generation_type'),
     pricing: toProfilePricing(o['pricing_profile'] ?? o['pricingProfile']),
+  };
+}
+
+/** uint64 or uint32 given as a JSON number or a decimal string (protojson uses both); defaults to 0n. */
+function uintFlex(o: Record<string, unknown>, snakeKey: string): bigint {
+  const v = o[snakeKey] ?? o[camelKey(snakeKey)];
+  if (v === undefined || v === null || v === '') return 0n;
+  if (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0) return BigInt(v);
+  if (typeof v === 'string' && /^[0-9]+$/.test(v)) return stringToU64(v);
+  throw malformed(`field ${snakeKey}`);
+}
+
+/** Enum name without its type prefix: "GENERATION_TYPE_SAMPLED" -> "SAMPLED". */
+function enumName(value: unknown, prefix: string, field: string): string {
+  if (typeof value !== 'string') throw malformed(`field ${field}`);
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function toProfileManifestState(o: Record<string, unknown>): ProfileManifestState {
+  const rawTypes = o['task_types'] ?? o['taskTypes'] ?? [];
+  if (!Array.isArray(rawTypes)) throw malformed('field task_types');
+  const minStake = o['min_stake'] ?? o['minStake'];
+  const pricing = toProfilePricing(o['pricing_profile'] ?? o['pricingProfile']);
+  return {
+    modelId: hash32Hex(o, 'model_id'),
+    profileVersion: u32(o, 'profile_version'),
+    manifestHash: hash32HexOpt(o, 'manifest_hash'),
+    manifestUri: strOpt(o, 'manifest_uri'),
+    previousProfileVersion: u32(o, 'previous_profile_version'),
+    tokenizerHash: hash32HexOpt(o, 'tokenizer_hash'),
+    schemaHash: hash32HexOpt(o, 'schema_hash'),
+    runtimeClass: strOpt(o, 'runtime_class'),
+    requiredTopK: u32(o, 'required_top_k'),
+    taskTypes: rawTypes.map((t) => enumName(t, 'TASK_TYPE_', 'task_types')),
+    generationType: enumName(o['generation_type'] ?? o['generationType'] ?? '', 'GENERATION_TYPE_', 'generation_type'),
+    resourceTier: u32(o, 'resource_tier'),
+    // ProfileState.min_stake is a bare uint64; tolerate a Coin-shaped value as well.
+    minStake: typeof minStake === 'object' && minStake !== null ? uintFlex(minStake as Record<string, unknown>, 'amount') : uintFlex(o, 'min_stake'),
+    challengeOpenWindowBlocks: uintFlex(o, 'challenge_open_window_blocks'),
+    pricing: {
+      initialOutputPrice: pricing.initialOutputPrice,
+      minOrderValue: pricing.minOrderValue,
+      verifyRatioBps: pricing.verifyRatioBps,
+    },
+    registrationDigest: hash32HexOpt(o, 'registration_digest'),
+    proposerAddress: strOpt(o, 'proposer_address'),
   };
 }
 

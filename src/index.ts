@@ -140,6 +140,7 @@ export {
   uint64BE,
   boolByte,
   enumBE,
+  optionalV1,
 } from './codec/domain-hash';
 export { canonicalOperatorAddressBytes } from './codec/address';
 export { SIGN_DOMAINS } from './codec/domains';
@@ -188,18 +189,22 @@ export {
 } from './signer/secp256k1';
 export type { CosmosSecp256k1Signer, Secp256k1DigestSigner } from './signer/secp256k1';
 
-export { frame4, i64be, u64be } from './codec/frame';
 export {
   SDK_REQUEST_DOMAIN,
   sdkRequestSignBytes,
-  bodyDigest,
-  openTaskBodyDigest,
-  getTaskEventsBodyDigest,
-  prepareChallengeBodyDigest,
-  subscribeOutputBodyDigest,
-  ackOutputBodyDigest,
   signSdkRequestEnvelope,
 } from './transport/sdk-request-envelope';
+export {
+  SDK_BODY_DOMAIN,
+  openTaskBodyDigest,
+  openTaskPayloadRef,
+  subscribeOutputBodyDigest,
+  ackOutputBodyDigest,
+  getTaskEventsBodyDigest,
+  parseFromCursor,
+  prepareChallengeBodyDigest,
+} from './transport/sdk-request-body';
+export type { OpenTaskBody } from './transport/sdk-request-body';
 export type { SdkRequestEnvelopeFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
 
 export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES } from './transport/ingress-client';

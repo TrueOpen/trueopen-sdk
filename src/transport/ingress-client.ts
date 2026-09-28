@@ -30,13 +30,13 @@ import { TrueOpenError } from '../errors/errors';
 import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
 import type { Eip712Signer } from '../signer/eth-secp256k1';
 import { sha256 } from '../codec/hash';
+import { signSdkRequestEnvelope } from './sdk-request-envelope';
 import {
-  signSdkRequestEnvelope,
   getTaskEventsBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
-} from './sdk-request-envelope';
+} from './sdk-request-body';
 import type { SignedSdkRequestEnvelope } from './sdk-request-envelope';
 import {
   taskDataRequestEip712Digest,
@@ -255,7 +255,7 @@ export class IngressClient {
      */
     signal?: AbortSignal;
   }): AsyncIterable<SubscribeOutputResponse> {
-    const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId);
+    const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq);
     const env = await this.signEnvelope('SubscribeOutput', p.sessionId, p.taskId, bd);
     const stream = this.client.subscribeOutput(
       create(SubscribeOutputRequestSchema, {
@@ -499,7 +499,7 @@ export class IngressClient {
 
   /** Confirms plaintext output has been durably saved (idempotent; only the original order placer). */
   async ackOutput(p: { sessionId: string; taskId: string; lastSeq: bigint }): Promise<AckOutputResponse> {
-    const bd = ackOutputBodyDigest(p.sessionId, p.taskId);
+    const bd = ackOutputBodyDigest(p.sessionId, p.taskId, p.lastSeq);
     const env = await this.signEnvelope('AckOutput', p.sessionId, p.taskId, bd);
     return this.client.ackOutput(
       create(AckOutputRequestSchema, {

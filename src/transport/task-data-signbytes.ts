@@ -1,8 +1,8 @@
-import { canonicalFrameBytes, canonicalHashBytes, uint32BE, uint64BE, enumBE } from '../codec/domain-hash';
+import { canonicalFrameBytes, canonicalHashBytes, optionalV1, uint32BE, uint64BE, enumBE } from '../codec/domain-hash';
 import { canonicalOperatorAddressBytes } from '../codec/address';
 import { eip712Digest } from '../codec/eip712';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
-import { concatBytes, fromHex, toHex } from '../util/bytes';
+import { fromHex, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
@@ -94,18 +94,6 @@ function hash32(field: string, hex: string): Uint8Array {
   return fromHex(hex);
 }
 
-/**
- * Encoding for an optional field: absent is a **single byte 0x00**; present
- * is 0x01 followed by a length-prefixed frame of the value. A "read the
- * whole object" request must sign an absent range (0x00), and must not be
- * rewritten as a present form with offset=0/length=total -- the two produce
- * different preimages.
- */
-function optionalField(value: Uint8Array | undefined): Uint8Array {
-  if (value === undefined) return new Uint8Array([0x00]);
-  return concatBytes(new Uint8Array([0x01]), canonicalFrameBytes(value));
-}
-
 /** SDK view of nexus.v1.TaskDataObjectRefV1 (Hash32 as canonical lowercase hex). */
 export interface TaskDataObjectRef {
   readonly taskHash: string;
@@ -186,7 +174,7 @@ export function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array {
     hash32('content_hash', ref.contentHash),
     enumBE(ref.evidenceProducerKind ?? EVIDENCE_PRODUCER_KIND.UNSPECIFIED),
     uint32BE(ref.verifyRound ?? 0),
-    optionalField(
+    optionalV1(
       ref.producerOperator === undefined
         ? undefined
         : canonicalOperatorAddressBytes('producer_operator', ref.producerOperator),
@@ -208,7 +196,7 @@ export interface ByteRange {
 
 /** body digest for FetchTaskData. An absent vs. present range produces two different preimages. */
 export function taskDataFetchBodyDigest(ref: TaskDataObjectRef, range?: ByteRange): Uint8Array {
-  const rangeField = optionalField(
+  const rangeField = optionalV1(
     range === undefined ? undefined : canonicalFrameBytes(uint64BE(range.offset), uint64BE(range.length)),
   );
   return canonicalHashBytes(

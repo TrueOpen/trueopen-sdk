@@ -10,7 +10,8 @@ import type { TaskOrderChainContext, TaskOrderRequest } from '../../src/order/ta
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS, taskOrderHashHex } from '../../src/order/task-order';
 import { decodeSignedOrder } from '../../src/order/signed-order';
 import { orderEnvelopeSigningBytes, deriveTaskId } from '../../src/order/order-signing';
-import { sdkRequestSignBytes, openTaskBodyDigest } from '../../src/transport/sdk-request-envelope';
+import { sdkRequestSignBytes } from '../../src/transport/sdk-request-envelope';
+import { openTaskBodyDigest } from '../../src/transport/sdk-request-body';
 import {
   privKeySecp256k1Signer,
   secp256k1PublicKey,
@@ -128,16 +129,14 @@ describe('buildOpenTaskRequest', () => {
     expect(env.expiryHeightOrTime).toBe(1_000n);
 
     const expected = openTaskBodyDigest({
-      orderEnvelope: r.input.orderEnvelope,
-      payloadRef: r.input.payloadRef,
-      signature: r.input.signature,
+      taskHash: fromHex(r.taskHash),
       sessionId: SESSION,
       orderSequence: order.orderSequence,
       userAddress: USER,
-      signatureScheme: 'secp256k1',
       inputSizeBytes: BigInt(PAYLOAD.length),
       inputHash: toHex(sha256(PAYLOAD)),
       inputMediaType: 'application/octet-stream',
+      idempotencyKey: 'idem-1',
     });
     expect(toHex(env.bodyDigest)).toBe(toHex(expected));
     expect(verifyCosmosSecp256k1(sdkRequestSignBytes(env), env.signature, pub)).toBe(true);

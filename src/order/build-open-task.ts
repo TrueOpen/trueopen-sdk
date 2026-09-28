@@ -5,7 +5,8 @@ import { signAndEncodeOrder, OPEN_TASK_HEADER_SIGNATURE_SCHEME } from './signed-
 import type { OrderEip712Context } from './signed-order';
 import { payloadRefFor } from './task-order-input';
 import { orderEnvelopeSigningBytes } from './order-signing';
-import { openTaskBodyDigest, signSdkRequestEnvelope } from '../transport/sdk-request-envelope';
+import { signSdkRequestEnvelope } from '../transport/sdk-request-envelope';
+import { openTaskBodyDigest } from '../transport/sdk-request-body';
 import type { TaskOrderV3 } from './task-order';
 import type { OpenTaskInput } from '../transport/ingress-client';
 import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
@@ -139,16 +140,14 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
   const inputMediaType = input.inputMediaType ?? DEFAULT_MEDIA_TYPE;
 
   const bodyDigest = openTaskBodyDigest({
-    orderEnvelope: signed.bytes,
-    payloadRef,
-    signature: outerSignature,
+    taskHash: signed.taskHash,
     sessionId: input.sessionId,
     orderSequence: input.order.orderSequence,
     userAddress: input.order.userAddress,
-    signatureScheme: OPEN_TASK_HEADER_SIGNATURE_SCHEME,
     inputSizeBytes: BigInt(input.payload.length),
     inputHash: payloadHashHex,
     inputMediaType,
+    idempotencyKey: input.idempotencyKey,
   });
 
   // (3) Request envelope: identity can be separate from the user, defaulting back to the user.

@@ -49,8 +49,11 @@
 - `FinishReasonV1` accepts `USER_STOP` (5) and `STOP_TOKEN` (6). Both map to OpenAI `stop`.
 - Task data object refs with an illegal object_kind / evidence_kind combination are refused
   before any body digest is computed.
-- `queryTask` maps the compacted `terminal` arm of `TaskViewV1` (`view: 'terminal'`) instead of
-  throwing.
+- **Breaking:** `queryTask` maps the compacted `terminal` arm of `TaskViewV1`
+  (`view: 'terminal'`) instead of throwing. `acceptedInputHash`, `receiptStatus` and
+  `assignmentStatus` are optional and absent on that arm, so callers must branch on `view`;
+  reporting `""` would let code written against the active arm read a compacted task as one
+  with an empty input hash and no receipt.
 - `cancelOrder` no longer computes an owner signature: `MsgCancelOrder` is authorized by the
   account signature alone.
 
@@ -88,6 +91,9 @@
   `maxEntries * MAX_MANIFEST_BYTES` (256 MiB at the defaults).
 - The projection check compares `task_types` element by element. Joining on `","` made `["A,B"]`
   and `["A","B"]` compare equal and hid a length difference.
+- `RestChainReader.queryTask` decodes the terminal arm's `model_id` as a Hash32 as well.
+- An evidence object with no producer kind reports that, instead of the unhelpful
+  "evidence_kind 0 is not a data-plane evidence kind for producer kind 0".
 
 ### Known limitations
 

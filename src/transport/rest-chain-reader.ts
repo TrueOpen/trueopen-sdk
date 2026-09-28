@@ -138,16 +138,16 @@ export class RestChainReader implements ChainReader {
     const view = obj(body, 'task');
     const terminal = optObj(view, 'terminal');
     if (terminal !== undefined) {
+      // The summary carries no input hash, receipt status or assignment status. Leaving
+      // them undefined rather than "" is what keeps a caller written against the active
+      // arm from reading a compacted task as a silently empty one.
       return {
         view: 'terminal',
         terminalPhase: enumField(terminal, 'terminal_phase', 'TASK_PHASE_'),
         taskId: field(terminal, 'task_id'),
         acceptedTaskHash: field(terminal, 'task_hash'),
-        acceptedInputHash: '',
         winnerWorker: pendingField(terminal, 'winner_worker'),
-        receiptStatus: '',
-        assignmentStatus: '',
-        modelId: field(terminal, 'model_id'),
+        modelId: hash32Field(terminal, 'model_id'),
         profileVersion: u64Field(terminal, 'profile_version'),
         orderSequence: u64Field(terminal, 'order_sequence'),
       };

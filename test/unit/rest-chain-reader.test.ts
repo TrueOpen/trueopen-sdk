@@ -224,14 +224,16 @@ describe('RestChainReader', () => {
       terminalPhase: 'SETTLED',
       taskId: TASK_ID,
       acceptedTaskHash: '22'.repeat(32),
-      acceptedInputHash: '',
       winnerWorker: 'trueopen1worker',
-      receiptStatus: '',
-      assignmentStatus: '',
       modelId: '55'.repeat(32),
       profileVersion: 2n,
       orderSequence: 4n,
     });
+    // The summary carries none of these. Reporting "" would read, to a caller written
+    // against the active arm, as a real empty input hash and a task with no receipt.
+    expect(snap.acceptedInputHash).toBeUndefined();
+    expect(snap.receiptStatus).toBeUndefined();
+    expect(snap.assignmentStatus).toBeUndefined();
   });
 
   it('queryTask maps a terminal task that never had a winner', async () => {
@@ -244,6 +246,22 @@ describe('RestChainReader', () => {
       },
     });
     expect(snap).toMatchObject({ view: 'terminal', winnerWorker: '', terminalPhase: 'FAILED' });
+  });
+
+  it('queryTask reports the active arm with all three fields present', async () => {
+    const snap = await readTask(pendingTask(null));
+    expect(snap.view).toBe('active');
+    expect(snap.acceptedInputHash).toBe('44'.repeat(32));
+    expect(snap.receiptStatus).toBe('NONE');
+    expect(snap.assignmentStatus).toBe('PENDING');
+  });
+
+  it('queryTask decodes the terminal arm model_id as a Hash32 too', async () => {
+    const terminal = {
+      task_id: TASK_ID, order_sequence: '0', task_hash: '22'.repeat(32),
+      terminal_phase: 'TASK_PHASE_SETTLED', model_id: bytesToBase64(fromHex(MODEL_ID)), profile_version: 1,
+    };
+    expect((await readTask({ task: { terminal } })).modelId).toBe(MODEL_ID);
   });
 
   it('queryTask reports the active arm', async () => {

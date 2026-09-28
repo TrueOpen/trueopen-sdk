@@ -628,8 +628,9 @@ export class TrueOpenClient {
    *  - `task/{task_id}/infer_receipt` -> output_hash (the MMR root), size and leaf count.
    *
    * The receipt lands one generation after the winner, so streaming does not need it: pass
-   * `withReceipt: false` to skip that read. A missing winner, or a missing receipt when one is
-   * asked for, is a retriable `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again.
+   * `withReceipt: false` to skip that read. A task not on chain yet (node answers 404), a missing
+   * winner, or a missing receipt when one is asked for, is a retriable
+   * `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again.
    *
    * Needs config.taskReader (RestChainReader) and a hub reader with getCurrentServiceKey.
    */
@@ -649,7 +650,20 @@ export class TrueOpenClient {
     const pending = (what: string): TrueOpenError =>
       new TrueOpenError('CHAIN_REJECT', 'OUTPUT_TRUST_ANCHOR_PENDING', `task ${taskId}: ${what}`, { retriable: true });
 
-    const task = await taskReader.queryTask(taskId);
+    let task: ChainTaskSnapshot;
+    try {
+      task = await taskReader.queryTask(taskId);
+    } catch (e) {
+      // Between nexus accepting the order and the chain including it, node answers 404: the
+      // task is not there yet, which is a state to poll on, not a final failure.
+      if (e instanceof TrueOpenError && e.code === 'CHAIN_QUERY_NOT_FOUND') {
+        throw new TrueOpenError('CHAIN_REJECT', 'OUTPUT_TRUST_ANCHOR_PENDING', `task ${taskId}: not on chain yet`, {
+          retriable: true,
+          cause: e,
+        });
+      }
+      throw e;
+    }
     const taskHash = task.acceptedTaskHash.toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(taskHash)) throw pending('no accepted task_hash on chain yet');
     if (task.winnerWorker === '') throw pending('no winner Worker on chain yet');

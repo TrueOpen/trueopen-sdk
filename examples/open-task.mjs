@@ -1,11 +1,11 @@
-// OpenTask example: read the on-chain context, assemble the frozen TaskOrderV1, sign it in three
+// OpenTask example: read the on-chain context, assemble the frozen TaskOrderV3, sign it in three
 // layers, pick the Task Builders and submit the order as a stream.
 //
 // The contract replaced the deprecated SubmitOrder entry point with OpenTask, and the order body
-// with the frozen SignedOrderV1. Three things differ from the older example:
-//   1. An orderSigner is required: the inner SignedOrderV1.user_signature signs the raw 32-byte
-//      task_hash directly, so an ordinary signer that hashes with sha256 first does not work
-//      (node verifies with VerifyStrictSecp256k1Digest);
+// with the frozen SignedOrderV2. Three things differ from the older example:
+//   1. An orderSigner is required: the inner SignedOrderV2.user_signature is a 65-byte
+//      recoverable signature over the EIP-712 "TrueOpen Task Order" v3 digest, so an ordinary
+//      signer that hashes with sha256 first does not work;
 //   2. A hub and an ingressTransportFactory are required: the anchor signed into the order fixes
 //      the Task Builders, so the SDK reads the on-chain context and picks endpoints by
 //      task_builder_seed;

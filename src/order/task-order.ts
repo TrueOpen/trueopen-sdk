@@ -149,8 +149,11 @@ export interface TaskOrderV3 {
  * single bit in any TaskOrder field and task_hash changes; swapping in a different user
  * signature alone does not. Paired with it is task_id (the stable RBF-slot identity).
  *
- * Checked against wire testdata/v1/task/task_order_v3.json (the base digest and every
- * single-leaf mutation) in test/unit/task-order-contract-vectors.test.ts.
+ * Checked against the three TRUEOPEN_TASK_ORDER_V3 vectors in wire
+ * testdata/v1/task/task_order_v3.json (preimage and digest) in
+ * test/unit/task-order-contract-vectors.test.ts. The fixture's mutation rows publish
+ * digests but not the mutated values, so they are not reproduced; local single-field
+ * mutations check field binding instead.
  *
  * If either side changes the framing, the same TaskOrder will hash to a different
  * task_hash, and the Keeper will bounce it back at admission via the user's signature -

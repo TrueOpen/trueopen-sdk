@@ -127,8 +127,41 @@ export interface TaskDataObjectRef {
   readonly evidenceKind?: number;
 }
 
+const EVIDENCE_OBJECT_KINDS: readonly number[] = [
+  TASK_DATA_OBJECT_KIND.EVIDENCE_MANIFEST,
+  TASK_DATA_OBJECT_KIND.EVIDENCE_ARTIFACT,
+];
+
+/** Data-plane evidence kinds each producer may carry. The settlement root opening is never a data-plane object. */
+const EVIDENCE_KINDS_BY_PRODUCER: Readonly<Record<number, readonly number[]>> = {
+  [EVIDENCE_PRODUCER_KIND.WORKER]: [EVIDENCE_KIND.WORKER_VALUE_OPENING, EVIDENCE_KIND.WORKER_TOKEN_OPENING],
+  [EVIDENCE_PRODUCER_KIND.VERIFIER]: [EVIDENCE_KIND.VERIFIER_VALUE_OPENING],
+};
+
+/**
+ * Refuses an object_kind / evidence_kind combination the contract makes illegal, before
+ * any digest is computed: INPUT and OUTPUT carry EVIDENCE_KIND_UNSPECIFIED, and an
+ * evidence object carries a kind its producer can produce (Worker: value or token
+ * opening; Verifier: value opening).
+ */
+function validateEvidenceKind(ref: TaskDataObjectRef): void {
+  const kind = ref.evidenceKind ?? EVIDENCE_KIND.UNSPECIFIED;
+  if (!EVIDENCE_OBJECT_KINDS.includes(ref.objectKind)) {
+    if (kind !== EVIDENCE_KIND.UNSPECIFIED) {
+      throw malformed(`evidence_kind ${kind} is not allowed on non-evidence object_kind ${ref.objectKind}`);
+    }
+    return;
+  }
+  const producer = ref.evidenceProducerKind ?? EVIDENCE_PRODUCER_KIND.UNSPECIFIED;
+  const allowed = EVIDENCE_KINDS_BY_PRODUCER[producer] ?? [];
+  if (!allowed.includes(kind)) {
+    throw malformed(`evidence_kind ${kind} is not a data-plane evidence kind for producer kind ${producer}`);
+  }
+}
+
 /** The nested nine-field frame of the canonical TaskDataObjectRefV1. */
 export function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array {
+  validateEvidenceKind(ref);
   return canonicalFrameBytes(
     hash32('task_hash', ref.taskHash),
     hash32('session_id', ref.sessionId),

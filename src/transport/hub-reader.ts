@@ -226,7 +226,7 @@ export class HubReader {
 
   /**
    * Looks up the beacon at a given height (QueryBeacon). Its block_hash is the only
-   * session anchor the Keeper recognizes -- TaskOrderV1.session_anchor_block_hash must
+   * session anchor the Keeper recognizes -- TaskOrderV3.session_anchor_block_hash must
    * match it byte for byte.
    */
   async getBeacon(height: bigint): Promise<BeaconView> {

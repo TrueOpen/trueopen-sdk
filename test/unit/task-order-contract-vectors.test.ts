@@ -43,12 +43,14 @@ interface FixtureVector {
   readonly preimage_hex?: string;
   readonly preimage_size_bytes: number;
   readonly fields: readonly FixtureField[];
+  readonly mutations?: readonly { readonly digest_hex?: string; readonly expect: string }[];
 }
 
 const fixture = JSON.parse(
   readFileSync('third_party/wire/testdata/v1/task/task_order_v3.json', 'utf8'),
 ) as { vectors: FixtureVector[] };
 const orderVectors = fixture.vectors.filter((v) => v.domain === DOMAIN_TASK_ORDER_V3);
+const openingVectors = fixture.vectors.filter((v) => v.domain === 'TRUEOPEN_ORDER_OPENING_V2');
 const enc = new TextEncoder();
 
 /** Encodes one fixture leaf exactly as its declared type says, independent of src/. */
@@ -165,6 +167,51 @@ describe('TaskOrderV3 wire vectors (task_order_v3.json)', () => {
       const order = toTaskOrder(v);
       expect(order.schemaVersion).toBe(TASK_ORDER_SCHEMA_VERSION_V3);
       expect(taskOrderHashHex(order)).toBe(v.digest_hex);
+    });
+  }
+});
+
+describe('TRUEOPEN_ORDER_OPENING_V2 vectors (task_order_v3.json)', () => {
+  // The Keeper produces the opening; the SDK does not. These checks keep the SDK's reading
+  // of the fixture honest: the opening is the 20-field light projection of the matching
+  // order, with generation_params replaced by its digest (the SDK does not compute
+  // generation_params_digest, so it is taken from the vector).
+  it('pairs each opening vector with an order vector', () => {
+    expect(openingVectors.map((v) => v.name)).toEqual([
+      'order_opening_v2_core',
+      'order_opening_v2_lower_bound',
+      'order_opening_v2_max_amounts',
+    ]);
+    for (const v of openingVectors) expect(v.fields).toHaveLength(20);
+  });
+
+  for (const v of openingVectors) {
+    it(`${v.name}: fixture field list reproduces the published preimage and digest`, () => {
+      const preimage = canonicalFrameBytes(enc.encode(v.domain), ...v.fields.map(encodeFixtureField));
+      expect(preimage.length).toBe(v.preimage_size_bytes);
+      if (v.preimage_hex !== undefined) expect(toHex(preimage)).toBe(v.preimage_hex);
+      expect(toHex(sha256(preimage))).toBe(v.digest_hex);
+    });
+
+    it(`${v.name}: every shared field is byte-identical to the matching order vector`, () => {
+      const order = orderVectors.find((o) => o.name === v.name.replace('order_opening_v2', 'task_order_v3'))!;
+      for (const f of v.fields) {
+        if (f.name === 'generation_params_digest') continue;
+        expect(toHex(encodeFixtureField(f)), f.name).toBe(toHex(encodeFixtureField(byName(order.fields, f.name))));
+      }
+    });
+  }
+});
+
+describe('mutation rows (task_order_v3.json)', () => {
+  // The mutated values are not published, so the digests cannot be recomputed; at least
+  // every row must move the digest. (Rows can legitimately share a digest: changing a
+  // single-leaf frame and changing that leaf is the same edit.)
+  for (const v of [...orderVectors, ...openingVectors]) {
+    it(`${v.name}: every mutation digest differs from the base`, () => {
+      const digests = (v.mutations ?? []).filter((m) => m.expect === 'digest_changes').map((m) => m.digest_hex);
+      expect(digests.length).toBeGreaterThan(0);
+      expect(digests).not.toContain(v.digest_hex);
     });
   }
 });

@@ -46,13 +46,13 @@ TRUEOPEN_MNEMONIC="..." TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_ORDER_SEQUENCE
 node examples/open-task.mjs
 ```
 The order entry point has moved from the deprecated SubmitOrder to **OpenTask**; the order body itself is
-the frozen `SignedOrderV1`. The old canonical JSON envelope cannot produce the canonical `task_hash`, so it
+the frozen `SignedOrderV2`. The old canonical JSON envelope cannot produce the canonical `task_hash`, so it
 **can never be broadcast on-chain**.
 
 Three differences from the old example:
-- Requires `orderSigner` -- the inner `SignedOrderV1.user_signature` **signs the raw 32-byte task_hash
-  directly**, so it cannot use an ordinary signer that first does a sha256 hash (node uses
-  `VerifyStrictSecp256k1Digest`);
+- Requires `orderSigner` -- the inner `SignedOrderV2.user_signature` is a **65-byte recoverable
+  signature over the EIP-712 "TrueOpen Task Order" v3 digest**, so it cannot use an ordinary signer
+  that first does a sha256 hash;
 - Requires `hub` + `ingressTransportFactory` -- the Task Builders are uniquely determined by the anchor
   signed into the order, so the SDK must read the on-chain context and pick an endpoint by
   `task_builder_seed` (no `TRUEOPEN_NEXUS_URL` needed);

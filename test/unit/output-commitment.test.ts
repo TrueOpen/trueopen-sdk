@@ -280,6 +280,21 @@ describe('official cross-language vectors (wire testdata/v1/task/output_mmr_v1.j
   it('negative cases: re-chunking / reordering / mismatched seq and root / different chain / modified task_hash', () => {
     const neg = v.negative as Record<string, unknown>[];
     const byName = (n: string): Record<string, unknown> => neg.find((x) => x['name'] === n)!;
+    // Every published negative case is asserted below.
+    expect(neg.map((x) => x['name']).sort()).toEqual([
+      'chunks_merged',
+      'chunks_reordered',
+      'empty_output_as_empty_tree',
+      'other_chain_id',
+      'seq_and_root_unpaired',
+      'task_hash_one_bit_flipped',
+    ]);
+
+    // The empty tree root is never a legal output_hash: an empty output is one zero-length leaf.
+    const emptyTree = byName('empty_output_as_empty_tree');
+    expect(toHex(mmrEmpty(OUTPUT_MMR_DOMAIN))).toBe(emptyTree['output_hash_hex']);
+    expect(toHex(outputHash([new Uint8Array(0)]))).not.toBe(emptyTree['output_hash_hex']);
+    expect(() => outputHash([])).toThrow();
 
     const merged = byName('chunks_merged');
     expect(toHex(outputHash((merged['chunks_utf8'] as string[]).map((t) => new TextEncoder().encode(t))))).toBe(
@@ -327,5 +342,8 @@ describe('official cross-language vectors (wire testdata/v1/task/output_mmr_v1.j
         }),
       ),
     ).toBe(flipped['digest_hex']);
+    // Each signing-digest negative must differ from the positive seq 1 digest.
+    const positive = (v.chunk_signing.cases as { seq: number; digest_hex: string }[]).find((c) => c.seq === 1)!.digest_hex;
+    for (const n of [unpaired, otherChain, flipped]) expect(n['digest_hex']).not.toBe(positive);
   });
 });

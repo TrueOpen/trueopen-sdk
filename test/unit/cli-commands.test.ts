@@ -36,7 +36,7 @@ describe('cli commands', () => {
     expect(r.address).toBe('trueopen1jah6xx0ve056wgl3cxlxhe393ywwwyuamfl037');
   });
 
-  it('parseOrderFile parses JSON into a frozen TaskOrderV1 intent (fees are Amount decimal text)', () => {
+  it('parseOrderFile parses JSON into a frozen TaskOrderV3 intent (fees are Amount decimal text)', () => {
     const p = join(tmpdir(), `order-${Date.now()}.json`);
     writeFileSync(
       p,

@@ -53,7 +53,7 @@ session.command('get').argument('<sessionId>').description('query a session').ac
 const order = program.command('order');
 order
   .command('submit')
-  .requiredOption('--order-file <f>', 'TaskOrder JSON file (the intent portion of the frozen TaskOrderV1)')
+  .requiredOption('--order-file <f>', 'TaskOrder JSON file (the intent portion of the frozen TaskOrderV3)')
   .requiredOption('--session <id>')
   .option('--seq <n>', 'order_sequence; defaults to reading StreamState.next_expected_sequence on chain, an explicit value is only for RBF resubmission with the same sequence')
   .requiredOption('--payload-file <f>', 'plaintext input body file (the V1 data plane transmits plaintext); the SDK derives input_hash / input_size_bytes / payload_ref from it')

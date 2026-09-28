@@ -21,7 +21,7 @@ const GOLDEN_SIG =
  * was removed as part of that migration, so the JSON string from that time is pinned here
  * verbatim. What it actually anchors is the **still-in-use** combination of
  * orderEnvelopeSigningBytes + signer — OpenTask's outer signature takes exactly the same
- * path, just with the input swapped for hex(SignedOrderV1 bytes). If the framing of the
+ * path, just with the input swapped for hex(SignedOrderV2 bytes). If the framing of the
  * signed bytes ever drifts, this test fails immediately.
  */
 const ENVELOPE =

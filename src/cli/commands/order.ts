@@ -14,7 +14,7 @@ const AMOUNT_FIELDS = ['priceBid', 'maxFee', 'assignmentPriorityFee', 'txFeeRese
 /**
  * Read order-file JSON -> TaskOrderIntent.
  *
- * Since TaskOrderV1 was frozen, the order no longer carries reward_bucket / profile_resource_tier /
+ * Since TaskOrderV3 was frozen, the order no longer carries reward_bucket / profile_resource_tier /
  * order_value / infer_timeout_blocks -- all of these are now derived by the Keeper, and submitting them
  * is rejected. Fee fields are now Amount (decimal text atomic units).
  */

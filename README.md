@@ -169,8 +169,8 @@ for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
 | Method | Description |
 |---|---|
 | `createSession(label?)` / `getSession(sessionId)` | create / retrieve a session |
-| `openTask({ sessionId, orderSequence, order, idempotencyKey })` | reads on-chain context -> builds the frozen `TaskOrderV2` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, endpointsTried, ...ack }` |
-| `cancelOrder(sessionId, orderSequence)` | signs `owner_signature` + on-chain `MsgCancelOrder` |
+| `openTask({ sessionId, orderSequence, order, idempotencyKey })` | reads on-chain context -> builds the frozen `TaskOrderV3` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, endpointsTried, ...ack }` |
+| `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
 | `watchTask(sessionId, taskId, fromCursor?)` | subscribes to the task event stream (`AsyncIterable`) |
 | `fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })` | fetches the full output and recomputes the MMR root from `chunk_lengths` to verify it (see section 4) |
@@ -181,7 +181,6 @@ for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
 | `fetchOutputRef(sessionId, taskId, opts?)` | fetches a retrieval credential (superseded by the task data plane, see section 4) |
 | `prepareChallenge(sessionId, taskId, kind, localEvidenceDigest?)` | prepares challenge material (does not submit a verdict) |
-| `challenge({ sessionId, taskId, settlementId, kind, evidenceDigest, bondAmount })` | signs `challenger_signature` + on-chain `MsgUserChallenge` |
 
 ---
 
@@ -191,13 +190,12 @@ This section states plainly **which capabilities are already aligned with the re
 
 ### ✅ Ready and aligned with the real backend
 
-- **OrderEnvelope canonical JSON + `user_signature`** -- the canonical JSON is **byte-for-byte identical** to node's `CanonicalAssignmentOrderEnvelopeV1` (Go `json.Marshal`): same field order, no whitespace, uint64 as numbers, `tx_fee_reserve` always present, empty `reference_bucket_key` / `timeout_bucket_key` omitted.
-- **`task_id` derivation** -- derived from the order signature bytes.
-- **cancel / userChallenge signing** -- the signing bytes for `owner_signature` / `challenger_signature`.
+- **Order signing** -- the order is signed as EIP-712 "TrueOpen Task Order" v3 (65-byte recoverable signature) and encoded as `SignedOrderV2`; the OpenTask header carries a separate 64-byte secp256k1 signature over `TRUEOPEN_ORDER_V1`.
+- **`task_id` derivation** -- `H_FIELDS_V1("TRUEOPEN_TASK_ID_V1", raw32(session_id), u64be(order_sequence))`, anchored to `testdata/v1/task/task_data_plane_v1_golden.json`.
 - **nexus `SDKRequestEnvelope` + per-method `body_digest`** -- the body_digest for `openTask` / `submitOrder` (deprecated) / `fetchOutputRef` / `getTaskEvents` / `refreshCredential` / `prepareChallenge` is **byte-for-byte identical** to nexus's.
-- **EVM-style identity and EIP-712** -- the address `bech32(keccak256(uncompressed_XY)[12:32])`, and the type hash, domain separator, hash struct, signing digest and 65-byte signature for the three EIP-712 domains (`Cosmos Web3` / `TrueOpen Task Order` v2 / `TrueOpen Task Data Request` v1), all anchored to wire's
+- **EVM-style identity and EIP-712** -- the address `bech32(keccak256(uncompressed_XY)[12:32])`, and the type hash, domain separator, hash struct, signing digest and 65-byte signature for the three EIP-712 domains (`Cosmos Web3` / `TrueOpen Task Order` v3 / `TrueOpen Task Data Request` v1), all anchored to wire's
   `testdata/v1/shared/account_signing_v1.json`.
-- **Task data plane authentication** -- the two body digests (METADATA / FETCH), together with their preimages, are anchored to `testdata/v1/task/task_data_auth_v1.json`; the USER branch's EIP-712 and the CORTEX_SERVICE branch's H_FIELDS_V1 are each cross-checked separately. **Verified against a live chain**: the EIP-712 signature for `GetTaskDataMetadata` was verified by a real nexus, the body digest matched nexus's recomputation, and authorization matched the contract (a User can query OUTPUT but not INPUT).
+- **Task data plane authentication** -- the two body digests (METADATA / FETCH, V2 domains), together with their preimages, are anchored to `testdata/v1/task/task_data_auth_v1.json`, and illegal object_kind / evidence_kind combinations are refused before hashing; the USER branch's EIP-712 and the CORTEX_SERVICE branch's H_FIELDS_V1 are each cross-checked separately. **Verified against a live chain**: the EIP-712 signature for `GetTaskDataMetadata` was verified by a real nexus, the body digest matched nexus's recomputation, and authorization matched the contract (a User can query OUTPUT but not INPUT).
 
 > ⚠️ `evm_chain_id` must match **nexus's configuration**, not just the on-chain
 > `params.phase0`. It goes into the EIP-712 domain separator; when the two differ, the only
@@ -206,18 +204,15 @@ This section states plainly **which capabilities are already aligned with the re
 > separator. The SDK reads this from the chain by default (`HubReader.getEvmChainId()`); if you
 > hit this error during integration testing, check nexus's configured value first.
 - **MMR_ROOT_V1 and output commitments** -- anchored to `testdata/v1/shared/mmr_primitive_v1.json` and `testdata/v1/task/output_mmr_v1.json`, including 7-leaf discriminating vectors for fold direction and all negative cases.
-- **`task_id` and `task_builder_rank`** -- anchored to the cross-language golden vectors published by node.
+- **`task_builder_rank`** -- anchored to all four vectors (preimage and rank) in `testdata/v1/task/task_builder_rank_v1.json`.
 
-- **`TaskOrderV2`'s canonical `task_hash`** -- anchored to three contract digests (core /
-  decoded-parameter lower bound / u64 upper bound of the four Amount fields), cross-checked
-  together with the preimage length and the five intermediate frames; see
-  `test/unit/task-order-contract-vectors.test.ts`. This implementation matches nexus's `internal/nodecontract/taskorder.go`
-  `canonicalTaskOrderFieldsV2` field for field. There is also live-chain evidence: across
-  multiple submissions on devnet, the on-chain `accepted_task_hash` matched the locally computed
-  `task_hash` byte for byte -- stronger evidence than a vector, since it proves the encoding the
-  Keeper actually accepts, not a transcription of published values.
-- **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/settlement_finality/...`.
-- **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` / `MsgUserChallenge` (including the task registry).
+- **`TaskOrderV3`'s canonical `task_hash`** -- anchored to the three `TRUEOPEN_TASK_ORDER_V3`
+  vectors in `testdata/v1/task/task_order_v3.json` (preimage and digest); the three
+  `TRUEOPEN_ORDER_OPENING_V2` vectors in the same file are read as well. See
+  `test/unit/task-order-contract-vectors.test.ts`.
+- **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/task/...` (both the active and the compacted terminal view).
+- **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` (including the task registry).
+- **Not supported yet** -- `MsgOpenChallengeRound`, the only challenge Msg in wire. `prepareChallenge` (nexus) still prepares material.
 - **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `fetchOutputRef` / `refreshCredential` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput`; `submitOrder` is kept only for deprecated raw RPC access.
 
 ### ✅ Output delivery: two paths
@@ -379,7 +374,7 @@ Cortex -> Nexus -> SDK -> OpenAI SSE.
 
 ### ✅ On-chain writes: direct ethsecp256k1 signing (`EthSecp256k1DirectSigner`)
 
-The three write paths -- `createSession` / `cancelOrder` / `challenge` -- **cannot use** CosmJS's
+The two write paths -- `createSession` / `cancelOrder` -- **cannot use** CosmJS's
 built-in `DirectSecp256k1HdWallet`: it disagrees with node's `app/account_ante.go` in three
 places, and missing any one of them gets rejected by the ante handler:
 
@@ -529,9 +524,9 @@ A proxy that alters the body therefore cannot get a manifest accepted.
 
 ### ⚠️ Integration checkpoint (byte encoding conventions)
 
-`evidence_digest` / `owner_signature` / `challenger_signature` are `string` in the on-chain
-proto; the SDK **passes them through unchanged** (signatures as hex strings). The byte encoding
-the chain side expects needs end-to-end signature verification against a real chain.
+The order envelope sent to nexus is the protobuf `SignedOrderV2`, and the OpenTask header
+signature covers its hex text. This header layer is nexus-side and has no wire fixture; it is
+checked by a regression value and by live submissions.
 
 ### Protocol hard rule
 
@@ -627,11 +622,11 @@ Besides the library, `trueopen-sdk` ships the `trueopen` CLI -- a thin wrapper a
 | `trueopen output get <session> <task> <task-hash> <output-hash>` | fetchTaskOutput (requires `--auto`) | none |
 | `trueopen output stream <session> <task> <task-hash> <worker-pubkey>` | streamOutput (per-frame signature + root verification) | none |
 | `trueopen output ref <session> <task>` | fetchOutputRef (superseded by the contract) | none |
-| `trueopen challenge prepare <session> <task> <kind>` / `challenge submit ...` | prepareChallenge / challenge | none / locks bond |
+| `trueopen challenge prepare <session> <task> <kind>` | prepareChallenge | none |
 
 ### Order-file format for `order submit`
 
-Since `TaskOrderV2` was frozen, the fields have changed materially: fees are now **Amount
+Since `TaskOrderV2`/`TaskOrderV3`, the fields have changed materially: fees are now **Amount
 (decimal text, atomic units)** for the four fee fields (`priceBid` / `maxFee` /
 `assignmentPriorityFee` / `txFeeReserve`), enums can be written by name, and the file **no
 longer includes** `reward_bucket` / `profile_resource_tier` / `order_value` /
@@ -683,7 +678,7 @@ from the chain at order time and signs them into the order.
 
 **Connect only what you need**: read-only commands need only REST; commands that touch nexus
 need nexus (`--auto` can discover it); commands that write to the chain (session create, order
-cancel, challenge submit) need rpc + a key.
+cancel) need rpc + a key.
 
 ### Keys (production security)
 

@@ -137,7 +137,6 @@ Commands that need no key: `builders`, `session get`, `task status`.
 | `output get <s> <t> <task-hash> <output-hash>` | v | v | | v | v | none |
 | `output stream <s> <t> <task-hash> <worker-pubkey>` | v | v | | v | v | none |
 | `challenge prepare <s> <t> <kind>` | v | v | | v | v | none |
-| `challenge submit ...` | v | v | v | v | | locks bond |
 
 [^1]: `order submit` itself does not write to the chain; it only hands a signed order to nexus.
 Funds are frozen per `max_fee` once the Task Builder submits an Assign on-chain.
@@ -206,7 +205,7 @@ trueopen session get 1a50a587...2e3f --rest-url http://<rest-host>:1317
 ### `trueopen order submit`
 
 Places an order via **OpenTask**: reads on-chain context -> builds the frozen
-`TaskOrderV2` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams
+`TaskOrderV3` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams
 the submission to every selected endpoint, succeeding as soon as one accepts.
 
 | Parameter | Required | Description |
@@ -242,7 +241,6 @@ Returns:
     "sessionAnchorBlockHash": "d37ee43c...5f10",
     "builderSetId": "1",
     "builderSetHash": "33530796...706a",
-    "referenceBucketVersion": "1",
     "timeoutBucketVersion": "1",
     "latestHeight": "19661"
   }
@@ -374,22 +372,13 @@ progress; it plays no part in settlement, retention, or accountability).
 Prepares challenge material (read-only, zero cost). `--evidence-file <f>` can attach local
 evidence bytes.
 
-### `trueopen challenge submit`
-
-Opens an on-chain challenge, **locks a bond**.
-
-| Parameter | Required |
-|---|:--:|
-| `--session <id>` `--task <id>` `--settlement <id>` | v |
-| `--kind <k>` | v |
-| `--evidence <hex>` | v |
-| `--bond <amt>` | v |
+On-chain challenges (`MsgOpenChallengeRound`) are not supported by the SDK yet.
 
 ---
 
 ## order-file format
 
-Since `TaskOrderV2` was frozen, the fields have changed materially:
+Since `TaskOrderV2`/`TaskOrderV3`, the fields have changed materially:
 
 - Fees are **`Amount` (decimal text, atomic units)**, written as strings;
 - Enums can be written by name or by numeric value;

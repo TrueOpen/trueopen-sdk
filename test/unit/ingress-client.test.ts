@@ -15,7 +15,7 @@ const pub = secp256k1PublicKey(PRIV);
 const PAYLOAD = new TextEncoder().encode('trueopen-input');
 const PAYLOAD_HASH = 'ba07a45a431bd3b9c4c0490b8a312f5c919909b37477f1eb2c220946ed71dc79';
 const PAYLOAD_REF = `nexus://sha256/${PAYLOAD_HASH}`;
-// order_envelope is now the protobuf bytes of SignedOrderV1; this test only checks the proto
+// order_envelope is now the protobuf bytes of SignedOrderV2; this test only checks the proto
 // field mapping, so fixed placeholder bytes are enough (the encoding itself is covered by
 // signed-order.test.ts).
 const ORDER_ENVELOPE = new Uint8Array([0x0a, 0x02, 0x08, 0x01]);

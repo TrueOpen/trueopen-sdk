@@ -29,6 +29,9 @@
 
 ### Changed
 
+- The `third_party/wire` submodule temporarily points at wire commit `86ed1c4` (after v0.3.3,
+  before the next release) for `testdata/v1/shared/rest_json_shapes_v1.json`; it will move to
+  the next wire tag. The proto changes since v0.3.3 are comments only.
 - The examples and the README quick start are rewritten against the current facade:
   `create-session`, `open-task` and `fetch-output` read the EVM chain ID and fee denom from chain,
   start at order sequence 0, use the current amount fields, fetch output through the chain trust

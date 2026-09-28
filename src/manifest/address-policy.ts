@@ -104,7 +104,7 @@ function v6Blocked(g: number[]): boolean {
   if (g[0] === 0x2001 && g[1]! < 0x200) return true; // IETF protocol assignments 2001::/23 (Teredo, benchmarking)
   if (g[0] === 0x2001 && g[1] === 0xdb8) return true; // documentation 2001:db8::/32
   if (g[0] === 0x2002) return v4Blocked(embeddedV4(g[1]!, g[2]!)); // 6to4 2002::/16
-  if ((g[0]! & 0xfff0) === 0x3ff0 && g[0]! <= 0x3fff) return true; // documentation 3fff::/20
+  if (g[0] === 0x3fff && (g[1]! & 0xf000) === 0) return true; // documentation 3fff::/20 (RFC 9637)
   if ((g[0]! & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7 (fd00:ec2::254 metadata)
   if ((g[0]! & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
   if ((g[0]! & 0xffc0) === 0xfec0) return true; // deprecated site-local fec0::/10

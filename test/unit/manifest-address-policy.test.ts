@@ -41,6 +41,9 @@ describe('address policy for untrusted manifest_uri fetches', () => {
     ['2002:a00:1::1', '6to4 of 10.0.0.1'],
     ['2001::1', 'Teredo'],
     ['2001:db8::1', 'documentation'],
+    // RFC 9637 documentation is 3fff::/20, i.e. 3fff:0000:: through 3fff:0fff:ffff...
+    ['3fff::1', 'documentation 3fff::/20'],
+    ['3fff:0fff:ffff:ffff:ffff:ffff:ffff:ffff', 'documentation 3fff::/20 upper bound'],
     ['100::1', 'discard-only'],
     // Not an address at all
     ['', 'empty'],
@@ -60,6 +63,11 @@ describe('address policy for untrusted manifest_uri fetches', () => {
     ['169.253.255.255'],
     ['2606:4700:4700::1111'],
     ['2a00:1450::1'],
+    // Just outside RFC 9637's 3fff::/20 on either side. The policy must not widen to
+    // 3ff0::/12, which would blanket-refuse reserved-but-allocatable global unicast.
+    ['3ffe::1'],
+    ['3ff0::1'],
+    ['3fff:1000::1'],
     ['::ffff:93.184.216.34'],
     ['64:ff9b::5db8:d822'],
     ['2002:5db8:d822::1'],

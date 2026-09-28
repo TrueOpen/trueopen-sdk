@@ -20,6 +20,17 @@ const KEY = readFileSync('test/fixtures/tls/manifest-test.key.pem', 'utf8');
 const LIMITS = { maxBytes: MAX_MANIFEST_BYTES, timeoutMs: 5_000 };
 const OVER = MAX_MANIFEST_BYTES + 1024;
 
+/**
+ * A smaller cap for the compressed-side bound, so the test trips it on a few hundred KiB
+ * instead of pushing tens of MiB through a local TLS socket.
+ */
+const SMALL_LIMITS = { maxBytes: 64 * 1024, timeoutMs: 10_000 };
+/** 64 KiB of concatenated empty gzip members: many members, almost no output. */
+const NULL_GZIP_BLOCK = ((): Buffer => {
+  const empty = gzipSync(Buffer.alloc(0));
+  return Buffer.concat(new Array<Buffer>(Math.ceil((64 * 1024) / empty.length)).fill(empty));
+})();
+
 let server: Server;
 let port = 0;
 let connections = 0;
@@ -50,6 +61,26 @@ beforeAll(async () => {
       case '/compress':
         res.writeHead(200, { 'content-encoding': 'compress' }).end('x');
         return;
+      case '/gzip-null': {
+        // The inverse of a bomb: a gzip stream that decodes to almost nothing, so the
+        // decompressed cap never trips and only a compressed-side bound stops the read.
+        // Written in 64 KiB blocks -- a write per tiny member would starve the event loop
+        // and time out whatever test runs next.
+        res.writeHead(200, { 'content-encoding': 'gzip' });
+        let sent = 0;
+        const pump = (): void => {
+          while (sent < SMALL_LIMITS.maxBytes * 64) {
+            sent += NULL_GZIP_BLOCK.length;
+            if (!res.write(NULL_GZIP_BLOCK)) {
+              res.once('drain', pump);
+              return;
+            }
+          }
+          res.end();
+        };
+        pump();
+        return;
+      }
       case '/big-cl':
         res.writeHead(200, { 'content-length': String(OVER) });
         res.write('x'); // then stall: the client must abort on the header alone
@@ -230,6 +261,18 @@ describe('node manifest fetcher: size bounds', () => {
   it('aborts a small compressed response that decompresses above 4 MiB', async () => {
     const { fetcher } = testFetcher();
     await expect(fetcher(url('/gzip-bomb'), LIMITS)).rejects.toThrow(/after decompression/);
+  });
+
+  /**
+   * A bomb is caught by the decompressed cap. Its inverse is not: a gzip stream of empty
+   * deflate blocks decodes to nothing, so without a bound on the compressed side the
+   * socket is read until the total timeout.
+   */
+  it('aborts a compressed body that decodes to nothing but never stops arriving', async () => {
+    const { fetcher } = testFetcher();
+    await expect(fetcher(url('/gzip-null'), SMALL_LIMITS)).rejects.toThrow(
+      /compressed body exceeds \d+ bytes before decoding/,
+    );
   });
 
   it('refuses a Content-Encoding other than gzip, deflate or br', async () => {

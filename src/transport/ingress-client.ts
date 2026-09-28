@@ -79,7 +79,7 @@ export interface OpenTaskInput {
   /** Canonical lowercase 64-hex = hex(sha256(payload)). */
   readonly inputHash: string;
   readonly inputMediaType: string;
-  /** Required by contract Section 3.1: must stay the same across retries. */
+  /** Required: must stay the same across retries. */
   readonly idempotencyKey: string;
   /** Plaintext input body; this method sends it chunked according to chunkSizeBytes. */
   readonly payload: Uint8Array;
@@ -115,7 +115,7 @@ export interface SubmitOrderRequest {
   readonly payload: Uint8Array;
 }
 
-/** SubmitOrder's local accept response (not the on-chain accepted status; see implementation design Section 2.5). */
+/** SubmitOrder's local accept response (not the on-chain accepted status). */
 export interface SubmitOrderAck {
   readonly taskId: string;
   readonly accepted: boolean;
@@ -186,7 +186,7 @@ export class IngressClient {
   }
 
   /**
-   * OpenTask (contract Section 3.1, the target-state order-placement entry point):
+   * OpenTask (the order-placement entry point):
    * client-streaming, sends 1 header frame followed by N chunk frames (N >= 1, each chunk
    * non-empty and within the server's chunk size cap, 256 KiB by default -- see nexus
    * internal/config chunk_size_bytes).
@@ -241,7 +241,7 @@ export class IngressClient {
     };
   }
 
-  /** Snapshot of nexus's local FSM (no application-level signature required, v1.5 Section 4.1). */
+  /** Snapshot of nexus's local FSM (no application-level signature required). */
   async getTaskStatus(sessionId: string, taskId: string): Promise<TaskStatusView> {
     const res = await this.client.getTaskStatus(create(GetTaskStatusRequestSchema, { sessionId, taskId }));
     return { state: res.state, stage: res.stage, setId: res.setId, taskPhase: res.taskPhase, updatedAt: res.updatedAt };
@@ -250,10 +250,10 @@ export class IngressClient {
   /**
    * Fetches a retrieval credential (SDK envelope path; the Verifier-role signing path is not
    * wrapped here).
-   * @deprecated Contract Sections 3.3/3.4 replace the retrieval-credential flow with
+   * @deprecated The task data plane replaces the retrieval-credential flow with
    * GetTaskDataMetadata + FetchTaskData: "on-chain role implies authorization", so V1 no
    * longer issues separate retrieval credentials. Kept until the team decides on a removal
-   * date (mapping table Section 5.2).
+   * date.
    */
   async fetchOutputRef(p: {
     sessionId: string;
@@ -280,8 +280,8 @@ export class IngressClient {
    * Refreshes a retrieval credential (exchanges the original credential, held by the escrow,
    * for a new one).
    * @deprecated There's no corresponding method in the contract: the CredentialV1 flow is
-   * entirely replaced by Sections 3.3/3.4, and V1 doesn't refresh separate download
-   * credentials (mapping table Section 5.3). Kept until the team decides on a removal date.
+   * entirely replaced by GetTaskDataMetadata + FetchTaskData, and V1 doesn't refresh separate
+   * download credentials. Kept until the team decides on a removal date.
    */
   async refreshCredential(p: {
     credential: CredentialV1;
@@ -355,7 +355,7 @@ export class IngressClient {
   }
 
   /**
-   * Subscribes to chunked output (interface list Section 4.7, server streaming). Forwards
+   * Subscribes to chunked output (server streaming). Forwards
    * each Worker-signed OutputChunkV1 as-is, then forwards the final OutputFinV1; signature
    * verification, MMR checks, deduplication, and resubscription are handled by TrueOpenClient.
    */
@@ -369,7 +369,7 @@ export class IngressClient {
      * (`iterator.return()`) does not tear down the underlying HTTP request -- if the queried
      * Builder isn't the one the task was routed to, it has no frames to push, and the
      * connection stays open waiting for a response, keeping the event loop alive and
-     * preventing the process from exiting (observed in nexus#102).
+     * preventing the process from exiting.
      */
     signal?: AbortSignal;
   }): AsyncIterable<SubscribeOutputResponse> {
@@ -389,7 +389,7 @@ export class IngressClient {
 
 
   /**
-   * Fetches task data metadata (contract Section 3.3). Unlike the other methods, this one
+   * Fetches task data metadata. Unlike the other methods, this one
    * doesn't take an SDKRequestEnvelope -- it takes a TaskDataRequestAuthV1 instead, domain
    * TRUEOPEN_TASK_DATA_REQUEST_V1, signing bytes defined in task-data-signbytes.ts. nexus
    * hashes with sha256 before verifying, so use an auth.signer that hashes first.
@@ -421,7 +421,7 @@ export class IngressClient {
   }
 
   /**
-   * Streams the task data body (contract Section 3.6). The response is a frame oneof: one
+   * Streams the task data body. The response is a frame oneof: one
    * FetchTaskDataHeaderV1 first (echoing the actual returned range and media type), then
    * some number of FetchTaskDataChunkV1 frames, until eof.
    *
@@ -429,7 +429,7 @@ export class IngressClient {
    * offset=0/length=size form, since the two produce different body digests and the
    * signature won't verify.
    *
-   * Callers are responsible for validating the content after fetching (post ADR-0017 this
+   * Callers are responsible for validating the content after fetching (this
    * means re-chunking by chunk_lengths and computing the MMR root, no longer a whole-object
    * sha256) -- this method only fetches the bytes.
    */
@@ -624,7 +624,7 @@ export class IngressClient {
 const TASK_DATA_AUTH_SCHEMA_VERSION = 1;
 
 /**
- * request_nonce must be **exactly 32 bytes** as of v0.4.1 (v0.1.2 only required >= 16).
+ * request_nonce must be **exactly 32 bytes** (an earlier revision only required >= 16).
  * IngressAuth.nonce() is a generic nonce source whose length isn't guaranteed to comply,
  * so this normalizes it to 32 bytes: if it's shorter, pad it out with sha256 (preserving
  * entropy rather than truncating); if it's longer, also collapse it with sha256.

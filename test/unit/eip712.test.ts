@@ -12,9 +12,8 @@ import { toHex, fromHex } from '../../src/util/bytes';
 import { ORDER_EIP712_TYPES, ORDER_EIP712_DOMAIN_NAME, ORDER_EIP712_DOMAIN_VERSION } from '../../src/order/signed-order';
 
 /**
- * Anchor: wire v0.4.1's testdata/v1/shared/account_signing_v1.json.
- * This file is published byte-for-byte by wire per the monorepo's "Account and Signing
- * Protocol" doc, and is a cross-language vector shared by all three parties.
+ * Anchor: wire's testdata/v1/shared/account_signing_v1.json, a cross-language vector
+ * shared by every implementation.
  * This test **reads that file directly from the submodule** rather than copying it into a
  * local constant - copying it would create a second source of truth.
  */

@@ -5,11 +5,11 @@ import { toHex, fromHex } from '../util/bytes';
  * Hand-written proto encoding + response decoding for the task.v1 user Msgs (no codegen
  * needed). The authoritative field numbers come from TrueOpen/wire's (third_party/wire
  * submodule) proto/task/v1/msg_session.proto: MsgCreateSession / MsgCancelOrder and their
- * responses have been checked field-by-field against v0.1.2.
+ * responses have been checked field-by-field against the pinned wire release.
  *
- * Warning: MsgUserChallenge is an exception -- wire v0.1.2's msg_challenge.proto has
- * **entirely deleted** it ("V1 has NO public challenge or proof Msg"; K-BLOCK-03/04 is
- * still open, and neither the type URL nor the field numbers are kept, not even as
+ * Warning: MsgUserChallenge is an exception -- wire's msg_challenge.proto has
+ * **entirely deleted** it ("V1 has NO public challenge or proof Msg"; the challenge
+ * design is still open, and neither the type URL nor the field numbers are kept, not even as
  * reserved). So the encodeMsgUserChallenge below and `/task.v1.MsgUserChallenge` are
  * guaranteed to be rejected on the current chain. This code is kept only as a reference
  * for when the contract is re-frozen -- don't treat it as a usable path.

@@ -11,7 +11,7 @@ export interface SessionHandle {
 
 /**
  * Creates a session, caches its handle, and rebuilds the handle from on-chain
- * StreamState if the cache is lost (Implementation Design §2.2).
+ * StreamState if the cache is lost.
  * The single source of truth for next_expected_sequence is the chain; the local
  * cache is observational only, and rebuild always wins on conflict.
  */

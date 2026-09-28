@@ -12,8 +12,8 @@ export interface ChainTaskView {
 
 /**
  * One-way ranking: the higher the value, the more "final", and it never moves
- * backward (Detailed Design §3).
- * OVERTURNED is an absorbing state (04-Task/06 §9: must never go back to
+ * backward.
+ * OVERTURNED is an absorbing state (it must never go back to
  * CHALLENGED or FINAL), so it has the highest rank -- once OVERTURNED, no
  * FINAL/CHALLENGED chain view may override it.
  */

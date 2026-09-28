@@ -3,8 +3,7 @@ import { TrueOpenError } from '../errors/errors';
 
 /**
  * Converts a bech32 operator address into the address codec bytes actually used by the
- * section 1.2 preimage framing (mirrors nexus internal/nodecontract/hfields.go:CanonicalOperatorAddressBytes,
- * ruling 24 / node#95).
+ * H_FIELDS_V1 preimage framing (mirrors nexus internal/nodecontract/hfields.go:CanonicalOperatorAddressBytes).
  *
  * The bech32 text itself **never goes into the preimage**: the human-readable prefix belongs to the
  * display layer, and cross-chain isolation is handled by the chain_id field. So this returns the
@@ -30,7 +29,7 @@ export function canonicalOperatorAddressBytes(field: string, value: string): Uin
   } catch (e) {
     throw malformed(field, 'is not a decodable Bech32 address', e);
   }
-  // Matches cosmos-sdk's address length ceiling; the section 1.2 framing operates on codec bytes,
+  // Matches cosmos-sdk's address length ceiling; the H_FIELDS_V1 framing operates on codec bytes,
   // so the only structural upper bound a derived function can enforce is the codec's own.
   if (raw.length === 0 || raw.length > 255) {
     throw malformed(field, `decodes to ${raw.length} address bytes, outside 1..255`);

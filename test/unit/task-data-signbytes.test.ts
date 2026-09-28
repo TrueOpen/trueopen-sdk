@@ -114,7 +114,7 @@ describe('CORTEX_SERVICE branch (H_FIELDS_V1 outer layer)', () => {
     );
     // The address field vector provides both bech32 and 20-byte hex: the SDK accepts bech32, but the preimage must use the hex form.
     // Here we **re-encode bech32 from the hex** instead of using the vector's bech32 annotation directly:
-    // in v0.4.1, the requester_address annotation has a broken checksum (see the dedicated test case below),
+    // an earlier fixture revision carried a broken checksum in the requester_address annotation (see the dedicated test case below),
     // and since the digest is computed from hex, re-encoding from hex sidesteps the annotation defect without touching the authoritative value.
     const val = (name: string): unknown => f[name]?.['value'] ?? f[name]?.['utf8'] ?? f[name]?.['hex'];
     const addr = (name: string): string =>
@@ -138,9 +138,9 @@ describe('CORTEX_SERVICE branch (H_FIELDS_V1 outer layer)', () => {
   });
 
   it('every address\'s bech32 annotation in the vector is self-consistent with its hex', () => {
-    // This was previously a snapshot of a known defect: in v0.4.1's task_data_auth_v1.json, the requester_address's
-    // bech32 annotation has a broken checksum (hex is authoritative and the digest only consumes hex, so the digest
-    // itself is unaffected). wire#33 fixed the bech32 column of four fixtures in v0.4.2, so this is now a positive
+    // This was previously a snapshot of a known defect: an earlier task_data_auth_v1.json carried a broken checksum in
+    // the requester_address's bech32 annotation (hex is authoritative and the digest only consumes hex, so the digest
+    // itself is unaffected). wire has since fixed the bech32 column, so this is now a positive
     // assertion: both addresses must re-encode from hex into an identical bech32, and both must decode successfully.
     const v = vector('task_data_request_v1_cortex_service');
     const f = Object.fromEntries((v['fields'] as { name: string }[]).map((x) => [x.name, x])) as Record<

@@ -4,12 +4,12 @@ import { concatBytes } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
- * MMR_ROOT_V1 (monorepo Canonical Encoding and Domain Hashing, section 9).
+ * MMR_ROOT_V1 (wire registry/v1/framing.json).
  *
  * Commits to an append-only ordered list of byte strings, and lets any prefix's root be
  * recomputed from the final root -- MERKLE_ROOT_V1 cannot do this, because a prefix
  * tree's shape is not a substructure of the final tree's shape. The only current
- * consumer is the streaming output's output_hash (04-Task/05-Verification Algorithm section 8.1).
+ * consumer is the streaming output's output_hash (TRUEOPEN_OUTPUT_MMR_V1).
  *
  * This is not the same **framing** as canonicalFrameBytes in codec/domain-hash.ts: here
  * the domain length is a u32, the leaf length is a u64, and none of the three framing
@@ -23,7 +23,7 @@ const LEAF_TAG = enc.encode('TRUEOPEN_MMR_LEAF_V1');
 const NODE_TAG = enc.encode('TRUEOPEN_MMR_NODE_V1');
 const EMPTY_TAG = enc.encode('TRUEOPEN_MMR_EMPTY_V1');
 
-/** Domain is capped at 128 bytes (§4.2), matching the framing constant used by MERKLE_ROOT_V1. */
+/** Domain is capped at 128 bytes, matching the framing constant used by MERKLE_ROOT_V1. */
 const DOMAIN_MAX_BYTES = 128;
 
 /** uint64 upper bound. */
@@ -100,7 +100,7 @@ export interface MmrAccumulatorCheckpoint {
 }
 
 /**
- * Append one leaf and merge peaks according to the rule, returning the new peak list (§9, item 2).
+ * Append one leaf and merge peaks according to the rule, returning the new peak list.
  *
  * The merge condition looks only at **whether the last two peaks have equal height**, which
  * uniquely determines the peak shape: each set bit in the binary representation of the leaf
@@ -123,7 +123,7 @@ function pushLeaf(domain: string, peaks: Peak[], hash: Uint8Array): Peak[] {
 }
 
 /**
- * Fold the peak list down into a root (§9, item 4): the direction is fixed as
+ * Fold the peak list down into a root: the direction is fixed as
  * **right to left**.
  *
  * acc starts as the rightmost peak; every other peak is folded right-to-left as
@@ -148,7 +148,7 @@ export function mmrRoot(domain: string, leaves: readonly Uint8Array[]): Uint8Arr
 }
 
 /**
- * Root over the first k leaves (§9, item 6). k=0 gives the empty-tree root.
+ * Root over the first k leaves. k=0 gives the empty-tree root.
  *
  * An out-of-range k throws directly instead of letting slice clamp it silently:
  * `leaves.slice(0, 99)` would silently return all leaves, so "give me the root of the
@@ -166,7 +166,7 @@ export function mmrPrefixRoot(domain: string, leaves: readonly Uint8Array[], k: 
  * Incremental accumulator: while streaming frames in, each frame only does O(log n)
  * merges instead of recomputing every leaf.
  *
- * Used for ADR-0017's verify-as-you-receive flow: the mmr_root carried in each frame is
+ * Used for the streamed output's verify-as-you-receive flow: the mmr_root carried in each frame is
  * the **prefix root after appending this leaf**, so on receiving frame k it's enough to
  * compare append's return value against the root in the frame. Rerunning mmrRoot on every
  * frame is O(n), making the whole stream O(n^2); keeping only the peak list here amortizes

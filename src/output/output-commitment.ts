@@ -6,8 +6,7 @@ import { TrueOpenError } from '../errors/errors';
 import { bytesEqual, concatBytes, toHex } from '../util/bytes';
 
 /**
- * Commitment and frame verification for streamed output (ADR-0017 / 04-Task/05-Verification
- * Algorithm §8.1).
+ * Commitment and frame verification for streamed output.
  *
  * The protocol object for output is an **ordered list of text chunks** emitted by the Worker,
  * one chunk per leaf, and output_hash is the MMR root over those leaves. Non-streaming isn't a
@@ -60,7 +59,7 @@ export interface OutputChunkSigningFields {
  * Exactly 4 top-level fields, in a fixed order. What's signed is the **cumulative commitment**,
  * not the single frame's content -- holding the signature for frame k means holding the Worker's
  * commitment to the first k leaves as a whole, which is exactly the basis for prefix-contradiction
- * accountability (06 §6.3).
+ * accountability.
  *
  * Note that everything fed into the frame is raw bytes: task_hash / mmr_root are the raw 32
  * bytes, not hex text, and seq is a big-endian uint64 (8 bytes), not decimal text. Encoding
@@ -102,7 +101,7 @@ export function verifyOutputChunkSignature(
   return verifySecp256k1Digest(outputChunkSigningDigest(f), signature, workerServicePubKey);
 }
 
-/** Domain for the terminal frame's signature (wire v0.4.3 / wire#35). Also data-plane only, never in the receipt. */
+/** Domain for the terminal frame's signature. Also data-plane only, never in the receipt. */
 export const OUTPUT_FIN_DOMAIN = 'TRUEOPEN_OUTPUT_FIN_V1';
 
 /**
@@ -227,7 +226,7 @@ export interface OutputStreamVerifierCheckpoint {
 export type OutputFrameAcceptance = 'accepted' | 'duplicate';
 
 /**
- * Verifies and accumulates streamed output frame by frame (ADR-0017, SDK Detailed Design §5.2).
+ * Verifies and accumulates streamed output frame by frame.
  *
  * A failed verification **never changes the accumulated state**: the caller can hand the full
  * checkpoint (not a bare seq) to another Task Builder to re-subscribe and continue from the

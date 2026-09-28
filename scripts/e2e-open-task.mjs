@@ -202,7 +202,7 @@ const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, stringToPath(
 const signer = privKeySecp256k1Signer(privkey);   // sha256 scheme, 64 bytes: outer order signature + request envelope
 const orderSigner = privKeyEip712Signer(privkey);  // keccak scheme, 65 bytes: order EIP-712 + task data plane
 const pubKey = secp256k1PublicKey(privkey);
-// As of wire v0.4.1 the address is EVM-style: bech32(keccak256(uncompressed_XY)[12:32]).
+// The address is EVM-style: bech32(keccak256(uncompressed_XY)[12:32]).
 const address = ethSecp256k1Address(pubKey, PREFIX);
 // The order's EIP-712 needs a numeric EVM chain ID and a fee denom; neither is part of
 // TaskOrderV2. The EVM chain ID defaults to reading params.phase0.evm_chain_id on chain
@@ -336,7 +336,7 @@ const expiryHeight = ctx.latestHeight + BigInt(flag('--expiry-blocks', '10'));
 const built = await buildOpenTaskRequest({
   order, payload, sessionId, taskId, expiryHeight,
   orderEip712: { evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM },
-  // v0.4.1's TaskDataRequestAuthV1 requires request_nonce to be exactly 32 bytes.
+  // TaskDataRequestAuthV1 requires request_nonce to be exactly 32 bytes.
   requestNonce: crypto.getRandomValues(new Uint8Array(32)),
   idempotencyKey, orderSigner, signer, signerPubKey: pubKey,
 });
@@ -485,7 +485,7 @@ function streamCandidates() {
 }
 
 /**
- * Streaming retrieval (contract §3.5 / ADR-0017). The key difference from a full-output
+ * Streaming retrieval. The key difference from a full-output
  * fetch: **no receipt required**. Every frame carries the Worker's signature over
  * TRUEOPEN_OUTPUT_CHUNK_V1(chain_id, task_hash, seq, mmr_root); each frame is verified
  * locally and the MMR root over the first seq+1 leaves is recomputed -- any mismatch
@@ -734,11 +734,11 @@ if (streamInfo?.frame_count > 0 && streamCheckpoint !== null) {
   }
 }
 
-// ---- 9) fetch the plaintext output (data plane per contract §3.5/§3.6) ----
+// ---- 9) fetch the plaintext output (task data plane) ----
 //
-// v0.4.1 retrieval is content-addressed: TaskDataObjectRefV1 requires task_hash and
-// content_hash, where the latter is the on-chain InferReceipt.output_hash (since
-// ADR-0017 this is the MMR root over the chunk list). So we must wait for the Worker to
+// Retrieval is content-addressed: TaskDataObjectRefV1 requires task_hash and
+// content_hash, where the latter is the on-chain InferReceipt.output_hash (this
+// is the MMR root over the chunk list). So we must wait for the Worker to
 // submit the receipt first -- before that there's no object to locate and nothing to
 // verify against.
 let output = null;

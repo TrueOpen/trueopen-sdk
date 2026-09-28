@@ -35,7 +35,7 @@ export interface BuildOpenTaskInput {
    */
   readonly expiryHeight: bigint;
   readonly requestNonce: Uint8Array;
-  /** Required by contract §3.1; must stay identical across retries. */
+  /** Required; must stay identical across retries. */
   readonly idempotencyKey: string;
   readonly inputMediaType?: string;
   /** The signer that signs the order's EIP-712 digest (the user's identity; the Keeper recovers the address from the recoverable signature). */
@@ -108,7 +108,7 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
     );
   }
   if (input.idempotencyKey === '') {
-    throw local('SDK_LOCAL_IDEMPOTENCY_KEY_REQUIRED', 'idempotency_key is required by contract §3.1');
+    throw local('SDK_LOCAL_IDEMPOTENCY_KEY_REQUIRED', 'idempotency_key is required');
   }
 
   // (1) Inner: sign the order's EIP-712 digest (task_hash is one of its fields), encode as SignedOrderV2.

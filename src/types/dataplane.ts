@@ -7,7 +7,7 @@ export type CredentialUsage =
 /**
  * Data plane output retrieval reference (used by ChunkVerifier.finalize for validation).
  * The V1 data plane transmits in plaintext with no sealed key; retrieval authorization is
- * carried by the on-chain role plus a signed credential (CredentialV1), see Section 5.
+ * carried by the on-chain role plus a signed credential (CredentialV1).
  */
 export interface OutputRef {
   readonly taskId: string;
@@ -17,7 +17,7 @@ export interface OutputRef {
   readonly outputCid: string;
 }
 
-/** A raw chunk fetched from the gateway (includes commitment fields, Section 5.7). */
+/** A raw chunk fetched from the gateway (includes commitment fields). */
 export interface RawChunk {
   readonly chunkIndex: bigint;
   readonly prevChunkHash: Uint8Array;

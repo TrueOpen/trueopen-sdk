@@ -25,7 +25,7 @@ describe('cli context', () => {
     const id = await deriveIdentity(MN, 'trueopen');
     // coin_type 118 (Cosmos convention) - same mnemonic, different private key.
     expect(id.address).not.toBe('trueopen14yrq4wjw4jkjejfcvxnt2ew2fyp84xzwknntwd');
-    // Same private key but derived via ripemd160(sha256(compressed)) (the pre-v0.4.1 scheme).
+    // Same private key but derived via ripemd160(sha256(compressed)) (the earlier Cosmos scheme).
     expect(id.address).not.toBe(secp256k1Address(id.pubKey, 'trueopen'));
   });
 

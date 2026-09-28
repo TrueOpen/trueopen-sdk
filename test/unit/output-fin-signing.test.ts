@@ -11,7 +11,7 @@ import {
 import { fromHex, toHex } from '../../src/util/bytes';
 
 /**
- * TRUEOPEN_OUTPUT_FIN_V1 is anchored to the official wire vectors (wire v0.4.3 / wire#35).
+ * TRUEOPEN_OUTPUT_FIN_V1 is anchored to the official wire vectors.
  *
  * All expected values come from the fin_signing section of
  * third_party/wire/testdata/v1/task/output_mmr_v1.json, never made up locally:

@@ -3,8 +3,8 @@ import { concatBytes } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
- * EIP-712 typed-data encoding (as of wire v0.4.1, accounts, orders, and retrieval-credential
- * requests are all signed against this digest scheme).
+ * EIP-712 typed-data encoding (accounts, orders, and retrieval-credential requests are all
+ * signed against this digest scheme).
  *
  * wire publishes a full vector for all three domains (testdata/v1/shared/account_signing_v1.json),
  * each one giving type_hash / domain_separator / hash_struct / signing_digest / signature_65:
@@ -18,7 +18,7 @@ import { TrueOpenError } from '../errors/errors';
  *
  * Note the distinction from H_FIELDS_V1 (codec/domain-hash.ts): that scheme is sha256 plus an
  * 8-byte length-prefixed frame, whereas this one is keccak256 plus a 32-byte fixed-width word.
- * Both coexist in v0.4.1, and signing with the wrong one will always fail on-chain verification.
+ * Both coexist, and signing with the wrong one will always fail on-chain verification.
  */
 
 const enc = new TextEncoder();

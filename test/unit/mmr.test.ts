@@ -46,7 +46,7 @@ describe('MMR_ROOT_V1 preimage', () => {
     expect(() => mmrLeaf(D, 2n ** 64n - 1n, leaf)).not.toThrow();
   });
 
-  it('empty leaf_bytes is a valid leaf (ADR-0017: empty output is a zero-length leaf)', () => {
+  it('empty leaf_bytes is a valid leaf (empty output is a zero-length leaf)', () => {
     const empty = mmrLeaf(D, 0n, new Uint8Array(0));
     expect(empty).toHaveLength(32);
     expect(toHex(empty)).not.toBe(toHex(mmrLeaf(D, 0n, utf8('x'))));
@@ -200,10 +200,10 @@ describe('prefix root and accumulator', () => {
   });
 });
 
-describe('official cross-language vectors (wire v0.4.1 testdata/v1/shared/mmr_primitive_v1.json)', () => {
+describe('official cross-language vectors (wire testdata/v1/shared/mmr_primitive_v1.json)', () => {
   /**
-   * This vector is published byte-for-byte by wire per monorepo "Canonical Encoding and Domain Hashing.md §11.5",
-   * and is the shared criterion used by cortex / nexus / trueopen-sdk. The SDK's earlier self-made vectors have
+   * This vector is published by wire and is the shared criterion used by every
+   * implementation. The SDK's earlier self-made vectors have
    * been removed -- a self-made vector can only prove "the implementation hasn't changed unintentionally," not
    * "the implementation reads the spec correctly."
    */
@@ -226,7 +226,7 @@ describe('official cross-language vectors (wire v0.4.1 testdata/v1/shared/mmr_pr
     expect(toHex(mmrEmpty(v.domain))).toBe(f[3]!.digest_hex);
   });
 
-  it('leaf_count 2\'s root equals leaf_count 3\'s height-1 peak (the minimal case for §9 rule 6)', () => {
+  it('leaf_count 2\'s root equals leaf_count 3\'s height-1 peak (the minimal prefix-peak case)', () => {
     const two = v.cases.find((c: { leaf_count: number }) => c.leaf_count === 2);
     const three = v.cases.find((c: { leaf_count: number }) => c.leaf_count === 3);
     expect(three.peaks[0].hash_hex).toBe(two.root_hex);

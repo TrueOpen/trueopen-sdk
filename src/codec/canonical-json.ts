@@ -1,7 +1,7 @@
 import { TrueOpenError } from '../errors/errors';
 
 /**
- * canonical_json_v1 (wire docs/CANONICAL_ENCODING_V1.md, "Canonical JSON").
+ * canonical_json_v1, the JSON payload encoding used by the H_V1 digests.
  *
  * Values are UTF-8 strings, integers, booleans, arrays and objects. Integers are held
  * as bigint so uint64 values never lose precision. null, floats, exponents, leading

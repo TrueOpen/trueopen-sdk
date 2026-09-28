@@ -4,7 +4,7 @@
 
 ### Added
 
-- Wire v0.3.2: model manifest retrieval. `ManifestSource` fetches from the local cache, then
+- Wire v0.3.3: model manifest retrieval. `ManifestSource` fetches from the local cache, then
   `ProfileState.manifest_uri`, then mirrors. It verifies each body in this order: hash
   (`TRUEOPEN_MODEL_MANIFEST_V4`), strict parse, canonical bytes, then projection fields.
   `HubReader.getProfileManifestState` reads `manifest_hash`, `manifest_uri` and the projection
@@ -29,7 +29,7 @@
 
 ### Changed
 
-- **Breaking (wire v0.3.2):** orders are `TaskOrderV3`.
+- **Breaking (wire v0.3.3):** orders are `TaskOrderV3`.
   - `model_id` is a raw Hash32. `TaskOrderRequest.modelId` is lowercase 64-hex, and legacy text
     slugs are rejected.
   - Three reserved plaintext fields are added: `payload_mode` = PLAINTEXT, a zero
@@ -48,5 +48,5 @@
 ### Known limitations
 
 - Exact optional `resume_after_seq` presence remains blocked on TrueOpen/wire#28.
-- Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked on
-  TrueOpen/wire#35, TrueOpen/cortex#382, and TrueOpen/nexus#99.
+- Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked until
+  the Worker runtime and nexus produce and forward signed Fins.

@@ -14,7 +14,7 @@ import { privKeySecp256k1Signer, privKeySecp256k1DigestSigner, secp256k1PublicKe
 import { privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
 import { fromHex, toHex } from '../../src/util/bytes';
 
-// ADR-0015: after a Builder rotates its certificate, the new fingerprint goes on-chain, but the
+// After a Builder rotates its certificate, the new fingerprint goes on-chain, but the
 // descriptor the client is holding may still be the old fingerprint. If the handshake check
 // mismatches, re-read that Builder's descriptor, and if the fingerprint changed, retry once with
 // the new fingerprint - only once.

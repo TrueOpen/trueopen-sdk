@@ -81,8 +81,8 @@ export function submitOrderBodyDigest(m: {
  * Differences from SubmitOrder: **no payload** (the input body travels as
  * chunk frames, not part of the digest), and input_size_bytes / input_hash /
  * input_media_type are appended at the end. It also **excludes
- * idempotency_key** -- contract §8.1 hasn't frozen whether it's folded into
- * BodyDigest, and nexus currently doesn't count it.
+ * idempotency_key** -- whether it is folded into BodyDigest is not frozen,
+ * and nexus currently doesn't count it.
  */
 export function openTaskBodyDigest(m: {
   readonly orderEnvelope: Uint8Array;
@@ -171,7 +171,7 @@ export function subscribeOutputBodyDigest(sessionId: string, taskId: string): Ui
  * body_digest for AckOutput: **three fields, output_id must be present even when empty**.
  *
  * Matches nexus main's internal/ingress/outputstream.go:ackOutputStream -- this line
- * hasn't changed in ADR-0017's streaming branch:
+ * hasn't changed with streamed output:
  *   body := sdkauth.BodyDigest(sessionID, taskID, outputID)
  * output_id is marked deprecated in the proto, but it's still part of the signature.
  * BodyDigest is a length-prefixed frame, and an empty string contributes a "4-byte

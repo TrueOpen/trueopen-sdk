@@ -93,7 +93,7 @@ export interface DeadlinePolicyV1 {
 }
 
 /**
- * task.v1.TaskOrderV3 (wire v0.3.2). Field names correspond to proto field numbers 1..28.
+ * task.v1.TaskOrderV3. Field names correspond to proto field numbers 1..28.
  *
  * Changes relative to V2: model_id is the raw 32-byte Hash32 model ID instead of a text
  * slug, and three reserved encryption fields are appended (payload_mode,

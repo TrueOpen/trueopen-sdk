@@ -83,7 +83,7 @@ export function nexusTransport(url: string, tlsPubkeyHash = ''): Transport {
  * If `--nexus-tls-pubkey-hash` (or `TRUEOPEN_NEXUS_TLS_PUBKEY_HASH`) is given, the certificate public key
  * is checked against it, using the same PinnedHttpsAgent as the on-chain discovery path; if not given, it
  * falls back to CA chain verification, with no further downgrade. The latter is essentially unusable for
- * real deployments -- per ADR-0015 nexus certificates are self-signed, so CA chain verification will
+ * real deployments -- nexus certificates are self-signed, so CA chain verification will
  * always fail -- so a fingerprint should always be given alongside a manually specified https endpoint.
  */
 export function explicitNexusTransport(url: string, tlsPubkeyHash = ''): Transport {

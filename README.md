@@ -112,8 +112,8 @@ const client = new TrueOpenClient({
   ingressTransport,
   // Required for openTask: reads on-chain context + picks an endpoint by task_builder_seed
   hub,
-  // nexus endpoints verify their certificate against the on-chain descriptor's tls_pubkey_hash
-  // (ADR-0015): an https endpoint with a fingerprint registered on-chain is checked against
+  // nexus endpoints verify their certificate against the on-chain descriptor's tls_pubkey_hash:
+  // an https endpoint with a fingerprint registered on-chain is checked against
   // that fingerprint, no downgrade allowed; an https endpoint without a registered fingerprint
   // falls back to http with a WARN during the transition period if the peer offers no TLS, or
   // is rejected if NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 is set.
@@ -127,7 +127,7 @@ const session = await client.createSession('demo');
 const submitted = await client.openTask({
   sessionId: session.sessionId,
   orderSequence: 1n,
-  // Required by contract §3.1; must stay identical across retries.
+  // Required; must stay identical across retries.
   idempotencyKey: `${session.sessionId}:1`,
   order: {
     modelId: '<64hex>', // raw Hash32 model ID, lowercase hex
@@ -173,13 +173,13 @@ for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
 | `cancelOrder(sessionId, orderSequence)` | signs `owner_signature` + on-chain `MsgCancelOrder` |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
 | `watchTask(sessionId, taskId, fromCursor?)` | subscribes to the task event stream (`AsyncIterable`) |
-| `fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })` | fetches the full output and recomputes the MMR root from `chunk_lengths` to verify it (see §4) |
-| `streamOutput({ sessionId, taskId, taskHash, workerServicePubKey, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see §4) |
+| `fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })` | fetches the full output and recomputes the MMR root from `chunk_lengths` to verify it (see section 4) |
+| `streamOutput({ sessionId, taskId, taskHash, workerServicePubKey, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
 | `confirmOutput({ taskId, taskHash, checkpoint, receipt })` | uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
-| `fetchOutputRef(sessionId, taskId, opts?)` | fetches a retrieval credential (superseded by §3.3/§3.4, see §4) |
+| `fetchOutputRef(sessionId, taskId, opts?)` | fetches a retrieval credential (superseded by the task data plane, see section 4) |
 | `prepareChallenge(sessionId, taskId, kind, localEvidenceDigest?)` | prepares challenge material (does not submit a verdict) |
 | `challenge({ sessionId, taskId, settlementId, kind, evidenceDigest, bondAmount })` | signs `challenger_signature` + on-chain `MsgUserChallenge` |
 
@@ -208,22 +208,19 @@ This section states plainly **which capabilities are already aligned with the re
 - **MMR_ROOT_V1 and output commitments** -- anchored to `testdata/v1/shared/mmr_primitive_v1.json` and `testdata/v1/task/output_mmr_v1.json`, including 7-leaf discriminating vectors for fold direction and all negative cases.
 - **`task_id` and `task_builder_rank`** -- anchored to the cross-language golden vectors published by node.
 
-- **`TaskOrderV2`'s canonical `task_hash`** -- anchored to the three digests published in the
-  monorepo's TaskOrder hashing-and-signing doc (chapter 04 "Task", doc 08, §8.3) (core /
-  decoded-parameter lower bound / u64 upper bound
-  of the four Amount fields), cross-checked together with the preimage length and the five
-  intermediate frames; see `test/unit/task-order-contract-vectors.test.ts`. Wire v0.4.3 has not
-  yet turned this into a testdata fixture (wire#24), but the published values themselves are
-  authoritative. This implementation matches nexus's `internal/nodecontract/taskorder.go`
+- **`TaskOrderV2`'s canonical `task_hash`** -- anchored to three contract digests (core /
+  decoded-parameter lower bound / u64 upper bound of the four Amount fields), cross-checked
+  together with the preimage length and the five intermediate frames; see
+  `test/unit/task-order-contract-vectors.test.ts`. This implementation matches nexus's `internal/nodecontract/taskorder.go`
   `canonicalTaskOrderFieldsV2` field for field. There is also live-chain evidence: across
   multiple submissions on devnet, the on-chain `accepted_task_hash` matched the locally computed
   `task_hash` byte for byte -- stronger evidence than a vector, since it proves the encoding the
-  Keeper actually accepts, not a transcription of the published document.
+  Keeper actually accepts, not a transcription of published values.
 - **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/settlement_finality/...`.
 - **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` / `MsgUserChallenge` (including the task registry).
 - **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `fetchOutputRef` / `refreshCredential` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput`; `submitOrder` is kept only for deprecated raw RPC access.
 
-### ✅ Output delivery: two paths (contract §3.5/§3.6, ADR-0017)
+### ✅ Output delivery: two paths
 
 `output_hash` is **no longer a sha256 of the whole payload**; it is the MMR root (framing
 `MMR_ROOT_V1`) of an ordered list of text chunks under `TRUEOPEN_OUTPUT_MMR_V1`. The
@@ -244,7 +241,7 @@ different `output_hash`.
   it. When multiple `sources` are given, the SDK rotates across Builders on idle, disconnect, a
   bad frame, or a sequence gap; frames replayed from an old wire position are fully re-verified
   and deduplicated, so they are never delivered twice.
-- `OutputFinV1` (since wire v0.4.3 / wire#35) carries `finish_reason` and `worker_signature`: the
+- `OutputFinV1` carries `finish_reason` and `worker_signature`: the
   digest is `H_FIELDS_V1(TRUEOPEN_OUTPUT_FIN_V1, chain_id, task_hash, final_seq,
   output_mmr_root, finish_reason)`, with `finish_reason` encoded in the frame as a **uint32_be
   enum value**, accepting only 1..4 (UNSPECIFIED / unknown values are rejected before the digest
@@ -253,14 +250,14 @@ different `output_hash`.
   Receipt arrives, and gives them a Worker-authenticated finish reason.
 - **`finSignaturePolicy`** (a `streamOutput` parameter): `'accept-unsigned'` (default -- verifies
   a signature if present, passes through if absent) / `'require'` (must carry a valid reason and
-  a verifiable signature). The default is relaxed because v0.4.3 is an additive field, and before
-  nexus forwards signed Fins (nexus#99) ships, live chains still emit the old, unsigned Fin;
+  a verifiable signature). The default is relaxed because the signed Fin is an additive field, and until
+  nexus forwards signed Fins, live chains still emit the old, unsigned Fin;
   unconditionally failing closed would make the SDK unusable against the current network today.
   The switch only relaxes "whether a signature must be present" -- **a Fin with a bad signature
   is never accepted under any policy**.
 - Phase 0 requires `attachment` / `attachment_signature` to be empty; a non-empty value fails closed.
 - `workerServicePubKey` must be supplied by the caller; the SDK has no switch to skip this check
-  -- accepting output without verifying it discards all of ADR-0017's guarantees. To obtain it:
+  -- accepting output without verifying it discards all of the streamed-output guarantees. To obtain it:
   on-chain `assignment.winner_worker` -> `hub.getCurrentServiceKey(PARTICIPANT_TYPE.CORTEX,
   winnerWorker)`.
 - **No need to wait for `InferReceipt`**: `winner_worker` is available on-chain as soon as
@@ -308,7 +305,7 @@ Confirmation first checks the checkpoint's own chunks / MMR peaks / leaf count f
 consistency, then checks `receipt.output_hash`, `output_leaf_count`, and `output_size_bytes`
 against it one by one. Any mismatch fails closed with a non-retryable
 `DATA_OUTPUT_CONFIRMATION_*` error. The Receipt today makes no promise about the finish reason;
-a trusted terminal reason still depends on Wire #35's signed Fin and cannot be guessed by
+a trusted terminal reason still depends on a signed Fin and cannot be guessed by
 confirmation.
 
 **OpenAI-compatible SSE**: a pure conversion layer that consumes `VerifiedOutputEvent` and never
@@ -343,12 +340,12 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.
 
-Wire #35 shipped in **v0.4.3**; the SDK already implements the digest and signature
+The SDK already implements the digest and signature
 verification for `TRUEOPEN_OUTPUT_FIN_V1` (anchored to the official `fin_signing` vectors) and
 wires it into `streamOutput`. But **the live chain does not yet produce a signed Fin**: nexus's
-side of verifying/storing/forwarding it (nexus#99) has not shipped, so the current network still
+side of verifying/storing/forwarding it has not shipped, so the current network still
 emits the old, unsigned Fin, and `finSignaturePolicy` defaults to `'accept-unsigned'`. Once
-nexus#99 ships, it can switch to `'require'` and complete cross-repo live-chain acceptance for
+that ships, it can switch to `'require'` and complete cross-repo live-chain acceptance for
 Cortex -> Nexus -> SDK -> OpenAI SSE.
 
 **Full package**: `client.fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })`
@@ -358,7 +355,7 @@ Cortex -> Nexus -> SDK -> OpenAI SSE.
   root and compares it to `outputHash` (throwing `DATA_OUTPUT_HASH_MISMATCH` on mismatch) ->
   returns `{ bytes, text, outputHash, chunks, sizeBytes, mediaType }`.
 - `outputHash` comes from the on-chain `InferReceipt.output_hash`: it is both the verification
-  target and `TaskDataObjectRefV1.content_hash` -- v0.4.x retrieval is content-addressed, and
+  target and `TaskDataObjectRefV1.content_hash` -- retrieval is content-addressed, and
   without it the object cannot even be located.
 - `builderAddress` must be the operator address of **the specific Builder being asked**: nexus
   compares it byte-for-byte against its own configuration. The object only exists on the Task
@@ -370,7 +367,7 @@ Cortex -> Nexus -> SDK -> OpenAI SSE.
   uses `TRUEOPEN_TASK_DATA_REQUEST_V1`, always 64 bytes; the length is not sniffed. See
   `src/transport/task-data-signbytes.ts`.
 
-> `fetchOutputRef(...)` has been superseded by §3.5/§3.6 (marked `deprecated` in the proto); all
+> `fetchOutputRef(...)` has been superseded by the task data plane (marked `deprecated` in the proto); all
 > that remains is an unused `CredentialV1`, whose fate is still undecided. `ChunkVerifier` is
 > kept for chunked-fetch scenarios.
 
@@ -578,7 +575,7 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` (currently **v0.3.2**). **This repo no longer keeps
+pinned as a submodule at `third_party/wire` (currently **v0.3.3**). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -592,15 +589,15 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (v0.3.2) |
-| `task.v1` / `shared.v1` | `third_party/wire` (v0.3.2) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (v0.3.3) |
+| `task.v1` / `shared.v1` | `third_party/wire` (v0.3.3) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK
 needs (13 wire files + 5 annotation/type dependencies), not all 74 proto files in wire. RPCs the
 SDK uses: `OpenTask` / `GetTaskStatus` / `GetTaskEvents` / `GetTaskDataMetadata` /
 `FetchTaskData` / `SubscribeOutput` / `AckOutput` / `PrepareChallenge` / `FetchOutputRef` (the
-last one has been superseded by the contract, see §4).
+last one has been superseded by the task data plane, see section 4).
 
 Upgrading the wire version: `git -C third_party/wire fetch --tags && git -C third_party/wire
 checkout <tag>`, then recompute the import closure, update `buf.gen.yaml`'s `paths`, and run

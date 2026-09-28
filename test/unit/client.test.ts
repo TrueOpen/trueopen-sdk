@@ -49,7 +49,7 @@ function fakeChain(cap: { challenge?: unknown; cancel?: unknown } = {}): ChainCl
   };
 }
 
-/** ADR-0017: output is an ordered list of chunks, not one solid block of text. Deliberately split in a way that would be erased if the chunks were merged. */
+/** Output is an ordered list of chunks, not one solid block of text. Deliberately split in a way that would be erased if the chunks were merged. */
 const OUTPUT_CHUNKS = ['hello ', 'final ', 'output'].map((t) => new TextEncoder().encode(t));
 const OUTPUT_TEXT = 'hello final output';
 /** Worker service key (a separate key unrelated to the user's identity). */
@@ -215,10 +215,10 @@ describe('TrueOpenClient facade', () => {
     expect(cap.ack?.lastSeq).toBe(2n);
   });
 
-  // ---- wire v0.4.3 (wire#35): Fin carries finish_reason + worker_signature ----
+  // ---- Fin carries finish_reason + worker_signature ----
   //
   // The key requirement here is that "the upgrade must not brick the SDK against the live
-  // network": v0.4.3 only adds fields, and before nexus#99 ships, the live chain still sends an
+  // network": the signed Fin only adds fields, and until nexus forwards it, the live chain sends an
   // unsigned Fin, so the default policy must allow it through; but once a Fin does carry a
   // signature, a bad signature must never be accepted under any policy.
 
@@ -263,7 +263,7 @@ describe('TrueOpenClient facade', () => {
     return out;
   };
 
-  it('an unsigned Fin (the live-network shape before nexus#99 ships) is allowed by default', async () => {
+  it('an unsigned Fin (the live-network shape until nexus forwards signed Fins) is allowed by default', async () => {
     const c = makeClientWithTransport(streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot })));
     await expect(drain(c)).resolves.toBe(OUTPUT_TEXT);
   });
@@ -397,7 +397,7 @@ describe('TrueOpenClient facade', () => {
       throw new Error('connection reset');
     }, capA);
     const transportB = scriptedStreamTransport(async function* () {
-      // Wire v0.4.1's bare uint64 replays seq=0 on present(0); the SDK must re-verify and dedupe it.
+      // A bare (implicit-presence) uint64 replays seq=0 on present(0); the SDK must re-verify and dedupe it.
       for (const frame of frames) yield { frame: { case: 'chunk', value: frame } };
       const last = frames[frames.length - 1]!;
       yield { frame: { case: 'fin', value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
@@ -467,7 +467,7 @@ describe('TrueOpenClient facade', () => {
     });
     const cap: { subscribes?: SubscribeOutputRequest[] } = {};
     const transport = scriptedStreamTransport(async function* () {
-      // Simulates the server after the Wire #28 fix: present(0) only returns seq > 0.
+      // Simulates a server with explicit resume_after_seq presence: present(0) only returns seq > 0.
       for (const frame of frames.slice(1)) yield { frame: { case: 'chunk', value: frame } };
       const last = frames[frames.length - 1]!;
       yield { frame: { case: 'fin', value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
@@ -550,7 +550,7 @@ describe('TrueOpenClient facade', () => {
       () =>
         new TrueOpenClient({
           chainId: 'trueopen-devnet-1',
-          // Since v0.4.1 the address is keccak-derived; the derivation rule itself is anchored against the official vectors in eth-secp256k1.test.ts.
+          // The address is keccak-derived; the derivation rule itself is anchored against the official vectors in eth-secp256k1.test.ts.
           userAddress: ethSecp256k1Address(pub, 'trueopen'),
           signerPubKey: pub, signer,
           chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',

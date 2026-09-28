@@ -5,8 +5,7 @@ import { concatBytes, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
- * EVM-style secp256k1 identity (on-chain accounts switched to this scheme as
- * of wire v0.4.1).
+ * EVM-style secp256k1 identity (the scheme on-chain accounts use).
  *
  * This is **a different address scheme** from the Cosmos style in
  * signer/secp256k1.ts -- the same private key produces different results:
@@ -21,8 +20,8 @@ import { TrueOpenError } from '../errors/errors';
  */
 
 /**
- * The HD path is frozen by the protocol: coin_type = **60** (Account and
- * Signing Protocol doc §2.2), not the usual Cosmos 118.
+ * The HD path is frozen by the protocol: coin_type = **60**, not the usual
+ * Cosmos 118.
  *
  * This isn't a harmless "swap a prefix" difference: deriving from the same
  * mnemonic with 118 versus 60 yields **two different private keys**, with no

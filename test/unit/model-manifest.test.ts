@@ -124,13 +124,34 @@ describe('verifyManifestBytes: processing order', () => {
     ['profile_version', { profileVersion: 2n }],
     ['tokenizer_hash', { tokenizerHash: '45'.repeat(32) }],
     ['runtime_class', { runtimeClass: 'OTHER' }],
-    ['task_types', { taskTypes: ['CHAT', 'TEXT_GENERATION'] }],
+    ['task_types\\[0\\]', { taskTypes: ['CHAT', 'TEXT_GENERATION'] }],
     ['min_stake', { minStake: 1n }],
     ['pricing_profile.min_order_value', { pricing: { initialOutputPrice: 10n, minOrderValue: 1n, verifyRatioBps: 1000n } }],
   ] as const)('rejects a projection mismatch on %s', (name, override) => {
     expect(() => verifyManifestBytes(BYTES, goldenState(override as Partial<ProfileManifestState>))).toThrow(
       new RegExp(`${name.replace('.', '\\.')} differs`),
     );
+  });
+
+  /**
+   * Comparing task_types as a joined string makes ["A,B"] and ["A","B"] equal, and hides
+   * a length difference. Both must be caught element by element.
+   */
+  it('compares task_types element by element, not as a joined string', () => {
+    const onChain = goldenState().taskTypes;
+    expect(onChain.length).toBeGreaterThan(0);
+    expect(() => verifyManifestBytes(BYTES, goldenState({ taskTypes: [onChain.join(',')] }))).toThrow(
+      /task_types length differs/,
+    );
+    expect(() => verifyManifestBytes(BYTES, goldenState({ taskTypes: [...onChain, 'CHAT'] }))).toThrow(
+      /task_types length differs/,
+    );
+  });
+
+  it('reports whether the whole projection was bound, so a partial check cannot read as a full one', () => {
+    // Without RegistrationCheck only the scalars ProfileState exposes are compared;
+    // min_stake.denom has nothing on chain to compare against.
+    expect(verifyManifestBytes(BYTES, goldenState()).projectionFullyBound).toBe(false);
   });
 
   it('optional registration check binds the whole projection with the chain manifest_uri', () => {
@@ -150,6 +171,7 @@ describe('verifyManifestBytes: processing order', () => {
     const state = goldenState({ registrationDigest: digest });
     const check = { chainId: 'trueopen-golden-1', registrationFee: fee };
     expect(() => verifyManifestBytes(BYTES, state, check)).not.toThrow();
+    expect(verifyManifestBytes(BYTES, state, check).projectionFullyBound).toBe(true);
     // Same manifest, different chain manifest_uri: the rebuilt digest no longer matches.
     expect(() => verifyManifestBytes(BYTES, { ...state, manifestUri: 'https://other.example/m.json' }, check)).toThrow(
       /registration digest/,

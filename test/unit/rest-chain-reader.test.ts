@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { RestChainReader } from '../../src/transport/rest-chain-reader';
 import type { FetchLike, FetchResponse } from '../../src/transport/rest-chain-reader';
 import { TrueOpenError } from '../../src/errors/errors';
+import { bytesToBase64 } from '../../src/codec/wire';
+import { fromHex } from '../../src/util/bytes';
 
 function okJson(body: unknown): FetchResponse {
   return { ok: true, status: 200, json: async () => body };
@@ -140,6 +142,9 @@ describe('RestChainReader', () => {
    * that omitted them would be testing a response the chain never produces.
    */
   const TASK_ID = '11'.repeat(32);
+  // model_id is `bytes` with REST_BYTES_ENCODING_HASH32_LOWER_HEX as of TaskOrderV3
+  // (wire proto/task/v1/assignment.proto), so the gateway sends 64-hex, not a text slug.
+  const MODEL_ID = '33'.repeat(32);
   const pendingTask = (assignment: unknown) => ({
     task: {
       active: {
@@ -148,7 +153,7 @@ describe('RestChainReader', () => {
           accepted_input_hash: '44'.repeat(32),
           receipt_status: 'RECEIPT_STATUS_NONE',
           assignment_status: 'ASSIGNMENT_STATUS_PENDING',
-          model_id: '55'.repeat(32),
+          model_id: MODEL_ID,
           profile_version: '1',
           order_sequence: '0',
         },
@@ -169,6 +174,22 @@ describe('RestChainReader', () => {
     // task_id lives on the absent assignment view; it falls back to the queried id.
     expect(snap.taskId).toBe(TASK_ID);
     expect(snap.orderSequence).toBe(0n);
+    // Decoded through the same Hash32 path hub.v1 uses, so the two readers' model ids
+    // are comparable.
+    expect(snap.modelId).toBe(MODEL_ID);
+  });
+
+  it('queryTask accepts the base64 form of model_id and normalizes it to hex', async () => {
+    const b64 = bytesToBase64(fromHex(MODEL_ID));
+    const body = pendingTask(null);
+    (body.task.active.core as { model_id: string }).model_id = b64;
+    expect((await readTask(body)).modelId).toBe(MODEL_ID);
+  });
+
+  it('queryTask rejects a model_id that is neither hex nor a 32-byte base64 value', async () => {
+    const body = pendingTask(null);
+    (body.task.active.core as { model_id: string }).model_id = 'llama3_8b';
+    await expect(readTask(body)).rejects.toThrow(/malformed field model_id/);
   });
 
   // Pending shape 2: assignment exists, but no winner has been drawn.

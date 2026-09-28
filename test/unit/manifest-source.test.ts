@@ -7,7 +7,8 @@ import { createNodeManifestSource } from '../../src/node';
 import { GOLDEN_MANIFEST_BYTES, GOLDEN_MANIFEST_HASH, goldenState } from '../helpers/manifest-fixture';
 
 const WRONG = new TextEncoder().encode('{"not":"it"}');
-const IPFS_URI = 'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/manifests/golden.json';
+const CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+const IPFS_URI = `ipfs://${CID}/manifests/golden.json`;
 
 function readerOf(state: ProfileManifestState): ProfileManifestReader & { calls: number } {
   const r = {
@@ -177,6 +178,32 @@ describe('ManifestSource: ipfs://', () => {
     expect(r.source).toBe('mirror');
     expect(r.attempts[0]).toMatchObject({ code: 'MANIFEST_URI_SKIPPED' });
   });
+
+  /**
+   * The gateway is operator-configured and therefore fetched without the address policy,
+   * so a chain-provided path must never address anything outside /ipfs/<cid>. A URL
+   * parser resolves dot segments before the request is sent, so an unchecked
+   * `${base}/ipfs/${cid}/../../x` would become a GET for `${base}/x`.
+   */
+  it.each([
+    ['dot-dot segments', `ipfs://${CID}/../../v0/id`],
+    ['a trailing dot-dot', `ipfs://${CID}/manifests/..`],
+    ['a single-dot segment', `ipfs://${CID}/./manifests/golden.json`],
+    ['percent-encoded dot-dot', `ipfs://${CID}/%2E%2E/%2E%2E/v0/id`],
+  ])('refuses %s in the ipfs path instead of escaping the gateway prefix', async (_name, uri) => {
+    const state = goldenState({ manifestUri: uri });
+    const trusted = stubFetcher({ [MIRROR_URL]: GOLDEN_MANIFEST_BYTES });
+    const r = await new ManifestSource({
+      reader: readerOf(state), fetcher: stubFetcher({}), trustedFetcher: trusted,
+      ipfsGateway: 'http://127.0.0.1:8080', mirrors: [MIRROR],
+    }).fetchForState(state);
+
+    // The manifest still arrives, from the mirror; only the hostile URI is refused.
+    expect(r.source).toBe('mirror');
+    expect(r.attempts[0]).toMatchObject({ source: 'manifest_uri', code: 'MANIFEST_URI_INVALID' });
+    expect(trusted.urls).not.toContain('http://127.0.0.1:8080/v0/id');
+    for (const url of trusted.urls) expect(url.startsWith(`http://127.0.0.1:8080/ipfs/${CID}`) || url === MIRROR_URL).toBe(true);
+  });
 });
 
 describe('ManifestSource: runtime configuration', () => {
@@ -216,6 +243,33 @@ describe('ManifestSource: runtime configuration', () => {
     c.set('c', new Uint8Array([3]));
     expect(c.get('a')).toBeUndefined();
     expect(c.get('c')).toEqual(new Uint8Array([3]));
+  });
+
+  // The entry cap alone bounds the cache at maxEntries * MAX_MANIFEST_BYTES (256 MiB at
+  // the defaults), which is not a bound worth having.
+  it('MemoryManifestCache also evicts to stay inside its byte budget', () => {
+    const c = new MemoryManifestCache(64, 10);
+    c.set('a', new Uint8Array(6));
+    c.set('b', new Uint8Array(6));
+    expect(c.get('a')).toBeUndefined();
+    expect(c.get('b')).toHaveLength(6);
+  });
+
+  it('MemoryManifestCache re-counts bytes when a key is overwritten', () => {
+    const c = new MemoryManifestCache(64, 10);
+    c.set('a', new Uint8Array(6));
+    c.set('a', new Uint8Array(6)); // 12 bytes only if the old entry was double-counted
+    c.set('b', new Uint8Array(4));
+    expect(c.get('a')).toHaveLength(6);
+    expect(c.get('b')).toHaveLength(4);
+  });
+
+  it('MemoryManifestCache drops an entry larger than the whole budget rather than emptying itself', () => {
+    const c = new MemoryManifestCache(64, 10);
+    c.set('a', new Uint8Array(4));
+    c.set('big', new Uint8Array(11));
+    expect(c.get('big')).toBeUndefined();
+    expect(c.get('a')).toHaveLength(4);
   });
 });
 

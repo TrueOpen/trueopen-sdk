@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { u64ToString, stringToU64, bytesToBase64, base64ToBytes } from '../../src/codec/wire';
+import { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from '../../src/codec/wire';
+import { fromHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 
 describe('u64 <-> string', () => {
@@ -46,5 +47,40 @@ describe('base64 <-> bytes', () => {
     expect(base64ToBytes('AA')).toEqual(new Uint8Array([0])); // 4 padding bits, all zero
     expect(new TextDecoder().decode(base64ToBytes('Zm8='))).toBe('fo');
     expect(new TextDecoder().decode(base64ToBytes('Zm8'))).toBe('fo'); // unpadded variant
+  });
+});
+
+/**
+ * model_id became a Hash32 in TaskOrderV3 and is read from both hub.v1 and task.v1. Both
+ * readers decode it through this one function, so ProfileInfo.modelId and
+ * ChainTaskSnapshot.modelId cannot end up in different encodings.
+ */
+describe('hash32ToHex', () => {
+  const hex = 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b';
+  const b64 = bytesToBase64(fromHex(hex));
+
+  it('passes canonical lowercase 64-hex through untouched', () => {
+    expect(hash32ToHex(hex)).toBe(hex);
+  });
+
+  it('decodes the protojson base64 form to the same hex', () => {
+    expect(b64).not.toBe(hex);
+    expect(hash32ToHex(b64)).toBe(hex);
+  });
+
+  it('never base64-decodes something that is already hex', () => {
+    // '01'.repeat(32) is valid base64 text as well as valid hex; hex must win, otherwise
+    // the decode silently produces a different 32 bytes.
+    const ambiguous = '01'.repeat(32);
+    expect(hash32ToHex(ambiguous)).toBe(ambiguous);
+  });
+
+  it('rejects a base64 value that is not 32 bytes', () => {
+    expect(() => hash32ToHex(bytesToBase64(new Uint8Array(31)))).toThrowError(TrueOpenError);
+    expect(() => hash32ToHex(bytesToBase64(new Uint8Array(33)))).toThrowError(TrueOpenError);
+  });
+
+  it('rejects uppercase hex rather than folding it', () => {
+    expect(() => hash32ToHex(hex.toUpperCase())).toThrowError(TrueOpenError);
   });
 });

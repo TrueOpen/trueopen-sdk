@@ -1,10 +1,6 @@
 import { toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
-import {
-  orderEnvelopeSigningBytes,
-  cancelOrderSigningBytes,
-  userChallengeSigningBytes,
-} from '../order/order-signing';
+import { orderEnvelopeSigningBytes } from '../order/order-signing';
 import type { CosmosSecp256k1Signer } from './secp256k1';
 
 /** Signs signing bytes -> a hex-encoded 64-byte detached signature (verified as hex on-chain). */
@@ -31,46 +27,6 @@ export function signOrderEnvelope(
 ): Promise<string> {
   return signDetached(
     orderEnvelopeSigningBytes(chainId, ownerAddress, sessionId, orderSequence, canonicalOrderEnvelopeJson),
-    signer,
-  );
-}
-
-/** Signs a CancelOrder -> owner_signature (hex). */
-export function signCancelOrder(
-  chainId: string,
-  ownerAddress: string,
-  sessionId: string,
-  orderSequence: bigint,
-  signer: CosmosSecp256k1Signer,
-): Promise<string> {
-  return signDetached(cancelOrderSigningBytes(chainId, ownerAddress, sessionId, orderSequence), signer);
-}
-
-/** Signs a UserChallenge -> challenger_signature (hex). */
-export function signUserChallenge(
-  args: {
-    chainId: string;
-    sessionId: string;
-    taskId: string;
-    settlementId: string;
-    challengeKind: string;
-    evidenceDigest: string;
-    bondAmount: bigint;
-    requestedEvidence: readonly string[];
-  },
-  signer: CosmosSecp256k1Signer,
-): Promise<string> {
-  return signDetached(
-    userChallengeSigningBytes(
-      args.chainId,
-      args.sessionId,
-      args.taskId,
-      args.settlementId,
-      args.challengeKind,
-      args.evidenceDigest,
-      args.bondAmount,
-      args.requestedEvidence,
-    ),
     signer,
   );
 }

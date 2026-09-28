@@ -55,10 +55,8 @@ function fakeChain(): ChainClient {
       return { sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
-    async querySettlementFinality() { throw new Error('n/a'); },
     async createSession() { return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
     async cancelOrder(i) { return { taskId: 'task-1', cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
-    async userChallenge() { return { challengeId: 'ch-1', status: 'OPEN', challengeDeadlineHeight: 200n, resolveDeadlineHeight: 250n, bondLockedAmount: 1000n }; },
   };
 }
 

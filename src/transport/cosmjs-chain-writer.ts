@@ -1,12 +1,10 @@
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { TrueOpenError } from '../errors/errors';
-import { isChallengeKindEnabled } from '../types/node';
 import {
   TYPE_URL,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
-  decodeMsgUserChallengeResponse,
 } from './task-msgs';
 import type {
   ChainReader,
@@ -14,8 +12,6 @@ import type {
   CreateSessionResult,
   CancelOrderInput,
   CancelOrderResult,
-  UserChallengeInput,
-  UserChallengeResult,
 } from './chain-client';
 
 /**
@@ -29,8 +25,7 @@ import type {
  * re-calling it re-queries the account sequence and signs a **new** transaction, which
  * genuinely double-submits if the first one landed after all. What that costs differs per
  * message -- a duplicate `MsgCancelOrder` is rejected by the sequence that the first one
- * advanced, a duplicate `MsgCreateSession` wastes a fee and leaves a stray session, and a
- * duplicate `MsgUserChallenge` locks a second bond.
+ * advanced, and a duplicate `MsgCreateSession` wastes a fee and leaves a stray session.
  */
 export interface TxBroadcaster {
   /** Broadcasts without waiting and returns the transaction hash. Called exactly once. */
@@ -75,12 +70,10 @@ export interface CosmjsChainWriterOptions {
 
 /**
  * Broadcasts task user tx via CosmJS (implements the write side of ChainClient).
- * The detached signatures (owner_signature / challenger_signature) and evidence_digest
- * are all proto strings; callers pass in an already-computed hex/opaque string (see
- * signCancelOrder / signUserChallenge), and this layer does no byte encoding of its own.
- * The broadcast path needs a real signer and node, so it's covered by integration tests;
- * Msg construction, the challenge-enabled guard, and response decoding can be unit tested
- * with an injected TxBroadcaster.
+ * Authorization is the Cosmos account signature alone; neither Msg carries a detached
+ * signature. The broadcast path needs a real signer and node, so it's covered by
+ * integration tests; Msg construction and response decoding are unit tested with an
+ * injected TxBroadcaster.
  */
 export class CosmjsChainWriter {
   constructor(private readonly opts: CosmjsChainWriterOptions) {}
@@ -161,25 +154,6 @@ export class CosmjsChainWriter {
     const res = await this.broadcast([{ typeUrl: TYPE_URL.cancelOrder, value }]);
     return decodeMsgCancelOrderResponse(firstResponse(res, TYPE_URL.cancelOrder));
   }
-
-  async userChallenge(input: UserChallengeInput): Promise<UserChallengeResult> {
-    if (!isChallengeKindEnabled(input.kind)) {
-      throw new TrueOpenError('CHALLENGE', 'CHALLENGE_KIND_NOT_ENABLED', `challenge kind not enabled on chain: ${input.kind}`);
-    }
-    const value = {
-      signer: this.opts.signerAddress,
-      sessionId: input.sessionId,
-      taskId: input.taskId,
-      settlementId: input.settlementId,
-      challengeKind: input.kind,
-      evidenceDigest: input.evidenceDigest,
-      bondAmount: input.bondAmount,
-      requestedEvidence: [] as string[],
-      challengerSignature: input.challengerSignature,
-    };
-    const res = await this.broadcast([{ typeUrl: TYPE_URL.userChallenge, value }]);
-    return decodeMsgUserChallengeResponse(firstResponse(res, TYPE_URL.userChallenge));
-  }
 }
 
 function firstResponse(res: IndexedTx, typeUrl: string): Uint8Array {
@@ -195,9 +169,7 @@ export function composeChainClient(reader: ChainReader, writer: CosmjsChainWrite
   return {
     querySession: (id) => reader.querySession(id),
     querySessionNonce: (a) => reader.querySessionNonce(a),
-    querySettlementFinality: (s, t) => reader.querySettlementFinality(s, t),
     createSession: () => writer.createSession(),
     cancelOrder: (i) => writer.cancelOrder(i),
-    userChallenge: (i) => writer.userChallenge(i),
   };
 }

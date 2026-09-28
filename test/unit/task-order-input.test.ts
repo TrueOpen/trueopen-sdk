@@ -158,7 +158,6 @@ describe('resolveTaskOrderContext', () => {
     const hub = readerFor(1000, {
       'builder_set/by_height/1000': SET_BODY,
       'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14), randomness_hex: hexOf(0x01), source_tag: 'proposer_vrf_v1', verified: true } },
-      'reference_bucket/default': bucketBody('BUCKET_KIND_REFERENCE'),
       'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
     });
     const c = await resolveTaskOrderContext(hub, 'trueopen-localnet-1');
@@ -176,7 +175,6 @@ describe('resolveTaskOrderContext', () => {
         set: { ...SET_BODY.set, effective_height: '9999' },
       },
       'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14) } },
-      'reference_bucket/default': bucketBody('BUCKET_KIND_REFERENCE'),
       'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
     });
     await expect(resolveTaskOrderContext(hub, 'trueopen-localnet-1')).rejects.toMatchObject({

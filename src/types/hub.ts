@@ -99,7 +99,7 @@ export interface ModelState {
   readonly updatedHeight: bigint;
 }
 
-/** Trimmed-down SDK view of node hub.v1 ProfileState (Profiles list query; only discovery-relevant scalar fields, verification/pricing and other nested config are not expanded). */
+/** Trimmed-down SDK view of hub.v1 ProfileState (the Profile query; only discovery-relevant scalar fields, verification/pricing and other nested config are not expanded). */
 export interface ProfileInfo {
   readonly modelId: string;
   readonly profileVersion: bigint;
@@ -154,9 +154,8 @@ export interface BeaconView {
   readonly verified: boolean;
 }
 
-/** node hub.v1 parameter bucket kind (TaskOrderV1 fields 25/26 sign in its version). */
+/** hub.v1 parameter bucket kind. Orders sign only the timeout bucket version (TaskOrderV3.timeout_bucket_version). */
 export const BUCKET_KIND = {
-  REFERENCE: 'BUCKET_KIND_REFERENCE',
   TIMEOUT: 'BUCKET_KIND_TIMEOUT',
 } as const;
 

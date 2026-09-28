@@ -1,5 +1,5 @@
 import type { Transport } from '@connectrpc/connect';
-import type { ChainClient, CancelOrderResult, UserChallengeResult } from './transport/chain-client';
+import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { CosmosSecp256k1Signer } from './signer/secp256k1';
 import type { Eip712Signer } from './signer/eth-secp256k1';
 import { ethSecp256k1AddressMatches } from './signer/eth-secp256k1';
@@ -23,7 +23,6 @@ import { buildTaskOrder, resolveTaskOrderContext } from './order/task-order-inpu
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader } from './order/task-order-input';
 import { buildOpenTaskRequest } from './order/build-open-task';
 import { deriveTaskId } from './order/order-signing';
-import { signCancelOrder, signUserChallenge } from './signer/order-signer';
 import type { ChallengeKind } from './types/challenge';
 import { TrueOpenError, dataError } from './errors/errors';
 import { sha256 } from './codec/hash';
@@ -143,15 +142,6 @@ export interface OpenTaskResult extends OpenTaskAck {
   /** The on-chain context actually used (anchor / builder set / bucket version), kept for reuse and debugging. */
   readonly context: TaskOrderChainContext;
   readonly endpointsTried: number;
-}
-
-export interface ChallengeParams {
-  readonly sessionId: string;
-  readonly taskId: string;
-  readonly settlementId: string;
-  readonly kind: ChallengeKind;
-  readonly evidenceDigest: string;
-  readonly bondAmount: bigint;
 }
 
 /** A Builder/Nexus data source that can be subscribed to for the same task's OUTPUT. */
@@ -453,15 +443,9 @@ export class TrueOpenClient {
     return stream.nextExpectedSequence;
   }
 
+  /** Cancels a pending order. MsgCancelOrder is authorized by the account signature alone. */
   async cancelOrder(sessionId: string, orderSequence: bigint): Promise<CancelOrderResult> {
-    const ownerSignature = await signCancelOrder(
-      this.cfg.chainId,
-      this.cfg.userAddress,
-      sessionId,
-      orderSequence,
-      this.cfg.signer,
-    );
-    return this.cfg.chain.cancelOrder({ sessionId, orderSequence, ownerSignature });
+    return this.cfg.chain.cancelOrder({ sessionId, orderSequence });
   }
 
   /** A local, nexus-side snapshot of task status (informational only; the chain query is authoritative). */
@@ -776,32 +760,6 @@ export class TrueOpenClient {
         ? { sessionId, taskId, challengeKind, localEvidenceDigest }
         : { sessionId, taskId, challengeKind };
     return this.ingress.prepareChallenge(p);
-  }
-
-  /** File an on-chain UserChallenge: sign challenger_signature and submit MsgUserChallenge. */
-  async challenge(params: ChallengeParams): Promise<UserChallengeResult> {
-    const challengerSignature = await signUserChallenge(
-      {
-        chainId: this.cfg.chainId,
-        sessionId: params.sessionId,
-        taskId: params.taskId,
-        settlementId: params.settlementId,
-        challengeKind: params.kind,
-        evidenceDigest: params.evidenceDigest,
-        bondAmount: params.bondAmount,
-        requestedEvidence: [],
-      },
-      this.cfg.signer,
-    );
-    return this.cfg.chain.userChallenge({
-      sessionId: params.sessionId,
-      taskId: params.taskId,
-      settlementId: params.settlementId,
-      kind: params.kind,
-      evidenceDigest: params.evidenceDigest,
-      bondAmount: params.bondAmount,
-      challengerSignature,
-    });
   }
 
   private nextNonce(): Uint8Array {

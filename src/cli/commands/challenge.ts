@@ -19,23 +19,3 @@ export async function cmdChallengePrepare(
     await ctx.dispose();
   }
 }
-
-export async function cmdChallengeSubmit(
-  cfg: CliConfig,
-  mnemonic: string,
-  a: { session: string; task: string; settlement: string; kind: string; evidence: string; bond: string },
-): Promise<unknown> {
-  const ctx = await buildContext(cfg, mnemonic, { write: true, key: true });
-  try {
-    return await ctx.client.challenge({
-      sessionId: a.session,
-      taskId: a.task,
-      settlementId: a.settlement,
-      kind: a.kind as ChallengeKind,
-      evidenceDigest: a.evidence,
-      bondAmount: BigInt(a.bond),
-    });
-  } finally {
-    await ctx.dispose();
-  }
-}

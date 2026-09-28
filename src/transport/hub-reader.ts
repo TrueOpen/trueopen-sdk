@@ -105,7 +105,6 @@ export class HubReader {
     return list.map((m) => toModel(asObject(m)));
   }
 
-  /** Lists registered profiles (Profiles, with optional model_id / status filter). */
   /**
    * Looks up a single model profile. Placing an order must read this: the pricing's
    * min_order_value and verify_ratio_bps determine the lower bound for price_bid;
@@ -127,16 +126,6 @@ export class HubReader {
     return toProfileManifestState(asObject(body['profile'] ?? body));
   }
 
-  async listProfiles(opts?: { modelId?: string; status?: string }): Promise<ProfileInfo[]> {
-    const params: string[] = [];
-    if (opts?.modelId !== undefined && opts.modelId !== '') params.push(`model_id=${encodeURIComponent(opts.modelId)}`);
-    if (opts?.status !== undefined && opts.status !== '') params.push(`status=${encodeURIComponent(opts.status)}`);
-    const q = params.length > 0 ? `?${params.join('&')}` : '';
-    const body = await this.getJson(`/TrueOpen/hub/v1/profiles${q}`);
-    const list = body['profiles'];
-    if (!Array.isArray(list)) throw malformed('profiles array');
-    return list.map((p) => toProfile(asObject(p)));
-  }
 
   /** Looks up the builder set snapshot effective at a given block height. */
   async getBuilderSetAtHeight(height: bigint): Promise<BuilderSetSnapshot> {
@@ -246,17 +235,17 @@ export class HubReader {
   }
 
   /**
-   * Looks up the currently effective version of a parameter bucket (QueryReferenceBucket /
-   * QueryTimeoutBucket). The reference/timeout_bucket_version signed into the order must
-   * equal currentVersion, or the Keeper reports "signed parameter bucket version is not
-   * effective".
+   * Looks up the currently effective version of the timeout parameter bucket
+   * (QueryTimeoutBucket). The timeout_bucket_version signed into the order must equal
+   * currentVersion, or the Keeper reports "signed parameter bucket version is not
+   * effective". Wire has no reference bucket query.
    */
   async getParameterBucket(
     kind: typeof BUCKET_KIND[keyof typeof BUCKET_KIND],
     bucketKey = DEFAULT_PARAMETER_BUCKET_KEY,
   ): Promise<ParameterBucketView> {
-    const route = kind === BUCKET_KIND.REFERENCE ? 'reference_bucket' : 'timeout_bucket';
-    const body = await this.getJson(`/TrueOpen/hub/v1/${route}/${encodeURIComponent(bucketKey)}`);
+    if (kind !== BUCKET_KIND.TIMEOUT) throw malformed(`request: unsupported bucket kind ${String(kind)}`);
+    const body = await this.getJson(`/TrueOpen/hub/v1/timeout_bucket/${encodeURIComponent(bucketKey)}`);
     const bucket = asObject(body['bucket']);
     return {
       bucketKind: str(bucket, 'bucket_kind'),

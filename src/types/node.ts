@@ -1,5 +1,3 @@
-import type { TaskVerdict } from './task';
-import type { ChallengeKind, OptimisticFinalityStatus } from './challenge';
 
 /** node task.v1 failure_class (K9 taxonomy). */
 export type TaskFailureClass =
@@ -20,37 +18,21 @@ export interface StreamStateView {
   readonly status: 'ACTIVE' | 'IDLE' | 'CLOSED';
 }
 
-/** Query view of node task.v1 SettlementFinality. */
-export interface SettlementFinalityView {
-  readonly optimisticFinalityStatus: OptimisticFinalityStatus;
-  readonly challengeCloseHeight: bigint;
-  readonly maxChallengeResolveDeadlineHeight: bigint;
-  readonly taskFinalityHeight: bigint;
-  readonly claimableAfterHeight: bigint;
-}
-
-/** Query view of node task.v1 Settlement (the subset the SDK cares about). */
-export interface SettlementView extends SettlementFinalityView {
-  readonly sessionId: string;
-  readonly taskId: string;
-  readonly settlementId: string;
-  readonly taskVerdict: TaskVerdict;
-  readonly failureClass: TaskFailureClass;
-}
-
-/** The only challenge kind currently enabled on chain (node UserChallenge only accepts USER_REVALIDATION). */
-export const CHAIN_ENABLED_CHALLENGE_KINDS: readonly ChallengeKind[] = ['USER_REVALIDATION'];
-
-export function isChallengeKindEnabled(kind: ChallengeKind): boolean {
-  return CHAIN_ENABLED_CHALLENGE_KINDS.includes(kind);
-}
-
 /**
- * Key facts about an on-chain task (the active view from QueryTask). Needed by both
- * retrieval and stream subscription: task_hash is the first field of
- * TaskDataObjectRefV1, and winner_worker determines whose frame signature to verify.
+ * Key facts about an on-chain task (QueryTask). Needed by both retrieval and stream
+ * subscription: task_hash is the first field of TaskDataObjectRefV1, and winner_worker
+ * determines whose frame signature to verify.
+ *
+ * TaskViewV1 has two arms. `active` is the composite view of an uncompacted task;
+ * `terminal` is the fixed-size TaskTerminalSummaryState kept after cleanup compaction,
+ * which no longer carries accepted_input_hash, receipt_status or assignment_status
+ * (those read as "" here).
  */
 export interface ChainTaskSnapshot {
+  /** Which TaskViewV1 arm the chain returned. */
+  readonly view: 'active' | 'terminal';
+  /** TaskPhase without its prefix, for the terminal arm only (for example "SETTLED"). */
+  readonly terminalPhase?: string;
   readonly taskId: string;
   /** Canonical lowercase 64-hex; should match the SDK's locally computed task_hash byte for byte. */
   readonly acceptedTaskHash: string;

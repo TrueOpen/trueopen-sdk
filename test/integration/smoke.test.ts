@@ -13,7 +13,7 @@ import type {
 } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenClient } from '../../src/client';
 import { sha256 } from '../../src/codec/hash';
-import type { ChainClient, CancelOrderInput, UserChallengeInput } from '../../src/transport/chain-client';
+import type { ChainClient, CancelOrderInput } from '../../src/transport/chain-client';
 import type { TaskOrderIntent } from '../../src/order/task-order-input';
 import { defaultGenerationParams } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
@@ -86,7 +86,7 @@ const hub = {
 } as never;
 const PAYLOAD = new TextEncoder().encode('trueopen-input');
 
-interface ChainCap { cancel?: CancelOrderInput; challenge?: UserChallengeInput }
+interface ChainCap { cancel?: CancelOrderInput }
 interface IngressCap {
   openHeader?: { userAddress: string; requestEnvelope?: GenSDKEnvelope };
   fetch?: FetchOutputRefRequest;
@@ -105,10 +105,8 @@ function fakeChain(cap: ChainCap): ChainClient {
       return { sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
-    async querySettlementFinality() { throw new Error('n/a'); },
     async createSession() { return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
     async cancelOrder(i) { cap.cancel = i; return { taskId: 'task-1', cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
-    async userChallenge(i) { cap.challenge = i; return { challengeId: 'ch-1', status: 'OPEN', challengeDeadlineHeight: 200n, resolveDeadlineHeight: 250n, bondLockedAmount: 1000n }; },
   };
 }
 
@@ -226,16 +224,10 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     expect(plan.challengeOpen).toBe(true);
     expect(plan.estimatedBond?.amount).toBe('5');
 
-    // 8) open the on-chain challenge: challenger_signature is 128-hex and reaches the chain Msg
-    const ch = await client.challenge({ sessionId: SESSION, taskId, settlementId: 'st-1', kind: 'USER_REVALIDATION', evidenceDigest: 'evi', bondAmount: 1000n });
-    expect(ch.challengeId).toBe('ch-1');
-    expect(chainCap.challenge?.kind).toBe('USER_REVALIDATION');
-    expect(/^[0-9a-f]{128}$/.test(chainCap.challenge?.challengerSignature ?? '')).toBe(true);
-
-    // 9) cancel the order: owner_signature is 128-hex and the sequence advances
+    // 8) cancel the order: the sequence advances; no detached owner signature is sent
     const cancel = await client.cancelOrder(SESSION, 5n);
     expect(cancel.nextExpectedSequence).toBe(6n);
-    expect(/^[0-9a-f]{128}$/.test(chainCap.cancel?.ownerSignature ?? '')).toBe(true);
+    expect(chainCap.cancel?.ownerSignature).toBeUndefined();
   });
 
   it('separate SDK identity: the request envelope is signed by sdkSigner and verifies against the SDK public key', async () => {

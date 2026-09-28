@@ -37,7 +37,7 @@ import { PARTICIPANT_TYPE } from './types/hub';
 import { resolveFeeDenom } from './order/fee-denom';
 import type { TaskBuilderEndpoint } from './hub/stage1-routing';
 import type { ByteRange } from './transport/task-data-signbytes';
-import { ConnectError, Code } from '@connectrpc/connect';
+import { classifyNexusError } from './errors/classify';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { toHex, fromHex } from './util/bytes';
 import { bytesEqual } from './util/bytes';
@@ -1128,16 +1128,13 @@ function minBig(a: bigint, b: bigint): bigint {
 }
 
 /**
- * Whether a failed call is worth repeating against the same peer: only transport-level
- * failures (unavailable, deadline, aborted, overloaded) and a stream cut short. Anything
- * about the content -- a wrong range, a bad hash -- is final.
+ * Whether a failed call is worth repeating against the same peer: the classified error says
+ * so (a dropped connection, an expired request window, a peer that is busy or not ready, a
+ * stream cut short). Anything about the content -- a wrong range, a bad hash -- is final.
  */
 function isTransientTransportError(e: unknown): boolean {
-  if (e instanceof TrueOpenError) return e.code === 'NEXUS_FETCH_TASK_DATA_SHORT';
-  if (e instanceof ConnectError) {
-    return [Code.Unavailable, Code.DeadlineExceeded, Code.Aborted, Code.ResourceExhausted].includes(e.code);
-  }
-  return false;
+  const c = classifyNexusError(e);
+  return c instanceof TrueOpenError && c.retriable;
 }
 
 async function retryTransient<T>(attempts: number, run: () => Promise<T>): Promise<T> {

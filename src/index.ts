@@ -1,7 +1,8 @@
 export const SDK_WIRE_VERSION = 'SDK_WIRE_V1' as const;
 
 export { TrueOpenError, dataError } from './errors/errors';
-export type { ErrorFamily, TrueOpenErrorOptions } from './errors/errors';
+export type { ErrorFamily, ErrorCategory, TrueOpenErrorOptions } from './errors/errors';
+export { classifyNexusError, classifyBroadcastError, nexusErrorCode } from './errors/classify';
 
 export type { TaskState, TaskPhase, TaskVerdict } from './types/task';
 export type {

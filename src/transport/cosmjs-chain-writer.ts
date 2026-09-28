@@ -1,6 +1,7 @@
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { TrueOpenError } from '../errors/errors';
+import { classifyBroadcastError } from '../errors/classify';
 import {
   TYPE_URL,
   decodeMsgCreateSessionResponse,
@@ -88,12 +89,18 @@ export class CosmjsChainWriter {
    * nothing else.
    */
   private async broadcast(messages: EncodeObject[]): Promise<IndexedTx> {
-    const hash = await this.opts.broadcaster.signAndBroadcastSync(
-      this.opts.signerAddress,
-      messages,
-      this.opts.fee,
-      this.opts.memo,
-    );
+    let hash: string;
+    try {
+      hash = await this.opts.broadcaster.signAndBroadcastSync(
+        this.opts.signerAddress,
+        messages,
+        this.opts.fee,
+        this.opts.memo,
+      );
+    } catch (e) {
+      // CheckTx refused it (BroadcastTxError) -> CHAIN_TX_REJECTED with code and log kept.
+      throw classifyBroadcastError(e);
+    }
     const tx = await this.awaitInclusion(hash);
     if (tx.code !== 0) {
       // Included but rejected by the state machine. Not retriable: the same bytes will be
@@ -102,6 +109,7 @@ export class CosmjsChainWriter {
         'CHAIN_REJECT',
         'CHAIN_TX_FAILED',
         `tx ${hash} failed on chain with code ${tx.code}: ${tx.rawLog}`,
+        { category: 'chain-rejected', details: { txHash: hash, code: tx.code, log: tx.rawLog } },
       );
     }
     return tx;

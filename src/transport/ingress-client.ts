@@ -1,4 +1,5 @@
 import { createClient } from '@connectrpc/connect';
+import { classifyNexusError } from '../errors/classify';
 import type { Client, Transport } from '@connectrpc/connect';
 import { create } from '@bufbuild/protobuf';
 import {
@@ -161,10 +162,11 @@ export class IngressClient {
   private readonly auth?: IngressAuth;
 
   constructor(transport: Transport, auth?: IngressAuth) {
-    this.client = createClient(IngressAPI, transport);
+    this.client = classifyingClient(createClient(IngressAPI, transport));
     if (auth) this.auth = auth;
   }
 
+  /** The generated Connect client. Its errors are classified the same way as this class's. */
   get raw(): Client<typeof IngressAPI> {
     return this.client;
   }
@@ -475,8 +477,9 @@ export class IngressClient {
       }),
     );
 
+    // The peer answered with bytes other than the ones asked for: do not trust it again.
     const bad = (message: string): TrueOpenError =>
-      new TrueOpenError('NEXUS_INGRESS', 'NEXUS_FETCH_TASK_DATA_RANGE_INVALID', message);
+      new TrueOpenError('NEXUS_INGRESS', 'NEXUS_FETCH_TASK_DATA_RANGE_INVALID', message, { switchSource: true, category: 'data-corrupt' });
     const chunks: Uint8Array[] = [];
     let header: { totalSizeBytes: bigint; servedRange: ByteRange; mediaType: string } | undefined;
     let next = 0n; // absolute offset the next chunk must start at
@@ -711,4 +714,39 @@ async function sig64(signer: CosmosSecp256k1Signer, bytes: Uint8Array): Promise<
     throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BAD_SIGNATURE_LEN', `signature must be 64 bytes R||S, got ${sig.length}`);
   }
   return sig;
+}
+
+/**
+ * Wraps every method of the generated client so a Connect error surfaces as a typed
+ * TrueOpenError (see classifyNexusError): unary and client-streaming calls reject with it, and
+ * server streams throw it from `next()`.
+ */
+function classifyingClient<T extends object>(client: T): T {
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]): unknown => {
+        let out: unknown;
+        try {
+          out = (value as (...a: unknown[]) => unknown).apply(target, args);
+        } catch (e) {
+          throw classifyNexusError(e);
+        }
+        if (out instanceof Promise) return out.catch((e: unknown) => { throw classifyNexusError(e); });
+        if (out !== null && typeof out === 'object' && Symbol.asyncIterator in out) {
+          return classifyingIterable(out as AsyncIterable<unknown>);
+        }
+        return out;
+      };
+    },
+  });
+}
+
+async function* classifyingIterable<T>(source: AsyncIterable<T>): AsyncGenerator<T> {
+  try {
+    yield* source;
+  } catch (e) {
+    throw classifyNexusError(e);
+  }
 }

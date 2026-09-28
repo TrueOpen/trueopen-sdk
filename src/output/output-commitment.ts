@@ -23,6 +23,17 @@ function malformed(what: string): TrueOpenError {
 }
 
 /**
+ * A frame from the peer that does not verify (bad signature, wrong root, gap, a duplicate that
+ * disagrees). Same code as malformed, but it is the peer's fault: switch source, do not retry it.
+ */
+function frameFault(what: string): TrueOpenError {
+  return new TrueOpenError('DATA', 'OUTPUT_COMMITMENT_MALFORMED', `output commitment: ${what}`, {
+    switchSource: true,
+    category: 'data-corrupt',
+  });
+}
+
+/**
  * Computes output_hash from the chunk list.
  *
  * n >= 1: an empty output is a single zero-length leaf, not an empty tree -- MmrEmptyV1 is
@@ -292,20 +303,20 @@ export class OutputStreamVerifier {
    */
   accept(frame: OutputFrame): void {
     if (frame.seq !== this.acc.leafCount) {
-      throw malformed(`seq must be ${this.acc.leafCount}, got ${frame.seq} (the first frame must be 0, incrementing by 1 thereafter)`);
+      throw frameFault(`seq must be ${this.acc.leafCount}, got ${frame.seq} (the first frame must be 0, incrementing by 1 thereafter)`);
     }
     const text = Uint8Array.from(frame.text);
     const candidate = this.acc.clone();
     const root = candidate.append(text);
     if (!bytesEqual(root, frame.mmrRoot)) {
-      throw malformed(`frame ${frame.seq} mmr_root mismatch: computed ${toHex(root)}, frame carries ${toHex(frame.mmrRoot)}`);
+      throw frameFault(`frame ${frame.seq} mmr_root mismatch: computed ${toHex(root)}, frame carries ${toHex(frame.mmrRoot)}`);
     }
     const ok = verifyOutputChunkSignature(
       { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, seq: frame.seq, mmrRoot: frame.mmrRoot },
       frame.signature,
       this.cfg.workerServicePubKey,
     );
-    if (!ok) throw malformed(`frame ${frame.seq} worker signature invalid`);
+    if (!ok) throw frameFault(`frame ${frame.seq} worker signature invalid`);
 
     this.acc = candidate;
     this.chunks.push(text);
@@ -328,25 +339,25 @@ export class OutputStreamVerifier {
       return 'accepted';
     }
     if (frame.seq < 0n || frame.seq > this.acc.leafCount) {
-      throw malformed(`seq must be <= ${this.acc.leafCount}, got ${frame.seq}`);
+      throw frameFault(`seq must be <= ${this.acc.leafCount}, got ${frame.seq}`);
     }
 
     const index = Number(frame.seq);
     if (!Number.isSafeInteger(index) || index < 0 || index >= this.chunks.length) {
-      throw malformed(`duplicate seq ${frame.seq} is outside retained checkpoint`);
+      throw frameFault(`duplicate seq ${frame.seq} is outside retained checkpoint`);
     }
     const expectedText = this.chunks[index]!;
-    if (!bytesEqual(frame.text, expectedText)) throw malformed(`duplicate frame ${frame.seq} text mismatch`);
+    if (!bytesEqual(frame.text, expectedText)) throw frameFault(`duplicate frame ${frame.seq} text mismatch`);
     const expectedRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, this.chunks, index + 1);
     if (!bytesEqual(frame.mmrRoot, expectedRoot)) {
-      throw malformed(`duplicate frame ${frame.seq} mmr_root mismatch`);
+      throw frameFault(`duplicate frame ${frame.seq} mmr_root mismatch`);
     }
     const ok = verifyOutputChunkSignature(
       { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, seq: frame.seq, mmrRoot: frame.mmrRoot },
       frame.signature,
       this.cfg.workerServicePubKey,
     );
-    if (!ok) throw malformed(`duplicate frame ${frame.seq} worker signature invalid`);
+    if (!ok) throw frameFault(`duplicate frame ${frame.seq} worker signature invalid`);
     return 'duplicate';
   }
 

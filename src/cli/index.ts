@@ -6,7 +6,7 @@ import { cmdAddress, cmdBuilders } from './commands/misc';
 import { cmdSessionCreate, cmdSessionGet } from './commands/session';
 import { cmdOrderSubmit, cmdOrderCancel } from './commands/order';
 import { cmdTaskStatus, cmdTaskWatch } from './commands/task';
-import { cmdOutputRef, cmdOutputStream, cmdOutputGet } from './commands/output';
+import { cmdOutputStream, cmdOutputGet } from './commands/output';
 import { cmdChallengePrepare } from './commands/challenge';
 
 const program = new Command();
@@ -81,16 +81,6 @@ task
   .action((s: string, t: string, a: { fromCursor?: string }) => watch(s, t, a.fromCursor));
 
 const output = program.command('output');
-output
-  .command('ref')
-  .argument('<session>')
-  .argument('<task>')
-  .option('--access-level <l>', 'package | sealed_key')
-  .option('--usage <u>')
-  .description('fetch the retrieval credential + commitment')
-  .action((s: string, t: string, a: { accessLevel?: string; usage?: string }) =>
-    run((cfg, m) => cmdOutputRef(cfg, m, s, t, a.accessLevel, a.usage)),
-  );
 output
   .command('get')
   .argument('<session>')

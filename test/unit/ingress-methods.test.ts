@@ -1,13 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRouterTransport } from '@connectrpc/connect';
-import { create } from '@bufbuild/protobuf';
-import {
-  IngressAPI,
-  CredentialV1Schema,
-} from '../../src/gen/nexus/v1/ingress_pb.js';
+import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type {
-  FetchOutputRefRequest,
-  RefreshCredentialRequest,
   PrepareChallengeRequest,
   GetTaskEventsRequest,
   SubscribeOutputRequest,
@@ -16,9 +10,7 @@ import type {
 import { IngressClient } from '../../src/transport/ingress-client';
 import type { IngressAuth } from '../../src/transport/ingress-client';
 import {
-  fetchOutputRefBodyDigest,
   getTaskEventsBodyDigest,
-  refreshCredentialBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
@@ -28,9 +20,7 @@ import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/sec
 
 // Independent Python oracle golden values (per-method field order for nexus body_digest)
 const G = {
-  fetch: 'dc59dcf8cce7492629cbd6536747bf79e23db60af9f49baf980e09a3df8c185b',
   events: '1b778156e522d5f03f85fe3f5fb32966585408a9cab40e1887815ab9cfd332d8',
-  refresh: 'e48446194c29b2a25851568219ba5891f87831b6cbc4670630e62e14a6c9d17a',
   prepare: 'ba8ef5c4f10b559d8e67e2bc2c0786e48b5b9305eb72b6335ae15b2fbd9b70ea',
   subscribe: '2e2aed93c4a53d587cec600418f365a52a2be80a2e99694a08e0be1c39ed321f',
   // Three fields (session_id, task_id, output_id). output_id is deprecated but still goes into
@@ -43,9 +33,7 @@ const G = {
 
 describe('body_digest builders (nexus oracle golden)', () => {
   it('every method\'s field order matches byte-for-byte', () => {
-    expect(toHex(fetchOutputRefBodyDigest('sess-1', 'task-1', 'trueopen1u', 'SEALED_KEY', 'SDK_DELIVERY'))).toBe(G.fetch);
     expect(toHex(getTaskEventsBodyDigest('sess-1', 'task-1', '42'))).toBe(G.events);
-    expect(toHex(refreshCredentialBodyDigest('cred-1', 'sess-1', 'task-1', 'trueopen1u', 'SDK_DELIVERY', 1893456000000n))).toBe(G.refresh);
     expect(toHex(prepareChallengeBodyDigest('sess-1', 'task-1', 'USER_REVALIDATION', new Uint8Array([0xde, 0xad])))).toBe(G.prepare);
     expect(toHex(subscribeOutputBodyDigest('sess-1', 'task-1'))).toBe(G.subscribe);
     expect(toHex(ackOutputBodyDigest('sess-1', 'task-1'))).toBe(G.ack);
@@ -68,8 +56,6 @@ const auth: IngressAuth = {
 };
 
 interface Captured {
-  fetch?: FetchOutputRefRequest;
-  refresh?: RefreshCredentialRequest;
   prepare?: PrepareChallengeRequest;
   events?: GetTaskEventsRequest;
   subscribe?: SubscribeOutputRequest;
@@ -79,14 +65,6 @@ interface Captured {
 function client(cap: Captured, withAuth = true): IngressClient {
   const transport = createRouterTransport(({ service }) => {
     service(IngressAPI, {
-      fetchOutputRef(req: FetchOutputRefRequest) {
-        cap.fetch = req;
-        return { outputRef: undefined, credential: undefined };
-      },
-      refreshCredential(req: RefreshCredentialRequest) {
-        cap.refresh = req;
-        return { credential: undefined, outputRef: undefined };
-      },
       prepareChallenge(req: PrepareChallengeRequest) {
         cap.prepare = req;
         return { challengeOpen: true, challengeCloseHeight: 999n, requiredEvidence: ['e1'], estimatedBond: { denom: 'utrueopen', amount: '5' }, estimatedGas: 21000n };
@@ -110,21 +88,6 @@ function client(cap: Captured, withAuth = true): IngressClient {
 }
 
 describe('IngressClient signed methods (router transport)', () => {
-  it('fetchOutputRef signs and maps access_level/usage', async () => {
-    const cap: Captured = {};
-    await client(cap).fetchOutputRef({ sessionId: 'sess-1', taskId: 'task-1', requester: 'trueopen1u', accessLevel: 'SEALED_KEY', usage: 'SDK_DELIVERY' });
-    expect(cap.fetch?.accessLevel).toBe(1); // SEALED_KEY
-    expect(toHex(cap.fetch?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.fetch);
-    expect(cap.fetch?.requestEnvelope?.method).toBe('FetchOutputRef');
-  });
-
-  it('refreshCredential body_digest uses credential_id', async () => {
-    const cap: Captured = {};
-    const credential = create(CredentialV1Schema, { credentialId: 'cred-1' });
-    await client(cap).refreshCredential({ credential, sessionId: 'sess-1', taskId: 'task-1', recipient: 'trueopen1u', usage: 'SDK_DELIVERY', requestedValidUntil: 1893456000000n });
-    expect(toHex(cap.refresh?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.refresh);
-  });
-
   it('prepareChallenge maps the request and returns a plan', async () => {
     const cap: Captured = {};
     const res = await client(cap).prepareChallenge({ sessionId: 'sess-1', taskId: 'task-1', challengeKind: 'USER_REVALIDATION', localEvidenceDigest: new Uint8Array([0xde, 0xad]) });
@@ -163,7 +126,7 @@ describe('IngressClient signed methods (router transport)', () => {
 
   it('a signed method throws when there is no auth', async () => {
     await expect(
-      client({}, false).fetchOutputRef({ sessionId: 's', taskId: 't', requester: 'r', accessLevel: 'PACKAGE', usage: 'u' }),
+      client({}, false).prepareChallenge({ sessionId: 's', taskId: 't', challengeKind: 'USER_REVALIDATION' }),
     ).rejects.toThrow(/auth/);
   });
 });

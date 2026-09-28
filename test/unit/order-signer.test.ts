@@ -5,7 +5,6 @@ import {
   secp256k1PublicKey,
   verifyCosmosSecp256k1,
 } from '../../src/signer/secp256k1';
-import { signOrderEnvelope } from '../../src/signer/order-signer';
 import { orderEnvelopeSigningBytes } from '../../src/order/order-signing';
 
 // Real golden values: fixed private key 0x01..0x20, produced by node's SignWithSecp256k1ForTest.
@@ -37,8 +36,9 @@ describe('secp256k1 signer (real golden from chain)', () => {
   });
 
   it('user_signature matches the golden value byte-for-byte (deterministic RFC6979 + low-S)', async () => {
-    const sig = await signOrderEnvelope('trueopen-devnet-1', 'trueopen1testuser', 'sess-1', 3n, ENVELOPE, privKeySecp256k1Signer(PRIV));
-    expect(sig).toBe(GOLDEN_SIG);
+    const message = orderEnvelopeSigningBytes('trueopen-devnet-1', 'trueopen1testuser', 'sess-1', 3n, ENVELOPE);
+    const sig = await privKeySecp256k1Signer(PRIV)(message);
+    expect(toHex(sig.subarray(0, 64))).toBe(GOLDEN_SIG);
   });
 
   it('local sign/verify round trip passes', async () => {

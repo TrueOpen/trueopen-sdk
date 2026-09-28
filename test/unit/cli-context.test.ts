@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ethSecp256k1Address, secp256k1Address } from '../../src/index';
+import { ethSecp256k1Address } from '../../src/index';
 import { TRUEOPEN_HD_PATH, deriveIdentity, resolveNexusCandidates, resolveNexusCandidateEndpoints, queryAcrossNexus } from '../../src/cli/context';
 import type { Ctx } from '../../src/cli/context';
 import { resolveConfig } from '../../src/cli/config';
@@ -25,8 +25,6 @@ describe('cli context', () => {
     const id = await deriveIdentity(MN, 'trueopen');
     // coin_type 118 (Cosmos convention) - same mnemonic, different private key.
     expect(id.address).not.toBe('trueopen14yrq4wjw4jkjejfcvxnt2ew2fyp84xzwknntwd');
-    // Same private key but derived via ripemd160(sha256(compressed)) (the earlier Cosmos scheme).
-    expect(id.address).not.toBe(secp256k1Address(id.pubKey, 'trueopen'));
   });
 
   it('resolveNexusCandidates returns only the explicit nexusUrl by itself', async () => {

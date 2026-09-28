@@ -13,7 +13,6 @@ import {
   recoverEip712PubKey,
   verifyEip712,
 } from '../../src/signer/eth-secp256k1';
-import { secp256k1Address } from '../../src/signer/secp256k1';
 import { toHex, fromHex } from '../../src/util/bytes';
 import { bech32 } from '@scure/base';
 
@@ -68,10 +67,8 @@ describe('EVM-style address derivation', () => {
     expect(ethSecp256k1Address(full, 'trueopen')).toBe(want);
   });
 
-  it('differs from the cosmos-style address (not the same identity)', () => {
-    // Sanity check: the same public key must produce different addresses under the two derivation schemes. If they were equal, one side would be wrong.
+  it('matches the account address only, not the operator address', () => {
     const compressed = fromHex(a.pub_compressed);
-    expect(secp256k1Address(compressed, 'trueopen')).not.toBe(a.account_bech32);
     expect(ethSecp256k1AddressMatches(a.account_bech32, compressed, 'trueopen')).toBe(true);
     expect(ethSecp256k1AddressMatches(a.operator_bech32, compressed, 'trueopen')).toBe(false);
   });

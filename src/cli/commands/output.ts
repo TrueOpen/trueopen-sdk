@@ -1,29 +1,8 @@
-import { buildContext, queryAcrossNexus } from '../context';
+import { buildContext } from '../context';
 import { fromHex } from '../../util/bytes';
 import { TrueOpenError } from '../../errors/errors';
 import { FinishReasonV1 } from '../../gen/task/v1/evidence_pb.js';
 import type { CliConfig } from '../config';
-import type { AccessLevelName } from '../../transport/sdk-request-envelope';
-
-export async function cmdOutputRef(
-  cfg: CliConfig,
-  mnemonic: string,
-  session: string,
-  task: string,
-  accessLevel?: string,
-  usage?: string,
-): Promise<unknown> {
-  const ctx = await buildContext(cfg, mnemonic, { nexus: true, key: true });
-  try {
-    const opts: { accessLevel?: AccessLevelName; usage?: string } = {};
-    if (accessLevel) opts.accessLevel = accessLevel.toUpperCase() === 'PACKAGE' ? 'PACKAGE' : 'SEALED_KEY';
-    if (usage) opts.usage = usage;
-    // A task only has state on the Task Builder that received the order, so we locate it across candidate endpoints.
-    return await queryAcrossNexus(ctx, (client) => client.fetchOutputRef(session, task, opts));
-  } finally {
-    await ctx.dispose();
-  }
-}
 
 /**
  * Retrieve the output body over the task data plane.

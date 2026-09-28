@@ -4,22 +4,14 @@ export { TrueOpenError, dataError } from './errors/errors';
 export type { ErrorFamily, ErrorCategory, TrueOpenErrorOptions } from './errors/errors';
 export { classifyNexusError, classifyBroadcastError, nexusErrorCode } from './errors/classify';
 
-export type { TaskState, TaskPhase, TaskVerdict } from './types/task';
-export type {
-  ChallengeKind,
-  OptimisticFinalityStatus,
-  EvidenceRequestStatus,
-  ChallengeOutcome,
-} from './types/challenge';
-export type { CredentialUsage, OutputRef, RawChunk, VerifiedChunk, ChunkBoundary } from './types/dataplane';
-
-export { ChunkVerifier } from './output/chunk-verifier';
-
-export { phaseToState } from './task/phase-map';
+// Task lifecycle enums come straight from the wire contract.
+export { TaskPhase, AssignmentStatus, ReceiptStatus, VerificationStatus, SettlementStatus } from './gen/task/v1/assignment_pb.js';
+export { TaskVerdict, TaskFailureClass } from './gen/task/v1/settlement_pb.js';
+export { TaskFinalityStatusV1 } from './gen/shared/v1/common_pb.js';
 
 export { u64ToString, stringToU64, bytesToBase64, base64ToBytes } from './codec/wire';
 
-export type { TaskFailureClass, StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
+export type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 
 export type {
   ChainReader,
@@ -79,11 +71,6 @@ export type {
   CreateTrueOpenChainClientConfig,
   ConnectTrueOpenChainClientOptions,
 } from './transport/trueopen-chain-client';
-
-export { reduce, initialState } from './state/local-state';
-export type { LocalTaskState, TaskEvent, AttentionIssue } from './state/local-state';
-export { reconcile } from './state/reconcile';
-export type { ChainTaskView } from './state/reconcile';
 
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
@@ -190,28 +177,22 @@ export {
   secp256k1PublicKey,
   verifyCosmosSecp256k1,
   verifySecp256k1Digest,
-  secp256k1Address,
-  secp256k1AddressMatches,
 } from './signer/secp256k1';
 export type { CosmosSecp256k1Signer, Secp256k1DigestSigner } from './signer/secp256k1';
-export { signDetached, signOrderEnvelope } from './signer/order-signer';
 
 export { frame4, i64be, u64be } from './codec/frame';
 export {
   SDK_REQUEST_DOMAIN,
   sdkRequestSignBytes,
   bodyDigest,
-  submitOrderBodyDigest,
   openTaskBodyDigest,
-  fetchOutputRefBodyDigest,
   getTaskEventsBodyDigest,
-  refreshCredentialBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
   signSdkRequestEnvelope,
 } from './transport/sdk-request-envelope';
-export type { SdkRequestEnvelopeFields, SignedSdkRequestEnvelope, AccessLevelName } from './transport/sdk-request-envelope';
+export type { SdkRequestEnvelopeFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
 
 export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES } from './transport/ingress-client';
 export {
@@ -231,7 +212,7 @@ export type {
   ByteRange,
   TaskDataRequestAuthFields,
 } from './transport/task-data-signbytes';
-export type { OpenTaskInput, OpenTaskAck, SubmitOrderAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
+export type { OpenTaskInput, OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
 
 // ---- MMR commitment for streamed output (wired into both the SubscribeOutput and retrieval paths) ----
 export { mmrLeaf, mmrNode, mmrEmpty, mmrRoot, mmrPrefixRoot, MmrAccumulator } from './codec/mmr';

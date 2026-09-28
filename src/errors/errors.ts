@@ -4,7 +4,6 @@ export type ErrorFamily =
   | 'NEXUS_INGRESS'
   | 'CHAIN_REJECT'
   | 'DATA'
-  | 'CREDENTIAL'
   | 'CHALLENGE';
 
 /**

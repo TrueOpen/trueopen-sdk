@@ -5,9 +5,7 @@ import type { Eip712Signer } from './signer/eth-secp256k1';
 import { ethSecp256k1AddressMatches } from './signer/eth-secp256k1';
 import { IngressClient } from './transport/ingress-client';
 import type { OpenTaskAck, TaskStatusView } from './transport/ingress-client';
-import type { AccessLevelName } from './transport/sdk-request-envelope';
 import type {
-  FetchOutputRefResponse,
   PrepareChallengeResponse,
   GetTaskEventsResponse,
 } from './gen/nexus/v1/ingress_pb.js';
@@ -23,7 +21,6 @@ import { buildTaskOrder, resolveTaskOrderContext } from './order/task-order-inpu
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader } from './order/task-order-input';
 import { buildOpenTaskRequest } from './order/build-open-task';
 import { deriveTaskId } from './order/order-signing';
-import type { ChallengeKind } from './types/challenge';
 import { TrueOpenError, dataError } from './errors/errors';
 import { sha256 } from './codec/hash';
 import { outputHash as outputMmrRoot, OutputStreamVerifier, verifyOutputFinSignature } from './output/output-commitment';
@@ -837,21 +834,6 @@ export class TrueOpenClient {
     return (await hub.getLatestHeight()) + BigInt(this.cfg.requestTtlBlocks ?? 10);
   }
 
-  /** Fetch a retrieval credential (defaults to the SEALED_KEY access level, usage SDK_DELIVERY). The V1 data plane is plaintext; the credential only authorizes retrieval and carries no key material. */
-  fetchOutputRef(
-    sessionId: string,
-    taskId: string,
-    opts?: { accessLevel?: AccessLevelName; usage?: string },
-  ): Promise<FetchOutputRefResponse> {
-    return this.ingress.fetchOutputRef({
-      sessionId,
-      taskId,
-      requester: this.cfg.userAddress,
-      accessLevel: opts?.accessLevel ?? 'SEALED_KEY',
-      usage: opts?.usage ?? 'SDK_DELIVERY',
-    });
-  }
-
   /**
    * Subscribe to output as a stream. Yields verified text segments frame by frame.
    *
@@ -1066,7 +1048,8 @@ export class TrueOpenClient {
   prepareChallenge(
     sessionId: string,
     taskId: string,
-    challengeKind: ChallengeKind,
+    /** The challenge kind name nexus expects (a free-form string on the wire). */
+    challengeKind: string,
     localEvidenceDigest?: Uint8Array,
   ): Promise<PrepareChallengeResponse> {
     const p =

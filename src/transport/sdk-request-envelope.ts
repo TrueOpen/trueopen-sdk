@@ -2,8 +2,6 @@ import { sha256 } from '../codec/hash';
 import { frame4, i64be, u64be } from '../codec/frame';
 import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
 
-export type AccessLevelName = 'PACKAGE' | 'SEALED_KEY';
-
 const enc = new TextEncoder();
 
 /** Fixed domain separator (nexus internal/sdkauth RequestDomain). */
@@ -47,32 +45,6 @@ export function bodyDigest(...fields: Uint8Array[]): Uint8Array {
 }
 
 /**
- * body_digest for SubmitOrder (field order matches nexus submitOrderBodyDigest).
- * Since nexus PR#10, the payload is appended at the end (the plaintext input body; the V1 dataplane transmits it in plaintext).
- */
-export function submitOrderBodyDigest(m: {
-  readonly orderEnvelope: Uint8Array;
-  readonly payloadRef: string;
-  readonly signature: Uint8Array; // raw 64-byte user order signature
-  readonly sessionId: string;
-  readonly orderSequence: bigint;
-  readonly userAddress: string;
-  readonly signatureScheme: string;
-  readonly payload: Uint8Array; // the plaintext input body
-}): Uint8Array {
-  return bodyDigest(
-    m.orderEnvelope,
-    enc.encode(m.payloadRef),
-    m.signature,
-    enc.encode(m.sessionId),
-    u64be(m.orderSequence),
-    enc.encode(m.userAddress),
-    enc.encode(m.signatureScheme),
-    m.payload,
-  );
-}
-
-/**
  * body_digest for OpenTask (field order strictly matches openTaskBodyDigest in
  * nexus internal/ingress/taskdata.go:240-247):
  *   order_envelope, payload_ref, signature, session_id, u64be(order_sequence),
@@ -113,39 +85,9 @@ export function openTaskBodyDigest(m: {
 
 const e = enc;
 
-/** FetchOutputRef body_digest (field order matches nexus fetchOutputRefBodyDigest). */
-export function fetchOutputRefBodyDigest(
-  sessionId: string,
-  taskId: string,
-  requester: string,
-  accessLevel: AccessLevelName,
-  usage: string,
-): Uint8Array {
-  return bodyDigest(e.encode(sessionId), e.encode(taskId), e.encode(requester), e.encode(accessLevel), e.encode(usage));
-}
-
 /** body_digest for GetTaskEvents. */
 export function getTaskEventsBodyDigest(sessionId: string, taskId: string, fromCursor: string): Uint8Array {
   return bodyDigest(e.encode(sessionId), e.encode(taskId), e.encode(fromCursor));
-}
-
-/** body_digest for RefreshCredential (requested_valid_until is i64be). */
-export function refreshCredentialBodyDigest(
-  credentialId: string,
-  sessionId: string,
-  taskId: string,
-  recipient: string,
-  usage: string,
-  requestedValidUntil: bigint,
-): Uint8Array {
-  return bodyDigest(
-    e.encode(credentialId),
-    e.encode(sessionId),
-    e.encode(taskId),
-    e.encode(recipient),
-    e.encode(usage),
-    i64be(requestedValidUntil),
-  );
 }
 
 /** body_digest for PrepareChallenge (local_evidence_digest is raw bytes, and may be empty). */

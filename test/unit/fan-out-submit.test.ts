@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from '../../src/transport/fan-out-submit';
 import { TrueOpenError } from '../../src/errors/errors';
-import type { SubmitOrderAck } from '../../src/transport/ingress-client';
+import type { OpenTaskAck } from '../../src/transport/ingress-client';
 
 // fan-out is transparent to the request body (generic), so a minimal placeholder is enough.
 const REQ = { marker: "req" };
@@ -13,7 +13,7 @@ const endpoints = [
 
 describe('fanOutToEndpoints', () => {
   it('submits concurrently, succeeds if any one is accepted', async () => {
-    const submit = async (endpoint: { serviceEndpoint: string }): Promise<SubmitOrderAck> =>
+    const submit = async (endpoint: { serviceEndpoint: string }): Promise<OpenTaskAck> =>
       ({ taskId: 't', accepted: endpoint.serviceEndpoint.includes('b'), reason: '', sessionId: 's' });
     const res = await fanOutToEndpoints(REQ, endpoints, submit);
     expect(res.accepted).toBe(true);
@@ -24,7 +24,7 @@ describe('fanOutToEndpoints', () => {
   // This test used to assert only that the message matched, which is how the
   // thrown error came to carry no detail at all despite its name.
   it('throws with details when all fail/reject', async () => {
-    const submit = async (endpoint: { serviceEndpoint: string }): Promise<SubmitOrderAck> => {
+    const submit = async (endpoint: { serviceEndpoint: string }): Promise<OpenTaskAck> => {
       // One endpoint answers with a rejection ACK, the others throw: both
       // outcomes have to survive on the thrown error.
       if (endpoint.serviceEndpoint.includes('b')) {
@@ -39,7 +39,7 @@ describe('fanOutToEndpoints', () => {
     );
 
     expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
-    const failure = err as TaskBuilderAllEndpointsFailedError<(typeof endpoints)[number], SubmitOrderAck>;
+    const failure = err as TaskBuilderAllEndpointsFailedError<(typeof endpoints)[number], OpenTaskAck>;
     expect(failure.code).toBe('TASK_BUILDER_ALL_ENDPOINTS_FAILED');
     expect(failure.retriable).toBe(true);
     // The base constructor sets name to TrueOpenError, so the subclass has to

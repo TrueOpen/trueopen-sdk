@@ -137,7 +137,6 @@ Commands that need no key: `builders`, `session get`, `task status`.
 | `order cancel ...` | v | v | v | v | | gas |
 | `task status <s> <t>` | | v | | | v | none |
 | `task watch <s> <t>` | v | v | | v | v | none |
-| `output ref <s> <t>` | v | v | | v | v | none |
 | `output get <s> <t> [task-hash] [output-hash]` | v | v | | v | v | none |
 | `output stream <s> <t> [task-hash] [worker-pubkey]` | v | v | | v | v | none |
 | `challenge prepare <s> <t> <kind>` | v | v | | v | v | none |
@@ -303,15 +302,6 @@ trueopen task watch 1a50a587...2e3f 61ae9b89...4dd0 \
 ```
 
 ---
-
-### `trueopen output ref <session> <task>`
-
-Fetches a retrieval credential and its commitment.
-
-| Parameter | Description |
-|---|---|
-| `--access-level <l>` | `package` \| `sealed_key` (default `sealed_key`) |
-| `--usage <u>` | a usage tag |
 
 ### `trueopen output get <session> <task> [task-hash] [output-hash]`
 

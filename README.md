@@ -182,7 +182,6 @@ for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
-| `fetchOutputRef(sessionId, taskId, opts?)` | fetches a retrieval credential (superseded by the task data plane, see section 4) |
 | `prepareChallenge(sessionId, taskId, kind, localEvidenceDigest?)` | prepares challenge material (does not submit a verdict) |
 
 ---
@@ -195,7 +194,7 @@ This section states plainly **which capabilities are already aligned with the re
 
 - **Order signing** -- the order is signed as EIP-712 "TrueOpen Task Order" v3 (65-byte recoverable signature) and encoded as `SignedOrderV2`; the OpenTask header carries a separate 64-byte secp256k1 signature over `TRUEOPEN_ORDER_V1`.
 - **`task_id` derivation** -- `H_FIELDS_V1("TRUEOPEN_TASK_ID_V1", raw32(session_id), u64be(order_sequence))`, anchored to `testdata/v1/task/task_data_plane_v1_golden.json`.
-- **nexus `SDKRequestEnvelope` + per-method `body_digest`** -- the body_digest for `openTask` / `submitOrder` (deprecated) / `fetchOutputRef` / `getTaskEvents` / `refreshCredential` / `prepareChallenge` is **byte-for-byte identical** to nexus's.
+- **nexus `SDKRequestEnvelope` + per-method `body_digest`** -- the body_digest for `openTask` / `getTaskEvents` / `prepareChallenge` / `subscribeOutput` / `ackOutput` is **byte-for-byte identical** to nexus's.
 - **EVM-style identity and EIP-712** -- the address `bech32(keccak256(uncompressed_XY)[12:32])`, and the type hash, domain separator, hash struct, signing digest and 65-byte signature for the three EIP-712 domains (`Cosmos Web3` / `TrueOpen Task Order` v3 / `TrueOpen Task Data Request` v1), all anchored to wire's
   `testdata/v1/shared/account_signing_v1.json`.
 - **Task data plane authentication** -- the two body digests (METADATA / FETCH, V2 domains), together with their preimages, are anchored to `testdata/v1/task/task_data_auth_v1.json`, and illegal object_kind / evidence_kind combinations are refused before hashing; the USER branch's EIP-712 and the CORTEX_SERVICE branch's H_FIELDS_V1 are each cross-checked separately. **Verified against a live chain**: the EIP-712 signature for `GetTaskDataMetadata` was verified by a real nexus, the body digest matched nexus's recomputation, and authorization matched the contract (a User can query OUTPUT but not INPUT).
@@ -216,7 +215,7 @@ This section states plainly **which capabilities are already aligned with the re
 - **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/task/...` (both the active and the compacted terminal view).
 - **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` (including the task registry).
 - **Not supported yet** -- `MsgOpenChallengeRound`, the only challenge Msg in wire. `prepareChallenge` (nexus) still prepares material.
-- **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `fetchOutputRef` / `refreshCredential` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput`; `submitOrder` is kept only for deprecated raw RPC access.
+- **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput` / `getTaskDataMetadata` / `fetchTaskData`. The deprecated `SubmitOrder` / `FetchOutputRef` / `RefreshCredential` RPCs are not wrapped.
 
 ### ✅ Output delivery: two paths
 
@@ -371,10 +370,6 @@ unchanged to subscribers.
   USER uses the EIP-712 `TrueOpen Task Data Request` domain, always 65 bytes; CORTEX_SERVICE
   uses `TRUEOPEN_TASK_DATA_REQUEST_V1`, always 64 bytes; the length is not sniffed. See
   `src/transport/task-data-signbytes.ts`.
-
-> `fetchOutputRef(...)` has been superseded by the task data plane (marked `deprecated` in the proto); all
-> that remains is an unused `CredentialV1`, whose fate is still undecided. `ChunkVerifier` is
-> kept for chunked-fetch scenarios.
 
 > These two body_digest computations were verified against the nexus main source (2026-09-15,
 > main@b19f6206): `subscribeOutputBodyDigest` = `(session_id, task_id)`, with `resume_after_seq`
@@ -599,10 +594,10 @@ npm run generate                              # needs BSR network access (cosmos
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK
-needs (13 wire files + 5 annotation/type dependencies), not all 74 proto files in wire. RPCs the
+needs (14 wire files + 5 annotation/type dependencies), not all 74 proto files in wire. RPCs the
 SDK uses: `OpenTask` / `GetTaskStatus` / `GetTaskEvents` / `GetTaskDataMetadata` /
-`FetchTaskData` / `SubscribeOutput` / `AckOutput` / `PrepareChallenge` / `FetchOutputRef` (the
-last one has been superseded by the task data plane, see section 4).
+`FetchTaskData` / `SubscribeOutput` / `AckOutput` / `PrepareChallenge`. `task/v1/settlement.proto`
+is generated as well, for the `TaskVerdict` / `TaskFailureClass` enums the SDK re-exports.
 
 Upgrading the wire version: `git -C third_party/wire fetch --tags && git -C third_party/wire
 checkout <tag>`, then recompute the import closure, update `buf.gen.yaml`'s `paths`, and run
@@ -631,7 +626,6 @@ Besides the library, `trueopen-sdk` ships the `trueopen` CLI -- a thin wrapper a
 | `trueopen task status <session> <task>` / `task watch <session> <task>` | taskStatus / watchTask (streaming) | none |
 | `trueopen output get <session> <task> [task-hash] [output-hash]` | fetchTaskOutput, anchors read from chain (requires `--auto`) | none |
 | `trueopen output stream <session> <task> [task-hash] [worker-pubkey]` | streamOutput, anchors read from chain (per-frame signature + root verification) | none |
-| `trueopen output ref <session> <task>` | fetchOutputRef (superseded by the contract) | none |
 | `trueopen challenge prepare <session> <task> <kind>` | prepareChallenge | none |
 
 ### Order-file format for `order submit`

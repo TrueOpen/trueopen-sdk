@@ -5,7 +5,6 @@ import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest as GenOpenTaskRequest,
   SDKRequestEnvelopeV1 as GenSDKEnvelope,
-  FetchOutputRefRequest,
   PrepareChallengeRequest,
   GetTaskEventsRequest,
   SubscribeOutputRequest,
@@ -91,7 +90,6 @@ const PAYLOAD = new TextEncoder().encode('trueopen-input');
 interface ChainCap { cancel?: CancelOrderInput }
 interface IngressCap {
   openHeader?: { userAddress: string; requestEnvelope?: GenSDKEnvelope };
-  fetch?: FetchOutputRefRequest;
   prepare?: PrepareChallengeRequest;
   events?: GetTaskEventsRequest;
   subscribe?: SubscribeOutputRequest;
@@ -126,16 +124,6 @@ function fakeTransport(cap: IngressCap): Transport {
       getTaskStatus() {
         return { state: 'PENDING', stage: 'ASSIGN', setId: 'set-1', updatedAt: 0n, taskPhase: 'ASSIGN_RANDOMNESS_PENDING' };
       },
-      fetchOutputRef(req: FetchOutputRefRequest) {
-        cap.fetch = req;
-        return {
-          credential: {
-            credentialId: 'cred-1', sessionId: req.sessionId, taskId: req.taskId,
-            recipient: req.requester, usage: req.usage, accessLevel: req.accessLevel,
-            validUntil: 0n, issuer: 'trueopen1builder', issuerSig: new Uint8Array(),
-          },
-        };
-      },
       prepareChallenge(req: PrepareChallengeRequest) {
         cap.prepare = req;
         return { challengeOpen: true, challengeCloseHeight: 999n, requiredEvidence: [], estimatedBond: { denom: 'utrueopen', amount: '5' }, estimatedGas: 21000n };
@@ -158,7 +146,7 @@ function fakeTransport(cap: IngressCap): Transport {
 }
 
 describe('end-to-end smoke: the full user journey against a fake backend', () => {
-  it('createSession → submitOrder → status → watch → fetchOutputRef → fetchOutput → prepare → challenge → cancel', async () => {
+  it('createSession → openTask → status → watch → streamOutput wiring → prepareChallenge → cancelOrder', async () => {
     const chainCap: ChainCap = {};
     const ingressCap: IngressCap = {};
     const client = new TrueOpenClient({
@@ -210,23 +198,17 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     expect(events[0]?.eventCode).toBe('OPEN_VERIFY_ACCEPTED');
     expect(ingressCap.events?.fromCursor).toBe('0');
 
-    // 5) retrieval credential: SEALED_KEY by default, requester = userAddress
-    const ref = await client.fetchOutputRef(SESSION, taskId);
-    expect(ref.credential?.credentialId).toBe('cred-1');
-    expect(ingressCap.fetch?.accessLevel).toBe(1); // SEALED_KEY
-    expect(ingressCap.fetch?.requester).toBe(USER);
-
-    // 6) fetch the output: SubscribeOutput verifies each frame signature and the MMR root, then
+    // 5) stream the output: SubscribeOutput verifies each frame signature and the MMR root, then
     // reports progress. This test only checks that the wiring works; the positive and negative
     // cases for frame verification live in client.test.ts.
     expect(typeof client.streamOutput).toBe('function');
 
-    // 7) prepare the challenge
+    // 6) prepare the challenge
     const plan = await client.prepareChallenge(SESSION, taskId, 'USER_REVALIDATION');
     expect(plan.challengeOpen).toBe(true);
     expect(plan.estimatedBond?.amount).toBe('5');
 
-    // 8) cancel the order: the sequence advances; no detached owner signature is sent
+    // 7) cancel the order: the sequence advances; no detached owner signature is sent
     const cancel = await client.cancelOrder(SESSION, 5n);
     expect(cancel.nextExpectedSequence).toBe(6n);
     expect(chainCap.cancel?.ownerSignature).toBeUndefined();

@@ -6,11 +6,8 @@ import {
   IngressAPI,
   OpenTaskHeaderSchema,
   OpenTaskRequestSchema,
-  SubmitOrderRequestSchema,
   SDKRequestEnvelopeV1Schema,
   GetTaskStatusRequestSchema,
-  FetchOutputRefRequestSchema,
-  RefreshCredentialRequestSchema,
   PrepareChallengeRequestSchema,
   GetTaskEventsRequestSchema,
   SubscribeOutputRequestSchema,
@@ -20,14 +17,10 @@ import {
   TaskDataRequestAuthV1Schema,
   TaskDataObjectRefV1Schema,
   ByteRangeV1Schema,
-  AccessLevel,
 } from '../gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest,
   TaskDataObjectMetadataV1,
-  CredentialV1,
-  FetchOutputRefResponse,
-  RefreshCredentialResponse,
   PrepareChallengeResponse,
   GetTaskEventsResponse,
   SubscribeOutputResponse,
@@ -39,14 +32,12 @@ import type { Eip712Signer } from '../signer/eth-secp256k1';
 import { sha256 } from '../codec/hash';
 import {
   signSdkRequestEnvelope,
-  fetchOutputRefBodyDigest,
   getTaskEventsBodyDigest,
-  refreshCredentialBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
 } from './sdk-request-envelope';
-import type { AccessLevelName, SignedSdkRequestEnvelope } from './sdk-request-envelope';
+import type { SignedSdkRequestEnvelope } from './sdk-request-envelope';
 import {
   taskDataRequestEip712Digest,
   taskDataMetadataBodyDigest,
@@ -96,34 +87,6 @@ export interface OpenTaskAck {
   readonly inputMetadata?: TaskDataObjectMetadataV1;
 }
 
-/**
- * SubmitOrder request (kept for raw RPC access).
- * @deprecated The contract has moved the order-placement entry point to OpenTask; SubmitOrder
- * is also marked deprecated in the nexus proto. Note that order_envelope must now be the
- * frozen SignedOrderV2 protobuf bytes -- the old canonical JSON envelope can't produce a
- * canonical task_hash and can never be broadcast on chain
- * (nexus internal/coordinator/taskfsm.go:151). New code should use openTask().
- */
-export interface SubmitOrderRequest {
-  readonly orderEnvelope: Uint8Array;
-  readonly payloadRef: string;
-  readonly signature: Uint8Array;
-  readonly requestEnvelope: SignedSdkRequestEnvelope;
-  readonly sessionId: string;
-  readonly orderSequence: bigint;
-  readonly userAddress: string;
-  readonly signatureScheme: string;
-  readonly payload: Uint8Array;
-}
-
-/** SubmitOrder's local accept response (not the on-chain accepted status). */
-export interface SubmitOrderAck {
-  readonly taskId: string;
-  readonly accepted: boolean;
-  readonly reason: string;
-  readonly sessionId: string;
-}
-
 /** Snapshot of nexus's local FSM (GetTaskStatus). The on-chain state is still authoritative via chain query. */
 export interface TaskStatusView {
   readonly state: string;
@@ -154,8 +117,7 @@ export interface IngressAuth {
 /**
  * nexus IngressAPI client (Connect RPC, generated from ingress.proto).
  * The transport is injected by the caller; auth is optional, and methods that need a
- * signature throw if it's absent. SubmitOrder takes a pre-assembled request
- * (buildSubmitOrderRequest, which carries both the order signature and the request signature).
+ * signature throw if it's absent.
  */
 export class IngressClient {
   private readonly client: Client<typeof IngressAPI>;
@@ -169,22 +131,6 @@ export class IngressClient {
   /** The generated Connect client. Its errors are classified the same way as this class's. */
   get raw(): Client<typeof IngressAPI> {
     return this.client;
-  }
-
-  async submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderAck> {
-    const msg = create(SubmitOrderRequestSchema, {
-      orderEnvelope: req.orderEnvelope,
-      payloadRef: req.payloadRef,
-      signature: req.signature,
-      requestEnvelope: this.envelopeMsg(req.requestEnvelope),
-      sessionId: req.sessionId,
-      orderSequence: req.orderSequence,
-      userAddress: req.userAddress,
-      signatureScheme: req.signatureScheme,
-      payload: req.payload,
-    });
-    const res = await this.client.submitOrder(msg);
-    return { taskId: res.taskId, accepted: res.accepted, reason: res.reason, sessionId: res.sessionId };
   }
 
   /**
@@ -247,72 +193,6 @@ export class IngressClient {
   async getTaskStatus(sessionId: string, taskId: string): Promise<TaskStatusView> {
     const res = await this.client.getTaskStatus(create(GetTaskStatusRequestSchema, { sessionId, taskId }));
     return { state: res.state, stage: res.stage, setId: res.setId, taskPhase: res.taskPhase, updatedAt: res.updatedAt };
-  }
-
-  /**
-   * Fetches a retrieval credential (SDK envelope path; the Verifier-role signing path is not
-   * wrapped here).
-   * @deprecated The task data plane replaces the retrieval-credential flow with
-   * GetTaskDataMetadata + FetchTaskData: "on-chain role implies authorization", so V1 no
-   * longer issues separate retrieval credentials. Kept until the team decides on a removal
-   * date.
-   */
-  async fetchOutputRef(p: {
-    sessionId: string;
-    taskId: string;
-    requester: string;
-    accessLevel: AccessLevelName;
-    usage: string;
-  }): Promise<FetchOutputRefResponse> {
-    const bd = fetchOutputRefBodyDigest(p.sessionId, p.taskId, p.requester, p.accessLevel, p.usage);
-    const env = await this.signEnvelope('FetchOutputRef', p.sessionId, p.taskId, bd);
-    return this.client.fetchOutputRef(
-      create(FetchOutputRefRequestSchema, {
-        taskId: p.taskId,
-        requester: p.requester,
-        sessionId: p.sessionId,
-        accessLevel: p.accessLevel === 'SEALED_KEY' ? AccessLevel.SEALED_KEY : AccessLevel.PACKAGE_UNSPECIFIED,
-        usage: p.usage,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
-    );
-  }
-
-  /**
-   * Refreshes a retrieval credential (exchanges the original credential, held by the escrow,
-   * for a new one).
-   * @deprecated There's no corresponding method in the contract: the CredentialV1 flow is
-   * entirely replaced by GetTaskDataMetadata + FetchTaskData, and V1 doesn't refresh separate
-   * download credentials. Kept until the team decides on a removal date.
-   */
-  async refreshCredential(p: {
-    credential: CredentialV1;
-    sessionId: string;
-    taskId: string;
-    recipient: string;
-    usage: string;
-    requestedValidUntil: bigint;
-  }): Promise<RefreshCredentialResponse> {
-    const bd = refreshCredentialBodyDigest(
-      p.credential.credentialId,
-      p.sessionId,
-      p.taskId,
-      p.recipient,
-      p.usage,
-      p.requestedValidUntil,
-    );
-    const env = await this.signEnvelope('RefreshCredential', p.sessionId, p.taskId, bd);
-    return this.client.refreshCredential(
-      create(RefreshCredentialRequestSchema, {
-        credential: p.credential,
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        recipient: p.recipient,
-        usage: p.usage,
-        requestedValidUntil: p.requestedValidUntil,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
-    );
   }
 
   /** Prepares challenge material (does not submit a verdict). */

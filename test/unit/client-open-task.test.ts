@@ -13,16 +13,15 @@ import { deriveTaskId } from '../../src/order/order-signing';
 import {
   privKeySecp256k1Signer,
     secp256k1PublicKey,
-  secp256k1Address,
 } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
+import { privKeyEip712Signer, ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const signer = privKeySecp256k1Signer(PRIV);
 const orderSigner = privKeyEip712Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
-const USER = secp256k1Address(pub, 'trueopen');
+const USER = ethSecp256k1Address(pub, 'trueopen');
 
 const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
 const amount = (atomicUnits: string) => ({ atomicUnits });
@@ -215,14 +214,14 @@ describe('TrueOpenClient.openTask', () => {
       nonce: () => new Uint8Array([1, 2, 3]),
       sdkSigner: privKeySecp256k1Signer(sdkPriv),
       sdkSignerPubKey: sdkPub,
-      sdkSignerAddress: secp256k1Address(sdkPub, 'trueopen'),
+      sdkSignerAddress: ethSecp256k1Address(sdkPub, 'trueopen'),
     });
     await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
     const header = seen.frames.find((f) => f.frame.case === 'header')?.frame.value as {
       userAddress: string;
       requestEnvelope?: { signerAddress: string };
     };
-    expect(header.requestEnvelope?.signerAddress).toBe(secp256k1Address(sdkPub, 'trueopen'));
+    expect(header.requestEnvelope?.signerAddress).toBe(ethSecp256k1Address(sdkPub, 'trueopen'));
     expect(header.userAddress).toBe(USER);
   });
 

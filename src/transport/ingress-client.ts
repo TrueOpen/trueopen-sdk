@@ -1,15 +1,13 @@
 import { createClient } from '@connectrpc/connect';
+import { classifyNexusError } from '../errors/classify';
 import type { Client, Transport } from '@connectrpc/connect';
 import { create } from '@bufbuild/protobuf';
 import {
   IngressAPI,
   OpenTaskHeaderSchema,
   OpenTaskRequestSchema,
-  SubmitOrderRequestSchema,
   SDKRequestEnvelopeV1Schema,
   GetTaskStatusRequestSchema,
-  FetchOutputRefRequestSchema,
-  RefreshCredentialRequestSchema,
   PrepareChallengeRequestSchema,
   GetTaskEventsRequestSchema,
   SubscribeOutputRequestSchema,
@@ -19,14 +17,10 @@ import {
   TaskDataRequestAuthV1Schema,
   TaskDataObjectRefV1Schema,
   ByteRangeV1Schema,
-  AccessLevel,
 } from '../gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest,
   TaskDataObjectMetadataV1,
-  CredentialV1,
-  FetchOutputRefResponse,
-  RefreshCredentialResponse,
   PrepareChallengeResponse,
   GetTaskEventsResponse,
   SubscribeOutputResponse,
@@ -38,14 +32,12 @@ import type { Eip712Signer } from '../signer/eth-secp256k1';
 import { sha256 } from '../codec/hash';
 import {
   signSdkRequestEnvelope,
-  fetchOutputRefBodyDigest,
   getTaskEventsBodyDigest,
-  refreshCredentialBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
 } from './sdk-request-envelope';
-import type { AccessLevelName, SignedSdkRequestEnvelope } from './sdk-request-envelope';
+import type { SignedSdkRequestEnvelope } from './sdk-request-envelope';
 import {
   taskDataRequestEip712Digest,
   taskDataMetadataBodyDigest,
@@ -95,34 +87,6 @@ export interface OpenTaskAck {
   readonly inputMetadata?: TaskDataObjectMetadataV1;
 }
 
-/**
- * SubmitOrder request (kept for raw RPC access).
- * @deprecated The contract has moved the order-placement entry point to OpenTask; SubmitOrder
- * is also marked deprecated in the nexus proto. Note that order_envelope must now be the
- * frozen SignedOrderV2 protobuf bytes -- the old canonical JSON envelope can't produce a
- * canonical task_hash and can never be broadcast on chain
- * (nexus internal/coordinator/taskfsm.go:151). New code should use openTask().
- */
-export interface SubmitOrderRequest {
-  readonly orderEnvelope: Uint8Array;
-  readonly payloadRef: string;
-  readonly signature: Uint8Array;
-  readonly requestEnvelope: SignedSdkRequestEnvelope;
-  readonly sessionId: string;
-  readonly orderSequence: bigint;
-  readonly userAddress: string;
-  readonly signatureScheme: string;
-  readonly payload: Uint8Array;
-}
-
-/** SubmitOrder's local accept response (not the on-chain accepted status). */
-export interface SubmitOrderAck {
-  readonly taskId: string;
-  readonly accepted: boolean;
-  readonly reason: string;
-  readonly sessionId: string;
-}
-
 /** Snapshot of nexus's local FSM (GetTaskStatus). The on-chain state is still authoritative via chain query. */
 export interface TaskStatusView {
   readonly state: string;
@@ -153,36 +117,20 @@ export interface IngressAuth {
 /**
  * nexus IngressAPI client (Connect RPC, generated from ingress.proto).
  * The transport is injected by the caller; auth is optional, and methods that need a
- * signature throw if it's absent. SubmitOrder takes a pre-assembled request
- * (buildSubmitOrderRequest, which carries both the order signature and the request signature).
+ * signature throw if it's absent.
  */
 export class IngressClient {
   private readonly client: Client<typeof IngressAPI>;
   private readonly auth?: IngressAuth;
 
   constructor(transport: Transport, auth?: IngressAuth) {
-    this.client = createClient(IngressAPI, transport);
+    this.client = classifyingClient(createClient(IngressAPI, transport));
     if (auth) this.auth = auth;
   }
 
+  /** The generated Connect client. Its errors are classified the same way as this class's. */
   get raw(): Client<typeof IngressAPI> {
     return this.client;
-  }
-
-  async submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderAck> {
-    const msg = create(SubmitOrderRequestSchema, {
-      orderEnvelope: req.orderEnvelope,
-      payloadRef: req.payloadRef,
-      signature: req.signature,
-      requestEnvelope: this.envelopeMsg(req.requestEnvelope),
-      sessionId: req.sessionId,
-      orderSequence: req.orderSequence,
-      userAddress: req.userAddress,
-      signatureScheme: req.signatureScheme,
-      payload: req.payload,
-    });
-    const res = await this.client.submitOrder(msg);
-    return { taskId: res.taskId, accepted: res.accepted, reason: res.reason, sessionId: res.sessionId };
   }
 
   /**
@@ -245,72 +193,6 @@ export class IngressClient {
   async getTaskStatus(sessionId: string, taskId: string): Promise<TaskStatusView> {
     const res = await this.client.getTaskStatus(create(GetTaskStatusRequestSchema, { sessionId, taskId }));
     return { state: res.state, stage: res.stage, setId: res.setId, taskPhase: res.taskPhase, updatedAt: res.updatedAt };
-  }
-
-  /**
-   * Fetches a retrieval credential (SDK envelope path; the Verifier-role signing path is not
-   * wrapped here).
-   * @deprecated The task data plane replaces the retrieval-credential flow with
-   * GetTaskDataMetadata + FetchTaskData: "on-chain role implies authorization", so V1 no
-   * longer issues separate retrieval credentials. Kept until the team decides on a removal
-   * date.
-   */
-  async fetchOutputRef(p: {
-    sessionId: string;
-    taskId: string;
-    requester: string;
-    accessLevel: AccessLevelName;
-    usage: string;
-  }): Promise<FetchOutputRefResponse> {
-    const bd = fetchOutputRefBodyDigest(p.sessionId, p.taskId, p.requester, p.accessLevel, p.usage);
-    const env = await this.signEnvelope('FetchOutputRef', p.sessionId, p.taskId, bd);
-    return this.client.fetchOutputRef(
-      create(FetchOutputRefRequestSchema, {
-        taskId: p.taskId,
-        requester: p.requester,
-        sessionId: p.sessionId,
-        accessLevel: p.accessLevel === 'SEALED_KEY' ? AccessLevel.SEALED_KEY : AccessLevel.PACKAGE_UNSPECIFIED,
-        usage: p.usage,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
-    );
-  }
-
-  /**
-   * Refreshes a retrieval credential (exchanges the original credential, held by the escrow,
-   * for a new one).
-   * @deprecated There's no corresponding method in the contract: the CredentialV1 flow is
-   * entirely replaced by GetTaskDataMetadata + FetchTaskData, and V1 doesn't refresh separate
-   * download credentials. Kept until the team decides on a removal date.
-   */
-  async refreshCredential(p: {
-    credential: CredentialV1;
-    sessionId: string;
-    taskId: string;
-    recipient: string;
-    usage: string;
-    requestedValidUntil: bigint;
-  }): Promise<RefreshCredentialResponse> {
-    const bd = refreshCredentialBodyDigest(
-      p.credential.credentialId,
-      p.sessionId,
-      p.taskId,
-      p.recipient,
-      p.usage,
-      p.requestedValidUntil,
-    );
-    const env = await this.signEnvelope('RefreshCredential', p.sessionId, p.taskId, bd);
-    return this.client.refreshCredential(
-      create(RefreshCredentialRequestSchema, {
-        credential: p.credential,
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        recipient: p.recipient,
-        usage: p.usage,
-        requestedValidUntil: p.requestedValidUntil,
-        requestEnvelope: this.envelopeMsg(env),
-      }),
-    );
   }
 
   /** Prepares challenge material (does not submit a verdict). */
@@ -475,8 +357,9 @@ export class IngressClient {
       }),
     );
 
+    // The peer answered with bytes other than the ones asked for: do not trust it again.
     const bad = (message: string): TrueOpenError =>
-      new TrueOpenError('NEXUS_INGRESS', 'NEXUS_FETCH_TASK_DATA_RANGE_INVALID', message);
+      new TrueOpenError('NEXUS_INGRESS', 'NEXUS_FETCH_TASK_DATA_RANGE_INVALID', message, { switchSource: true, category: 'data-corrupt' });
     const chunks: Uint8Array[] = [];
     let header: { totalSizeBytes: bigint; servedRange: ByteRange; mediaType: string } | undefined;
     let next = 0n; // absolute offset the next chunk must start at
@@ -711,4 +594,39 @@ async function sig64(signer: CosmosSecp256k1Signer, bytes: Uint8Array): Promise<
     throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BAD_SIGNATURE_LEN', `signature must be 64 bytes R||S, got ${sig.length}`);
   }
   return sig;
+}
+
+/**
+ * Wraps every method of the generated client so a Connect error surfaces as a typed
+ * TrueOpenError (see classifyNexusError): unary and client-streaming calls reject with it, and
+ * server streams throw it from `next()`.
+ */
+function classifyingClient<T extends object>(client: T): T {
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]): unknown => {
+        let out: unknown;
+        try {
+          out = (value as (...a: unknown[]) => unknown).apply(target, args);
+        } catch (e) {
+          throw classifyNexusError(e);
+        }
+        if (out instanceof Promise) return out.catch((e: unknown) => { throw classifyNexusError(e); });
+        if (out !== null && typeof out === 'object' && Symbol.asyncIterator in out) {
+          return classifyingIterable(out as AsyncIterable<unknown>);
+        }
+        return out;
+      };
+    },
+  });
+}
+
+async function* classifyingIterable<T>(source: AsyncIterable<T>): AsyncGenerator<T> {
+  try {
+    yield* source;
+  } catch (e) {
+    throw classifyNexusError(e);
+  }
 }

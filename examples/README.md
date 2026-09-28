@@ -1,11 +1,13 @@
-# Manual test examples
+# Examples
 
-Runnable scripts that call `TrueOpenClient` like a real consumer, against a real devnet. Scripts import from `../dist`.
+Runnable scripts that use `TrueOpenClient` the way an application does, against a real chain and
+nexus. They import from `../dist`.
 
 ## Prerequisites
 
 ```bash
-npm run build          # build first; the examples import dist/index.js
+npm run build                 # the examples import dist/index.js
+npm run typecheck:examples    # optional: checks them against the built types
 ```
 
 Node >= 18 (uses global `fetch`). All configuration is via environment variables.
@@ -15,69 +17,63 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | Variable | Purpose | Example |
 |---|---|---|
 | `TRUEOPEN_REST_URL` | node gRPC-gateway REST | `http://<rest-host>:1317` |
-| `TRUEOPEN_RPC_URL` | node CometBFT RPC | `http://<rpc-host>:26657` |
-| `TRUEOPEN_NEXUS_URL` | nexus IngressAPI (http) | `http://<nexus-host>:8080` |
-| `TRUEOPEN_CHAIN_ID` | chain ID | `trueopen-localnet-1` |
-| `TRUEOPEN_ADDR_PREFIX` | bech32 prefix (default `trueopen`) | `trueopen` |
+| `TRUEOPEN_RPC_URL` | node CometBFT RPC (only for chain writes) | `http://<rpc-host>:26657` |
+| `TRUEOPEN_CHAIN_ID` | Cosmos chain ID | `trueopen-localnet-1` |
 | `TRUEOPEN_MNEMONIC` | mnemonic of a funded test account | `"flee cover ..."` |
-| `TRUEOPEN_GAS_PRICE` | gas price (default `0.025utrueopen`) | `0.025utrueopen` |
-| `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` / `TRUEOPEN_QUERY_ADDR` | used for queries / placing orders / retrieval | - |
+| `TRUEOPEN_ADDR_PREFIX` | bech32 prefix (default `trueopen`) | `trueopen` |
+| `TRUEOPEN_ALLOW_INSECURE_HTTP` | `1` allows plain `http://` / `grpc://` nexus endpoints. **Localnet only.** | `1` |
+| `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
+| `TRUEOPEN_MODEL_ID` | raw Hash32 model ID, 64-hex (open-task) | - |
+| `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
 
-## Scripts
+Nothing chain-specific is hard-coded: the EVM chain ID and the fee denom (`business_denom`, used
+for the order signature and for tx fees) are read from `params.phase0` on chain.
 
-### 1. read.mjs -- read-only (zero cost) ✅
-Reads the chain and discovers the nexus endpoint on-chain (builders -> serviceDescriptor -> fetch the document, verify its hash -> service_endpoint).
+nexus endpoints come from the Builders' on-chain descriptors. An https endpoint is checked against
+the certificate fingerprint registered on chain and is never downgraded to http. A localnet whose
+endpoints are plain http needs `TRUEOPEN_ALLOW_INSECURE_HTTP=1`.
+
+## The flow
+
 ```bash
-TRUEOPEN_REST_URL=http://<rest-host>:1317 \
-TRUEOPEN_QUERY_ADDR=trueopen1qp5c4zkm4q4efuqrwjaww8n5yvrht7fdvnp2mq \
-node examples/read.mjs
+export TRUEOPEN_REST_URL=http://<rest-host>:1317 TRUEOPEN_RPC_URL=http://<rpc-host>:26657
+export TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..."
+export TRUEOPEN_ALLOW_INSECURE_HTTP=1   # localnet only
+
+node examples/read.mjs            # 0. read-only: chain params and nexus endpoints
+node examples/create-session.mjs  # 1. create a session (gas); prints TRUEOPEN_SESSION_ID
+TRUEOPEN_MODEL_ID=<64hex> node examples/open-task.mjs   # 2. place an order; prints TRUEOPEN_TASK_ID
+node examples/fetch-output.mjs    # 3. wait for the receipt, fetch and verify the output
 ```
 
-### 2. create-session.mjs -- create a session (spends gas, on-chain) ✅
-```bash
-TRUEOPEN_RPC_URL=http://<rpc-host>:26657 TRUEOPEN_REST_URL=http://<rest-host>:1317 \
-TRUEOPEN_MNEMONIC="..." node examples/create-session.mjs
-```
+### read.mjs -- read-only, costs nothing
+Prints the chain's EVM chain ID and business denom, the nexus endpoint of each active Builder, and,
+when set, the session, task and infer receipt.
 
-### 3. open-task.mjs -- place an order (OpenTask: three-layer signing + streaming submission)
-```bash
-TRUEOPEN_RPC_URL=... TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 \
-TRUEOPEN_MNEMONIC="..." TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_ORDER_SEQUENCE=1 \
-node examples/open-task.mjs
-```
-The order entry point has moved from the deprecated SubmitOrder to **OpenTask**; the order body itself is
-the frozen `SignedOrderV2`. The old canonical JSON envelope cannot produce the canonical `task_hash`, so it
-**can never be broadcast on-chain**.
+### create-session.mjs -- spends gas
+Broadcasts `MsgCreateSession` with an explicit fee in the chain business denom. A new session's
+first order sequence is 0.
 
-Three differences from the old example:
-- Requires `orderSigner` -- the inner `SignedOrderV2.user_signature` is a **65-byte recoverable
-  signature over the EIP-712 "TrueOpen Task Order" v3 digest**, so it cannot use an ordinary signer
-  that first does a sha256 hash;
-- Requires `hub` + `ingressTransportFactory` -- the Task Builders are uniquely determined by the anchor
-  signed into the order, so the SDK must read the on-chain context and pick an endpoint by
-  `task_builder_seed` (no `TRUEOPEN_NEXUS_URL` needed);
-- The order no longer carries `reward_bucket` / `profile_resource_tier` / `order_value` /
-  `infer_timeout_blocks` -- these are derived by the Keeper, and submitting them causes rejection; the fee
-  field is now `Amount` (decimal text, atomic units).
+### open-task.mjs -- places an order
+Reads the next order sequence from chain (0 for a new session), builds and signs the order, and
+sends it to every Task Builder selected by `task_builder_seed`. Before signing, the SDK checks the
+order against the chain's generation limits and the model profile's pricing, and refuses one the
+chain would reject. It prints each selected Builder's outcome.
 
-> ⚠️ ingress returning `accepted` only means it was accepted locally; whether the task actually lands
-> on-chain must be checked via `taskStatus` moving out of `PENDING`. Once accepted, the Task Builder may
-> submit an Assign on-chain, at which point funds are frozen per `max_fee`.
+> An `accepted` ack is local acceptance by nexus. The chain decides whether the task exists; once
+> it is assigned, funds up to `max_fee` are frozen.
 
-### 4. fetch-output.mjs -- retrieve the final plaintext output (subscribe -> verify hash -> ACK)
-```bash
-TRUEOPEN_NEXUS_URL=http://<nexus-host>:8080 TRUEOPEN_CHAIN_ID=trueopen-localnet-1 \
-TRUEOPEN_MNEMONIC="..." TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_TASK_ID=<task id> \
-node examples/fetch-output.mjs
-```
-> Requires a task that has already completed and produced output; `SubscribeOutput` will hang until the
-> output arrives.
+### fetch-output.mjs -- fetches and verifies the output
+Reads the trust anchors from chain (`resolveOutputTrustAnchors`): the accepted task hash, the
+winner Worker's service key and the accepted infer receipt. It waits while the receipt is not
+there yet, then fetches the output from the Builders with `fetchTaskOutput`, which checks the MMR
+root, size and leaf count against the receipt.
 
 ## Notes
-- Purely local (no backend) facade logic is covered in `test/unit/*.test.ts` and
-  `test/integration/smoke.test.ts` (a fake backend runs the full journey).
-- Assertion-style live-chain verification is in `test/integration/chain.integration.test.ts`
-  (env-gated).
+- Local facade logic is covered by `test/unit/*.test.ts`, and `test/integration/smoke.test.ts`
+  runs the whole journey against a fake backend.
+- Assertion-style checks against a live chain are in `test/integration/chain.integration.test.ts`
+  (skipped unless its environment variables are set).
 
 ### manifest-proxy.mjs -- same-origin manifest proxy for browser apps
 A server-side endpoint, `GET /manifest-proxy?url=<manifest_uri>`, for the recommended browser

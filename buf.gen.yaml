@@ -9,9 +9,9 @@ inputs:
   # The wire contract (submodule, v0.3.3). Only the transitive closure the SDK needs is generated,
   # which deliberately excludes cortex.v1: wire withholds that package, so its fields are not frozen
   # and generating types from it now would bake in a shape wire has already said it will break.
-  # not all of wire's files. These 13 are the import closure computed from two roots (ingress /
-  # msg_assignment): drop one and an internal src/gen import dangles, add one and it is generated
-  # for nothing. Recompute the closure before changing this list.
+  # not all of wire's files. The first 13 are the import closure computed from two roots (ingress /
+  # msg_assignment): drop one and an internal src/gen import dangles. Recompute the closure before
+  # changing this list.
   #   Roots:
   #     - ingress.proto         the nexus IngressAPI (every SDK RPC)
   #     - msg_assignment.proto  TaskOrderV3 / SignedOrderV2, the only message that goes on chain
@@ -25,6 +25,9 @@ inputs:
       - third_party/wire/proto/task/v1/evidence.proto
       - third_party/wire/proto/task/v1/infer_receipt.proto
       - third_party/wire/proto/task/v1/result.proto
+      # settlement.proto is not in the closure of the two roots; it is generated for the
+      # TaskVerdict / TaskFailureClass enums the SDK re-exports. Its imports are all above.
+      - third_party/wire/proto/task/v1/settlement.proto
       - third_party/wire/proto/shared/v1/amount.proto
       - third_party/wire/proto/shared/v1/common.proto
       - third_party/wire/proto/shared/v1/evidence.proto

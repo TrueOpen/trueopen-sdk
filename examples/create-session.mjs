@@ -1,31 +1,19 @@
-// CreateSession example (spends gas and writes on chain): exercises the CosmJS chain write and the response decoding round trip.
+// CreateSession example (spends gas and writes on chain).
 // Run:
-//   TRUEOPEN_RPC_URL=http://<rpc-host>:26657 \
-//   TRUEOPEN_REST_URL=http://<rest-host>:1317 \
-//   TRUEOPEN_MNEMONIC="..." \
+//   TRUEOPEN_REST_URL=http://<rest-host>:1317 TRUEOPEN_RPC_URL=http://<rpc-host>:26657 \
+//   TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..." \
 //   node examples/create-session.mjs
-import { connectTrueOpenChainClient } from '../dist/index.js';
-import { DirectSecp256k1HdWallet } from '@cosmjs/proto-signing';
-import { GasPrice } from '@cosmjs/stargate';
-import { env, show } from './_shared.mjs';
+import { setup, show } from './_shared.mjs';
 
-const prefix = env('TRUEOPEN_ADDR_PREFIX', 'trueopen');
-const wallet = await DirectSecp256k1HdWallet.fromMnemonic(env('TRUEOPEN_MNEMONIC'), { prefix });
-const [account] = await wallet.getAccounts();
-console.log('account:', account.address, '\nAbout to broadcast MsgCreateSession (spends gas)...');
-
-const { client, signingClient } = await connectTrueOpenChainClient({
-  rpcUrl: env('TRUEOPEN_RPC_URL'),
-  restUrl: env('TRUEOPEN_REST_URL'),
-  signer: wallet,
-  signerAddress: account.address,
-  fee: 'auto',
-  gasPrice: GasPrice.fromString(env('TRUEOPEN_GAS_PRICE', '0.025utrueopen')),
-});
+const { id, client, businessDenom, disconnect } = await setup({ write: true });
+console.log('account:', id.address);
+console.log(`About to broadcast MsgCreateSession (spends gas, fee in ${businessDenom})...`);
 try {
   const created = await client.createSession();
   show('createSession', created);
-  show('querySession (round-trip confirmation)', await client.querySession(created.sessionId));
+  // A new session starts at order sequence 0: that is the first orderSequence to sign.
+  show('getSession (round trip)', await client.getSession(created.sessionId));
+  console.log(`\nexport TRUEOPEN_SESSION_ID=${created.sessionId}`);
 } finally {
-  signingClient.disconnect();
+  disconnect();
 }

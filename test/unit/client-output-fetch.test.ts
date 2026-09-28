@@ -9,6 +9,7 @@ import type {
   SubscribeOutputRequest,
 } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenClient } from '../../src/client';
+import { TrueOpenError } from '../../src/errors/errors';
 import type { OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
 import type { ChainTaskSnapshot, InferReceiptView } from '../../src/types/node';
@@ -174,6 +175,23 @@ describe('resolveOutputTrustAnchors', () => {
     const a = await makeClient(t, reader).resolveOutputTrustAnchors(TASK, { withReceipt: false });
     expect(a.outputHash).toBeUndefined();
     expect(reader.receiptReads).toBe(0);
+  });
+
+  it('is retriable-pending while the task is not on chain yet (node answers 404)', async () => {
+    const reader: OutputTaskReader = {
+      queryTask: async () => { throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_NOT_FOUND', 'chain query -> HTTP 404'); },
+      queryInferReceipt: async () => undefined,
+    };
+    const e = await makeClient(dataTransport(BYTES, [6, 6, 6], newLog()), reader).resolveOutputTrustAnchors(TASK).catch((x: unknown) => x);
+    expect(e).toMatchObject({ code: 'OUTPUT_TRUST_ANCHOR_PENDING', retriable: true });
+    expect((e as Error).cause).toMatchObject({ code: 'CHAIN_QUERY_NOT_FOUND' });
+    // Any other read failure is passed through unchanged.
+    const broken: OutputTaskReader = {
+      queryTask: async () => { throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_MALFORMED', 'bad body'); },
+      queryInferReceipt: async () => undefined,
+    };
+    await expect(makeClient(dataTransport(BYTES, [6, 6, 6], newLog()), broken).resolveOutputTrustAnchors(TASK))
+      .rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
   });
 
   it('refuses a revoked Worker key and a receipt from another Worker', async () => {

@@ -1,13 +1,4 @@
 
-/** node task.v1 failure_class (K9 taxonomy). */
-export type TaskFailureClass =
-  | 'NONE'
-  | 'OK' // legacy alias (node failure_class.go; new code writes NONE)
-  | 'INSUFFICIENT_VERIFIER'
-  | 'VALUE_MISMATCH'
-  | 'SCHEMA_FAULT'
-  | 'WORKER_REVEAL_FAULT';
-
 /** SDK view of node task.v1.StreamState (camelCase mapping). */
 export interface StreamStateView {
   readonly sessionId: string;

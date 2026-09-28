@@ -10,8 +10,8 @@ import type { TaskOrderIntent } from '../../src/order/task-order-input';
 import { defaultGenerationParams } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
-import { privKeySecp256k1Signer, privKeySecp256k1DigestSigner, secp256k1PublicKey, secp256k1Address } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
+import { privKeySecp256k1Signer, privKeySecp256k1DigestSigner, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { privKeyEip712Signer, ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { fromHex, toHex } from '../../src/util/bytes';
 
 // After a Builder rotates its certificate, the new fingerprint goes on-chain, but the
@@ -23,7 +23,7 @@ const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d
 const signer = privKeySecp256k1Signer(PRIV);
 const orderSigner = privKeyEip712Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
-const USER = secp256k1Address(pub, 'trueopen');
+const USER = ethSecp256k1Address(pub, 'trueopen');
 const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
 const amount = (atomicUnits: string) => ({ atomicUnits });
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';

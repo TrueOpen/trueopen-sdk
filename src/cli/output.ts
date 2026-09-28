@@ -18,13 +18,25 @@ export interface FormattedError {
   readonly message: string;
   readonly code?: string;
   readonly family?: string;
+  readonly category?: string;
+  readonly retriable?: boolean;
+  readonly switchSource?: boolean;
+  readonly details?: Readonly<Record<string, unknown>>;
   readonly userAction?: string;
 }
 
 export function formatError(err: unknown): FormattedError {
   if (err instanceof TrueOpenError) {
-    const out: FormattedError = { message: err.message, code: err.code, family: err.family };
-    return err.userAction !== undefined ? { ...out, userAction: err.userAction } : out;
+    return {
+      message: err.message,
+      code: err.code,
+      family: err.family,
+      ...(err.category !== undefined ? { category: err.category } : {}),
+      ...(err.retriable ? { retriable: true } : {}),
+      ...(err.switchSource ? { switchSource: true } : {}),
+      ...(err.details !== undefined ? { details: err.details } : {}),
+      ...(err.userAction !== undefined ? { userAction: err.userAction } : {}),
+    };
   }
   const message = err instanceof Error ? err.message : String(err);
   return { message };

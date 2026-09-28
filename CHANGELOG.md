@@ -37,6 +37,20 @@
 
 ### Changed
 
+- The examples and the README quick start are rewritten against the current facade:
+  `create-session`, `open-task` and `fetch-output` read the EVM chain ID and fee denom from chain,
+  start at order sequence 0, use the current amount fields, fetch output through the chain trust
+  anchors, and use the insecure-http opt-in only for localnet. `examples/_shared.mjs` no longer
+  downgrades https to http. `npm run typecheck:examples` checks the examples against the built
+  types, and CI runs it.
+- **Breaking:** errors are classified. `TrueOpenError` gains `category`, `switchSource` and
+  `details`. `dataError` is no longer retriable: a hash mismatch, a bad chunk or Fin signature, a
+  forbidden attachment or a bad range sets `switchSource` instead. `IngressClient` (including
+  `raw`) now throws a `TrueOpenError` for every Connect error, coded by the nexus code in the
+  message (for example `NEXUS_DATA_EXPIRED`), else `NEXUS_TRANSPORT_FAILED` for a local failure
+  (including a refused or reset connection) or `NEXUS_CONNECT_<CODE>`; the Connect error stays as `cause`. A CheckTx failure is
+  `CHAIN_TX_REJECTED` with the codespace, code and log in `details`. New `classifyNexusError` /
+  `classifyBroadcastError`.
 - **Breaking:** the order fee denom comes from the chain. `openTask` reads
   `params.phase0.business_denom` (`HubReader.getBusinessDenom`) and signs it; `feeDenom` in the
   config is now an optional check, and an order is refused locally
@@ -54,7 +68,8 @@
   accepted task_hash and winner Worker, the Worker's current service key (must be ACTIVE) and
   the accepted InferReceipt. `fetchTaskOutput` and `streamOutput` use it when `taskHash` /
   `outputHash` / `workerServicePubKey` are not given (new `taskReader` config), and the CLI
-  `output get` / `output stream` no longer take them as required arguments.
+  `output get` / `output stream` no longer take them as required arguments. A task not on chain
+  yet, a missing winner or a missing receipt is the retriable `OUTPUT_TRUST_ANCHOR_PENDING`.
 - `fetchTaskOutput` fetches in ranges of at most 8 MiB (nexus's default max range), checks each
   range's `served_range` and chunk offsets, retries a range that failed on transport, checks
   the metadata against the accepted receipt, and does not fetch a size-0 object.
@@ -108,6 +123,27 @@
   stream cancellation, and avoids upstream prefetch until consumer demand.
 
 ### Removed
+
+- **Breaking:** the old local task-state model: `reduce`, `initialState`, `reconcile`,
+  `phaseToState` and their types (`LocalTaskState`, `TaskEvent`, `AttentionIssue`,
+  `ChainTaskView`, `TaskState`). The on-chain query is the task state.
+- **Breaking:** `ChunkVerifier` and the chunk-chain types `OutputRef`, `RawChunk`,
+  `VerifiedChunk`, `ChunkBoundary` and `CredentialUsage`. Output is verified by its MMR root.
+- **Breaking:** `secp256k1Address` and `secp256k1AddressMatches`. They derive
+  ripemd160(sha256(pubkey)), which is not this chain's address scheme; use
+  `ethSecp256k1Address` / `ethSecp256k1AddressMatches`.
+- **Breaking:** `signDetached`, `signOrderEnvelope` and `submitOrderBodyDigest`.
+- **Breaking:** the deprecated retrieval-credential path: `TrueOpenClient.fetchOutputRef`,
+  `IngressClient.fetchOutputRef` / `refreshCredential` / `submitOrder`,
+  `fetchOutputRefBodyDigest`, `refreshCredentialBodyDigest`, the `SubmitOrderAck` and
+  `AccessLevelName` types, the CLI `output ref` command and the `CREDENTIAL` error family. Output
+  is fetched over the task data plane (`fetchTaskOutput`).
+- **Breaking:** the hand-written `TaskPhase`, `TaskVerdict`, `TaskFailureClass`, `ChallengeKind`,
+  `OptimisticFinalityStatus`, `EvidenceRequestStatus` and `ChallengeOutcome` types. The wire
+  enums `TaskPhase`, `TaskVerdict`, `TaskFailureClass`, `TaskFinalityStatusV1`,
+  `AssignmentStatus`, `ReceiptStatus`, `VerificationStatus` and `SettlementStatus` are
+  re-exported instead (`task/v1/settlement.proto` is now generated). `prepareChallenge` takes the
+  challenge kind as a string, which is what the wire carries.
 
 - **Breaking:** `MsgUserChallenge` (encoding, registry entry, `client.challenge()`, the CLI
   `challenge submit` command and the `TRUEOPEN_USER_CHALLENGE_V1` signing bytes). Wire has no

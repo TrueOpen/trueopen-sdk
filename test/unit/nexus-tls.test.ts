@@ -257,6 +257,8 @@ describe('error classification', () => {
     }
     expect(caught).toBeTruthy();
     expect(isTLSPubkeyMismatch(caught)).toBe(true);
-    expect(caught instanceof TrueOpenError).toBe(false); // It's a Connect wrapper; identified via the cause chain.
+    // The classified wrapper is a transport error; the mismatch itself is only in its cause chain.
+    expect(caught instanceof TrueOpenError && caught.category).toBe('transport');
+    expect((caught as TrueOpenError).code).not.toBe('NEXUS_TLS_PUBKEY_MISMATCH');
   });
 });

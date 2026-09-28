@@ -55,116 +55,123 @@ npm install trueopen-sdk
 
 ## 3. Quick start
 
-> The example below is **illustrative only**. Real endpoints, wallet / signer wiring, and fee policy depend on your deployment -- substitute your own.
+The same flow as `examples/create-session.mjs`, `examples/open-task.mjs` and
+`examples/fetch-output.mjs`, which run against a real chain (see `examples/README.md`). Endpoints
+and the mnemonic are yours to supply; everything chain-specific is read from the chain.
 
 ```ts
 import {
   TrueOpenClient,
-  createTrueOpenChainClient,
+  HubReader,
   RestChainReader,
+  connectTrueOpenChainClient,
+  ethSecp256k1SignerFromMnemonic,
   nexusIngressTransport,
   privKeySecp256k1Signer,
+  privKeyEip712Signer,
   secp256k1PublicKey,
+  ethSecp256k1Address,
+  defaultGenerationParams,
+  TASK_TYPE,
+  DEADLINE_LATENCY_CLASS,
+  TRUEOPEN_HD_PATH,
 } from 'trueopen-sdk';
-import { createConnectTransport } from '@connectrpc/connect-node'; // use -web in the browser
-import { SigningStargateClient } from '@cosmjs/stargate';
+import { Bip39, Slip10, Slip10Curve, EnglishMnemonic, stringToPath } from '@cosmjs/crypto';
 
-// --- 1. Build the chain client (REST reads + CosmJS writes) ---
-// broadcaster satisfies TxBroadcaster (a SigningStargateClient works).
-const broadcaster = await SigningStargateClient.connectWithSigner(/* rpcUrl, offlineSigner, opts */);
+const restUrl = 'https://node.example:1317';
+const rpcUrl = 'https://node.example:26657';
+const chainId = 'trueopen-localnet-1';
+const prefix = 'trueopen';
 
-const chain = createTrueOpenChainClient({
-  restUrl: 'https://rest.example-trueopen-node',
-  signerAddress: 'trueopen1user...',
-  // Use an explicit fee, not 'auto': CosmJS's gas simulation sets the sign mode to
-  // SIGN_MODE_UNSPECIFIED, but node's ante handler only accepts SIGN_MODE_DIRECT, so the
-  // simulation step itself gets rejected (see "On-chain writes" below).
-  fee: { amount: [{ denom: 'uusdc', amount: '7500' }], gas: '300000' },
-  broadcaster,
-});
-// Or do it in one async step: const { client: chain } = await connectTrueOpenChainClient({...})
+// --- 1. Identity: HD path m/44'/60'/0'/0/0, EVM-style address ---
+const seed = await Bip39.mnemonicToSeed(new EnglishMnemonic(mnemonic));
+const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, stringToPath(TRUEOPEN_HD_PATH));
+const pubKey = secp256k1PublicKey(privkey);
+const address = ethSecp256k1Address(pubKey, prefix);
 
-// --- 2. Build the Connect transport for the nexus IngressAPI ---
-const ingressTransport = createConnectTransport({
-  baseUrl: 'https://ingress.example-trueopen-nexus',
-  httpVersion: '2',
-});
+// --- 2. Chain reads, and the two values that go into signatures ---
+const fetchLike = (url: string) => fetch(url);
+const hub = new HubReader({ baseUrl: restUrl, fetch: fetchLike });
+const taskReader = new RestChainReader({ baseUrl: restUrl, fetch: fetchLike });
+const evmChainId = await hub.getEvmChainId(); // EIP-712 domain; never a constant
+const businessDenom = await hub.getBusinessDenom(); // order fee denom and the only tx fee denom
 
-// --- 3. Two signers (the SDK never holds private keys; use a wallet / HSM in production) ---
-// signer: hashes with sha256 then signs -- used for the outer order envelope and the SDK request envelope.
-const signer = privKeySecp256k1Signer(userPrivKeyBytes);
-const signerPubKey = secp256k1PublicKey(userPrivKeyBytes); // 33-byte compressed public key
-// orderSigner: signs the **EIP-712 digest** (keccak), producing a 65-byte R‖S‖V -- used for
-// SignedOrderV2 and the USER branch of the task data plane. Not interchangeable with the
-// 64-byte sha256-based signature above.
-const orderSigner = privKeyEip712Signer(userPrivKeyBytes);
-
-// --- 4. Build the facade ---
-// Use https once TLS is enabled on the node port (the deployment security baseline); for local
-// testing use http://127.0.0.1:1317.
-const hub = new HubReader({ baseUrl: 'https://node.example:1317', fetch: (u) => fetch(u) });
-const client = new TrueOpenClient({
-  chainId: 'trueopen-devnet-1',
-  userAddress: 'trueopen1user...',
-  signerPubKey,
-  signer,
-  orderSigner,
-  chain,
-  ingressTransport,
-  // Required for openTask: reads on-chain context + picks an endpoint by task_builder_seed.
-  // Also the source of the order feeDenom (params.phase0.business_denom) and of the profile
-  // pricing checked before signing.
-  hub,
-  // On-chain task reads: the output trust anchors (accepted task_hash, winner Worker, receipt).
-  taskReader: new RestChainReader({ baseUrl: 'https://node.example:1317', fetch: (u) => fetch(u) }),
-  // nexus endpoints verify their certificate against the on-chain descriptor's tls_pubkey_hash:
-  // an https endpoint with a fingerprint registered on-chain is checked against that
-  // fingerprint; one without a registered fingerprint gets standard CA verification (or is
-  // rejected if NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 is set). https is never downgraded to http.
-  // Plaintext http:// / grpc:// endpoints are refused unless you opt in for a localnet with
-  // nexusIngressTransport(url, hash, { allowInsecureHttp: true }) or TRUEOPEN_ALLOW_INSECURE_HTTP=1.
-  ingressTransportFactory: (url, tlsPubkeyHash) => nexusIngressTransport(url, tlsPubkeyHash),
-  // Optional: nonce / requestTtlBlocks (OpenTask's expiry is a block height, default +10 blocks)
+// --- 3. Chain writes: ethsecp256k1 direct signing, explicit fee in business_denom ---
+// Not fee: 'auto': CosmJS simulates with a sign mode node refuses (see "On-chain writes").
+const wallet = await ethSecp256k1SignerFromMnemonic(mnemonic, prefix);
+const { client: chain, signingClient } = await connectTrueOpenChainClient({
+  rpcUrl, restUrl, signer: wallet, signerAddress: address,
+  fee: { amount: [{ denom: businessDenom, amount: '7500' }], gas: '300000' },
 });
 
-// --- 5. Session -> place order -> track ---
-const session = await client.createSession('demo');
+// --- 4. The facade ---
+// nexus endpoints come from the Builders' on-chain descriptors. https is checked against the
+// registered certificate fingerprint and never downgraded to http. A localnet with plain http
+// endpoints needs TRUEOPEN_ALLOW_INSECURE_HTTP=1 (or { allowInsecureHttp: true }).
+const nexus = (url: string, tlsPubkeyHash = '') => nexusIngressTransport(url, tlsPubkeyHash);
+const makeClient = (ingressTransport: ReturnType<typeof nexus>) =>
+  new TrueOpenClient({
+    chainId, userAddress: address, signerPubKey: pubKey,
+    signer: privKeySecp256k1Signer(privkey), // request envelopes (64-byte)
+    orderSigner: privKeyEip712Signer(privkey), // order + task-data requests (EIP-712, 65-byte)
+    evmChainId, // no feeDenom: openTask signs business_denom read through the hub
+    chain, hub, taskReader,
+    ingressTransport, // default transport for calls not routed by the SDK
+    ingressTransportFactory: nexus, // openTask picks Builders by task_builder_seed
+    addressPrefix: prefix,
+  });
+const client = makeClient(nexus('http://nexus.unused.invalid'));
 
-const submitted = await client.openTask({
-  sessionId: session.sessionId,
-  orderSequence: 1n,
-  // Required; must stay identical across retries.
-  idempotencyKey: `${session.sessionId}:1`,
+// --- 5. Session -> order ---
+const { sessionId } = await client.createSession('demo');
+const orderSequence = await client.nextOrderSequence(sessionId); // 0 for a new session
+const height = await hub.getLatestHeight();
+const res = await client.openTask({
+  sessionId,
+  orderSequence,
+  idempotencyKey: `${sessionId}:${orderSequence}`, // keep it across retries
   order: {
     modelId: '<64hex>', // raw Hash32 model ID, lowercase hex
     profileVersion: 1,
     taskType: TASK_TYPE.TEXT_GENERATION,
-    payload: new Uint8Array(plaintextInputBytes), // input_hash / size are derived from this
+    payload: new TextEncoder().encode('hello'), // input_hash / size are derived from this
     inputBucket: 1,
     outputBudgetBucket: 1,
-    // Generation params go into task_hash and must be given explicitly (no implicit defaults)
-    generationParams: defaultGenerationParams(128n, 60_000n),
-    // Fees are Amount: the preimage uses decimal text atomic units, not numeric values
+    generationParams: defaultGenerationParams(256n, 60_000n), // enters task_hash: explicit
     amounts: {
       priceBid: { atomicUnits: '100000' }, // per million output tokens
       maxFee: { atomicUnits: '1000' }, // must cover order_value + txFeeReserve
       assignmentPriorityFee: { atomicUnits: '0' }, // must be 0
-      txFeeReserve: { atomicUnits: '10' },
+      txFeeReserve: { atomicUnits: '0' },
     },
-    earliestSubmitHeight: currentHeight,
-    orderExpireHeight: currentHeight + 50_000n,
+    earliestSubmitHeight: height,
+    orderExpireHeight: height + 50_000n,
     latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
   },
 });
-// submitted: { taskId, taskHash, context, endpointsTried, ...ack }
-// ack only means local acceptance by nexus, not on-chain accepted -- whether the task lands
-// on-chain is determined by taskStatus moving out of PENDING.
+// res.builders: every selected Builder with its ack or error. An ack is local acceptance by
+// nexus only; the chain decides whether the task exists.
 
-for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
-  // Events are UX hints only; the on-chain query is the source of truth for final state
-  console.log(ev);
+// --- 6. Output, verified against the chain ---
+// Anchors come from chain: accepted task_hash, winner Worker key, accepted InferReceipt.
+// OUTPUT_TRUST_ANCHOR_PENDING (retriable) means the receipt is not there yet: poll.
+const anchors = await client.resolveOutputTrustAnchors(res.taskId);
+for (const b of res.builders.filter((x) => x.ack?.accepted)) {
+  try {
+    const out = await makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).fetchTaskOutput({
+      sessionId, taskId: res.taskId, anchors, builderAddress: b.address,
+    });
+    console.log(out.text); // MMR root, size and leaf count match the receipt
+    break;
+  } catch (e) {
+    // try the next Builder
+  }
 }
+signingClient.disconnect();
 ```
+
+Without the order result at hand, `resolveBuilderEndpoints(hub)` lists every active Builder's
+endpoint to try instead (that is what `examples/fetch-output.mjs` does).
 
 `TrueOpenClient` methods (see `src/client.ts` for the authoritative signatures):
 
@@ -182,7 +189,6 @@ for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
-| `fetchOutputRef(sessionId, taskId, opts?)` | fetches a retrieval credential (superseded by the task data plane, see section 4) |
 | `prepareChallenge(sessionId, taskId, kind, localEvidenceDigest?)` | prepares challenge material (does not submit a verdict) |
 
 ---
@@ -195,7 +201,7 @@ This section states plainly **which capabilities are already aligned with the re
 
 - **Order signing** -- the order is signed as EIP-712 "TrueOpen Task Order" v3 (65-byte recoverable signature) and encoded as `SignedOrderV2`; the OpenTask header carries a separate 64-byte secp256k1 signature over `TRUEOPEN_ORDER_V1`.
 - **`task_id` derivation** -- `H_FIELDS_V1("TRUEOPEN_TASK_ID_V1", raw32(session_id), u64be(order_sequence))`, anchored to `testdata/v1/task/task_data_plane_v1_golden.json`.
-- **nexus `SDKRequestEnvelope` + per-method `body_digest`** -- the body_digest for `openTask` / `submitOrder` (deprecated) / `fetchOutputRef` / `getTaskEvents` / `refreshCredential` / `prepareChallenge` is **byte-for-byte identical** to nexus's.
+- **nexus `SDKRequestEnvelope` + per-method `body_digest`** -- the body_digest for `openTask` / `getTaskEvents` / `prepareChallenge` / `subscribeOutput` / `ackOutput` is **byte-for-byte identical** to nexus's.
 - **EVM-style identity and EIP-712** -- the address `bech32(keccak256(uncompressed_XY)[12:32])`, and the type hash, domain separator, hash struct, signing digest and 65-byte signature for the three EIP-712 domains (`Cosmos Web3` / `TrueOpen Task Order` v3 / `TrueOpen Task Data Request` v1), all anchored to wire's
   `testdata/v1/shared/account_signing_v1.json`.
 - **Task data plane authentication** -- the two body digests (METADATA / FETCH, V2 domains), together with their preimages, are anchored to `testdata/v1/task/task_data_auth_v1.json`, and illegal object_kind / evidence_kind combinations are refused before hashing; the USER branch's EIP-712 and the CORTEX_SERVICE branch's H_FIELDS_V1 are each cross-checked separately. **Verified against a live chain**: the EIP-712 signature for `GetTaskDataMetadata` was verified by a real nexus, the body digest matched nexus's recomputation, and authorization matched the contract (a User can query OUTPUT but not INPUT).
@@ -216,7 +222,7 @@ This section states plainly **which capabilities are already aligned with the re
 - **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/task/...` (both the active and the compacted terminal view).
 - **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` (including the task registry).
 - **Not supported yet** -- `MsgOpenChallengeRound`, the only challenge Msg in wire. `prepareChallenge` (nexus) still prepares material.
-- **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `fetchOutputRef` / `refreshCredential` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput`; `submitOrder` is kept only for deprecated raw RPC access.
+- **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput` / `getTaskDataMetadata` / `fetchTaskData`. The deprecated `SubmitOrder` / `FetchOutputRef` / `RefreshCredential` RPCs are not wrapped.
 
 ### ✅ Output delivery: two paths
 
@@ -372,10 +378,6 @@ unchanged to subscribers.
   uses `TRUEOPEN_TASK_DATA_REQUEST_V1`, always 64 bytes; the length is not sniffed. See
   `src/transport/task-data-signbytes.ts`.
 
-> `fetchOutputRef(...)` has been superseded by the task data plane (marked `deprecated` in the proto); all
-> that remains is an unused `CredentialV1`, whose fate is still undecided. `ChunkVerifier` is
-> kept for chunked-fetch scenarios.
-
 > These two body_digest computations were verified against the nexus main source (2026-09-15,
 > main@b19f6206): `subscribeOutputBodyDigest` = `(session_id, task_id)`, with `resume_after_seq`
 > excluded from the signature; `ackOutputBodyDigest` = `(session_id, task_id, output_id)`, where
@@ -403,17 +405,19 @@ SignDoc -- what gets broadcast is the rewritten version. The proto shapes of the
 are identical (`bytes key = 1`); only the type_url changes, the value is untouched.
 
 ```ts
-import { ethSecp256k1SignerFromMnemonic, connectTrueOpenChainClient } from 'trueopen-sdk';
+import { ethSecp256k1SignerFromMnemonic, connectTrueOpenChainClient, HubReader } from 'trueopen-sdk';
 
 // The HD path is frozen by the protocol at coin_type 60 (TRUEOPEN_HD_PATH), not the usual Cosmos 118.
 const signer = await ethSecp256k1SignerFromMnemonic(mnemonic, 'trueopen');
+// Fees are only accepted in the chain's business_denom.
+const businessDenom = await new HubReader({ baseUrl: restUrl, fetch: (u) => fetch(u) }).getBusinessDenom();
 const [account] = await signer.getAccounts();
 const { client } = await connectTrueOpenChainClient({
   rpcUrl, restUrl, signer, signerAddress: account.address,
   // Cannot use fee: 'auto': CosmJS's gas simulation sets the sign mode to
   // SIGN_MODE_UNSPECIFIED, but node's ante handler only accepts SIGN_MODE_DIRECT, so the
   // simulation step gets rejected. An explicit fee must be given.
-  fee: { amount: [{ denom: 'uusdc', amount: '7500' }], gas: '300000' },
+  fee: { amount: [{ denom: businessDenom, amount: '7500' }], gas: '300000' },
 });
 ```
 
@@ -599,10 +603,10 @@ npm run generate                              # needs BSR network access (cosmos
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK
-needs (13 wire files + 5 annotation/type dependencies), not all 74 proto files in wire. RPCs the
+needs (14 wire files + 5 annotation/type dependencies), not all 74 proto files in wire. RPCs the
 SDK uses: `OpenTask` / `GetTaskStatus` / `GetTaskEvents` / `GetTaskDataMetadata` /
-`FetchTaskData` / `SubscribeOutput` / `AckOutput` / `PrepareChallenge` / `FetchOutputRef` (the
-last one has been superseded by the task data plane, see section 4).
+`FetchTaskData` / `SubscribeOutput` / `AckOutput` / `PrepareChallenge`. `task/v1/settlement.proto`
+is generated as well, for the `TaskVerdict` / `TaskFailureClass` enums the SDK re-exports.
 
 Upgrading the wire version: `git -C third_party/wire fetch --tags && git -C third_party/wire
 checkout <tag>`, then recompute the import closure, update `buf.gen.yaml`'s `paths`, and run
@@ -631,7 +635,6 @@ Besides the library, `trueopen-sdk` ships the `trueopen` CLI -- a thin wrapper a
 | `trueopen task status <session> <task>` / `task watch <session> <task>` | taskStatus / watchTask (streaming) | none |
 | `trueopen output get <session> <task> [task-hash] [output-hash]` | fetchTaskOutput, anchors read from chain (requires `--auto`) | none |
 | `trueopen output stream <session> <task> [task-hash] [worker-pubkey]` | streamOutput, anchors read from chain (per-frame signature + root verification) | none |
-| `trueopen output ref <session> <task>` | fetchOutputRef (superseded by the contract) | none |
 | `trueopen challenge prepare <session> <task> <kind>` | prepareChallenge | none |
 
 ### Order-file format for `order submit`

@@ -1,6 +1,4 @@
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { ripemd160 } from '@noble/hashes/ripemd160';
-import { bech32 } from '@scure/base';
 import { sha256 } from '../codec/hash';
 import { TrueOpenError } from '../errors/errors';
 
@@ -29,19 +27,6 @@ export function secp256k1PublicKey(privKey: Uint8Array): Uint8Array {
 export function verifyCosmosSecp256k1(message: Uint8Array, sig: Uint8Array, pubKey: Uint8Array): boolean {
   const raw = sig.length === 65 ? sig.subarray(0, 64) : sig;
   return secp256k1.verify(raw, sha256(message), pubKey);
-}
-
-/**
- * Cosmos address derivation: bech32(prefix, ripemd160(sha256(compressedPubKey))).
- * nexus's SDKRequestEnvelope requires signer_address to equal this derived
- * address, otherwise it rejects the signature (SDK_AUTH_INVALID_SIGNATURE).
- * pubKey must be a 33-byte compressed pubkey.
- */
-export function secp256k1Address(pubKey: Uint8Array, prefix: string): string {
-  if (pubKey.length !== 33) {
-    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BAD_PUBKEY_LEN', `expected 33-byte compressed secp256k1 pubkey, got ${pubKey.length}`);
-  }
-  return bech32.encode(prefix, bech32.toWords(ripemd160(sha256(pubKey))));
 }
 
 /**
@@ -92,11 +77,3 @@ export function verifySecp256k1Digest(digest: Uint8Array, sig: Uint8Array, pubKe
   return secp256k1.verify(raw, digest, pubKey);
 }
 
-/** Whether signer_address matches the address derived from this compressed pubkey under prefix. */
-export function secp256k1AddressMatches(address: string, pubKey: Uint8Array, prefix: string): boolean {
-  try {
-    return secp256k1Address(pubKey, prefix) === address;
-  } catch {
-    return false;
-  }
-}

@@ -7,7 +7,9 @@ import { RestChainReader } from '../../src/transport/rest-chain-reader';
 import { HubReader } from '../../src/transport/hub-reader';
 import { IngressClient } from '../../src/transport/ingress-client';
 import type { IngressAuth } from '../../src/transport/ingress-client';
-import { privKeySecp256k1Signer, secp256k1PublicKey, secp256k1Address } from '../../src/signer/secp256k1';
+import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { TrueOpenError } from '../../src/errors/errors';
 import { fromHex } from '../../src/util/bytes';
 
 /**
@@ -145,39 +147,35 @@ describe.skipIf(!nexusEnabled)('nexus integration (Connect over http)', () => {
 
   it('GetTaskStatus reaches a real nexus over the Connect wire', async () => {
     const client = new IngressClient(makeTransport());
-    // For an unknown task nexus answers Connect NOT_FOUND(5); receiving that numeric code proves the call landed and the wire is right.
+    // For an unknown task nexus answers NOT_FOUND; a classified non-transport error proves the call landed and the wire is right.
     let reached = false;
     try {
       await client.getTaskStatus(NEXUS_SESSION, 'nonexistent-task');
       reached = true;
     } catch (e) {
-      reached = typeof (e as { code?: unknown }).code === 'number';
+      reached = e instanceof TrueOpenError && e.category !== undefined && e.category !== 'transport';
     }
     expect(reached).toBe(true);
   }, 30_000);
 
-  it('a real nexus accepts the SDKRequestEnvelope: fetchOutputRef fails for reasons other than auth', async () => {
-    // Self-consistent identity: signer_address must equal bech32(prefix, ripemd160(sha256(signer_pubkey))), otherwise nexus rejects the signature.
+  it('a real nexus accepts the SDKRequestEnvelope: GetTaskEvents fails for reasons other than auth', async () => {
+    // Self-consistent identity: signer_address must equal the EVM-style address of signer_pubkey, otherwise nexus rejects the signature.
     const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
     const pub = secp256k1PublicKey(PRIV);
-    const addr = secp256k1Address(pub, 'trueopen'); // dogfoods the SDK helper, which matches what nexus expects
+    const addr = ethSecp256k1Address(pub, 'trueopen');
     const auth: IngressAuth = {
       chainId: NEXUS_CHAIN_ID, userAddress: addr, signerPubKey: pub,
       signer: privKeySecp256k1Signer(PRIV),
       nonce: () => new Uint8Array([1, 2, 3, 4]), expiry: () => BigInt(Date.now() + 300_000),
     };
     const client = new IngressClient(makeTransport(), auth);
-    let code: unknown;
-    let msg = '';
+    let caught: unknown;
     try {
-      await client.fetchOutputRef({ sessionId: NEXUS_SESSION, taskId: 'nonexistent-task', requester: addr, accessLevel: 'SEALED_KEY', usage: 'SDK_DELIVERY' });
+      for await (const _ev of client.getTaskEvents({ sessionId: NEXUS_SESSION, taskId: 'nonexistent-task' })) break;
     } catch (e) {
-      const err = e as { code?: unknown; message?: string; rawMessage?: string };
-      code = err.code;
-      msg = err.rawMessage ?? err.message ?? '';
+      caught = e;
     }
-    // The signature was accepted => not UNAUTHENTICATED(16) and no INVALID_SIGNATURE, which would mean the frame or signature drifted.
-    expect(msg).not.toContain('INVALID_SIGNATURE');
-    expect(code).not.toBe(16);
+    // The signature was accepted => not an auth error, which would mean the frame or signature drifted.
+    if (caught instanceof TrueOpenError) expect(caught.category).not.toBe('auth');
   }, 30_000);
 });

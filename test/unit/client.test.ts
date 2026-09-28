@@ -177,14 +177,6 @@ function makeClientWithTransport(transport: Transport): TrueOpenClient {
 }
 
 describe('TrueOpenClient facade', () => {
-  it('fetchOutputRef defaults to SEALED_KEY + requester=userAddress', async () => {
-    const cap: { fetch?: FetchOutputRefRequest } = {};
-    const res = await makeClient({}, cap).fetchOutputRef(SESSION, 'task-1');
-    expect(cap.fetch?.accessLevel).toBe(1); // SEALED_KEY
-    expect(cap.fetch?.requester).toBe('trueopen1u');
-    expect(res.credential?.credentialId).toBe('cred-1');
-  });
-
   it('watchTask streams events', async () => {
     const events = [];
     for await (const ev of makeClient().watchTask(SESSION, 'task-1', '0')) events.push(ev);

@@ -5,9 +5,7 @@ import type { Eip712Signer } from './signer/eth-secp256k1';
 import { ethSecp256k1AddressMatches } from './signer/eth-secp256k1';
 import { IngressClient } from './transport/ingress-client';
 import type { OpenTaskAck, TaskStatusView } from './transport/ingress-client';
-import type { AccessLevelName } from './transport/sdk-request-envelope';
 import type {
-  FetchOutputRefResponse,
   PrepareChallengeResponse,
   GetTaskEventsResponse,
 } from './gen/nexus/v1/ingress_pb.js';
@@ -23,7 +21,6 @@ import { buildTaskOrder, resolveTaskOrderContext } from './order/task-order-inpu
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader } from './order/task-order-input';
 import { buildOpenTaskRequest } from './order/build-open-task';
 import { deriveTaskId } from './order/order-signing';
-import type { ChallengeKind } from './types/challenge';
 import { TrueOpenError, dataError } from './errors/errors';
 import { sha256 } from './codec/hash';
 import { outputHash as outputMmrRoot, OutputStreamVerifier, verifyOutputFinSignature } from './output/output-commitment';
@@ -37,7 +34,7 @@ import { PARTICIPANT_TYPE } from './types/hub';
 import { resolveFeeDenom } from './order/fee-denom';
 import type { TaskBuilderEndpoint } from './hub/stage1-routing';
 import type { ByteRange } from './transport/task-data-signbytes';
-import { ConnectError, Code } from '@connectrpc/connect';
+import { classifyNexusError } from './errors/classify';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { toHex, fromHex } from './util/bytes';
 import { bytesEqual } from './util/bytes';
@@ -173,7 +170,7 @@ export interface OutputTrustAnchors {
 export interface OpenTaskBuilderResult {
   /** Builder operator address; this is the builderAddress for task-data requests to it. */
   readonly address: string;
-  /** Rank in the task_builder_seed selection (0 = first). */
+  /** Rank in the task_builder_seed selection, 1-based (1 = first). */
   readonly rank: number;
   /** The nexus endpoint the order was actually sent to (after any certificate re-read). */
   readonly serviceEndpoint: string;
@@ -631,8 +628,9 @@ export class TrueOpenClient {
    *  - `task/{task_id}/infer_receipt` -> output_hash (the MMR root), size and leaf count.
    *
    * The receipt lands one generation after the winner, so streaming does not need it: pass
-   * `withReceipt: false` to skip that read. A missing winner, or a missing receipt when one is
-   * asked for, is a retriable `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again.
+   * `withReceipt: false` to skip that read. A task not on chain yet (node answers 404), a missing
+   * winner, or a missing receipt when one is asked for, is a retriable
+   * `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again.
    *
    * Needs config.taskReader (RestChainReader) and a hub reader with getCurrentServiceKey.
    *
@@ -658,7 +656,20 @@ export class TrueOpenClient {
     const pending = (what: string): TrueOpenError =>
       new TrueOpenError('CHAIN_REJECT', 'OUTPUT_TRUST_ANCHOR_PENDING', `task ${taskId}: ${what}`, { retriable: true });
 
-    const task = await taskReader.queryTask(taskId);
+    let task: ChainTaskSnapshot;
+    try {
+      task = await taskReader.queryTask(taskId);
+    } catch (e) {
+      // Between nexus accepting the order and the chain including it, node answers 404: the
+      // task is not there yet, which is a state to poll on, not a final failure.
+      if (e instanceof TrueOpenError && e.code === 'CHAIN_QUERY_NOT_FOUND') {
+        throw new TrueOpenError('CHAIN_REJECT', 'OUTPUT_TRUST_ANCHOR_PENDING', `task ${taskId}: not on chain yet`, {
+          retriable: true,
+          cause: e,
+        });
+      }
+      throw e;
+    }
     const taskHash = task.acceptedTaskHash.toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(taskHash)) throw pending('no accepted task_hash on chain yet');
     if (task.winnerWorker === '') throw pending('no winner Worker on chain yet');
@@ -841,21 +852,6 @@ export class TrueOpenClient {
       );
     }
     return (await hub.getLatestHeight()) + BigInt(this.cfg.requestTtlBlocks ?? 10);
-  }
-
-  /** Fetch a retrieval credential (defaults to the SEALED_KEY access level, usage SDK_DELIVERY). The V1 data plane is plaintext; the credential only authorizes retrieval and carries no key material. */
-  fetchOutputRef(
-    sessionId: string,
-    taskId: string,
-    opts?: { accessLevel?: AccessLevelName; usage?: string },
-  ): Promise<FetchOutputRefResponse> {
-    return this.ingress.fetchOutputRef({
-      sessionId,
-      taskId,
-      requester: this.cfg.userAddress,
-      accessLevel: opts?.accessLevel ?? 'SEALED_KEY',
-      usage: opts?.usage ?? 'SDK_DELIVERY',
-    });
   }
 
   /**
@@ -1072,7 +1068,8 @@ export class TrueOpenClient {
   prepareChallenge(
     sessionId: string,
     taskId: string,
-    challengeKind: ChallengeKind,
+    /** The challenge kind name nexus expects (a free-form string on the wire). */
+    challengeKind: string,
     localEvidenceDigest?: Uint8Array,
   ): Promise<PrepareChallengeResponse> {
     const p =
@@ -1134,16 +1131,13 @@ function minBig(a: bigint, b: bigint): bigint {
 }
 
 /**
- * Whether a failed call is worth repeating against the same peer: only transport-level
- * failures (unavailable, deadline, aborted, overloaded) and a stream cut short. Anything
- * about the content -- a wrong range, a bad hash -- is final.
+ * Whether a failed call is worth repeating against the same peer: the classified error says
+ * so (a dropped connection, an expired request window, a peer that is busy or not ready, a
+ * stream cut short). Anything about the content -- a wrong range, a bad hash -- is final.
  */
 function isTransientTransportError(e: unknown): boolean {
-  if (e instanceof TrueOpenError) return e.code === 'NEXUS_FETCH_TASK_DATA_SHORT';
-  if (e instanceof ConnectError) {
-    return [Code.Unavailable, Code.DeadlineExceeded, Code.Aborted, Code.ResourceExhausted].includes(e.code);
-  }
-  return false;
+  const c = classifyNexusError(e);
+  return c instanceof TrueOpenError && c.retriable;
 }
 
 /** Delay before retry i (0-based): 200ms then 400ms. */

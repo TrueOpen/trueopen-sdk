@@ -1,5 +1,4 @@
-import { buildContext, queryAcrossNexus, fetchLike } from '../context';
-import { HubReader } from '../../transport/hub-reader';
+import { buildContext, queryAcrossNexus } from '../context';
 import { fromHex } from '../../util/bytes';
 import { TrueOpenError } from '../../errors/errors';
 import { FinishReasonV1 } from '../../gen/task/v1/evidence_pb.js';
@@ -31,26 +30,25 @@ export async function cmdOutputRef(
  *
  * Queries each candidate Task Builder in turn: the object only exists on the ones that received this
  * order, and nexus compares the builder_operator_address in the request byte-for-byte against its own
- * configuration, so each endpoint must use its own address. The expiry is a **chain height**, fetched
- * fresh here each time -- a stale height cannot be reused.
+ * configuration, so each endpoint must use its own address.
  *
- * Retrieval is content-addressed: both the on-chain task_hash and the InferReceipt's
- * output_hash must be supplied -- the latter is both object_ref.content_hash (used to locate the object)
- * and the verification target for the MMR root. Both values only exist on chain; the CLI does not guess
- * them or fetch them back from nexus.
+ * The trust anchors -- the accepted task_hash and the accepted InferReceipt's output_hash, size and
+ * leaf count -- are read from chain once (resolveOutputTrustAnchors); the optional positional
+ * arguments override the two hashes. The request expiry is latest height + 10 blocks, read fresh for
+ * every request, which stays inside nexus's 20-block window with margin.
  */
 export async function cmdOutputGet(
   cfg: CliConfig,
   mnemonic: string,
   session: string,
   task: string,
-  taskHash: string,
-  outputHash: string,
+  taskHash?: string,
+  outputHash?: string,
 ): Promise<unknown> {
   const ctx = await buildContext(cfg, mnemonic, { nexus: true, key: true });
   try {
-    const hub = new HubReader({ baseUrl: cfg.requireRest(), fetch: fetchLike });
-    const height = await hub.getLatestHeight();
+    const explicit = taskHash !== undefined && outputHash !== undefined;
+    const anchors = explicit ? undefined : await ctx.client.resolveOutputTrustAnchors(task);
     const failures: string[] = [];
     for (const ep of ctx.nexusEndpoints) {
       if (ep.builderAddress === '') {
@@ -65,14 +63,15 @@ export async function cmdOutputGet(
         const got = await ctx.clientFor(ep.serviceEndpoint).fetchTaskOutput({
           sessionId: session,
           taskId: task,
-          taskHash,
-          outputHash,
+          ...(taskHash !== undefined ? { taskHash } : {}),
+          ...(outputHash !== undefined ? { outputHash } : {}),
+          ...(anchors !== undefined ? { anchors } : {}),
           builderAddress: ep.builderAddress,
-          expiresAtHeight: height + 20n,
         });
         return {
           endpoint: ep.serviceEndpoint,
           builderAddress: ep.builderAddress,
+          taskHash: got.taskHash,
           sizeBytes: got.sizeBytes.toString(),
           mediaType: got.mediaType,
           outputHash: got.outputHash,
@@ -99,22 +98,19 @@ export async function cmdOutputGet(
  * Stream-subscribe to output. Verifies each frame's signature and the
  * MMR root locally, emitting frames as they arrive.
  *
- * workerPubKeyHex must be supplied by the caller: it is the service public key of the selected Worker for
- * this Task. Without it there's no way to verify frame signatures, and "accept without verifying" would
- * mean giving up all of the streamed-output guarantees, so no switch to skip verification is provided here.
- *
- * How to obtain it: on-chain `assignment.winner_worker` -> `HubReader.getCurrentServiceKey`
- * (the participant type is CORTEX -- that's the name used for the Worker-side software). Both become
- * available together at the winner_confirm stage, one generation cycle before the InferReceipt, so
- * streaming retrieval doesn't need to wait for the receipt.
+ * The frame signatures are checked against the winner Worker's current service key, read from chain
+ * (`task/{id}` winner_worker -> `current_service_key/PARTICIPANT_TYPE_CORTEX/{winner}`) together with
+ * the accepted task_hash. Both exist once the winner is confirmed, one generation cycle before the
+ * InferReceipt, so streaming does not wait for the receipt. The optional positional arguments override
+ * them; there is no switch to skip verification.
  */
 export async function cmdOutputStream(
   cfg: CliConfig,
   mnemonic: string,
   session: string,
   task: string,
-  taskHash: string,
-  workerPubKeyHex: string,
+  taskHash: string | undefined,
+  workerPubKeyHex: string | undefined,
   ack: boolean,
 ): Promise<unknown> {
   const ctx = await buildContext(cfg, mnemonic, { nexus: true, key: true });
@@ -125,14 +121,14 @@ export async function cmdOutputStream(
     const sources = clients.map(({ ep, client }) => ({ id: ep.serviceEndpoint, ingress: client.ingress }));
     const frames: { seq: string; text: string }[] = [];
     let text = '';
-    // undefined when the peer sent an unsigned Fin: reported as such rather than guessed,
-    // and it never says "tool_calls" -- see OutputStreamEvent.
+    // From the Worker-signed Fin (streamOutput requires one by default). It never says
+    // "tool_calls" -- see OutputStreamEvent.
     let finishReason: FinishReasonV1 | undefined;
     for await (const e of first.client.streamOutput({
       sessionId: session,
       taskId: task,
-      taskHash,
-      workerServicePubKey: fromHex(workerPubKeyHex),
+      ...(taskHash !== undefined ? { taskHash } : {}),
+      ...(workerPubKeyHex !== undefined ? { workerServicePubKey: fromHex(workerPubKeyHex) } : {}),
       sources,
       maxAttempts: Math.max(3, sources.length * 3),
       idleTimeoutMs: 20_000,

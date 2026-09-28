@@ -18,9 +18,9 @@ import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricin
  * Keeper's validation rules for each field (node x/task/keeper/
  * task_builder_selection_runtime.go:51-71, msg_server_worker_handraises.go:486-502):
  *
- *  - builder_set_id is the identifier of that set on chain (it looks like
- *    "genesis-1", no longer a decimal term); builder_set_hash must equal that set
- *    snapshot's hash.
+ *  - builder_set_id / builder_set_hash must equal the BuilderSet in effect **at
+ *    session_anchor_height** (the Keeper reads GetBuilderSetForHeight(anchor), not the
+ *    latest set). The id looks like "genesis-1", no longer a decimal term.
  *  - session_anchor_height must not be earlier than that set's effective_height.
  *  - session_anchor_block_hash must equal GetBlockAnchorHash(height), i.e. the
  *    block_hash recorded by the on-chain **beacon** (not a block header read directly).
@@ -50,7 +50,8 @@ export interface TaskOrderChainContext {
 /** The minimal read capability resolveTaskOrderContext needs (HubReader satisfies it; makes test injection easy). */
 export interface TaskOrderContextReader {
   getLatestHeight(): Promise<bigint>;
-  getActiveBuilderSet(): Promise<BuilderSetSnapshot>;
+  /** The BuilderSet in effect at `height` (node `builder_set/by_height/{height}`). */
+  getBuilderSetAtHeight(height: bigint): Promise<BuilderSetSnapshot>;
   getBeacon(height: bigint): Promise<BeaconView>;
   getParameterBucket(
     kind: typeof BUCKET_KIND[keyof typeof BUCKET_KIND],
@@ -148,6 +149,11 @@ export function defaultGenerationParams(maxOutputTokens: bigint, maxOutputDurati
  * The anchor is `latestHeight - anchorLag`: since the beacon is written block by block,
  * using a slightly older height avoids racing the latest block (whose beacon record may
  * not be queryable yet), while still staying at or after the set's effective height.
+ *
+ * The BuilderSet is read **at the anchor height**, not the latest height: the chain checks
+ * the signed builder_set_id / builder_set_hash against the set in effect at
+ * session_anchor_height, and a set change between the anchor and the latest block would
+ * otherwise sign a set the chain rejects.
  */
 export async function resolveTaskOrderContext(
   hub: TaskOrderContextReader,
@@ -159,7 +165,7 @@ export async function resolveTaskOrderContext(
   const anchorHeight = latestHeight > lag ? latestHeight - lag : latestHeight;
 
   const [set, beacon, timeout, generationLimits] = await Promise.all([
-    hub.getActiveBuilderSet(),
+    hub.getBuilderSetAtHeight(anchorHeight),
     hub.getBeacon(anchorHeight),
     hub.getParameterBucket(BUCKET_KIND.TIMEOUT),
     hub.getTaskGenerationLimits(),
@@ -248,10 +254,22 @@ export function buildTaskOrder(
         `the current value needs to be >= ${minPriceBidFor(1n, req.generationParams.maxOutputTokens)}`,
     );
   }
-  // If profile pricing was given, also catch "below the profile minimum" locally - this
-  // is likewise a rejection that only happens on chain after nexus has accepted the
-  // order (node: "order_value is below the profile minimum").
-  if (pricing !== undefined && pricing.minOrderValue > 0n) {
+  // The chain requires a positive max_fee and a zero assignment_priority_fee ("task order
+  // amounts are invalid"); both are rejected only after nexus has accepted the order.
+  if (BigInt(req.amounts.maxFee.atomicUnits) === 0n) {
+    throw invalid('SDK_LOCAL_MAX_FEE_ZERO', 'max_fee must be positive');
+  }
+  if (BigInt(req.amounts.assignmentPriorityFee.atomicUnits) !== 0n) {
+    throw invalid(
+      'SDK_LOCAL_PRIORITY_FEE_NOT_ZERO',
+      `assignment_priority_fee must be 0 (got ${req.amounts.assignmentPriorityFee.atomicUnits}); the chain rejects any other value`,
+    );
+  }
+  // If profile pricing was given, also catch "below the profile minimum" and "order_value +
+  // tx_fee_reserve > max_fee" locally - both are rejections that only happen on chain after
+  // nexus has accepted the order (node TaskOrderCosts and "order_value is below the profile
+  // minimum"). The max_fee bound applies even when the profile sets no minimum.
+  if (pricing !== undefined) {
     const orderValue = workerMax + (workerMax * pricing.verifyRatioBps) / 10_000n;
     if (orderValue < pricing.minOrderValue) {
       throw invalid(

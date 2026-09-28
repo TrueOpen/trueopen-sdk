@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRouterTransport } from '@connectrpc/connect';
+import { createRouterTransport, ConnectError, Code } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type { OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
@@ -45,7 +45,7 @@ const snapshot: BuilderSetSnapshot = {
 /** Satisfies both TaskBuilderReader and TaskOrderContextReader. */
 const hub = {
   getLatestHeight: async (): Promise<bigint> => 1_000n,
-  getActiveBuilderSet: async (): Promise<BuilderSetSnapshot> => snapshot,
+  getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
   getBeacon: async (height: bigint): Promise<BeaconView> => ({
     height, blockHash: ANCHOR, randomnessHex: hexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
   }),
@@ -56,6 +56,8 @@ const hub = {
   getParameterBucket: async (kind: string): Promise<ParameterBucketView> => ({
     bucketKind: kind, bucketKey: 'default', version: 1n, currentVersion: 1n, effectiveHeight: 0n,
   }),
+  getBusinessDenom: async (): Promise<string> => 'utrueopen',
+  getProfile: async () => ({ pricing: { minOrderValue: 0n, verifyRatioBps: 0n, initialOutputPrice: 0n } }),
   getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => ({
     participantType: 'PARTICIPANT_TYPE_BUILDER', participantId: id, descriptorVersion: 2n,
     endpoints: [{ endpointKind: 'SERVICE_ENDPOINT_KIND_NEXUS_GRPC', uri: `grpc://${id}:8080`, protocolVersion: 'v1' }],
@@ -137,6 +139,42 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.context.sessionAnchorHeight).toBe(998n);
   });
 
+  it('a BuilderSet change between the anchor and the latest height: signs and routes by the anchor-height set', async () => {
+    // A new set with a single member takes effect at 999, after the anchor (998) but by the latest height (1000).
+    const rotated: BuilderSetSnapshot = {
+      builderSetId: 'rotation-2', builderSetVersion: 2n, effectiveHeight: 999n, builders: ADDRS[0]!, setHash: hexOf(0x99),
+    };
+    const heights: bigint[] = [];
+    const rotatingHub = {
+      ...(hub as object),
+      getBuilderSetAtHeight: async (h: bigint): Promise<BuilderSetSnapshot> => {
+        heights.push(h);
+        return h >= 999n ? rotated : snapshot;
+      },
+    } as never;
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const contacted: string[] = [];
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      evmChainId: 424242n, feeDenom: 'utrueopen',
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub: rotatingHub,
+      ingressTransportFactory: (uri) => {
+        contacted.push(uri);
+        return acceptTransport(seen);
+      },
+      nonce: () => new Uint8Array([1, 2, 3]),
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+
+    // Every BuilderSet read, for signing and for routing, is at the anchor height.
+    expect(heights).toEqual([998n, 998n]);
+    expect(res.context.builderSetId).toBe('genesis-1');
+    expect(res.context.builderSetHash).toBe(SET_HASH);
+    // The Builders contacted are the anchor-height set's members, not the latest set's single member.
+    expect(contacted.sort()).toEqual(ADDRS.map((a) => `grpc://${a}:8080`).sort());
+  });
+
   it('expiry uses block height rather than a timestamp (nexus only accepts block height for OpenTask)', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     await makeClient(seen).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
@@ -207,5 +245,116 @@ describe('TrueOpenClient.openTask', () => {
     await expect(
       client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_ROUTING_UNCONFIGURED' });
+  });
+
+  it('returns every selected Builder with its ack or error, keeping the first ack at the top level', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const rejecting = createRouterTransport(({ service }) => {
+      service(IngressAPI, {
+        async openTask(reqs: AsyncIterable<OpenTaskRequest>) {
+          for await (const _f of reqs) { /* drain */ }
+          throw new ConnectError('builder down', Code.Unavailable);
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      evmChainId: 424242n,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub,
+      ingressTransportFactory: (uri) => (uri.includes(ADDRS[1]!) ? rejecting : acceptTransport(seen)),
+      nonce: () => new Uint8Array([1, 2, 3]),
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+
+    expect(res.accepted).toBe(true);
+    expect(res.sessionId).toBe(SESSION);
+    expect(res.builders.map((b) => b.address).sort()).toEqual([...ADDRS].sort());
+    expect(res.builders.map((b) => b.rank)).toEqual([...res.builders.map((b) => b.rank)].sort((a, b) => a - b));
+    for (const b of res.builders) {
+      expect(b.serviceEndpoint).toBe(`grpc://${b.address}:8080`);
+      if (b.address === ADDRS[1]) {
+        expect(b.ack).toBeUndefined();
+        expect(String((b.error as Error).message)).toMatch(/builder down/);
+      } else {
+        expect(b.ack?.accepted).toBe(true);
+        expect(b.error).toBeUndefined();
+      }
+    }
+    expect(res.unresolvedBuilders).toEqual([]);
+  });
+
+  it('signs the chain business_denom when no override is configured', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      evmChainId: 424242n,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub: { ...(hub as object), getBusinessDenom: async () => 'uchain' } as never,
+      ingressTransportFactory: () => acceptTransport(seen),
+      nonce: () => new Uint8Array([1, 2, 3]),
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    expect(res.feeDenom).toBe('uchain');
+  });
+
+  it('refuses locally when the feeDenom override disagrees with the chain business_denom', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      evmChainId: 424242n, feeDenom: 'uusdc',
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      nonce: () => new Uint8Array([1, 2, 3]),
+    });
+    await expect(
+      client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_FEE_DENOM_MISMATCH' });
+    expect(seen.calls).toBe(0);
+  });
+
+  it('runs the profile pricing checks before signing (min order value and max fee)', async () => {
+    const withPricing = (minOrderValue: bigint, verifyRatioBps: bigint): TrueOpenClient =>
+      new TrueOpenClient({
+        chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+        evmChainId: 424242n,
+        chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+        hub: {
+          ...(hub as object),
+          getProfile: async () => ({ pricing: { minOrderValue, verifyRatioBps, initialOutputPrice: 0n } }),
+        } as never,
+        ingressTransportFactory: () => { throw new Error('must not send'); },
+        nonce: () => new Uint8Array([1, 2, 3]),
+      });
+    // worker = floor(128 x 100000 / 1e6) = 12
+    await expect(
+      withPricing(13n, 0n).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_VALUE_BELOW_PROFILE_MIN' });
+    // No profile minimum, but order_value (12) + tx_fee_reserve (0) > max_fee (10).
+    const cheap = { ...order, amounts: { ...order.amounts, maxFee: amount('10') } };
+    await expect(
+      withPricing(0n, 0n).openTask({ sessionId: SESSION, orderSequence: 3n, order: cheap, idempotencyKey: 'idem-1' }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_MAX_FEE_TOO_LOW' });
+  });
+
+  it('refuses to sign without pricing, unless the caller passes it', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const { getProfile: _drop, ...noProfile } = hub as unknown as Record<string, unknown>;
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer, orderSigner,
+      evmChainId: 424242n,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub: noProfile as never, ingressTransportFactory: () => acceptTransport(seen),
+      nonce: () => new Uint8Array([1, 2, 3]),
+    });
+    await expect(
+      client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_PRICING_UNAVAILABLE' });
+    const res = await client.openTask({
+      sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1',
+      pricing: { minOrderValue: 1n, verifyRatioBps: 0n, initialOutputPrice: 0n },
+    });
+    expect(res.accepted).toBe(true);
   });
 });

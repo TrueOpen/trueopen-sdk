@@ -17,7 +17,7 @@ import { Agent as HttpsAgent } from 'node:https';
 import type { AgentOptions } from 'node:https';
 import { connect as tlsConnect } from 'node:tls';
 import type { ConnectionOptions, TLSSocket } from 'node:tls';
-import { connect as netConnect, isIP } from 'node:net';
+import { isIP } from 'node:net';
 import { createHash, X509Certificate } from 'node:crypto';
 import type { Duplex } from 'node:stream';
 import { createConnectTransport } from '@connectrpc/connect-node';
@@ -117,139 +117,67 @@ export class PinnedHttpsAgent extends HttpsAgent {
 export interface NexusTransportOptions {
   readonly baseUrl: string;
   readonly httpVersion: '1.1';
-  readonly nodeOptions?: { readonly agent: PinnedHttpsAgent | PlaintextFallbackAgent };
+  readonly nodeOptions?: { readonly agent: PinnedHttpsAgent };
 }
 
 export interface NexusTransportPolicy {
   /**
    * What to do when an https endpoint has no tls_pubkey_hash on chain:
-   * - `plaintext-fallback` (default): transitional behavior. First attempt
-   *   https via the standard CA chain; if the peer doesn't speak TLS at all
-   *   (nexus hasn't enabled TLS yet, but the descriptor says https), fall back
-   *   to http and log a WARN. Once a fingerprint is registered on chain, this
-   *   path is never taken and the check automatically becomes strict.
-   * - `reject`: the nexus endpoint must register a fingerprint; a missing one
-   *   is treated as an incomplete descriptor and the connection is refused.
-   *   The env var `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` changes the default to
-   *   this mode.
-   * - `certificate-authority`: verify via the standard CA chain, no fallback.
-   *   Used for an operator-supplied `--nexus-url` (where there's no on-chain
-   *   descriptor to look up).
+   * - `certificate-authority` (default): verify the certificate through the standard CA chain.
+   *   A handshake failure is an error; the SDK never falls back to plaintext.
+   * - `reject`: the nexus endpoint must register a fingerprint; a missing one is treated as an
+   *   incomplete descriptor and the connection is refused. The env var
+   *   `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` changes the default to this mode.
    */
-  readonly unpinnedHttps?: 'reject' | 'certificate-authority' | 'plaintext-fallback';
+  readonly unpinnedHttps?: 'reject' | 'certificate-authority';
+  /**
+   * Allow plaintext `http://` (and `grpc://`) endpoints. Off by default: plaintext gives no
+   * confidentiality or integrity, so anyone on the network path can read or rewrite requests
+   * and responses. Meant for a localnet only. The env var `TRUEOPEN_ALLOW_INSECURE_HTTP=1` turns
+   * it on too. Every endpoint allowed this way logs a warning.
+   */
+  readonly allowInsecureHttp?: boolean;
+  /** Where the insecure-http warning goes; defaults to console.warn. */
+  readonly warn?: (message: string) => void;
 }
 
 /** When the NEXUS_TLS_PUBKEY_HASH_REQUIRED env var is 1/true/yes, any https endpoint without a registered fingerprint is rejected. */
 export function tlsPubkeyHashRequiredByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = (env.NEXUS_TLS_PUBKEY_HASH_REQUIRED ?? '').trim().toLowerCase();
+  return envFlag(env.NEXUS_TLS_PUBKEY_HASH_REQUIRED);
+}
+
+/** When the TRUEOPEN_ALLOW_INSECURE_HTTP env var is 1/true/yes, plaintext http:// nexus endpoints are allowed (localnet only). */
+export function insecureHttpAllowedByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return envFlag(env.TRUEOPEN_ALLOW_INSECURE_HTTP);
+}
+
+function envFlag(value: string | undefined): boolean {
+  const raw = (value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes';
 }
 
-/**
- * Whether `err` indicates the peer is a plaintext server: it replied to the TLS
- * ClientHello with non-TLS bytes, which OpenSSL reports as EPROTO or a "wrong
- * version number" style error.
- *
- * ECONNRESET is deliberately excluded: anything on the network path that can
- * send an RST can produce it, and so can an overloaded TLS server; treating it
- * as proof would let a single RST permanently pin this host:port to plaintext.
- * A genuine plaintext server responds to a ClientHello with EPROTO, not a
- * clean RST.
- */
-export function isPlaintextServerError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const code = (err as { code?: string }).code ?? '';
-  if (code === 'EPROTO') return true;
-  return /wrong version number|packet length too long|unknown protocol|unexpected message/i.test(err.message);
-}
+/** Endpoints already warned about through the default sink, so the console is told once each. */
+const warnedInsecureHttp = new Set<string>();
 
 /**
- * How long (ms) the "this host:port is a plaintext server" determination is
- * cached for.
+ * Warns that an endpoint is plaintext.
  *
- * The determination has to be cached: otherwise every connection pays for a
- * failed TLS handshake first. But it can't be cached forever either -- if the
- * Builder enables TLS while the client process is running, a long-lived
- * process would keep using plaintext until restarted. After the TTL expires
- * we retry TLS once, at the cost of one failed handshake every 5 minutes.
+ * A transport is constructed per endpoint per openTask, so warning unconditionally means one
+ * message per endpoint per request -- which is how a warning becomes noise people filter out.
+ * The default console sink therefore speaks once per endpoint per process. An injected `warn` is
+ * the caller's own sink and always fires, so tests and structured loggers see every occurrence.
  */
-const PLAINTEXT_MEMO_TTL_MS = 5 * 60 * 1000;
-
-/**
- * A transitional https Agent: attempt the handshake via the standard CA chain
- * first, then fall back to a plaintext connection with a WARN log if the peer
- * doesn't speak TLS.
- *
- * Only the "peer is a plaintext server" failure is handled this way; other
- * TLS-layer errors, such as an untrusted certificate, are returned as-is with
- * no fallback. Once a host:port is determined to be plaintext, it goes
- * straight to plaintext within the TTL instead of trying TLS first every
- * time; after the TTL expires, TLS is retried once, so a Builder that enables
- * TLS mid-flight doesn't require the client process to be restarted.
- */
-export class PlaintextFallbackAgent extends HttpsAgent {
-  /** host:port -> the time it was determined to be plaintext (Date.now()); expired after PLAINTEXT_MEMO_TTL_MS. */
-  private readonly plaintextHosts = new Map<string, number>();
-  private readonly warn: (message: string) => void;
-  private readonly memoTtlMs: number;
-
-  constructor(options?: AgentOptions & { readonly warn?: (message: string) => void; readonly memoTtlMs?: number }) {
-    const { warn, memoTtlMs, ...agentOptions } = options ?? {};
-    super({ keepAlive: true, ...agentOptions });
-    this.warn = warn ?? ((message) => console.warn(message));
-    this.memoTtlMs = memoTtlMs ?? PLAINTEXT_MEMO_TTL_MS;
+function warnInsecureHttp(baseUrl: string, warn: ((message: string) => void) | undefined): void {
+  const message =
+    `WARNING: nexus endpoint ${baseUrl} uses plaintext http (insecure http explicitly allowed); ` +
+    'requests and responses can be read and modified on the network path. Use this on a localnet only.';
+  if (warn !== undefined) {
+    warn(message);
+    return;
   }
-
-  /** Whether this host:port was determined to be plaintext within the TTL; expired entries are removed along the way. */
-  private memoizedPlaintext(key: string): boolean {
-    const at = this.plaintextHosts.get(key);
-    if (at === undefined) return false;
-    if (Date.now() - at < this.memoTtlMs) return true;
-    this.plaintextHosts.delete(key);
-    return false;
-  }
-
-  createConnection(options: ConnectionOptions & { readonly host?: string; readonly port?: number | string }, callback?: CreateConnectionCallback): Duplex | null | undefined {
-    if (!callback) {
-      throw new TrueOpenError('SDK_LOCAL', 'NEXUS_TLS_AGENT_MISUSE', 'PlaintextFallbackAgent.createConnection requires a callback');
-    }
-    const host = options.host ?? '';
-    const port = Number(options.port ?? 443);
-    const key = `${host}:${port}`;
-    const plain = (): void => {
-      const socket = netConnect({ host, port });
-      socket.once('error', (err) => callback(err, socket));
-      socket.once('connect', () => callback(null, socket));
-    };
-    if (this.memoizedPlaintext(key)) {
-      plain();
-      return undefined;
-    }
-    const socket: TLSSocket = tlsConnect({
-      ...options,
-      ...(options.servername === undefined && host !== '' && isIP(host) === 0 ? { servername: host } : {}),
-    });
-    const onError = (err: Error): void => {
-      socket.destroy();
-      if (!isPlaintextServerError(err)) {
-        callback(err, socket);
-        return;
-      }
-      this.plaintextHosts.set(key, Date.now());
-      this.warn(
-        `nexus ${key} does not speak TLS although its descriptor says https; falling back to plaintext http. ` +
-          'The Builder should enable ingress TLS and register its certificate fingerprint. ' +
-          'Set NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 to refuse instead.',
-      );
-      plain();
-    };
-    socket.once('error', onError);
-    socket.once('secureConnect', () => {
-      socket.removeListener('error', onError);
-      callback(null, socket);
-    });
-    return undefined;
-  }
+  if (warnedInsecureHttp.has(baseUrl)) return;
+  warnedInsecureHttp.add(baseUrl);
+  console.warn(message);
 }
 
 /** Error code for a handshake verification failure; callers use it to decide whether to re-read the descriptor and retry once. */
@@ -279,11 +207,13 @@ export function isTLSPubkeyMismatch(err: unknown): boolean {
  *
  * - `grpc://` / `grpcs://` are normalized to http(s).
  * - https with an on-chain hash: use PinnedHttpsAgent to verify the
- *   certificate public key during the handshake, with no fallback.
- * - https without an on-chain hash: follow NexusTransportPolicy; the default
- *   transitional behavior falls back to http only if the peer doesn't speak
- *   TLS, and rejects when `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1`.
- * - http: plaintext, for local integration testing only.
+ *   certificate public key during the handshake.
+ * - https without an on-chain hash: standard CA verification by default, or
+ *   refused under `unpinnedHttps: 'reject'` / `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1`.
+ * - http: refused unless `allowInsecureHttp` or `TRUEOPEN_ALLOW_INSECURE_HTTP=1`
+ *   opts in, and then logged as a warning.
+ *
+ * https is never downgraded to http, whatever the handshake does.
  */
 export function nexusTransportOptions(uri: string, tlsPubkeyHash = '', policy: NexusTransportPolicy = {}): NexusTransportOptions {
   const baseUrl = nexusHttpBaseUri(uri);
@@ -292,21 +222,33 @@ export function nexusTransportOptions(uri: string, tlsPubkeyHash = '', policy: N
     if (hash !== '') {
       return { baseUrl, httpVersion: '1.1', nodeOptions: { agent: new PinnedHttpsAgent(hash) } };
     }
-    const unpinned = policy.unpinnedHttps ?? (tlsPubkeyHashRequiredByEnv() ? 'reject' : 'plaintext-fallback');
+    const unpinned = policy.unpinnedHttps ?? (tlsPubkeyHashRequiredByEnv() ? 'reject' : 'certificate-authority');
     switch (unpinned) {
       case 'certificate-authority':
         return { baseUrl, httpVersion: '1.1' };
-      case 'plaintext-fallback':
-        return { baseUrl, httpVersion: '1.1', nodeOptions: { agent: new PlaintextFallbackAgent() } };
-      default:
+      case 'reject':
         throw new TrueOpenError(
           'CHAIN_REJECT',
           'NEXUS_TLS_PUBKEY_HASH_REQUIRED',
           `nexus endpoint ${baseUrl} is https but its descriptor carries no tls_pubkey_hash; the Builder must register its certificate fingerprint`,
         );
+      default:
+        throw new TrueOpenError('SDK_LOCAL', 'NEXUS_TLS_POLICY_INVALID', `unknown unpinnedHttps policy ${JSON.stringify(unpinned)}`);
     }
   }
-  return { baseUrl, httpVersion: '1.1' };
+  if (baseUrl.startsWith('http://')) {
+    if (policy.allowInsecureHttp !== true && !insecureHttpAllowedByEnv()) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'NEXUS_INSECURE_HTTP_REFUSED',
+        `nexus endpoint ${baseUrl} is plaintext http; refusing to connect. ` +
+          'For a localnet only, opt in with allowInsecureHttp: true or TRUEOPEN_ALLOW_INSECURE_HTTP=1',
+      );
+    }
+    warnInsecureHttp(baseUrl, policy.warn);
+    return { baseUrl, httpVersion: '1.1' };
+  }
+  throw new TrueOpenError('SDK_LOCAL', 'NEXUS_ENDPOINT_SCHEME_UNSUPPORTED', `nexus endpoint ${JSON.stringify(uri)} is not an http(s) or grpc(s) uri`);
 }
 
 /** Connect transport for the nexus IngressAPI; usable directly as TrueOpenClient.ingressTransportFactory. */

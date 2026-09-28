@@ -37,6 +37,51 @@
 
 ### Changed
 
+- **Breaking:** the order fee denom comes from the chain. `openTask` reads
+  `params.phase0.business_denom` (`HubReader.getBusinessDenom`) and signs it; `feeDenom` in the
+  config is now an optional check, and an order is refused locally
+  (`SDK_LOCAL_FEE_DENOM_MISMATCH`) when it disagrees with the chain. The CLI no longer defaults
+  to `uusdc`: `--fee-denom` / `TRUEOPEN_FEE_DENOM` is an optional check, and `--gas-price` is an
+  amount whose denom is the chain `business_denom` (any other denom is refused).
+- **Breaking:** `openTask` runs the profile pricing checks before signing. It reads the
+  profile through `hub.getProfile` (or takes `params.pricing`) and refuses an order below
+  `min_order_value` or whose `order_value + tx_fee_reserve` exceeds `max_fee`. It also refuses a
+  zero `max_fee` and a non-zero `assignment_priority_fee`. Without pricing it fails with
+  `SDK_LOCAL_PRICING_UNAVAILABLE` instead of skipping the checks.
+- `openTask` returns `builders` (every selected Builder's address, rank, endpoint and ack or
+  error), `unresolvedBuilders` and `feeDenom`. The first accepted ack stays at the top level.
+- Output trust anchors come from the chain. New `resolveOutputTrustAnchors(taskId)` reads the
+  accepted task_hash and winner Worker, the Worker's current service key (must be ACTIVE) and
+  the accepted InferReceipt. `fetchTaskOutput` and `streamOutput` use it when `taskHash` /
+  `outputHash` / `workerServicePubKey` are not given (new `taskReader` config), and the CLI
+  `output get` / `output stream` no longer take them as required arguments.
+- `fetchTaskOutput` fetches in ranges of at most 8 MiB (nexus's default max range), checks each
+  range's `served_range` and chunk offsets, retries a range that failed on transport, checks
+  the metadata against the accepted receipt, and does not fetch a size-0 object.
+  `expiresAtHeight` defaults to latest height + 10.
+- **Breaking:** the CLI order file requires every field and rejects unknown fields and unknown
+  `taskType` / `latencyClass` values (`CLI_ORDER_FILE_INVALID`). The docs now use the parser's
+  field names (`priceBid`, `maxFee`, `assignmentPriorityFee`, `txFeeReserve`).
+- CLI `output get` requests expire at latest height + 10 instead of + 20 (nexus's TTL edge).
+
+- **Breaking:** `streamOutput` requires a Worker-signed Fin by default
+  (`finSignaturePolicy: 'require'`). An unsigned Fin no longer ends the stream, since a Builder
+  could send one after any verified prefix and truncate the output. The `fin` event now carries
+  `attested`. Under the explicit `'accept-unsigned'` opt-in an unsigned Fin ends the stream as
+  `attested: false`, and it is never acked.
+- **Breaking:** the nexus transport never downgrades https to plaintext. An https endpoint
+  without a registered fingerprint is verified through the standard CA chain, and a handshake
+  failure is an error. `PlaintextFallbackAgent`, `isPlaintextServerError` and the
+  `plaintext-fallback` policy are removed. Plaintext `http://` / `grpc://` endpoints are refused
+  unless the caller opts in with `allowInsecureHttp: true` or `TRUEOPEN_ALLOW_INSECURE_HTTP=1`
+  (localnet only), which logs a warning. The default console sink says it once per endpoint per
+  process; an injected `warn` sink sees every occurrence.
+- **Breaking:** `openTask` reads the BuilderSet at the order's `session_anchor_height`, both for
+  the signed `builder_set_id` / `builder_set_hash` and for routing, matching the chain's check.
+  `TaskOrderContextReader` and `TaskBuilderReader` need `getBuilderSetAtHeight` instead of
+  `getActiveBuilderSet`, `resolveTaskBuilderEndpoints` takes a required `sessionAnchorHeight`,
+  and routing fails with `SDK_LOCAL_BUILDER_SET_MISMATCH` if the set at that height does not
+  match the signed hash.
 - **Breaking (wire v0.3.3):** orders are `TaskOrderV3`.
   - `model_id` is a raw Hash32. `TaskOrderRequest.modelId` is lowercase 64-hex, and legacy text
     slugs are rejected.
@@ -94,8 +139,3 @@
 - `RestChainReader.queryTask` decodes the terminal arm's `model_id` as a Hash32 as well.
 - An evidence object with no producer kind reports that, instead of the unhelpful
   "evidence_kind 0 is not a data-plane evidence kind for producer kind 0".
-
-### Known limitations
-
-- Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked until
-  the Worker runtime and nexus produce and forward signed Fins.

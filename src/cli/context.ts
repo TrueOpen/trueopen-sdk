@@ -22,6 +22,7 @@ import type { ChainClient, CosmosSecp256k1Signer } from '../index';
 export { TRUEOPEN_HD_PATH };
 import { TrueOpenError } from '../errors/errors';
 import type { CliConfig } from './config';
+import { resolveGasPrice } from './config';
 
 export interface Identity {
   readonly privkey: Uint8Array;
@@ -64,10 +65,10 @@ export async function fetchDescriptorBytes(url: string): Promise<Uint8Array> {
  * accepts an http(s) base URL; the normalization happens inside nexusIngressTransport.
  *
  * For https endpoints, the server certificate's public key is checked against the tls_pubkey_hash
- * registered on chain (transport/nexus-tls). When **no** hash is registered on chain, it falls back to
- * nexusTransportOptions's default transitional policy (`plaintext-fallback`: falls back to http and logs
- * a WARN only when the peer doesn't speak TLS at all; an untrusted certificate is never downgraded).
- * Setting `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` makes it reject unconditionally instead.
+ * registered on chain (transport/nexus-tls). When **no** hash is registered on chain, the certificate
+ * is verified through the standard CA chain; https is never downgraded to http. Setting
+ * `NEXUS_TLS_PUBKEY_HASH_REQUIRED=1` makes it reject unconditionally instead. Plaintext `http://` /
+ * `grpc://` endpoints are refused unless `TRUEOPEN_ALLOW_INSECURE_HTTP=1` is set (localnet only).
  *
  * The normalization lives here (rather than at each call site) so that the --auto single-endpoint path
  * and deterministic routing follow the same rules.
@@ -207,6 +208,10 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
   const signing = needs.key === true || needs.write === true;
   const identity = signing ? await deriveIdentity(reqKey(mnemonic), cfg.prefix) : ephemeralIdentity(cfg.prefix);
 
+  // Chain params are read, never guessed: the EVM chain ID feeds the EIP-712 domain separator,
+  // and business_denom is the only fee denom the chain accepts (tx fees and the order feeDenom).
+  const paramsReader = new HubReader({ baseUrl: cfg.requireRest(), fetch: fetchLike });
+
   let chain: ChainClient;
   let dispose: () => Promise<void> = async () => {};
   if (needs.write) {
@@ -234,7 +239,7 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
       // sign mode to SIGN_MODE_UNSPECIFIED (@cosmjs/stargate modules/tx/queries.js). node's ante requires
       // exactly SIGN_MODE_DIRECT, so the simulation step itself gets rejected: "signer 0 uses an invalid
       // signature mode". So we compute an explicit fee ourselves here as gasPrice x gas.
-      fee: explicitFee(cfg.gasPrice, cfg.gas),
+      fee: explicitFee(resolveGasPrice(cfg.gasPrice, await paramsReader.getBusinessDenom()), cfg.gas),
     });
     chain = conn.client;
     dispose = async () => conn.signingClient.disconnect();
@@ -242,15 +247,14 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
     chain = readOnlyChain(cfg.requireRest());
   }
 
-  // The EVM chain ID feeds into the EIP-712 domain separator; if not given explicitly, it's read from chain -- never guessed.
-  const evmChainId =
-    cfg.evmChainId ??
-    (await new HubReader({ baseUrl: cfg.requireRest(), fetch: fetchLike }).getEvmChainId());
+  const evmChainId = cfg.evmChainId ?? (await paramsReader.getEvmChainId());
+  // On-chain task reads for the output trust anchors (accepted task_hash, winner, receipt).
+  const taskReader = new RestChainReader({ baseUrl: cfg.requireRest(), fetch: fetchLike });
 
   let hubReader: HubReader | undefined;
   let candidates: NexusCandidate[] = [{ serviceEndpoint: 'http://nexus.unused.invalid', tlsPubkeyHash: '', builderAddress: '' }];
   if (needs.nexus) {
-    hubReader = new HubReader({ baseUrl: cfg.requireRest(), fetch: fetchLike });
+    hubReader = paramsReader;
     // Deterministic routing: doesn't pre-resolve the endpoint (actual sending goes through transportFactory); other commands resolve all candidates.
     candidates = needs.deterministic
       ? [{ serviceEndpoint: cfg.nexusUrl ?? 'http://nexus.unused.invalid', tlsPubkeyHash: cfg.nexusTlsPubkeyHash ?? '', builderAddress: '' }]
@@ -277,10 +281,12 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
       // signAndEncodeOrder as "signature is not 65 bytes".
       orderSigner: privKeyEip712Signer(identity.privkey),
       evmChainId,
-      feeDenom: cfg.feeDenom,
+      // Only an override: the facade reads business_denom from the hub and refuses a mismatch.
+      ...(cfg.feeDenom !== undefined ? { feeDenom: cfg.feeDenom } : {}),
+      taskReader,
+      ...(hubReader ? { hub: hubReader } : {}),
       ...(needs.deterministic && hubReader
         ? {
-            hub: hubReader,
             fetchDescriptor: fetchDescriptorBytes,
             // scheme normalization has been pushed down into nexusTransport itself.
             ingressTransportFactory: nexusTransport,

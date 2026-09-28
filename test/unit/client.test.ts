@@ -76,6 +76,21 @@ function signedFrames(chainId: string, chunks: readonly Uint8Array[] = OUTPUT_CH
   });
 }
 
+/** A Worker-signed Fin for the given last frame (finish_reason defaults to EOS_TOKEN). */
+function signFin(chainId: string, last: { seq: bigint; mmrRoot: Uint8Array }, finishReason = 1) {
+  return {
+    finalSeq: last.seq,
+    outputMmrRoot: last.mmrRoot,
+    finishReason,
+    workerSignature: secp256k1
+      .sign(
+        outputFinSigningDigest({ chainId, taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason }),
+        WORKER_PRIV,
+      )
+      .toCompactRawBytes(),
+  };
+}
+
 function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: unknown; events?: unknown; subscribe?: unknown; ack?: AckOutputRequest } = {}): Transport {
   return createRouterTransport(({ service }) => {
     service(IngressAPI, {
@@ -113,7 +128,7 @@ function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: un
         const replay = cursor > 0n || frames.length === 0 ? frames.filter((f) => f.seq > cursor) : frames;
         for (const f of replay) yield { frame: { case: 'chunk' as const, value: f } };
         const last = frames[frames.length - 1]!;
-        yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+        yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', last) } };
       },
       ackOutput(req: AckOutputRequest) {
         cap.ack = req;
@@ -206,10 +221,9 @@ describe('TrueOpenClient facade', () => {
 
   // ---- Fin carries finish_reason + worker_signature ----
   //
-  // The key requirement here is that "the upgrade must not brick the SDK against the live
-  // network": the signed Fin only adds fields, and until nexus forwards it, the live chain sends an
-  // unsigned Fin, so the default policy must allow it through; but once a Fin does carry a
-  // signature, a bad signature must never be accepted under any policy.
+  // An unsigned Fin only proves the prefix received so far is self-consistent, so by default the
+  // stream is complete only on a Worker-signed Fin. Accepting unsigned Fins is an explicit opt-in
+  // that surfaces the fin as unattested and never acks it. A bad signature is never accepted.
 
   /** Builds a complete stream; finOverride replaces the terminating frame. */
   function streamWithFin(
@@ -225,23 +239,8 @@ describe('TrueOpenClient facade', () => {
     }, cap);
   }
 
-  const signedFin = (last: { seq: bigint; mmrRoot: Uint8Array }, finishReason: number) => ({
-    finalSeq: last.seq,
-    outputMmrRoot: last.mmrRoot,
-    finishReason,
-    workerSignature: secp256k1
-      .sign(
-        outputFinSigningDigest({
-          chainId: 'trueopen-devnet-1',
-          taskHash: fromHex(TASK_HASH),
-          finalSeq: last.seq,
-          outputMmrRoot: last.mmrRoot,
-          finishReason,
-        }),
-        WORKER_PRIV,
-      )
-      .toCompactRawBytes(),
-  });
+  const signedFin = (last: { seq: bigint; mmrRoot: Uint8Array }, finishReason: number) =>
+    signFin('trueopen-devnet-1', last, finishReason);
 
   const drain = async (c: TrueOpenClient, extra: Record<string, unknown> = {}): Promise<string> => {
     let out = '';
@@ -252,9 +251,51 @@ describe('TrueOpenClient facade', () => {
     return out;
   };
 
-  it('an unsigned Fin (the live-network shape until nexus forwards signed Fins) is allowed by default', async () => {
-    const c = makeClientWithTransport(streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot })));
-    await expect(drain(c)).resolves.toBe(OUTPUT_TEXT);
+  it('a truncating unsigned Fin is rejected by default and never acked', async () => {
+    // The Builder stops after two of the three verified frames and closes with an unsigned Fin
+    // that matches that prefix: self-consistent, but nothing says the output ends there.
+    const cap: { ack?: AckOutputRequest } = {};
+    const c = makeClientWithTransport(scriptedStreamTransport(async function* () {
+      const frames = signedFrames('trueopen-devnet-1').slice(0, 2);
+      for (const f of frames) yield { frame: { case: 'chunk' as const, value: f } };
+      const last = frames[frames.length - 1]!;
+      yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+    }, cap));
+    const kinds: string[] = [];
+    await expect((async () => {
+      for await (const e of c.streamOutput({
+        sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
+      })) kinds.push(e.kind);
+    })()).rejects.toMatchObject({
+      code: 'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED',
+      message: expect.stringContaining('no worker_signature'),
+    });
+    expect(kinds).not.toContain('fin');
+    expect(cap.ack).toBeUndefined();
+  });
+
+  it('a valid signed Fin completes the stream as attested and acks it', async () => {
+    const cap: { ack?: AckOutputRequest } = {};
+    const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1), cap));
+    const events = [];
+    for await (const e of c.streamOutput({
+      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
+    })) events.push(e);
+    expect(events.at(-1)).toEqual({ kind: 'fin', attested: true, finishReason: 1 });
+    expect(cap.ack?.lastSeq).toBe(2n);
+  });
+
+  it('a signed Fin from a key other than the Worker service key is rejected', async () => {
+    const otherPriv = fromHex('0502030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
+    const c = makeClientWithTransport(streamWithFin((last) => ({
+      ...signedFin(last, 1),
+      workerSignature: secp256k1
+        .sign(outputFinSigningDigest({
+          chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1,
+        }), otherPriv)
+        .toCompactRawBytes(),
+    })));
+    await expect(drain(c)).rejects.toMatchObject({ message: expect.stringContaining('did not verify') });
   });
 
   it("an unsigned Fin is rejected under finSignaturePolicy:'require'", async () => {
@@ -275,11 +316,11 @@ describe('TrueOpenClient facade', () => {
     }
   });
 
-  it('a Fin with a bad signature is rejected even under the default lenient policy', async () => {
+  it("a Fin with a bad signature is rejected even under the opt-in 'accept-unsigned' policy", async () => {
     const c = makeClientWithTransport(
       streamWithFin((last) => ({ ...signedFin(last, 1), workerSignature: new Uint8Array(64) })),
     );
-    await expect(drain(c)).rejects.toMatchObject({
+    await expect(drain(c, { finSignaturePolicy: 'accept-unsigned' })).rejects.toMatchObject({
       code: 'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED',
       message: expect.stringContaining('did not verify'),
     });
@@ -309,17 +350,21 @@ describe('TrueOpenClient facade', () => {
   const drainEvents = async (
     c: TrueOpenClient,
     extra: Record<string, unknown> = {},
-  ): Promise<{ kinds: string[]; finishReason: FinishReasonV1 | undefined }> => {
+  ): Promise<{ kinds: string[]; finishReason: FinishReasonV1 | undefined; attested: boolean | undefined }> => {
     const kinds: string[] = [];
     let finishReason: FinishReasonV1 | undefined;
+    let attested: boolean | undefined;
     for await (const e of c.streamOutput({
       sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
     })) {
       kinds.push(e.kind);
-      if (e.kind === 'fin') finishReason = e.finishReason;
+      if (e.kind === 'fin') {
+        finishReason = e.finishReason;
+        attested = e.attested;
+      }
     }
-    return { kinds, finishReason };
+    return { kinds, finishReason, attested };
   };
 
   it('the stream ends with exactly one fin, after every chunk', async () => {
@@ -334,15 +379,34 @@ describe('TrueOpenClient facade', () => {
     expect(finishReason).toBe(1);
   });
 
-  // Absence has to stay distinguishable from "ended normally": under the default
-  // accept-unsigned policy an unsigned Fin is let through, and nothing about it is attested.
-  it('an unsigned Fin surfaces finishReason undefined rather than a default', async () => {
+  // Under the explicit opt-in an unsigned Fin ends the stream, but it must stay
+  // distinguishable from "ended normally" and must never report delivery progress.
+  it("under the opt-in 'accept-unsigned', an unsigned Fin surfaces as unattested and is never acked", async () => {
+    const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(
-      streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot })),
+      streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot }), cap),
     );
-    const { kinds, finishReason } = await drainEvents(c);
-    expect(kinds.at(-1)).toBe('fin');
-    expect(finishReason).toBeUndefined();
+    const events = [];
+    // ack is left at its default (true): an unattested Fin must still not be acked.
+    for await (const e of c.streamOutput({
+      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      maxAttempts: 1, finSignaturePolicy: 'accept-unsigned',
+    })) events.push(e);
+    expect(events.map((e) => e.kind)).toEqual(['chunk', 'chunk', 'chunk', 'fin']);
+    expect(events.at(-1)).toEqual({ kind: 'fin', attested: false, finishReason: undefined });
+    expect(cap.ack).toBeUndefined();
+  });
+
+  it("under the opt-in 'accept-unsigned', a signed Fin is still attested and acked", async () => {
+    const cap: { ack?: AckOutputRequest } = {};
+    const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 2), cap));
+    for await (const e of c.streamOutput({
+      sessionId: SESSION, taskId: 'task-1', taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      maxAttempts: 1, finSignaturePolicy: 'accept-unsigned',
+    })) {
+      if (e.kind === 'fin') expect(e).toEqual({ kind: 'fin', attested: true, finishReason: 2 });
+    }
+    expect(cap.ack?.lastSeq).toBe(2n);
   });
 
   // The fin is yielded after ackOutput, so a consumer that breaks on it cannot skip the ack:
@@ -389,7 +453,7 @@ describe('TrueOpenClient facade', () => {
       // A bare (implicit-presence) uint64 replays seq=0 on present(0); the SDK must re-verify and dedupe it.
       for (const frame of frames) yield { frame: { case: 'chunk', value: frame } };
       const last = frames[frames.length - 1]!;
-      yield { frame: { case: 'fin', value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+      yield { frame: { case: 'fin', value: signFin('trueopen-devnet-1', last) } };
     }, capB);
     const a = makeClientWithTransport(transportA);
     const b = makeClientWithTransport(transportB);
@@ -424,7 +488,7 @@ describe('TrueOpenClient facade', () => {
     const transportB = scriptedStreamTransport(async function* () {
       for (const frame of frames) yield { frame: { case: 'chunk', value: frame } };
       const last = frames[frames.length - 1]!;
-      yield { frame: { case: 'fin', value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+      yield { frame: { case: 'fin', value: signFin('trueopen-devnet-1', last) } };
     });
     const a = makeClientWithTransport(transportA);
     const b = makeClientWithTransport(transportB);
@@ -459,7 +523,7 @@ describe('TrueOpenClient facade', () => {
       // Simulates a server with explicit resume_after_seq presence: present(0) only returns seq > 0.
       for (const frame of frames.slice(1)) yield { frame: { case: 'chunk', value: frame } };
       const last = frames[frames.length - 1]!;
-      yield { frame: { case: 'fin', value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+      yield { frame: { case: 'fin', value: signFin('trueopen-devnet-1', last) } };
     }, cap);
     const client = makeClientWithTransport(transport);
     const got: string[] = [];

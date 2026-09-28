@@ -32,6 +32,7 @@
  * Usage:
  *   TRUEOPEN_MNEMONIC="word1 ... word24" node scripts/e2e-open-task.mjs
  *   node scripts/e2e-open-task.mjs --key-file /tmp/trueopen-mnemonic.txt
+ *   (a localnet whose nexus endpoints are plaintext grpc:// also needs TRUEOPEN_ALLOW_INSECURE_HTTP=1)
  *
  * Optional flags:
  *   --key-file <path>     mnemonic file (otherwise falls back to TRUEOPEN_MNEMONIC)
@@ -92,7 +93,7 @@ const {
   buildOpenTaskRequest, resolveTaskBuilderEndpoints,
   taskOrderHashHex, deriveTaskId, orderEnvelopeSigningBytes, sdkRequestSignBytes,
   decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, RestChainReader,
-  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE,
+  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom,
 } = await import(SDK);
 
 // ---- args ----
@@ -205,10 +206,10 @@ const pubKey = secp256k1PublicKey(privkey);
 // The address is EVM-style: bech32(keccak256(uncompressed_XY)[12:32]).
 const address = ethSecp256k1Address(pubKey, PREFIX);
 // The order's EIP-712 needs a numeric EVM chain ID and a fee denom; neither is part of
-// TaskOrderV2. The EVM chain ID defaults to reading params.phase0.evm_chain_id on chain
-// (see below), rather than being hardcoded.
+// TaskOrderV2. Both are read from chain params.phase0 (see below), never hardcoded:
+// --evm-chain-id overrides the former, and --fee-denom is only checked against the latter.
 const EVM_CHAIN_ID_FLAG = flag('--evm-chain-id', undefined);
-const FEE_DENOM = flag('--fee-denom', 'uusdc');
+const FEE_DENOM_FLAG = flag('--fee-denom', undefined);
 
 // ---- chain_id (auto) ----
 let CHAIN_ID = flag('--chain-id', undefined);
@@ -229,13 +230,18 @@ if (!activeModel) { console.error(`Model lookup returned 200 without a model fie
 // ---- wire up dependencies ----
 // On-chain endpoints may be grpc:// or https://; normalization happens inside the SDK.
 // For https endpoints, the nexus certificate's public key is checked against the
-// tls_pubkey_hash registered on chain -- https is never downgraded to http.
+// tls_pubkey_hash registered on chain -- https is never downgraded to http. Plaintext
+// grpc:// / http:// endpoints (a localnet) need TRUEOPEN_ALLOW_INSECURE_HTTP=1.
 const nexusTransport = (url, tlsPubkeyHash = '') => nexusIngressTransport(url, tlsPubkeyHash);
 const hub = new HubReader({ baseUrl: REST, fetch: (u) => fetch(u) });
 // On-chain params.phase0.evm_chain_id feeds the EIP-712 domain separator; --evm-chain-id
 // only overrides it.
 const EVM_CHAIN_ID = EVM_CHAIN_ID_FLAG !== undefined ? BigInt(EVM_CHAIN_ID_FLAG) : await hub.getEvmChainId();
 log(`evm_chain_id = ${EVM_CHAIN_ID}${EVM_CHAIN_ID_FLAG !== undefined ? ' (overridden by --evm-chain-id)' : ' (read from chain)'}`);
+// business_denom is the order feeDenom and the only tx fee denom; a --fee-denom that
+// disagrees would be rejected on chain after nexus accepted the order, so stop here instead.
+const FEE_DENOM = resolveFeeDenom(await hub.getBusinessDenom(), FEE_DENOM_FLAG);
+log(`fee denom = ${FEE_DENOM} (chain business_denom)`);
 
 // ethsecp256k1 direct signer: node's DIRECT path verifies keccak256(SignDoc) and expects
 // an ethsecp256k1 public key -- CosmJS's DirectSecp256k1HdWallet matches none of the three.
@@ -515,7 +521,7 @@ async function startStream(winnerWorker) {
   // Record the actual resubscription that carries a non-empty checkpoint, as evidence
   // that this path was exercised.
   let resumedFromSeq = null;
-  // From the terminating fin; stays undefined when the peer sends an unsigned Fin.
+  // From the terminating fin, which streamOutput requires to be Worker-signed by default.
   let finishReason;
 
   while (Date.now() < overallDeadline) {
@@ -560,9 +566,8 @@ async function startStream(winnerWorker) {
           }
           if (step.done) break;
           const f = step.value;
-          // The stream ends with one fin carrying the termination reason; only chunks
-          // are frames. undefined means the peer sent an unsigned Fin, so it is reported
-          // as unattested rather than defaulted to something that looks like an answer.
+          // The stream ends with one fin carrying the signature-verified termination
+          // reason; only chunks are frames.
           if (f.kind === 'fin') {
             finishReason = f.finishReason;
             continue;
@@ -589,9 +594,8 @@ async function startStream(winnerWorker) {
           // actually exercised: subsequent frames continue from the verified seq
           // instead of restarting from scratch.
           resumed_from_seq: resumedFromSeq,
-          // The signature-verified termination reason, or null when the peer sent an
-          // unsigned Fin. Null means "not attested", not "ended normally"; and it never
-          // says tool_calls -- cortex normalises that to EOS.
+          // The signature-verified termination reason. It never says tool_calls --
+          // cortex normalises that to EOS.
           finish_reason: finishReason === undefined ? null : finishReason,
           // Reaching here means streamOutput received fin, and fin's root matches the
           // root computed frame by frame.
@@ -778,7 +782,8 @@ if (FETCH_OUTPUT && DO_SUBMIT && landedOnChain && !streamDelivered) {
             taskHash: built.taskHash,
             outputHash: receipt.outputHash,
             builderAddress: a.address,
-            expiresAtHeight: heightNow + 20n,
+            // +10, not nexus's 20-block TTL edge: a block landing mid-request would expire it.
+            expiresAtHeight: heightNow + 10n,
           }),
           new Promise((_r, reject) =>
             setTimeout(() => reject(new Error(`Output fetch timed out (${OUTPUT_TIMEOUT_MS / 1000}s)`)), OUTPUT_TIMEOUT_MS).unref(),

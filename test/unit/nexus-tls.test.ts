@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { X509Certificate } from 'node:crypto';
 import { createServer, request as httpsRequest } from 'node:https';
 import type { Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
-import { PinnedHttpsAgent, PlaintextFallbackAgent, nexusIngressTransport, nexusTransportOptions, tlsPubkeyHashOfCertificate, isPlaintextServerError, isTLSPubkeyMismatch } from '../../src/transport/nexus-tls';
+import { PinnedHttpsAgent, nexusIngressTransport, nexusTransportOptions, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch } from '../../src/transport/nexus-tls';
 import { IngressClient } from '../../src/transport/ingress-client';
 import { explicitNexusTransport } from '../../src/cli/context';
 import { TrueOpenError } from '../../src/errors/errors';
@@ -21,7 +21,8 @@ const EXPECTED_HASH = readFileSync(new URL('../helpers/tls/pubkey_sha256.txt', i
 let server: Server;
 let port: number;
 let hits = 0;
-// Plaintext http server: simulates the transition period where "the descriptor says https but nexus hasn't enabled TLS yet".
+// Plaintext http server: an endpoint whose descriptor says https but which answers in plaintext,
+// which is also what an attacker on the path can make a TLS handshake look like.
 let plainServer: HttpServer;
 let plainPort: number;
 let plainHits = 0;
@@ -48,7 +49,7 @@ afterAll(async () => {
   await new Promise<void>((resolve) => plainServer.close(() => resolve()));
 });
 
-function get(agent: PinnedHttpsAgent | PlaintextFallbackAgent, targetPort = port): Promise<{ status: number; body: string }> {
+function get(agent: PinnedHttpsAgent, targetPort = port): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = httpsRequest({ host: '127.0.0.1', port: targetPort, path: '/healthz', method: 'GET', agent }, (res) => {
       let body = '';
@@ -93,30 +94,32 @@ describe('verify the nexus certificate against the on-chain tls_pubkey_hash', ()
     }
   });
 
-  it('https endpoint with no on-chain hash: default transition-period behavior, falls back to http and logs a WARN when the peer does not speak TLS', async () => {
+  it('https endpoint with no on-chain hash: defaults to CA verification with no agent, never a plaintext fallback', () => {
     const options = nexusTransportOptions(`https://127.0.0.1:${plainPort}`, '');
-    expect(options.nodeOptions?.agent).toBeInstanceOf(PlaintextFallbackAgent);
-    const warnings: string[] = [];
-    const agent = new PlaintextFallbackAgent({ warn: (m) => warnings.push(m) });
-    const before = plainHits;
-    const res = await get(agent, plainPort);
-    expect(res.status).toBe(200);
-    expect(res.body).toBe('{"status":"plain"}');
-    expect(plainHits).toBe(before + 1);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/does not speak TLS/);
-    // Once a host:port is determined to be plaintext, it goes straight to plaintext without repeating the warning.
-    await get(agent, plainPort);
-    expect(warnings).toHaveLength(1);
-    agent.destroy();
+    expect(options.baseUrl).toBe(`https://127.0.0.1:${plainPort}`);
+    expect(options.nodeOptions?.agent).toBeUndefined();
   });
 
-  it('https endpoint with no on-chain hash, peer uses self-signed TLS: rejected per CA chain validation, no fallback', async () => {
-    const agent = new PlaintextFallbackAgent({ warn: () => undefined });
+  it('https endpoint with no on-chain hash: a handshake failure against a plaintext peer is an error, not a downgrade', async () => {
+    const before = plainHits;
+    const client = new IngressClient(nexusIngressTransport(`https://127.0.0.1:${plainPort}`, ''));
+    await expect(client.getTaskStatus('sess', 'task')).rejects.toBeTruthy();
+    // A second attempt must not have learnt to go plaintext either.
+    await expect(client.getTaskStatus('sess', 'task')).rejects.toBeTruthy();
+    expect(plainHits).toBe(before);
+  });
+
+  it('https endpoint with no on-chain hash, peer uses self-signed TLS: rejected by CA verification, no fallback', async () => {
     const before = hits;
-    await expect(get(agent, port)).rejects.toBeTruthy();
+    const client = new IngressClient(nexusIngressTransport(`https://127.0.0.1:${port}`, ''));
+    await expect(client.getTaskStatus('sess', 'task')).rejects.toBeTruthy();
     expect(hits).toBe(before);
-    agent.destroy();
+  });
+
+  it('rejects the removed plaintext-fallback policy instead of silently honouring it', () => {
+    expect(() =>
+      nexusTransportOptions(`https://127.0.0.1:${port}`, '', { unpinnedHttps: 'plaintext-fallback' as never }),
+    ).toThrow(expect.objectContaining({ code: 'NEXUS_TLS_POLICY_INVALID' }));
   });
 
   it('explicitly specified https endpoint can opt into CA chain validation; a self-signed cert is still rejected, no fallback', async () => {
@@ -147,10 +150,73 @@ describe('nexusTransportOptions', () => {
     expect(options.nodeOptions?.agent).toBeInstanceOf(PinnedHttpsAgent);
   });
 
-  it('http:// plaintext endpoint is used as-is, without an agent (for integration testing)', () => {
-    const options = nexusTransportOptions('grpc://127.0.0.1:8080', EXPECTED_HASH);
+  it('http:// and grpc:// plaintext endpoints are refused by default', () => {
+    for (const uri of ['http://127.0.0.1:8080', 'grpc://127.0.0.1:8080']) {
+      expect(() => nexusTransportOptions(uri, EXPECTED_HASH)).toThrow(
+        expect.objectContaining({ code: 'NEXUS_INSECURE_HTTP_REFUSED' }),
+      );
+    }
+  });
+
+  it('allowInsecureHttp opts a plaintext endpoint in, with a warning', () => {
+    const warnings: string[] = [];
+    const options = nexusTransportOptions('grpc://127.0.0.1:8080', EXPECTED_HASH, {
+      allowInsecureHttp: true,
+      warn: (m) => warnings.push(m),
+    });
     expect(options.baseUrl).toBe('http://127.0.0.1:8080');
     expect(options.nodeOptions?.agent).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/plaintext http/);
+  });
+
+  it('TRUEOPEN_ALLOW_INSECURE_HTTP=1 opts a plaintext endpoint in, with a warning', () => {
+    process.env.TRUEOPEN_ALLOW_INSECURE_HTTP = '1';
+    try {
+      const warnings: string[] = [];
+      const options = nexusTransportOptions('http://127.0.0.1:8080', '', { warn: (m) => warnings.push(m) });
+      expect(options.baseUrl).toBe('http://127.0.0.1:8080');
+      expect(warnings).toHaveLength(1);
+    } finally {
+      delete process.env.TRUEOPEN_ALLOW_INSECURE_HTTP;
+    }
+  });
+
+  /**
+   * A transport is built per endpoint per openTask, so an unconditional warning is one line per
+   * request forever -- the shape of warning people learn to filter out. An injected sink is the
+   * caller's own and still sees every occurrence.
+   */
+  it('an injected warn sink fires every time; the default console sink speaks once per endpoint', () => {
+    const warnings: string[] = [];
+    const opts = { allowInsecureHttp: true, warn: (m: string) => warnings.push(m) };
+    nexusTransportOptions('http://127.0.0.1:9100', '', opts);
+    nexusTransportOptions('http://127.0.0.1:9100', '', opts);
+    expect(warnings).toHaveLength(2);
+
+    const console_ = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      nexusTransportOptions('http://127.0.0.1:9101', '', { allowInsecureHttp: true });
+      nexusTransportOptions('http://127.0.0.1:9101', '', { allowInsecureHttp: true });
+      expect(console_).toHaveBeenCalledTimes(1);
+      // A different endpoint is still worth saying out loud.
+      nexusTransportOptions('http://127.0.0.1:9102', '', { allowInsecureHttp: true });
+      expect(console_).toHaveBeenCalledTimes(2);
+    } finally {
+      console_.mockRestore();
+    }
+  });
+
+  it('allowInsecureHttp does not relax https: an https endpoint still never falls back', () => {
+    const options = nexusTransportOptions('https://builder.example:8443', '', { allowInsecureHttp: true });
+    expect(options.baseUrl).toBe('https://builder.example:8443');
+    expect(options.nodeOptions?.agent).toBeUndefined();
+  });
+
+  it('an unknown scheme is refused', () => {
+    expect(() => nexusTransportOptions('ftp://builder.example:21')).toThrow(
+      expect.objectContaining({ code: 'NEXUS_ENDPOINT_SCHEME_UNSUPPORTED' }),
+    );
   });
 
   it('hash must be 64-character lowercase hex', () => {
@@ -178,34 +244,6 @@ describe('manually specified --nexus-url', () => {
 });
 
 describe('error classification', () => {
-  it('ECONNRESET does not count as a plaintext server: anyone can trigger an RST, including an overloaded TLS server', () => {
-    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
-    expect(isPlaintextServerError(reset)).toBe(false);
-    const eproto = Object.assign(new Error('write EPROTO'), { code: 'EPROTO' });
-    expect(isPlaintextServerError(eproto)).toBe(true);
-    expect(isPlaintextServerError(new Error('ssl3_get_record:wrong version number'))).toBe(true);
-  });
-
-  it('plaintext detection has a TTL: after it expires, TLS is retried, so a Builder that enables TLS mid-flight does not need a process restart', async () => {
-    // keepAlive: false -- otherwise the second request reuses the socket from the
-    // connection pool, createConnection is never called again, and the detection-cache
-    // path is never exercised. In real scenarios the pooled socket eventually closes,
-    // at which point the TTL kicks in.
-    const warnings: string[] = [];
-    // memoTtlMs=0: the detection expires immediately, so every new connection retries TLS and re-detects.
-    const agent = new PlaintextFallbackAgent({ warn: (m) => warnings.push(m), memoTtlMs: 0, keepAlive: false });
-    await get(agent, plainPort);
-    await get(agent, plainPort);
-    expect(warnings).toHaveLength(2);
-
-    // Control: within the default TTL, TLS is not retried and the warning is not repeated.
-    const memo: string[] = [];
-    const cached = new PlaintextFallbackAgent({ warn: (m) => memo.push(m), keepAlive: false });
-    await get(cached, plainPort);
-    await get(cached, plainPort);
-    expect(memo).toHaveLength(1);
-  });
-
   it('a fingerprint mismatch is identified only by the structured error in the cause chain, never by the server-controlled message text', async () => {
     const fake = new Error(`server said ${'NEXUS_TLS_PUBKEY_MISMATCH'} in its reason`);
     expect(isTLSPubkeyMismatch(fake)).toBe(false);

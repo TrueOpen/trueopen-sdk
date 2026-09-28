@@ -61,6 +61,7 @@ npm install trueopen-sdk
 import {
   TrueOpenClient,
   createTrueOpenChainClient,
+  RestChainReader,
   nexusIngressTransport,
   privKeySecp256k1Signer,
   secp256k1PublicKey,
@@ -110,13 +111,18 @@ const client = new TrueOpenClient({
   orderSigner,
   chain,
   ingressTransport,
-  // Required for openTask: reads on-chain context + picks an endpoint by task_builder_seed
+  // Required for openTask: reads on-chain context + picks an endpoint by task_builder_seed.
+  // Also the source of the order feeDenom (params.phase0.business_denom) and of the profile
+  // pricing checked before signing.
   hub,
+  // On-chain task reads: the output trust anchors (accepted task_hash, winner Worker, receipt).
+  taskReader: new RestChainReader({ baseUrl: 'https://node.example:1317', fetch: (u) => fetch(u) }),
   // nexus endpoints verify their certificate against the on-chain descriptor's tls_pubkey_hash:
-  // an https endpoint with a fingerprint registered on-chain is checked against
-  // that fingerprint, no downgrade allowed; an https endpoint without a registered fingerprint
-  // falls back to http with a WARN during the transition period if the peer offers no TLS, or
-  // is rejected if NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 is set.
+  // an https endpoint with a fingerprint registered on-chain is checked against that
+  // fingerprint; one without a registered fingerprint gets standard CA verification (or is
+  // rejected if NEXUS_TLS_PUBKEY_HASH_REQUIRED=1 is set). https is never downgraded to http.
+  // Plaintext http:// / grpc:// endpoints are refused unless you opt in for a localnet with
+  // nexusIngressTransport(url, hash, { allowInsecureHttp: true }) or TRUEOPEN_ALLOW_INSECURE_HTTP=1.
   ingressTransportFactory: (url, tlsPubkeyHash) => nexusIngressTransport(url, tlsPubkeyHash),
   // Optional: nonce / requestTtlBlocks (OpenTask's expiry is a block height, default +10 blocks)
 });
@@ -140,13 +146,9 @@ const submitted = await client.openTask({
     generationParams: defaultGenerationParams(128n, 60_000n),
     // Fees are Amount: the preimage uses decimal text atomic units, not numeric values
     amounts: {
-      inferInputUnitPriceBid: { atomicUnits: '1' },
-      inferOutputUnitPriceBid: { atomicUnits: '1' },
-      verifyUnitPriceBid: { atomicUnits: '1' },
-      inferFeeCap: { atomicUnits: '500' },
-      verifyFeeCap: { atomicUnits: '400' },
-      maxFee: { atomicUnits: '1000' },
-      assignmentPriorityFee: { atomicUnits: '0' },
+      priceBid: { atomicUnits: '100000' }, // per million output tokens
+      maxFee: { atomicUnits: '1000' }, // must cover order_value + txFeeReserve
+      assignmentPriorityFee: { atomicUnits: '0' }, // must be 0
       txFeeReserve: { atomicUnits: '10' },
     },
     earliestSubmitHeight: currentHeight,
@@ -169,12 +171,13 @@ for await (const ev of client.watchTask(session.sessionId, submitted.taskId)) {
 | Method | Description |
 |---|---|
 | `createSession(label?)` / `getSession(sessionId)` | create / retrieve a session |
-| `openTask({ sessionId, orderSequence, order, idempotencyKey })` | reads on-chain context -> builds the frozen `TaskOrderV3` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, endpointsTried, ...ack }` |
+| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
+| `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
 | `watchTask(sessionId, taskId, fromCursor?)` | subscribes to the task event stream (`AsyncIterable`) |
-| `fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })` | fetches the full output and recomputes the MMR root from `chunk_lengths` to verify it (see section 4) |
-| `streamOutput({ sessionId, taskId, taskHash, workerServicePubKey, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
+| `fetchTaskOutput({ sessionId, taskId, builderAddress, taskHash?, outputHash?, expiresAtHeight? })` | fetches the full output in ranges and recomputes the MMR root from `chunk_lengths` to verify it against the on-chain receipt (see section 4) |
+| `streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
 | `confirmOutput({ taskId, taskHash, checkpoint, receipt })` | uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
@@ -223,7 +226,9 @@ non-streaming case is not a special case -- it is the same object with a chunk l
 Chunk boundaries are part of the commitment: the same bytes cut a different way produce a
 different `output_hash`.
 
-**Streaming**: `client.streamOutput({ sessionId, taskId, taskHash, workerServicePubKey, checkpoint?, sources?, idleTimeoutMs?, ack? })`
+**Streaming**: `client.streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, ack? })`
+(`taskHash` and `workerServicePubKey` default to the chain: the accepted task_hash and the
+winner Worker's current service key)
 
 - Two checks per frame: the locally computed root over the first `seq+1` leaves must equal the
   frame's `mmr_root`; the Worker service key's signature over
@@ -239,17 +244,20 @@ different `output_hash`.
 - `OutputFinV1` carries `finish_reason` and `worker_signature`: the
   digest is `H_FIELDS_V1(TRUEOPEN_OUTPUT_FIN_V1, chain_id, task_hash, final_seq,
   output_mmr_root, finish_reason)`, with `finish_reason` encoded in the frame as a **uint32_be
-  enum value**, accepting only 1..4 (UNSPECIFIED / unknown values are rejected before the digest
+  enum value**, accepting only 1..6 (UNSPECIFIED / unknown values are rejected before the digest
   is even computed). The authoritative settlement commitment is still the on-chain
   `InferReceipt.output_hash`; a signed Fin lets the receiver verify the terminal state before the
   Receipt arrives, and gives them a Worker-authenticated finish reason.
-- **`finSignaturePolicy`** (a `streamOutput` parameter): `'accept-unsigned'` (default -- verifies
-  a signature if present, passes through if absent) / `'require'` (must carry a valid reason and
-  a verifiable signature). The default is relaxed because the signed Fin is an additive field, and until
-  nexus forwards signed Fins, live chains still emit the old, unsigned Fin;
-  unconditionally failing closed would make the SDK unusable against the current network today.
-  The switch only relaxes "whether a signature must be present" -- **a Fin with a bad signature
-  is never accepted under any policy**.
+- **`finSignaturePolicy`** (a `streamOutput` parameter): `'require'` (default) -- the stream is
+  complete, and acked, only once a Fin with a valid reason and a `worker_signature` that verifies
+  against `workerServicePubKey` arrives. An unsigned Fin only proves the prefix received so far is
+  self-consistent, so a Builder could otherwise end the stream early and truncate the output.
+  nexus stores and replays the Worker-signed Fin as received.
+  `'accept-unsigned'` is an explicit opt-in for peers that still send the old, unsigned Fin: the
+  stream ends with a `fin` event carrying `attested: false` and `finishReason: undefined`, and
+  the SDK **never acks it**. **A Fin with a bad signature is never accepted under any policy**.
+- The terminal event is `{ kind: 'fin', attested: true, finishReason }` for a signed Fin, or
+  `{ kind: 'fin', attested: false, finishReason: undefined }` under the opt-in.
 - Phase 0 requires `attachment` / `attachment_signature` to be empty; a non-empty value fails closed.
 - `workerServicePubKey` must be supplied by the caller; the SDK has no switch to skip this check
   -- accepting output without verifying it discards all of the streamed-output guarantees. To obtain it:
@@ -335,27 +343,29 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.
 
-The SDK already implements the digest and signature
-verification for `TRUEOPEN_OUTPUT_FIN_V1` (anchored to the official `fin_signing` vectors) and
-wires it into `streamOutput`. But **the live chain does not yet produce a signed Fin**: nexus's
-side of verifying/storing/forwarding it has not shipped, so the current network still
-emits the old, unsigned Fin, and `finSignaturePolicy` defaults to `'accept-unsigned'`. Once
-that ships, it can switch to `'require'` and complete cross-repo live-chain acceptance for
-Cortex -> Nexus -> SDK -> OpenAI SSE.
+The SDK implements the digest and signature verification for `TRUEOPEN_OUTPUT_FIN_V1`
+(anchored to the official `fin_signing` vectors) and requires it in `streamOutput` by default.
+nexus verifies the Worker's Fin signature on receipt, stores the signed Fin and replays it
+unchanged to subscribers.
 
-**Full package**: `client.fetchTaskOutput({ sessionId, taskId, taskHash, outputHash, builderAddress, expiresAtHeight })`
+**Full package**: `client.fetchTaskOutput({ sessionId, taskId, builderAddress, taskHash?, outputHash?, expiresAtHeight? })`
 
 - `GetTaskDataMetadata` fetches `size_bytes` / `chunk_lengths` / `output_leaf_count` ->
-  `FetchTaskData` fetches the bytes -> re-chunks them per `chunk_lengths` -> computes the MMR
-  root and compares it to `outputHash` (throwing `DATA_OUTPUT_HASH_MISMATCH` on mismatch) ->
-  returns `{ bytes, text, outputHash, chunks, sizeBytes, mediaType }`.
-- `outputHash` comes from the on-chain `InferReceipt.output_hash`: it is both the verification
-  target and `TaskDataObjectRefV1.content_hash` -- retrieval is content-addressed, and
-  without it the object cannot even be located.
+  `FetchTaskData` fetches the bytes in ranges of at most 8 MiB (nexus's default max range;
+  `maxRangeBytes` changes it), checking each range's `served_range` and chunk offsets and
+  retrying a range that failed on transport -> re-chunks them per `chunk_lengths` -> computes
+  the MMR root and compares it to `outputHash` (throwing `DATA_OUTPUT_HASH_MISMATCH` on
+  mismatch) -> returns `{ bytes, text, outputHash, taskHash, chunks, sizeBytes, mediaType, receipt? }`.
+  A size-0 output is not fetched.
+- `taskHash` and `outputHash` default to `resolveOutputTrustAnchors(taskId)`: the accepted
+  task and `InferReceipt` on chain, whose size and leaf count the metadata must match.
+  `outputHash` is both the verification target and `TaskDataObjectRefV1.content_hash` --
+  retrieval is content-addressed. Explicit values override the chain.
 - `builderAddress` must be the operator address of **the specific Builder being asked**: nexus
   compares it byte-for-byte against its own configuration. The object only exists on the Task
   Builder(s) that accepted that order, so you ask them one at a time.
-- `expiresAtHeight` is a **block height** (current height + window), not a timestamp.
+- `expiresAtHeight` is a **block height**, not a timestamp; it defaults to the latest height +
+  `requestTtlBlocks` (10), inside nexus's 20-block window.
 - These two methods **do not use `SDKRequestEnvelope`**; they use `TaskDataRequestAuthV1`: the
   body digest binds to one of five domains via `H_FIELDS_V1`, chosen by `requester_kind` --
   USER uses the EIP-712 `TrueOpen Task Data Request` domain, always 65 bytes; CORTEX_SERVICE
@@ -619,8 +629,8 @@ Besides the library, `trueopen-sdk` ships the `trueopen` CLI -- a thin wrapper a
 | `trueopen order submit --order-file <f> --session <id> --payload-file <f> [--seq <n>] [--idempotency-key <k>]` | openTask | freezes max_fee |
 | `trueopen order cancel --session <id> --seq <n>` | cancelOrder | gas |
 | `trueopen task status <session> <task>` / `task watch <session> <task>` | taskStatus / watchTask (streaming) | none |
-| `trueopen output get <session> <task> <task-hash> <output-hash>` | fetchTaskOutput (requires `--auto`) | none |
-| `trueopen output stream <session> <task> <task-hash> <worker-pubkey>` | streamOutput (per-frame signature + root verification) | none |
+| `trueopen output get <session> <task> [task-hash] [output-hash]` | fetchTaskOutput, anchors read from chain (requires `--auto`) | none |
+| `trueopen output stream <session> <task> [task-hash] [worker-pubkey]` | streamOutput, anchors read from chain (per-frame signature + root verification) | none |
 | `trueopen output ref <session> <task>` | fetchOutputRef (superseded by the contract) | none |
 | `trueopen challenge prepare <session> <task> <kind>` | prepareChallenge | none |
 
@@ -643,11 +653,7 @@ from `--payload-file` and the on-chain height.
   "outputBudgetBucket": 1,
   "maxOutputTokens": 128,
   "maxOutputDurationMs": 60000,
-  "inferInputUnitPriceBid": "2",
-  "inferOutputUnitPriceBid": "3",
-  "verifyUnitPriceBid": "4",
-  "inferFeeCap": "600",
-  "verifyFeeCap": "300",
+  "priceBid": "100000",
   "maxFee": "1000",
   "assignmentPriorityFee": "0",
   "txFeeReserve": "0",
@@ -657,6 +663,7 @@ from `--payload-file` and the on-chain height.
 }
 ```
 
+Every field is required and no other field is accepted (the CLI never fills in a default).
 `taskType` accepts `TEXT_GENERATION` / `CHAT` / `EMBEDDING` / `CLASSIFICATION` /
 `IMAGE_GENERATION` / `MULTIMODAL`; `latencyClass` accepts `ECONOMY` / `STANDARD` / `FAST` /
 `EXPRESS` (or the corresponding numeric value directly).
@@ -673,7 +680,8 @@ from the chain at order time and signs them into the order.
 | `--nexus-tls-pubkey-hash` | `TRUEOPEN_NEXUS_TLS_PUBKEY_HASH` | - (`--auto` reads it from the on-chain descriptor) |
 | `--chain-id` | `TRUEOPEN_CHAIN_ID` | - |
 | `--prefix` | `TRUEOPEN_ADDR_PREFIX` | `trueopen` |
-| `--gas-price` | `TRUEOPEN_GAS_PRICE` | `0.025utrueopen` |
+| `--gas-price` | `TRUEOPEN_GAS_PRICE` | `0.025` in the chain `business_denom` (any other denom is refused) |
+| `--fee-denom` | `TRUEOPEN_FEE_DENOM` | - (optional check; the chain `business_denom` is always used) |
 | `--json` | - | human-readable |
 
 **Connect only what you need**: read-only commands need only REST; commands that touch nexus

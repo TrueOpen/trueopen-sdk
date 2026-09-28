@@ -63,7 +63,7 @@ Commands that need to reach nexus must pick one of the two, **except `order subm
 
 ### nexus TLS verification
 
-Per ADR-0015 (nexus self-terminated TLS and public key pinning, in TrueOpen/monorepo), a Builder's nexus terminates TLS itself with a **self-signed** certificate, and its public key sha256 is registered on-chain alongside the descriptor. The client trusts only that public key, not the issuing authority.
+A Builder's nexus terminates TLS itself with a **self-signed** certificate, and its public key sha256 is registered on-chain alongside the descriptor. The client trusts only that public key, not the issuing authority.
 
 - **`--auto` (on-chain discovery)**: the fingerprint is read from the descriptor; `https`
   endpoints are automatically checked against it, and a mismatch disconnects before a single
@@ -205,7 +205,7 @@ trueopen session get 1a50a587...2e3f --rest-url http://<rest-host>:1317
 
 ### `trueopen order submit`
 
-Places an order via contract §3.1's **OpenTask**: reads on-chain context -> builds the frozen
+Places an order via **OpenTask**: reads on-chain context -> builds the frozen
 `TaskOrderV2` -> three-layer signing -> selects Task Builders by `task_builder_seed` -> streams
 the submission to every selected endpoint, succeeding as soon as one accepts.
 
@@ -215,7 +215,7 @@ the submission to every selected endpoint, succeeding as soon as one accepts.
 | `--session <id>` | v | session id (canonical lowercase 64-hex) |
 | `--seq <n>` | | `order_sequence`. Defaults to reading `StreamState.next_expected_sequence` on-chain -- that is the only authority, and a new session's first order is `0`. Pass it explicitly only to resend under the same sequence (RBF) |
 | `--payload-file <f>` | v | the plaintext input body; `input_hash` / `input_size_bytes` / `payload_ref` are derived from it |
-| `--idempotency-key <k>` | | the contract §3.1 idempotency key, defaults to `<session>:<seq>` |
+| `--idempotency-key <k>` | | the idempotency key, defaults to `<session>:<seq>` |
 
 ```bash
 trueopen order submit \
@@ -313,15 +313,15 @@ Fetches a retrieval credential and its commitment.
 
 ### `trueopen output get <session> <task> <task-hash> <output-hash>`
 
-Fetches the full output package (the data plane of contract §3.5/§3.6): `GetTaskDataMetadata`
+Fetches the full output package over the task data plane: `GetTaskDataMetadata`
 fetches `size_bytes` / `chunk_lengths` / `output_leaf_count` -> `FetchTaskData` fetches the bytes
 -> re-chunks per `chunk_lengths` -> computes the MMR root under `TRUEOPEN_OUTPUT_MMR_V1` and
 compares it to `<output-hash>`. Outputs
 `{endpoint, builderAddress, sizeBytes, mediaType, outputHash, chunkCount, text}`.
 
 `<task-hash>` is the on-chain `accepted_task_hash`, and `<output-hash>` is the on-chain
-`InferReceipt.output_hash` (an MMR root as of ADR-0017). The latter is both the verification
-target and `TaskDataObjectRefV1.content_hash` -- v0.4.1 retrieval is content-addressed, and
+`InferReceipt.output_hash` (an MMR root). The latter is both the verification
+target and `TaskDataObjectRefV1.content_hash` -- retrieval is content-addressed, and
 without it the object cannot even be located. Both values only exist on-chain; the CLI never
 guesses them.
 
@@ -338,7 +338,7 @@ trueopen output get 845ae6e6...bf8a 22284f6b...62a7 <task-hash> <output-hash> \
 
 ### `trueopen output stream <session> <task> <task-hash> <worker-pubkey> [--no-ack]`
 
-Streams output via subscription (contract §3.5, ADR-0017), verifying each frame locally as it
+Streams output via subscription, verifying each frame locally as it
 arrives: the locally computed root over the first `seq+1` leaves must equal the frame's
 `mmr_root`, and the Worker service key's signature over
 `TRUEOPEN_OUTPUT_CHUNK_V1(chain_id, task_hash, seq, mmr_root)` must verify. Either failure drops
@@ -349,7 +349,7 @@ single endpoint switches after 20 seconds idle, up to three rotations. Outputs
 
 `<worker-pubkey>` is the selected Worker's service public key for this Task (33-byte compressed,
 hex). It must be supplied by the caller; there is no switch to skip verification -- accepting
-output without verifying it discards all of ADR-0017's guarantees.
+output without verifying it discards all of the streamed-output guarantees.
 
 How to obtain it (both steps are on-chain; usable as soon as `winner_confirm` lands, **no need
 to wait for `InferReceipt`**):

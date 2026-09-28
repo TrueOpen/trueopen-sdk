@@ -21,5 +21,5 @@
 ### Known limitations
 
 - Exact optional `resume_after_seq` presence remains blocked on TrueOpen/wire#28.
-- Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked on
-  TrueOpen/wire#35, TrueOpen/cortex#382, and TrueOpen/nexus#99.
+- Worker-authenticated Fin reason/signature and real streamed terminal SSE remain blocked until
+  the Worker runtime and nexus produce and forward signed Fins.

@@ -30,7 +30,7 @@ export class TrueOpenError extends Error {
   }
 }
 
-/** Convenience constructor for data-plane errors (used by §5.7). */
+/** Convenience constructor for data-plane errors. */
 export function dataError(code: string, message?: string): TrueOpenError {
   return new TrueOpenError('DATA', code, message ?? code, { retriable: true });
 }

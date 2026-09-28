@@ -6,11 +6,11 @@ import type { RawChunk, VerifiedChunk, ChunkBoundary, OutputRef } from '../types
 const EMPTY = new Uint8Array();
 
 /**
- * Verifies continuity and the commitment chunk by chunk (Implementation Design §5.7).
+ * Verifies continuity and the commitment chunk by chunk.
  * - chunkIndex increases monotonically by 1 starting from 0;
  * - prevChunkHash must equal the previous chunk's chunkDigest (empty for the first chunk);
  * - chunkDigest must equal sha256(bytes).
- * finalize compares the concatenated canonical output bytes against the outputHash commitment (§5.1).
+ * finalize compares the concatenated canonical output bytes against the outputHash commitment.
  */
 export class ChunkVerifier {
   private nextIndex = 0n;
@@ -31,14 +31,14 @@ export class ChunkVerifier {
     return { ...chunk, verified: true };
   }
 
-  /** Verifies the final output commitment once everything has been received (§5.1: output_hash == hash of the canonical output bytes). */
+  /** Verifies the final output commitment once everything has been received (output_hash == hash of the canonical output bytes). */
   finalize(assembled: Uint8Array, ref: OutputRef): void {
     if (!bytesEqual(sha256(assembled), ref.outputHash)) {
       throw dataError('DATA_OUTPUT_HASH_MISMATCH', `assembled output hash != ref.outputHash for task ${ref.taskId}`);
     }
   }
 
-  /** Exposes the resume boundary (crash recovery / RangeGet continues from here, §5.4). */
+  /** Exposes the resume boundary (crash recovery / RangeGet continues from here). */
   boundary(): ChunkBoundary {
     return { nextIndex: this.nextIndex, prevChunkHash: this.prevHash };
   }

@@ -15,11 +15,10 @@ import { bech32 } from '@scure/base';
  * ⚠️ **This is not a cross-language golden value -- just a self-consistency
  * regression value.**
  *
- * Back in v0.1.2 this asserted against the V1 golden value published by node itself
+ * Earlier this asserted against the V1 golden value published by node itself
  * (f7d3f70c..., from node x/task/types/task_order_test.go, which nexus also mirrored
  * as the same constant) -- that was hard evidence for task_hash between the SDK and
- * node/nexus. Since wire v0.3.0, TaskOrderV2 and TRUEOPEN_TASK_ORDER_V1 were removed
- * together, and V2 still has **no testdata vectors at all**
+ * node/nexus. TaskOrderV2 replaced it and TRUEOPEN_TASK_ORDER_V1 was removed, and V2 still has **no testdata vectors at all**
  * (registry/v1/domains.json only gives the 25 field names and framing rules), so that
  * hard evidence no longer applies.
  *
@@ -39,7 +38,7 @@ const amount = (atomicUnits: string): AmountV1 => ({ atomicUnits });
 // to match node's prefix.
 const accAddress = (raw: Uint8Array): string => bech32.encode('trueopen', bech32.toWords(raw));
 
-/** Reuses the values from the v0.1.2 fixture, rearranged to match TaskOrderV2's field set. */
+/** Reuses the values from the earlier V1 fixture, rearranged to match TaskOrderV2's field set. */
 function fixture(): TaskOrderV2 {
   return {
     schemaVersion: 2,

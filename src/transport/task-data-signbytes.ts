@@ -6,10 +6,9 @@ import { concatBytes, fromHex, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
 
 /**
- * Authentication for the nexus task data plane (wire v0.4.1, Interfaces and
- * Topics manifest §4.2.1).
+ * Authentication for the nexus task data plane.
  *
- * Everything changed relative to v0.1.2: SignedTaskDataRangeV1 was removed,
+ * Everything changed relative to an earlier revision: SignedTaskDataRangeV1 was removed,
  * TaskDataRequestAuthV1 went from 7 plain strings to an 11-field typed
  * message, and authentication now splits into **two layers**:
  *

@@ -184,7 +184,7 @@ export interface BuilderSetSnapshot {
   /**
    * builder_set_id: signed directly into TaskOrderV2 field 24.
    *
-   * Note it is **not a number**: on wire v0.4.1, on-chain values look like
+   * Note it is **not a number**: on-chain values look like
    * `"genesis-1"`. In earlier versions this was a decimal term string, but that term
    * model (term_id / term_start_height / term_end_height / snapshot_height) was
    * removed along with bonds when Builder registration changed.

@@ -57,7 +57,7 @@ order
   .requiredOption('--session <id>')
   .option('--seq <n>', 'order_sequence; defaults to reading StreamState.next_expected_sequence on chain, an explicit value is only for RBF resubmission with the same sequence')
   .requiredOption('--payload-file <f>', 'plaintext input body file (the V1 data plane transmits plaintext); the SDK derives input_hash / input_size_bytes / payload_ref from it')
-  .option('--idempotency-key <k>', 'the idempotency key from contract section 3.1; defaults to <session>:<seq>, must stay the same across retries')
+  .option('--idempotency-key <k>', 'the idempotency key; defaults to <session>:<seq>, must stay the same across retries')
   .description('submit an order (OpenTask: three-layer signing -> Task Builders selected by task_builder_seed)')
   .action((a: { orderFile: string; session: string; seq?: string; payloadFile: string; idempotencyKey?: string }) =>
     run((cfg, m) => cmdOrderSubmit(cfg, m, a)),

@@ -27,14 +27,14 @@ export async function cmdOutputRef(
 }
 
 /**
- * Retrieve the output body (the data plane from contract sections 3.5/3.6).
+ * Retrieve the output body over the task data plane.
  *
  * Queries each candidate Task Builder in turn: the object only exists on the ones that received this
  * order, and nexus compares the builder_operator_address in the request byte-for-byte against its own
  * configuration, so each endpoint must use its own address. The expiry is a **chain height**, fetched
  * fresh here each time -- a stale height cannot be reused.
  *
- * Since v0.4.1, retrieval is content-addressed: both the on-chain task_hash and the InferReceipt's
+ * Retrieval is content-addressed: both the on-chain task_hash and the InferReceipt's
  * output_hash must be supplied -- the latter is both object_ref.content_hash (used to locate the object)
  * and the verification target for the MMR root. Both values only exist on chain; the CLI does not guess
  * them or fetch them back from nexus.
@@ -96,12 +96,12 @@ export async function cmdOutputGet(
 }
 
 /**
- * Stream-subscribe to output (ADR-0017 / contract section 3.5). Verifies each frame's signature and the
+ * Stream-subscribe to output. Verifies each frame's signature and the
  * MMR root locally, emitting frames as they arrive.
  *
  * workerPubKeyHex must be supplied by the caller: it is the service public key of the selected Worker for
  * this Task. Without it there's no way to verify frame signatures, and "accept without verifying" would
- * mean giving up all of ADR-0017's guarantees, so no switch to skip verification is provided here.
+ * mean giving up all of the streamed-output guarantees, so no switch to skip verification is provided here.
  *
  * How to obtain it: on-chain `assignment.winner_worker` -> `HubReader.getCurrentServiceKey`
  * (the participant type is CORTEX -- that's the name used for the Worker-side software). Both become

@@ -238,7 +238,7 @@ describe('OutputStreamVerifier', () => {
   });
 });
 
-describe('official cross-language vectors (wire v0.4.1 testdata/v1/task/output_mmr_v1.json)', () => {
+describe('official cross-language vectors (wire testdata/v1/task/output_mmr_v1.json)', () => {
   const v = JSON.parse(readFileSync('third_party/wire/testdata/v1/task/output_mmr_v1.json', 'utf8'));
   const m = v.mmr;
   const chunks: Uint8Array[] = (m.chunks_utf8 as string[]).map((t) => new TextEncoder().encode(t));

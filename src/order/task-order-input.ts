@@ -17,7 +17,7 @@ import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricin
  * Keeper's validation rules for each field (node x/task/keeper/
  * task_builder_selection_runtime.go:51-71, msg_server_worker_handraises.go:486-502):
  *
- *  - builder_set_id is the identifier of that set on chain (as of v0.4.1 it looks like
+ *  - builder_set_id is the identifier of that set on chain (it looks like
  *    "genesis-1", no longer a decimal term); builder_set_hash must equal that set
  *    snapshot's hash.
  *  - session_anchor_height must not be earlier than that set's effective_height.
@@ -209,9 +209,8 @@ export function buildTaskOrder(
   // StreamState.next_expected_sequence (node keeper/order_sequence.go:34-36), and the
   // first order of a newly created session is 0 (createSession doesn't write this
   // field, so it takes the proto3 zero value). This used to hard-validate >= 1, which
-  // encoded protocol spec 04-Task/01-Session-and-Order Section 15's never-frozen
-  // pending item "order_sequence starting value (0 or 1)", and would block a legitimate
-  // first order locally.
+  // encoded a never-frozen assumption about the starting value (0 or 1), and would block
+  // a legitimate first order locally.
   if (req.outputBudgetBucket === 0) {
     throw invalid('SDK_LOCAL_OUTPUT_BUCKET_INVALID', 'output_budget_bucket must be non-zero');
   }

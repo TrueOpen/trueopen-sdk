@@ -313,7 +313,7 @@ export type {
   OutputFrameAcceptance,
 } from './output/output-commitment';
 
-export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS } from './client';
+export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS, stripChatTemplateEos } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,

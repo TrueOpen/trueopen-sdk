@@ -8,7 +8,7 @@ import type {
   GetTaskDataMetadataRequest,
   SubscribeOutputRequest,
 } from '../../src/gen/nexus/v1/ingress_pb.js';
-import { TrueOpenClient } from '../../src/client';
+import { TrueOpenClient, stripChatTemplateEos } from '../../src/client';
 import { TrueOpenError } from '../../src/errors/errors';
 import type { OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
@@ -334,5 +334,17 @@ describe('streamOutput trust anchors', () => {
     expect(attested).toBe(true);
     // The receipt is not needed for streaming.
     expect(reader.receiptReads).toBe(0);
+  });
+});
+
+describe('stripChatTemplateEos', () => {
+  it('strips a trailing <|im_end|> and the template whitespace left before it', () => {
+    expect(stripChatTemplateEos('9<|im_end|>')).toBe('9');
+    expect(stripChatTemplateEos('答案是 9\n<|im_end|>')).toBe('答案是 9');
+  });
+
+  it('leaves text without the marker untouched, including an embedded marker', () => {
+    expect(stripChatTemplateEos('答案是 9')).toBe('答案是 9');
+    expect(stripChatTemplateEos('a<|im_end|>b')).toBe('a<|im_end|>b'); // not trailing
   });
 });

@@ -851,8 +851,10 @@ export class TrueOpenClient {
     }
 
     return {
+      // bytes is the committed object verbatim; text is the presented view with the chat
+      // template's trailing EOS marker stripped. They differ only by that suffix.
       bytes,
-      text: new TextDecoder().decode(bytes),
+      text: stripChatTemplateEos(new TextDecoder().decode(bytes)),
       outputHash: got,
       taskHash,
       chunks,
@@ -995,7 +997,9 @@ export class TrueOpenClient {
             yield {
               kind: 'chunk',
               seq: c.seq,
-              text: new TextDecoder().decode(c.text),
+              // text is the presented view (chat-template EOS stripped); mmrRoot still
+              // covers the committed bytes, so it is what verification ran against.
+              text: stripChatTemplateEos(new TextDecoder().decode(c.text)),
               mmrRoot: Uint8Array.from(c.mmrRoot),
             };
             continue;
@@ -1164,6 +1168,25 @@ export const DEFAULT_TASK_DATA_EXPIRY_BLOCKS = 10;
 
 /** nexus's default max range (task_data.max_range_bytes); a larger single read is refused. */
 export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;
+
+/**
+ * Qwen3's chat template ends every assistant turn with the literal `<|im_end|>` marker (its
+ * end-of-turn / EOS token). The serving layer applies the template but does not yet strip
+ * that trailing marker, so it is committed on chain as part of the output bytes. It is not
+ * model content, so the SDK strips it from the *presented* text while the committed bytes
+ * stay untouched -- verification still runs over the bytes that hash to the on-chain
+ * receipt. Trailing whitespace left behind by the template is dropped with it.
+ *
+ * Temporary: once cortex strips the marker server side this becomes a no-op.
+ */
+const CHAT_TEMPLATE_EOS = '<|im_end|>';
+
+export function stripChatTemplateEos(text: string): string {
+  if (text.endsWith(CHAT_TEMPLATE_EOS)) {
+    return text.slice(0, -CHAT_TEMPLATE_EOS.length).trimEnd();
+  }
+  return text;
+}
 
 function minBig(a: bigint, b: bigint): bigint {
   return a < b ? a : b;

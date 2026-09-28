@@ -1,5 +1,4 @@
-import { stringToU64, base64ToBytes } from '../codec/wire';
-import { toHex } from '../util/bytes';
+import { stringToU64, base64ToBytes, hash32ToHex } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { FetchLike, FetchResponse, QueryRetryPolicy } from './rest-chain-reader';
 import { DEFAULT_QUERY_RETRY, withQueryRetry } from './rest-chain-reader';
@@ -21,19 +20,13 @@ import { BUCKET_KIND, DEFAULT_PARAMETER_BUCKET_KEY } from '../types/hub';
 import type { ProfileManifestState } from '../manifest/model-manifest';
 
 /**
- * Hash32 field -> canonical lowercase hex (builder_set_hash / descriptor_hash / etc).
- *
- * node's gRPC gateway used to output the proto `bytes` field as base64; it now uses
- * canonical lowercase 64-hex instead (matching nexus's `nodecontract.Hash32Bytes`
- * convention). Both are accepted: a value that's already 64-hex is returned as-is,
- * otherwise it's base64-decoded and converted to hex -- base64-decoding a hex string
- * directly would just produce garbage.
+ * Hash32 field -> canonical lowercase hex (model_id / builder_set_hash / descriptor_hash
+ * / etc). The decoding itself lives in codec/wire so task.v1's reader uses the same one.
  */
 function hash32Hex(o: Record<string, unknown>, snakeKey: string): string {
   const v = o[snakeKey] ?? o[camelKey(snakeKey)];
   if (typeof v !== 'string') throw malformed(`field ${snakeKey}`);
-  if (/^[0-9a-f]{64}$/.test(v)) return v;
-  return toHex(base64ToBytes(v));
+  return hash32ToHex(v);
 }
 
 /** Optional 32-byte hash field: returns an empty string when absent or when the bytes are empty. */

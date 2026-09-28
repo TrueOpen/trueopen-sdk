@@ -16,7 +16,7 @@ export { ChunkVerifier } from './output/chunk-verifier';
 
 export { phaseToState } from './task/phase-map';
 
-export { u64ToString, stringToU64, bytesToBase64, base64ToBytes } from './codec/wire';
+export { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from './codec/wire';
 
 export type { TaskFailureClass, StreamStateView, SettlementFinalityView, SettlementView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 export { CHAIN_ENABLED_CHALLENGE_KINDS, isChallengeKindEnabled } from './types/node';
@@ -95,7 +95,15 @@ export { settlementFinalityToChainView } from './state/finality-map';
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
 
-export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
+export {
+  validateModelId,
+  isValidModelId,
+  deriveModelId,
+  MODEL_ID_GRAMMAR,
+  MODEL_PROVIDER,
+  DOMAIN_MODEL_ID_V1,
+} from './order/model-id';
+export type { ModelIdInput } from './order/model-id';
 
 // ---- Frozen TaskOrderV3 / SignedOrderV2 ----
 export {

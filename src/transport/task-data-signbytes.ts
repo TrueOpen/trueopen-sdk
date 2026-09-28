@@ -153,13 +153,29 @@ function validateEvidenceKind(ref: TaskDataObjectRef): void {
     return;
   }
   const producer = ref.evidenceProducerKind ?? EVIDENCE_PRODUCER_KIND.UNSPECIFIED;
-  const allowed = EVIDENCE_KINDS_BY_PRODUCER[producer] ?? [];
+  const allowed = EVIDENCE_KINDS_BY_PRODUCER[producer];
+  // Reported separately: "no producer kind" and "wrong kind for this producer" are
+  // different mistakes, and folding them together yields the unhelpful
+  // "evidence_kind 0 is not a data-plane evidence kind for producer kind 0".
+  if (allowed === undefined) {
+    throw malformed(
+      `object_kind ${ref.objectKind} is an evidence object and needs evidence_producer_kind WORKER or VERIFIER`,
+    );
+  }
   if (!allowed.includes(kind)) {
     throw malformed(`evidence_kind ${kind} is not a data-plane evidence kind for producer kind ${producer}`);
   }
 }
 
-/** The nested nine-field frame of the canonical TaskDataObjectRefV1. */
+/**
+ * The nested nine-field frame of the canonical TaskDataObjectRefV1.
+ *
+ * Throws on an object_kind / evidence_kind combination the contract makes illegal, before
+ * any digest is computed. Note what that means when verifying a ref produced elsewhere: an
+ * illegal combination raises rather than yielding a digest that simply fails to match. The
+ * SDK's own User-side bodies (FETCH, METADATA) only ever carry INPUT or OUTPUT refs with
+ * no evidence_kind, so they never reach it.
+ */
 export function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array {
   validateEvidenceKind(ref);
   return canonicalFrameBytes(

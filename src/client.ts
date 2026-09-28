@@ -633,6 +633,12 @@ export class TrueOpenClient {
    * `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again.
    *
    * Needs config.taskReader (RestChainReader) and a hub reader with getCurrentServiceKey.
+   *
+   * These anchors are the root of everything the output is checked against, and they are only
+   * as trustworthy as the endpoints those two readers point at. A plaintext REST URL means
+   * whoever is on the network path chooses the task_hash, the winner and the output_hash, and
+   * every later check then confirms their answer. Point both readers at an endpoint you
+   * authenticate, or pass taskHash / outputHash / workerServicePubKey explicitly.
    */
   async resolveOutputTrustAnchors(
     taskId: string,
@@ -1134,13 +1140,29 @@ function isTransientTransportError(e: unknown): boolean {
   return c instanceof TrueOpenError && c.retriable;
 }
 
-async function retryTransient<T>(attempts: number, run: () => Promise<T>): Promise<T> {
+/** Delay before retry i (0-based): 200ms then 400ms. */
+const RANGE_RETRY_BASE_DELAY_MS = 200;
+
+/**
+ * Retries a range, backing off between attempts.
+ *
+ * The backoff is the point, not politeness: ResourceExhausted and Unavailable mean the peer is
+ * already past what it can serve, and an immediate retry is another request into the same
+ * overload. Every attempt re-reads the expiry height and re-signs, so it is a fresh request,
+ * not a replay.
+ */
+async function retryTransient<T>(
+  attempts: number,
+  run: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<T> {
   const n = Math.max(1, attempts);
   for (let i = 0; ; i++) {
     try {
       return await run();
     } catch (e) {
       if (i >= n - 1 || !isTransientTransportError(e)) throw e;
+      await sleep(RANGE_RETRY_BASE_DELAY_MS * 2 ** i);
     }
   }
 }

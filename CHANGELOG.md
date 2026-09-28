@@ -16,6 +16,14 @@
 - `examples/manifest-proxy.mjs`: a same-origin manifest proxy, the recommended browser
   deployment. Browsers never fetch an on-chain `manifest_uri` directly.
 - `parseManifestUri` / `isValidManifestUri`, matching `testdata/v1/hub/manifest_uri_v1.json`.
+- `deriveModelId`, the `TRUEOPEN_MODEL_ID_V1` derivation from `chain_id`, `provider`, `repo_id`
+  and the proposer address codec bytes. Checked against every vector in
+  `testdata/v1/hub/model_id_v1.json`. Non-canonical input is rejected, never normalized, so the
+  SDK derives the same identity the Hub Keeper recomputes from the registration signer.
+- `hash32ToHex`, the single decoder every reader uses for a REST-encoded Hash32.
+- `VerifiedManifest.projectionFullyBound` reports whether the registration digest bound the
+  whole projection. Without `RegistrationCheck` only the scalars `ProfileState` exposes are
+  compared, so fields such as `min_stake.denom` stay unbound.
 - canonical_json_v1 encoder and strict parser (no HTML escaping), the H_V1 framing,
   `chainProjectionHash` and `registrationDigest` (`TRUEOPEN_MODEL_CHAIN_PROJECTION_V3`,
   `TRUEOPEN_MODEL_REGISTRATION_DIGEST_V3`).
@@ -81,7 +89,8 @@
   failure is an error. `PlaintextFallbackAgent`, `isPlaintextServerError` and the
   `plaintext-fallback` policy are removed. Plaintext `http://` / `grpc://` endpoints are refused
   unless the caller opts in with `allowInsecureHttp: true` or `TRUEOPEN_ALLOW_INSECURE_HTTP=1`
-  (localnet only), which logs a warning.
+  (localnet only), which logs a warning. The default console sink says it once per endpoint per
+  process; an injected `warn` sink sees every occurrence.
 - **Breaking:** `openTask` reads the BuilderSet at the order's `session_anchor_height`, both for
   the signed `builder_set_id` / `builder_set_hash` and for routing, matching the chain's check.
   `TaskOrderContextReader` and `TaskBuilderReader` need `getBuilderSetAtHeight` instead of
@@ -100,8 +109,11 @@
 - `FinishReasonV1` accepts `USER_STOP` (5) and `STOP_TOKEN` (6). Both map to OpenAI `stop`.
 - Task data object refs with an illegal object_kind / evidence_kind combination are refused
   before any body digest is computed.
-- `queryTask` maps the compacted `terminal` arm of `TaskViewV1` (`view: 'terminal'`) instead of
-  throwing.
+- **Breaking:** `queryTask` maps the compacted `terminal` arm of `TaskViewV1`
+  (`view: 'terminal'`) instead of throwing. `acceptedInputHash`, `receiptStatus` and
+  `assignmentStatus` are optional and absent on that arm, so callers must branch on `view`;
+  reporting `""` would let code written against the active arm read a compacted task as one
+  with an empty input hash and no receipt.
 - `cancelOrder` no longer computes an owner signature: `MsgCancelOrder` is authorized by the
   account signature alone.
 
@@ -140,3 +152,31 @@
   `HubReader.listProfiles` and the reference bucket query; wire defines none of these routes.
 - **Breaking:** `signCancelOrder`, `cancelOrderSigningBytes`, the `DOMAINS` table and the unused
   builder stage domains.
+
+### Fixed
+
+- An `ipfs://` `manifest_uri` can no longer escape `/ipfs/<cid>` on the configured gateway.
+  `manifest_uri` is chosen by whoever registered the profile, and the gateway is fetched without
+  the address policy, so dot segments in the path turned into a GET for an arbitrary path on
+  that host. Dot segments are now refused, and the built URL is re-checked against the gateway
+  prefix.
+- `RestChainReader.queryTask` decodes `model_id` as a Hash32. It is `bytes` with
+  `REST_BYTES_ENCODING_HASH32_LOWER_HEX` in wire, so reading it as an opaque string left
+  `ChainTaskSnapshot.modelId` and `ProfileInfo.modelId` in encodings that never compare equal.
+- The address policy refuses exactly `3fff::/20` (RFC 9637). It previously covered `3ff0::/12`,
+  refusing 16 times that range.
+- The manifest downloader bounds the compressed side of a response. A gzip stream of empty
+  deflate blocks decodes to nothing, so the 4 MiB decompressed cap never tripped and the socket
+  was read until the total timeout.
+- `MemoryManifestCache` bounds its total bytes, not only its entry count, which allowed
+  `maxEntries * MAX_MANIFEST_BYTES` (256 MiB at the defaults).
+- The projection check compares `task_types` element by element. Joining on `","` made `["A,B"]`
+  and `["A","B"]` compare equal and hid a length difference.
+- `RestChainReader.queryTask` decodes the terminal arm's `model_id` as a Hash32 as well.
+- An evidence object with no producer kind reports that, instead of the unhelpful
+  "evidence_kind 0 is not a data-plane evidence kind for producer kind 0".
+- A ranged output fetch backs off between retries. `Unavailable` and `ResourceExhausted` mean the
+  peer is already past what it can serve, and the retry was immediate.
+- The CLI order file rejects a zero `profileVersion` / `outputBudgetBucket` by name. Both are
+  refused on chain and by `validateTaskOrderScalarScope`, which reported them as the field-less
+  "task order scalar scope is invalid".

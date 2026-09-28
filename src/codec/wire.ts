@@ -64,3 +64,28 @@ export function base64ToBytes(s: string): Uint8Array {
   }
   return new Uint8Array(out);
 }
+
+/**
+ * A REST-encoded Hash32 (`bytes` in the proto) as canonical lowercase 64-hex.
+ *
+ * node's gRPC gateway emits lowercase hex for these (REST_BYTES_ENCODING_HASH32_LOWER_HEX,
+ * matching nexus's `nodecontract.Hash32Bytes`), but protojson's default for `bytes` is
+ * base64, so both forms are accepted: already-hex is returned as is, anything else is
+ * base64-decoded. Base64-decoding a hex string would silently produce garbage, so the
+ * order matters.
+ *
+ * Every reader must decode Hash32 fields through this one function. `model_id` became a
+ * Hash32 in TaskOrderV3, and it is read from both hub.v1 and task.v1; two readers with two
+ * conventions would make `ProfileInfo.modelId` and `ChainTaskSnapshot.modelId` silently
+ * incomparable.
+ */
+export function hash32ToHex(value: string): string {
+  if (/^[0-9a-f]{64}$/.test(value)) return value;
+  const bytes = base64ToBytes(value);
+  if (bytes.length !== 32) {
+    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_HASH32_INVALID', `Hash32 must be 32 bytes, got ${bytes.length}`);
+  }
+  let hex = '';
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+  return hex;
+}

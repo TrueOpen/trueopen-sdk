@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { X509Certificate } from 'node:crypto';
 import { createServer, request as httpsRequest } from 'node:https';
@@ -179,6 +179,31 @@ describe('nexusTransportOptions', () => {
       expect(warnings).toHaveLength(1);
     } finally {
       delete process.env.TRUEOPEN_ALLOW_INSECURE_HTTP;
+    }
+  });
+
+  /**
+   * A transport is built per endpoint per openTask, so an unconditional warning is one line per
+   * request forever -- the shape of warning people learn to filter out. An injected sink is the
+   * caller's own and still sees every occurrence.
+   */
+  it('an injected warn sink fires every time; the default console sink speaks once per endpoint', () => {
+    const warnings: string[] = [];
+    const opts = { allowInsecureHttp: true, warn: (m: string) => warnings.push(m) };
+    nexusTransportOptions('http://127.0.0.1:9100', '', opts);
+    nexusTransportOptions('http://127.0.0.1:9100', '', opts);
+    expect(warnings).toHaveLength(2);
+
+    const console_ = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      nexusTransportOptions('http://127.0.0.1:9101', '', { allowInsecureHttp: true });
+      nexusTransportOptions('http://127.0.0.1:9101', '', { allowInsecureHttp: true });
+      expect(console_).toHaveBeenCalledTimes(1);
+      // A different endpoint is still worth saying out loud.
+      nexusTransportOptions('http://127.0.0.1:9102', '', { allowInsecureHttp: true });
+      expect(console_).toHaveBeenCalledTimes(2);
+    } finally {
+      console_.mockRestore();
     }
   });
 

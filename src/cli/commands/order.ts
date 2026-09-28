@@ -44,6 +44,20 @@ function uint32(key: string, value: unknown): number {
   return Number(n);
 }
 
+/**
+ * Required positive uint32.
+ *
+ * Zero is rejected here rather than two layers down: both node (task_order.go) and
+ * validateTaskOrderScalarScope refuse a zero profile_version or output_budget_bucket, but they
+ * report it as "task order scalar scope is invalid", which names no field. The point of parsing
+ * the order file strictly is that the message says which field is wrong.
+ */
+function positive32(key: string, value: unknown): number {
+  const n = uint32(key, value);
+  if (n === 0) throw orderFileError(`field ${key} must be a positive integer, got ${JSON.stringify(value)}`);
+  return n;
+}
+
 /** Required positive uint64 (no default: it goes into task_hash). */
 function positive(key: string, value: unknown): bigint {
   const n = uint(key, value);
@@ -96,11 +110,11 @@ export function parseOrderFile(path: string, payload: Uint8Array): TaskOrderInte
 
   return {
     modelId,
-    profileVersion: uint32('profileVersion', o['profileVersion']),
+    profileVersion: positive32('profileVersion', o['profileVersion']),
     taskType: enumValue('taskType', TASK_TYPE, o['taskType']),
     payload,
     inputBucket: uint32('inputBucket', o['inputBucket']),
-    outputBudgetBucket: uint32('outputBudgetBucket', o['outputBudgetBucket']),
+    outputBudgetBucket: positive32('outputBudgetBucket', o['outputBudgetBucket']),
     // These two go into GenerationParamsV1 -> task_hash. If maxOutputTokens is too small, the
     // response gets cut off mid-sentence and the user has no way of knowing what limit they signed.
     generationParams: defaultGenerationParams(

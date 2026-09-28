@@ -156,6 +156,30 @@ function envFlag(value: string | undefined): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes';
 }
 
+/** Endpoints already warned about through the default sink, so the console is told once each. */
+const warnedInsecureHttp = new Set<string>();
+
+/**
+ * Warns that an endpoint is plaintext.
+ *
+ * A transport is constructed per endpoint per openTask, so warning unconditionally means one
+ * message per endpoint per request -- which is how a warning becomes noise people filter out.
+ * The default console sink therefore speaks once per endpoint per process. An injected `warn` is
+ * the caller's own sink and always fires, so tests and structured loggers see every occurrence.
+ */
+function warnInsecureHttp(baseUrl: string, warn: ((message: string) => void) | undefined): void {
+  const message =
+    `WARNING: nexus endpoint ${baseUrl} uses plaintext http (insecure http explicitly allowed); ` +
+    'requests and responses can be read and modified on the network path. Use this on a localnet only.';
+  if (warn !== undefined) {
+    warn(message);
+    return;
+  }
+  if (warnedInsecureHttp.has(baseUrl)) return;
+  warnedInsecureHttp.add(baseUrl);
+  console.warn(message);
+}
+
 /** Error code for a handshake verification failure; callers use it to decide whether to re-read the descriptor and retry once. */
 export const NEXUS_TLS_PUBKEY_MISMATCH = 'NEXUS_TLS_PUBKEY_MISMATCH';
 
@@ -221,10 +245,7 @@ export function nexusTransportOptions(uri: string, tlsPubkeyHash = '', policy: N
           'For a localnet only, opt in with allowInsecureHttp: true or TRUEOPEN_ALLOW_INSECURE_HTTP=1',
       );
     }
-    (policy.warn ?? ((message: string) => console.warn(message)))(
-      `WARNING: nexus endpoint ${baseUrl} uses plaintext http (insecure http explicitly allowed); ` +
-        'requests and responses can be read and modified on the network path. Use this on a localnet only.',
-    );
+    warnInsecureHttp(baseUrl, policy.warn);
     return { baseUrl, httpVersion: '1.1' };
   }
   throw new TrueOpenError('SDK_LOCAL', 'NEXUS_ENDPOINT_SCHEME_UNSUPPORTED', `nexus endpoint ${JSON.stringify(uri)} is not an http(s) or grpc(s) uri`);

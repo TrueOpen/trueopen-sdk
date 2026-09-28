@@ -47,7 +47,8 @@
   failure is an error. `PlaintextFallbackAgent`, `isPlaintextServerError` and the
   `plaintext-fallback` policy are removed. Plaintext `http://` / `grpc://` endpoints are refused
   unless the caller opts in with `allowInsecureHttp: true` or `TRUEOPEN_ALLOW_INSECURE_HTTP=1`
-  (localnet only), which logs a warning.
+  (localnet only), which logs a warning. The default console sink says it once per endpoint per
+  process; an injected `warn` sink sees every occurrence.
 - **Breaking:** `openTask` reads the BuilderSet at the order's `session_anchor_height`, both for
   the signed `builder_set_id` / `builder_set_hash` and for routing, matching the chain's check.
   `TaskOrderContextReader` and `TaskBuilderReader` need `getBuilderSetAtHeight` instead of

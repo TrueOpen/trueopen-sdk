@@ -68,7 +68,10 @@ export async function resolveTaskBuilderEndpoints(
   const snapshot = await reader.getBuilderSetAtHeight(input.sessionAnchorHeight);
   // The signed set and the set whose members get contacted must be the same one; if the chain
   // disagrees at the anchor height, the order would be sent to Builders that were never selected.
-  if (snapshot.setHash !== input.builderSetHash.toLowerCase()) {
+  // Both sides are normalized, not just the input: HubReader already yields lowercase hex, but
+  // TaskBuilderReader is an injection point, and folding one side only turns a custom reader's
+  // uppercase hash into a spurious mismatch.
+  if (snapshot.setHash.toLowerCase() !== input.builderSetHash.toLowerCase()) {
     throw new TrueOpenError(
       'SDK_LOCAL',
       'SDK_LOCAL_BUILDER_SET_MISMATCH',

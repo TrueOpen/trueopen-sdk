@@ -79,12 +79,23 @@ function byConnectCode(code: Code): Rule {
 }
 
 /**
- * A failure that never reached a server answer: Connect wraps the local error (socket reset,
- * refused connection, TLS failure) as Unknown/Internal with the original as `cause`. An error
- * decoded from the server's response has no cause.
+ * A failure that never reached a server answer. Connect wraps the local error as
+ * Unknown/Internal with the original as `cause` (for example a TLS failure), except that
+ * connect-node reports a socket error (refused connection, reset, unreachable host) as
+ * Unavailable, again with the socket error as `cause`. An error decoded from the server's
+ * response has no cause, so a server-sent Unavailable is not mistaken for a local one.
  */
 function isClientSideFailure(err: ConnectError): boolean {
-  return (err.code === Code.Unknown || err.code === Code.Internal) && err.cause !== undefined;
+  if (err.cause === undefined) return false;
+  if (err.code === Code.Unknown || err.code === Code.Internal) return true;
+  return err.code === Code.Unavailable && isSocketError(err.cause);
+}
+
+/** A Node.js system error from the socket layer: it carries a `syscall` or an `E...` errno code. */
+function isSocketError(cause: unknown): boolean {
+  if (cause === null || typeof cause !== 'object') return false;
+  const c = cause as { syscall?: unknown; code?: unknown };
+  return typeof c.syscall === 'string' || (typeof c.code === 'string' && /^E[A-Z]+$/.test(c.code));
 }
 
 /**

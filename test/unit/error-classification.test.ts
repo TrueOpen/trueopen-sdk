@@ -7,6 +7,9 @@ import { TrueOpenError, dataError } from '../../src/errors/errors';
 import { IngressClient } from '../../src/transport/ingress-client';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { CosmjsChainWriter } from '../../src/transport/cosmjs-chain-writer';
+import { nexusIngressTransport } from '../../src/transport/nexus-tls';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 const classify = (e: unknown): TrueOpenError => {
   const c = classifyNexusError(e);
@@ -58,6 +61,24 @@ describe('classifyNexusError', () => {
     // A deliberate local refusal (for example a certificate pin mismatch) is not worth repeating.
     const pin = new TrueOpenError('NEXUS_INGRESS', 'NEXUS_TLS_PUBKEY_MISMATCH', 'pin');
     expect(classify(new ConnectError('pin', Code.Unknown, undefined, undefined, pin))).toMatchObject({ retriable: false, switchSource: true });
+  });
+
+  it('treats an Unavailable caused by a socket error as a local transport failure', () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED', syscall: 'connect' });
+    expect(classify(new ConnectError('NEXUS_DATA_NOT_READY connect ECONNREFUSED', Code.Unavailable, undefined, undefined, refused)))
+      .toMatchObject({ code: 'NEXUS_TRANSPORT_FAILED', category: 'transport', retriable: true, switchSource: true });
+    // A server-sent Unavailable carries no cause and keeps its own code.
+    expect(classify(new ConnectError('NEXUS_DATA_NOT_READY: x', Code.Unavailable))).toMatchObject({ code: 'NEXUS_DATA_NOT_READY' });
+  });
+
+  it('classifies a real refused connection (connect-node) as NEXUS_TRANSPORT_FAILED', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const ingress = new IngressClient(nexusIngressTransport(`http://127.0.0.1:${port}`, '', { allowInsecureHttp: true, warn: () => undefined }));
+    await expect(ingress.getTaskStatus('s', 't'))
+      .rejects.toMatchObject({ code: 'NEXUS_TRANSPORT_FAILED', category: 'transport', retriable: true, switchSource: true });
   });
 
   it('leaves TrueOpenErrors and non-Connect errors alone', () => {

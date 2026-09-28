@@ -40,7 +40,7 @@
   forbidden attachment or a bad range sets `switchSource` instead. `IngressClient` (including
   `raw`) now throws a `TrueOpenError` for every Connect error, coded by the nexus code in the
   message (for example `NEXUS_DATA_EXPIRED`), else `NEXUS_TRANSPORT_FAILED` for a local failure
-  or `NEXUS_CONNECT_<CODE>`; the Connect error stays as `cause`. A CheckTx failure is
+  (including a refused or reset connection) or `NEXUS_CONNECT_<CODE>`; the Connect error stays as `cause`. A CheckTx failure is
   `CHAIN_TX_REJECTED` with the codespace, code and log in `details`. New `classifyNexusError` /
   `classifyBroadcastError`.
 - **Breaking:** the order fee denom comes from the chain. `openTask` reads
@@ -60,7 +60,8 @@
   accepted task_hash and winner Worker, the Worker's current service key (must be ACTIVE) and
   the accepted InferReceipt. `fetchTaskOutput` and `streamOutput` use it when `taskHash` /
   `outputHash` / `workerServicePubKey` are not given (new `taskReader` config), and the CLI
-  `output get` / `output stream` no longer take them as required arguments.
+  `output get` / `output stream` no longer take them as required arguments. A task not on chain
+  yet, a missing winner or a missing receipt is the retriable `OUTPUT_TRUST_ANCHOR_PENDING`.
 - `fetchTaskOutput` fetches in ranges of at most 8 MiB (nexus's default max range), checks each
   range's `served_range` and chunk offsets, retries a range that failed on transport, checks
   the metadata against the accepted receipt, and does not fetch a size-0 object.

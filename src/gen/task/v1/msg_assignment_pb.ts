@@ -54,6 +54,13 @@ export const DeadlinePolicyV1Schema: GenMessage<DeadlinePolicyV1> = /*@__PURE__*
  * fill defaults explicitly before signing; stop_sequences ascend by UTF-8 bytes
  * and stop_token_ids ascend numerically. Unknown fields, floats and out-of-range
  * values are rejected.
+ *
+ * Ranges are inclusive. The Keeper enforces them when it projects the order
+ * (TRUEOPEN_TASK_ORDER_V3) and again when it derives generation_params_digest
+ * (TRUEOPEN_TASK_GENERATION_PARAMS_V1); top_k is bounded only by the second,
+ * against a governance parameter. The chain fills no default: every value is
+ * an explicit order fact. Boundary vectors are in
+ * testdata/v1/task/generation_params_ranges_v1.json.
  * DecodingParamsV1 defines the DecodingParamsV1 wire type.
  *
  * @generated from message task.v1.DecodingParamsV1
@@ -65,17 +72,23 @@ export type DecodingParamsV1 = Message<"task.v1.DecodingParamsV1"> & {
   samplingEnabled: boolean;
 
   /**
+   * 0..2000; 1000 means 1.0.
+   *
    * @generated from field: uint32 temperature_milli = 2;
    */
   temperatureMilli: number;
 
   /**
+   * 1..1000000; 1000000 means 1.0. 0 is rejected.
+   *
    * @generated from field: uint32 top_p_ppm = 3;
    */
   topPPpm: number;
 
   /**
-   * 0 disables top-k.
+   * 0 disables top-k. Otherwise at most task.v1 Params
+   * generation.top_k_max (default 1000), checked when
+   * generation_params_digest is derived.
    *
    * @generated from field: uint32 top_k = 4;
    */
@@ -87,16 +100,22 @@ export type DecodingParamsV1 = Message<"task.v1.DecodingParamsV1"> & {
   seed: bigint;
 
   /**
+   * -2000..2000; 0 is neutral.
+   *
    * @generated from field: int32 presence_penalty_milli = 6;
    */
   presencePenaltyMilli: number;
 
   /**
+   * -2000..2000; 0 is neutral.
+   *
    * @generated from field: int32 frequency_penalty_milli = 7;
    */
   frequencyPenaltyMilli: number;
 
   /**
+   * 100000..2000000; 1000000 means 1.0. 0 is rejected.
+   *
    * @generated from field: uint32 repetition_penalty_ppm = 8;
    */
   repetitionPenaltyPpm: number;
@@ -165,6 +184,22 @@ export const GenerationParamsV1Schema: GenMessage<GenerationParamsV1> = /*@__PUR
  * derives task_id, task_hash, generation_params_digest, order_value,
  * task_builder_seed, reward bucket, resource tier and the Task Builders; none of
  * them may be submitted here.
+ *
+ * Amounts (price_bid, max_fee, assignment_priority_fee, tx_fee_reserve) carry
+ * no denomination: every amount is in the chain's hub.v1 Params
+ * phase0.business_denom. The order's EIP-712 message signs that denomination
+ * as feeDenom; it is not a TaskOrderV3 field and does not enter taskHash, and
+ * the Keeper verifies the signature with feeDenom set to its current
+ * business_denom, so a signature over any other string fails.
+ *
+ * order_value is derived with one floor per step, all in u64 with a 128-bit
+ * intermediate: worker_max = floor(max_output_tokens * price_bid / 1000000),
+ * verify_max = floor(worker_max * verify_ratio_bps / 10000) with the profile's
+ * PricingProfile.verify_ratio_bps, order_value = worker_max + verify_max. The
+ * order is rejected when price_bid is zero, either step overflows u64,
+ * order_value is zero, order_value + tx_fee_reserve overflows or exceeds
+ * max_fee, or order_value is below the profile's min_order_value. Vectors are in
+ * testdata/v1/task/order_economics_v1.json.
  * TaskOrderV3 defines the TaskOrderV3 wire type.
  *
  * @generated from message task.v1.TaskOrderV3
@@ -326,7 +361,8 @@ export const TaskOrderV3Schema: GenMessage<TaskOrderV3> = /*@__PURE__*/
  * SignedOrderV2 is the upstream-locked signed order envelope.
  * signature_scheme accepts exactly lowercase "eip712" and is not persisted on
  * Task state. user_signature is recoverable 65-byte R||S||V with V in {27,28}
- * and low-S.
+ * and low-S. It signs the "TrueOpen Task Order" version "3" EIP-712 digest,
+ * whose feeDenom is hub.v1 Params phase0.business_denom (see TaskOrderV3).
  * SignedOrderV2 defines the SignedOrderV2 wire type.
  *
  * @generated from message task.v1.SignedOrderV2

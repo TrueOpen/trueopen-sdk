@@ -37,6 +37,9 @@
 
 ### Changed
 
+- The `third_party/wire` submodule temporarily points at wire commit `86ed1c4` (after v0.3.3,
+  before the next release) for `testdata/v1/shared/rest_json_shapes_v1.json`; it will move to
+  the next wire tag. The proto changes since v0.3.3 are comments only.
 - The examples and the README quick start are rewritten against the current facade:
   `create-session`, `open-task` and `fetch-output` read the EVM chain ID and fee denom from chain,
   start at order sequence 0, use the current amount fields, fetch output through the chain trust
@@ -180,3 +183,9 @@
 - The CLI order file rejects a zero `profileVersion` / `outputBudgetBucket` by name. Both are
   refused on chain and by `validateTaskOrderScalarScope`, which reported them as the field-less
   "task order scalar scope is invalid".
+- `classifyBroadcastError` recognizes a CheckTx failure by shape alone. It also required a class
+  name, which a bundler renames when it minifies, so `CHAIN_TX_REJECTED` and the retriable
+  sequence-mismatch would have been lost in a minified consumer build.
+- `openTask` works on Node 18 without `config.nonce`. Node exposes `globalThis.crypto` unflagged
+  only from v19, while this package declares `engines: node >=18`, so the request nonce threw
+  `SDK_LOCAL_NO_CRYPTO` on the minimum supported runtime.

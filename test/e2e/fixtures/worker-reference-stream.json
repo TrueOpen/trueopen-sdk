@@ -1,0 +1,50 @@
+{
+  "note": "OUTPUT stream captured from a real Worker (cortex) and relayed by a real nexus, for task_hash sha256(\"interop-accepted-task\")",
+  "chain_id": "trueopen-interop-1",
+  "session_id": "84097828fc31a8c8d29210df48901a85de7fd013f686b17be77d1be29cb7a98b",
+  "task_id": "41b9f86c8b73b7d740c641c07e7a4b9994a2563abff4bf0020b2189a2b70af63",
+  "task_hash": "4a35b63be7e59edcdb301200873df91cf65f93ad3a77e0b63f7127c4e0ba7e09",
+  "worker_pubkey_hex": "036930f46dd0b16d866d59d1054aa63298b357499cd1862ef16f3f55f1cafceb82",
+  "frames": [
+    {
+      "seq": 0,
+      "text_b64": "SGVsbG8sIOS4lg==",
+      "root_hex": "70450268f1a83a3eeede6bf3e479e57c095c9d3548a26c7ee574ba17a6d717e8",
+      "sig_hex": "eb321eef138d7bacf2da20d9f0a598693e52f793429fef4c0069f1d5b77cd6d433b0ea63ff79472d1434c3944fd8c7dd4531fa700f84aface6d03b57f4b4e36f"
+    },
+    {
+      "seq": 1,
+      "text_b64": "55WM8J+ZgsOp",
+      "root_hex": "a068d4ace3da3a41b65dc8c29d0618d8991e16bc1aba31b2957bc10174d49678",
+      "sig_hex": "8e6d60475365d01466c7b877303cba3e4cce0cb8bef322b7688b8d843d3d4bc50031fd8cdf2305a1045d5801cbd588862e5c2a60c53685d7b1d7cb1be4a4728b"
+    },
+    {
+      "seq": 2,
+      "text_b64": "4oCUb2sgbmHDr3Zl",
+      "root_hex": "4d527c5bc606e98396a625a332ac8b2722027309389a340bfd7e44d67e0646d3",
+      "sig_hex": "ce64225f6103a45990238b51c6d57967fedc7d63208a6d55058e6b391356b34634a1e973557c0f1326a38cc4c66b5c74a576be77c263d28c998e9ce22675527a"
+    },
+    {
+      "seq": 3,
+      "text_b64": "4pyT",
+      "root_hex": "0a5a7d5ed29841c52ad95fd5016ed2bd1b7619d5864d8ddb5a8b033b5ff283ec",
+      "sig_hex": "44d7cb100131244beeb08dc04f300c3cd7fa2a9c1aac9ea816e206d260dc70746ac271645c5d19184d71c23ff77b62090c371e953c096028f4bd9502251c877e"
+    }
+  ],
+  "fin": {
+    "final_seq": 3,
+    "finish_reason": 1,
+    "root_hex": "0a5a7d5ed29841c52ad95fd5016ed2bd1b7619d5864d8ddb5a8b033b5ff283ec",
+    "sig_hex": "c004dd8e9880e608e3660d776e6e3c58eed948a4ecc4b2ee413f88258eeab680767188157445b2bfbd338f93b175833f0fb1e25c9ee81bd8d9253d46708d7ea5"
+  },
+  "chunk_lengths": [
+    10,
+    9,
+    12,
+    3
+  ],
+  "output_b64": "SGVsbG8sIOS4lueVjPCfmYLDqeKAlG9rIG5hw692ZeKckw==",
+  "output_hash": "0a5a7d5ed29841c52ad95fd5016ed2bd1b7619d5864d8ddb5a8b033b5ff283ec",
+  "output_size_bytes": 34,
+  "output_leaf_count": 4
+}

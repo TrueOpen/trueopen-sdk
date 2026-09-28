@@ -416,7 +416,10 @@ export const ProfileSourceRefV1Schema: GenMessage<ProfileSourceRefV1> = /*@__PUR
 
 /**
  * ParserRefV1 selects one governance-approved parser specification.
- * The zero value is the sole representation of an absent parser.
+ * The zero value is the sole representation of an absent parser. In the
+ * canonical projection an absent parser is written as {} and a present one as
+ * {"name": ..., "version": ...}; see
+ * testdata/v1/hub/model_registration_chain_v1.json.
  *
  * @generated from message shared.v1.ParserRefV1
  */
@@ -491,6 +494,9 @@ export type ModelProfileProjection = Message<"shared.v1.ModelProfileProjection">
   resourceTier: number;
 
   /**
+   * denom must equal hub.v1 Params phase0.business_denom and amount must be a
+   * positive u64; ProfileState keeps the amount only.
+   *
    * @generated from field: cosmos.base.v1beta1.Coin min_stake = 10;
    */
   minStake?: Coin | undefined;
@@ -536,6 +542,10 @@ export type ModelProfileProjection = Message<"shared.v1.ModelProfileProjection">
   previousProfileVersion: number;
 
   /**
+   * denom must equal hub.v1 Params phase0.business_denom and amount must equal
+   * the effective registration fee parameter (see
+   * ProfileState.registration_fee_paid); ProfileState keeps the amount only.
+   *
    * @generated from field: cosmos.base.v1beta1.Coin registration_fee = 19;
    */
   registrationFee?: Coin | undefined;

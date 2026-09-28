@@ -584,7 +584,9 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` (currently **v0.3.3**). **This repo no longer keeps
+pinned as a submodule at `third_party/wire`. It currently points at wire commit **`86ed1c4`**,
+after v0.3.3 and before the next release, for the REST shape vectors the end-to-end tests read;
+it will move to the next wire tag once that is published. **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -598,8 +600,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (v0.3.3) |
-| `task.v1` / `shared.v1` | `third_party/wire` (v0.3.3) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (commit `86ed1c4`) |
+| `task.v1` / `shared.v1` | `third_party/wire` (commit `86ed1c4`) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

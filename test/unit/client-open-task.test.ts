@@ -358,3 +358,36 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.accepted).toBe(true);
   });
 });
+
+/**
+ * Node only exposes `globalThis.crypto` unflagged from v19, and this package declares
+ * `engines: node >=18`. Reading it directly made openTask throw SDK_LOCAL_NO_CRYPTO on the
+ * minimum supported runtime unless the caller passed `config.nonce` -- which is exactly how
+ * the examples e2e failed on node 18 while passing on node 20.
+ */
+describe('request nonce without globalThis.crypto (node 18)', () => {
+  it('still signs a request, using the platform secure RNG rather than only WebCrypto', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, signerPubKey: pub, signer,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      evmChainId: 424242n, feeDenom: 'utrueopen', orderSigner,
+      // No `nonce`: the SDK has to find its own random source.
+    });
+
+    let res: Awaited<ReturnType<TrueOpenClient['openTask']>>;
+    const saved = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true });
+    try {
+      res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-nonce' });
+    } finally {
+      if (saved !== undefined) Object.defineProperty(globalThis, 'crypto', saved);
+      else delete (globalThis as { crypto?: unknown }).crypto;
+    }
+
+    // The regression is that this threw SDK_LOCAL_NO_CRYPTO before reaching the network.
+    expect(res.accepted).toBe(true);
+    expect(seen.calls).toBeGreaterThan(0);
+  });
+});

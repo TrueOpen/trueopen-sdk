@@ -24,20 +24,38 @@ export interface ManifestCache {
   set(manifestHash: string, bytes: Uint8Array): void | Promise<void>;
 }
 
-/** In-memory ManifestCache with a simple entry cap (oldest entry evicted first). */
+/** Default byte budget: 16 manifests at the protocol maximum. */
+const DEFAULT_MAX_CACHE_BYTES = 16 * MAX_MANIFEST_BYTES;
+
+/**
+ * In-memory ManifestCache, evicting the oldest entry first. Both caps matter: entries
+ * alone would allow maxEntries * MAX_MANIFEST_BYTES (256 MiB at the defaults), and a byte
+ * budget alone would allow unbounded bookkeeping for tiny manifests.
+ */
 export class MemoryManifestCache implements ManifestCache {
   private readonly entries = new Map<string, Uint8Array>();
-  constructor(private readonly maxEntries = 64) {}
+  private bytes = 0;
+
+  constructor(
+    private readonly maxEntries = 64,
+    private readonly maxBytes = DEFAULT_MAX_CACHE_BYTES,
+  ) {}
 
   get(manifestHash: string): Uint8Array | undefined {
     return this.entries.get(manifestHash);
   }
 
   set(manifestHash: string, bytes: Uint8Array): void {
+    const previous = this.entries.get(manifestHash);
+    if (previous !== undefined) this.bytes -= previous.length;
     this.entries.delete(manifestHash);
+    // A single entry above the budget would evict everything and still not fit.
+    if (bytes.length > this.maxBytes) return;
     this.entries.set(manifestHash, bytes);
-    while (this.entries.size > this.maxEntries) {
+    this.bytes += bytes.length;
+    while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) {
       const oldest = this.entries.keys().next().value as string;
+      this.bytes -= this.entries.get(oldest)!.length;
       this.entries.delete(oldest);
     }
   }
@@ -104,6 +122,11 @@ export interface ManifestFetchResult extends VerifiedManifest {
 const DEFAULT_TIMEOUT_MS = 20_000;
 const HASH_PLACEHOLDER = '{manifest_hash}';
 
+/** Substitutes every placeholder. Validation and URL construction must agree on this. */
+function fillHash(template: string, manifestHash: string): string {
+  return template.split(HASH_PLACEHOLDER).join(manifestHash);
+}
+
 function configError(message: string): TrueOpenError {
   return new TrueOpenError('SDK_LOCAL', 'MANIFEST_SOURCE_MISCONFIGURED', `manifest source: ${message}`);
 }
@@ -111,7 +134,8 @@ function configError(message: string): TrueOpenError {
 function httpBaseUrl(what: string, value: string): URL {
   let url: URL;
   try {
-    url = new URL(value.replace(HASH_PLACEHOLDER, '0'));
+    // Substitute a well-formed hash so validation sees the shape the fetch will use.
+    url = new URL(fillHash(value, '0'.repeat(64)));
   } catch {
     throw configError(`${what} ${JSON.stringify(value)} is not a URL`);
   }
@@ -208,8 +232,7 @@ export class ManifestSource {
           if (this.opts.fetcher !== undefined) out.push({ source: 'manifest_uri', url: uri.uri, fetch: this.opts.fetcher });
           else attempts.push(skipped(uri.uri, 'no SSRF-safe fetcher configured for manifest_uri'));
         } else if (this.opts.ipfsGateway !== undefined) {
-          const base = this.opts.ipfsGateway.replace(/\/+$/, '');
-          out.push({ source: 'manifest_uri', url: `${base}/ipfs/${uri.cid}${uri.path}`, fetch: this.trustedFetcher });
+          out.push({ source: 'manifest_uri', url: gatewayUrl(this.opts.ipfsGateway, uri.cid, uri.path), fetch: this.trustedFetcher });
         } else {
           attempts.push(skipped(uri.uri, 'ipfs:// manifest_uri needs a configured IPFS gateway'));
         }
@@ -218,10 +241,29 @@ export class ManifestSource {
       }
     }
     for (const m of this.opts.mirrors ?? []) {
-      out.push({ source: 'mirror', url: m.split(HASH_PLACEHOLDER).join(state.manifestHash), fetch: this.trustedFetcher });
+      out.push({ source: 'mirror', url: fillHash(m, state.manifestHash), fetch: this.trustedFetcher });
     }
     return out;
   }
+}
+
+/**
+ * `${gateway}/ipfs/${cid}${path}`, resolved through the URL parser and then checked to
+ * still sit under `/ipfs/${cid}`. parseManifestUri already refuses dot segments; this is
+ * the second lock, so a regression there cannot turn a chain-provided path into a request
+ * for an arbitrary path on the operator's gateway.
+ */
+function gatewayUrl(gateway: string, cid: string, path: string): string {
+  const prefix = `${gateway.replace(/\/+$/, '')}/ipfs/${cid}`;
+  const url = new URL(`${prefix}${path}`).href;
+  if (url !== prefix && !url.startsWith(`${prefix}/`)) {
+    throw new TrueOpenError(
+      'SDK_LOCAL',
+      'MANIFEST_URI_INVALID',
+      `manifest_uri: ipfs path escapes the gateway prefix ${prefix}`,
+    );
+  }
+  return url;
 }
 
 function attempt(source: ManifestSourceKind, url: string | undefined, e: unknown): ManifestAttempt {

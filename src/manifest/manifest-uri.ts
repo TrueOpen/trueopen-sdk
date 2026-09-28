@@ -201,6 +201,22 @@ function validateUriChars(part: string, s: string, extra: string): void {
   }
 }
 
+/**
+ * Refuses "." and ".." path segments. An ipfs path is appended to an operator-configured
+ * gateway base, and a URL parser resolves dot segments before the request is sent, so a
+ * traversal would let the chain-provided URI escape `/ipfs/<cid>/` and address an
+ * arbitrary path on that gateway. `%2E` counts as a dot: validateUriChars already forces
+ * uppercase hex, so that is the only encoded form to fold.
+ */
+function rejectDotSegments(path: string): void {
+  for (const segment of path.split('/')) {
+    const folded = segment.split('%2E').join('.');
+    if (folded === '.' || folded === '..') {
+      throw invalid(`path segment ${JSON.stringify(segment)} is a dot segment`);
+    }
+  }
+}
+
 function parseIpfs(uri: string, rest: string): ManifestUri {
   const slash = rest.indexOf('/');
   const cid = slash >= 0 ? rest.slice(0, slash) : rest;
@@ -208,6 +224,7 @@ function parseIpfs(uri: string, rest: string): ManifestUri {
   if (cid.includes('?')) throw invalid('ipfs URI does not take a query');
   validateCid(cid);
   validateUriChars('path', path, '/');
+  rejectDotSegments(path);
   return { scheme: 'ipfs', uri, cid, path };
 }
 

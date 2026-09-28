@@ -139,6 +139,22 @@ describe('body digest (H_FIELDS_V1)', () => {
     expect(() => canonicalObjectRefFrame({ ...worker, evidenceProducerKind: 0 })).toThrow();
   });
 
+  // "no producer kind" and "wrong kind for this producer" are different mistakes; folding
+  // them together produced "evidence_kind 0 is not a data-plane evidence kind for producer
+  // kind 0", which names neither.
+  it('names the missing producer kind separately from a wrong evidence kind', () => {
+    const evidence: TaskDataObjectRef = {
+      ...REF, objectKind: TASK_DATA_OBJECT_KIND.EVIDENCE_ARTIFACT, producerOperator: OPERATOR,
+      evidenceKind: EVIDENCE_KIND.WORKER_TOKEN_OPENING,
+    };
+    expect(() => canonicalObjectRefFrame({ ...evidence, evidenceProducerKind: 0 })).toThrow(
+      /needs evidence_producer_kind WORKER or VERIFIER/,
+    );
+    expect(() => canonicalObjectRefFrame({ ...evidence, evidenceProducerKind: 2 })).toThrow(
+      /is not a data-plane evidence kind for producer kind 2/,
+    );
+  });
+
   it('Hash32 must be canonical lowercase 64-hex', () => {
     expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: '22' })).toThrow(/64-hex/);
     // Only a value containing letters can actually test case sensitivity (the hashes in the vector are all digits, so uppercasing them leaves the string unchanged).

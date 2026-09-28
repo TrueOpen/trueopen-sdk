@@ -9,7 +9,7 @@ export { TaskPhase, AssignmentStatus, ReceiptStatus, VerificationStatus, Settlem
 export { TaskVerdict, TaskFailureClass } from './gen/task/v1/settlement_pb.js';
 export { TaskFinalityStatusV1 } from './gen/shared/v1/common_pb.js';
 
-export { u64ToString, stringToU64, bytesToBase64, base64ToBytes } from './codec/wire';
+export { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from './codec/wire';
 
 export type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 
@@ -75,7 +75,15 @@ export type {
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle } from './session/session-manager';
 
-export { validateModelId, isValidModelId, MODEL_ID_GRAMMAR } from './order/model-id';
+export {
+  validateModelId,
+  isValidModelId,
+  deriveModelId,
+  MODEL_ID_GRAMMAR,
+  MODEL_PROVIDER,
+  DOMAIN_MODEL_ID_V1,
+} from './order/model-id';
+export type { ModelIdInput } from './order/model-id';
 
 // ---- Frozen TaskOrderV3 / SignedOrderV2 ----
 export {

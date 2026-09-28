@@ -42,6 +42,22 @@ describe('cli commands', () => {
     }
   });
 
+  /**
+   * node (task_order.go) and validateTaskOrderScalarScope both refuse a zero profile_version or
+   * output_budget_bucket, but they say "task order scalar scope is invalid", which names no
+   * field. A strict order-file parser exists so the message points at the field.
+   */
+  it('errors on a zero profile_version / output_budget_bucket, naming the field', () => {
+    expect(() => parseOrderFile(write({ ...base, profileVersion: 0 }), payload)).toThrow(
+      /profileVersion must be a positive integer/,
+    );
+    expect(() => parseOrderFile(write({ ...base, outputBudgetBucket: 0 }), payload)).toThrow(
+      /outputBudgetBucket must be a positive integer/,
+    );
+    // inputBucket has no such rule on either side, so zero stays acceptable.
+    expect(parseOrderFile(write({ ...base, inputBucket: 0 }), payload)).toMatchObject({ inputBucket: 0 });
+  });
+
   it('errors on unknown enum values and unknown fields', () => {
     expect(() => parseOrderFile(write({ ...base, taskType: 'TEXT' }), payload)).toThrow(/taskType must be one of/);
     expect(() => parseOrderFile(write({ ...base, taskType: 'UNSPECIFIED' }), payload)).toThrow(/taskType must be one of/);

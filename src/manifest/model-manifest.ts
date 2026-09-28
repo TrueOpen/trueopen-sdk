@@ -275,6 +275,16 @@ export interface VerifiedManifest {
   /** The exact canonical bytes that hash to manifest_hash. */
   readonly bytes: Uint8Array;
   readonly manifest: ModelManifestV4;
+  /**
+   * Whether every projection field was bound, via the registration digest.
+   *
+   * False means only the scalars ProfileState exposes over REST were compared. Fields
+   * outside that set are then unbound -- `min_stake.denom` is the clearest case, because
+   * ProfileState carries the amount as a bare uint64 with no denom to compare against. A
+   * caller that needs the whole projection bound must pass RegistrationCheck and assert
+   * this is true; without it, a verified manifest is not a fully bound one.
+   */
+  readonly projectionFullyBound: boolean;
 }
 
 /**
@@ -330,7 +340,7 @@ export function verifyManifestBytes(
       );
     }
   }
-  return { bytes, manifest };
+  return { bytes, manifest, projectionFullyBound: registration !== undefined };
 }
 
 function compareProjection(m: ModelManifestV4, s: ProfileManifestState): void {
@@ -341,7 +351,18 @@ function compareProjection(m: ModelManifestV4, s: ProfileManifestState): void {
   const stake = spec['min_stake'] as JsonObject;
   const strip0x = (v: CanonicalJsonValue | undefined): string => String(v).slice(2);
 
+  // Element by element, not a joined string: joining on "," makes ["A,B"] and ["A","B"]
+  // compare equal, and hides a length or order difference.
+  const manifestTypes = spec['task_types'] as readonly string[];
+  if (manifestTypes.length !== s.taskTypes.length) {
+    throw invalid(
+      'MANIFEST_PROJECTION_MISMATCH',
+      `task_types length differs: manifest ${manifestTypes.length}, chain ${s.taskTypes.length}`,
+    );
+  }
+
   const checks: [string, unknown, unknown][] = [
+    ...manifestTypes.map((t, i): [string, unknown, unknown] => [`task_types[${i}]`, t, s.taskTypes[i]]),
     ['model_id', m.modelId, s.modelId],
     ['profile_version', m.profileVersion, s.profileVersion],
     ['previous_profile_version', m.previousProfileVersion, s.previousProfileVersion],
@@ -349,7 +370,6 @@ function compareProjection(m: ModelManifestV4, s: ProfileManifestState): void {
     ['schema_hash', strip0x(spec['schema_hash']), s.schemaHash],
     ['runtime_class', runtime['runtime_class'], s.runtimeClass],
     ['required_top_k', runtime['required_top_k'], s.requiredTopK],
-    ['task_types', (spec['task_types'] as string[]).join(','), s.taskTypes.join(',')],
     ['generation_type', spec['generation_type'], s.generationType],
     ['resource_tier', spec['resource_tier'], s.resourceTier],
     ['min_stake', stake['amount'], s.minStake],

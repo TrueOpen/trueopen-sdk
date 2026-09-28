@@ -34,6 +34,13 @@ export interface NodeManifestFetcherOptions {
   readonly ca?: string | readonly string[];
 }
 
+/**
+ * How many compressed bytes may be read per byte of the decompressed cap. A manifest that
+ * needs more than this is not a manifest; the bound exists so a stream that decodes to
+ * nothing cannot hold the socket open until the total timeout.
+ */
+const MAX_COMPRESSION_RATIO = 4;
+
 const DEFAULT_MAX_REDIRECTS = 3;
 const DEFAULT_RETRIES = 1;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
@@ -223,6 +230,7 @@ function handleResponse(
 
   const chunks: Buffer[] = [];
   let decoded = 0;
+  let raw = 0;
   const fail = (e: unknown): void => {
     // Settle first: destroying the response emits 'aborted', which must not win.
     finish(e);
@@ -239,9 +247,17 @@ function handleResponse(
   };
   const onEnd = (): void => finish(undefined, { kind: 'body', body: new Uint8Array(Buffer.concat(chunks)) });
 
-  // Counting decoded bytes also bounds an uncompressed body; a compressed one can only
-  // grow when decoded.
+  // Decoded bytes bound the body that is kept. They do not bound what is read: a gzip
+  // stream of empty deflate blocks decodes to almost nothing, so `decoded` never trips
+  // while the socket is read until the total timeout. Cap the compressed side too, at a
+  // ratio no honest manifest needs.
+  const maxRawBytes = maxBytes * MAX_COMPRESSION_RATIO;
   res.on('data', (chunk: Buffer) => {
+    raw += chunk.length;
+    if (decoder !== undefined && raw > maxRawBytes) {
+      fail(tooLarge(`compressed body exceeds ${maxRawBytes} bytes before decoding to ${maxBytes}`));
+      return;
+    }
     if (decoder !== undefined) decoder.write(chunk);
     else onDecoded(chunk);
   });

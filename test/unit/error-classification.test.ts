@@ -117,6 +117,30 @@ describe('classifyBroadcastError', () => {
     expect(classifyBroadcastError(other)).toBe(other);
   });
 
+  /**
+   * CosmJS never sets `this.name`, so the only name a test could match is `constructor.name`,
+   * and a bundler renames that whenever it minifies class names -- which would hold here and
+   * quietly stop holding in a consumer's build. Recognition is by shape, so a structurally
+   * identical error classifies the same however it was built.
+   */
+  it('recognizes a CheckTx failure whose class name a bundler renamed', () => {
+    const renamed = class extends Error {
+      code = 32;
+      codespace = 'sdk';
+      log = 'account sequence mismatch';
+    };
+    Object.defineProperty(renamed, 'name', { value: 'n' });
+    const c = classifyBroadcastError(new renamed('broadcast failed')) as TrueOpenError;
+    expect(c).toMatchObject({ code: 'CHAIN_TX_REJECTED', retriable: true });
+    expect(c.details).toEqual({ codespace: 'sdk', code: 32, log: 'account sequence mismatch' });
+  });
+
+  it('leaves an error that only looks similar alone', () => {
+    // A Connect-style error carries a numeric code but no codespace.
+    const connectish = Object.assign(new Error('unavailable'), { code: 14 });
+    expect(classifyBroadcastError(connectish)).toBe(connectish);
+  });
+
   it('CosmjsChainWriter reports a CheckTx rejection as CHAIN_TX_REJECTED', async () => {
     const writer = new CosmjsChainWriter({
       signerAddress: 'trueopen1u',

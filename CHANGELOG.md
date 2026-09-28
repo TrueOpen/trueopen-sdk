@@ -186,3 +186,6 @@
 - `classifyBroadcastError` recognizes a CheckTx failure by shape alone. It also required a class
   name, which a bundler renames when it minifies, so `CHAIN_TX_REJECTED` and the retriable
   sequence-mismatch would have been lost in a minified consumer build.
+- `openTask` works on Node 18 without `config.nonce`. Node exposes `globalThis.crypto` unflagged
+  only from v19, while this package declares `engines: node >=18`, so the request nonce threw
+  `SDK_LOCAL_NO_CRYPTO` on the minimum supported runtime.

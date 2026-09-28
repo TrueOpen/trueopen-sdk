@@ -36,6 +36,7 @@ import type { TaskBuilderEndpoint } from './hub/stage1-routing';
 import type { ByteRange } from './transport/task-data-signbytes';
 import { classifyNexusError } from './errors/classify';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
+import { randomBytes } from '@noble/hashes/utils';
 import { toHex, fromHex } from './util/bytes';
 import { bytesEqual } from './util/bytes';
 
@@ -62,7 +63,7 @@ export interface TrueOpenClientConfig {
    * nexus enforces this constraint; a mismatch returns SDK_AUTH_INVALID_SIGNATURE.
    */
   readonly addressPrefix?: string;
-  /** Request nonce generator; defaults to 16 random bytes from WebCrypto. */
+  /** Request nonce generator; defaults to 16 random bytes from the platform's secure RNG. */
   readonly nonce?: () => Uint8Array;
   /** Request expiry (Unix ms) generator; defaults to now + requestTtlMs. */
   readonly expiry?: () => bigint;
@@ -1079,13 +1080,27 @@ export class TrueOpenClient {
     return this.ingress.prepareChallenge(p);
   }
 
+  /**
+   * A fresh 16-byte request nonce.
+   *
+   * Reading `globalThis.crypto` directly is not enough: Node only exposes it unflagged from
+   * v19, while this package supports node >=18, so openTask threw SDK_LOCAL_NO_CRYPTO on the
+   * minimum supported runtime unless the caller supplied `config.nonce`. noble's randomBytes
+   * resolves to `node:crypto`'s webcrypto under Node and to `globalThis.crypto` in browsers,
+   * which covers both without importing a Node built-in into the browser bundle.
+   */
   private nextNonce(): Uint8Array {
     if (this.cfg.nonce) return this.cfg.nonce();
-    const g = (globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } }).crypto;
-    if (!g?.getRandomValues) {
-      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_NO_CRYPTO', 'no WebCrypto getRandomValues; provide config.nonce');
+    try {
+      return randomBytes(16);
+    } catch (cause) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_NO_CRYPTO',
+        'no secure random source (a browser needs a secure context); provide config.nonce',
+        { cause },
+      );
     }
-    return g.getRandomValues(new Uint8Array(16));
   }
 
   private nextExpiry(): bigint {

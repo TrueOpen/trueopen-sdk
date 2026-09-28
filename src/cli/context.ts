@@ -12,7 +12,7 @@ import {
   connectTrueOpenChainClient,
   privKeySecp256k1Signer,
   secp256k1PublicKey,
-  privKeyEip712Signer,
+  privateKeyTypedDataSigner,
   ethSecp256k1Address,
   ethSecp256k1SignerFromMnemonic,
   TRUEOPEN_HD_PATH,
@@ -268,18 +268,14 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
     new TrueOpenClient({
       chainId: signing ? cfg.requireChainId() : (cfg.chainId ?? 'trueopen'),
       userAddress: identity.address,
-      signerPubKey: identity.pubKey,
       signer: identity.signer,
       chain,
       ingressTransport: cfg.nexusUrl === serviceEndpoint
         ? explicitNexusTransport(serviceEndpoint, pinFor(serviceEndpoint))
         : nexusTransport(serviceEndpoint, pinFor(serviceEndpoint)),
-      addressPrefix: cfg.prefix,
-      // The order's inner signature is an EIP-712 digest (keccak, 65-byte R||S||V).
-      // Note that Eip712Signer and Secp256k1DigestSigner have exactly the same function signature, so
-      // TS's structural typing cannot catch a mix-up -- getting it wrong only surfaces inside
-      // signAndEncodeOrder as "signature is not 65 bytes".
-      orderSigner: privKeyEip712Signer(identity.privkey),
+      // Every user signature (order, request envelope, task data request) is EIP-712 typed
+      // data signed with the account key: 65 bytes R||S||V.
+      wallet: privateKeyTypedDataSigner(identity.privkey),
       evmChainId,
       // Only an override: the facade reads business_denom from the hub and refuses a mismatch.
       ...(cfg.feeDenom !== undefined ? { feeDenom: cfg.feeDenom } : {}),

@@ -16,7 +16,11 @@ import {
   ackOutputBodyDigest,
 } from '../../src/transport/sdk-request-body';
 import { toHex, fromHex } from '../../src/util/bytes';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
+import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
+import { recoverEip712Address } from '../../src/signer/eth-secp256k1';
 
 // Base vectors of wire testdata/v1/task/sdk_request_body_v1.json and its replay rows
 // (sdk-request-body.test.ts reproduces the whole file; these pin what the client sends).
@@ -44,12 +48,13 @@ describe('body_digest builders (wire vectors)', () => {
 });
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
+const USER = ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen');
 const auth: IngressAuth = {
   chainId: 'trueopen-devnet-1',
-  userAddress: 'trueopen1u',
-  signerPubKey: secp256k1PublicKey(PRIV),
-  signer: privKeySecp256k1Signer(PRIV),
-  nonce: () => new Uint8Array([1, 2, 3]),
+  userAddress: USER,
+  wallet: privateKeyTypedDataSigner(PRIV),
+  evmChainId: 424242n,
+  nonce: () => new Uint8Array(32).fill(3),
   expiry: () => 1893456000000n,
 };
 
@@ -122,6 +127,25 @@ describe('IngressClient signed methods (router transport)', () => {
     expect(cap.ack?.requestEnvelope?.method).toBe('AckOutput');
     expect(toHex(cap.ack?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.ack17);
     expect(cap.ack?.lastSeq).toBe(17n);
+    const env = cap.ack!.requestEnvelope!;
+    expect(env.requestDomain).toBe('TRUEOPEN_SDK_REQUEST_V2');
+    expect(env.endpoint).toBe('/nexus.v1.IngressAPI/AckOutput');
+    expect(env.signerAddress).toBe(USER);
+    expect(env.signerPubkey).toHaveLength(0);
+    expect(env.signature).toHaveLength(65);
+    const digest = sdkRequestEip712Digest({
+      chainId: env.chainId, method: env.method, sessionId: env.sessionId, taskId: env.taskId,
+      requestNonce: env.requestNonce, expiryHeightOrTime: BigInt(env.expiryHeightOrTime), bodyDigest: env.bodyDigest,
+    }, 424242n);
+    expect(recoverEip712Address(digest, env.signature, 'trueopen')).toBe(USER);
+  });
+
+  it('a nonce that is not 32 bytes, or a height expiry, is refused before signing', async () => {
+    const transport = createRouterTransport(() => {});
+    const short = new IngressClient(transport, { ...auth, nonce: () => new Uint8Array(16) });
+    await expect(short.ackOutput({ sessionId: S, taskId: T, lastSeq: 1n })).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+    const height = new IngressClient(transport, { ...auth, expiry: () => 1000n });
+    await expect(height.ackOutput({ sessionId: S, taskId: T, lastSeq: 1n })).rejects.toMatchObject({ code: 'SDK_LOCAL_EXPIRY_NOT_TIME' });
   });
 
   it('a signed method throws when there is no auth', async () => {

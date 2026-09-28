@@ -27,10 +27,10 @@ import type {
   AckOutputResponse,
 } from '../gen/nexus/v1/ingress_pb.js';
 import { TrueOpenError } from '../errors/errors';
-import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
-import type { Eip712Signer } from '../signer/eth-secp256k1';
-import { sha256 } from '../codec/hash';
-import { signSdkRequestEnvelope } from './sdk-request-envelope';
+import type { TypedDataSigner } from '../signer/typed-data-signer';
+import { signTypedDataAs } from '../signer/typed-data-signer';
+import { canonicalOperatorAddressBytes } from '../codec/address';
+import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD } from './sdk-request-envelope';
 import {
   getTaskEventsBodyDigest,
   prepareChallengeBodyDigest,
@@ -39,7 +39,7 @@ import {
 } from './sdk-request-body';
 import type { SignedSdkRequestEnvelope } from './sdk-request-envelope';
 import {
-  taskDataRequestEip712Digest,
+  taskDataRequestTypedData,
   taskDataMetadataBodyDigest,
   taskDataFetchBodyDigest,
   bodyDigestHex,
@@ -96,22 +96,37 @@ export interface TaskStatusView {
   readonly updatedAt: bigint;
 }
 
-/** Signing context: methods that need an SDKRequestEnvelope (all except GetTaskStatus) sign internally with this. */
+/**
+ * Signing context for the requests the user signs: every method except GetTaskStatus and
+ * OpenTask (whose envelope is signed while the order is built, see buildOpenTaskRequest).
+ */
 export interface IngressAuth {
   readonly chainId: string;
+  /** The user's canonical Bech32 address: signer_address, requester_address. */
   readonly userAddress: string;
-  readonly signerPubKey: Uint8Array;
-  readonly signer: CosmosSecp256k1Signer;
-  readonly nonce: () => Uint8Array;
-  readonly expiry: () => bigint;
+  /** The user's wallet: signs EIP-712 typed data (65 bytes R||S||V) as userAddress. */
+  readonly wallet: TypedDataSigner;
   /**
-   * EIP-712 signer for the task data plane (USER branch), producing a 65-byte R||S||V
-   * signature. Not interchangeable with `signer`: that one produces a 64-byte Cosmos
-   * signature over a sha256 digest.
+   * The chain's EVM chain ID (`params.phase0.evm_chain_id`), the chainId of every EIP-712
+   * domain. A function is called for each request, so the caller decides how to cache it.
    */
-  readonly eip712Signer?: Eip712Signer;
-  /** The numeric EVM chain ID used in the EIP-712 domain; distinct from the cosmos chainId string. */
-  readonly evmChainId?: bigint | number | string;
+  readonly evmChainId: bigint | (() => Promise<bigint>);
+  /** Exactly 32 bytes from a CSPRNG per call. */
+  readonly nonce: () => Uint8Array;
+  /** Request expiry as Unix milliseconds (at or above 10^12). */
+  readonly expiry: () => bigint;
+}
+
+async function resolveEvmChainId(auth: IngressAuth): Promise<bigint> {
+  return typeof auth.evmChainId === 'function' ? auth.evmChainId() : auth.evmChainId;
+}
+
+function nonce32(auth: IngressAuth): Uint8Array {
+  const n = auth.nonce();
+  if (n.length !== 32) {
+    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_MALFORMED', `request nonce must be exactly 32 bytes, got ${n.length}`);
+  }
+  return n;
 }
 
 /**
@@ -269,12 +284,11 @@ export class IngressClient {
     for await (const msg of stream) yield msg;
   }
 
-
   /**
    * Fetches task data metadata. Unlike the other methods, this one
-   * doesn't take an SDKRequestEnvelope -- it takes a TaskDataRequestAuthV1 instead, domain
-   * TRUEOPEN_TASK_DATA_REQUEST_V1, signing bytes defined in task-data-signbytes.ts. nexus
-   * hashes with sha256 before verifying, so use an auth.signer that hashes first.
+   * doesn't take an SDKRequestEnvelope -- it takes a TaskDataRequestAuthV1 instead: the USER
+   * branch, EIP-712 typed data under the "TrueOpen Task Data Request" domain
+   * (task-data-signbytes.ts), signed by the wallet.
    *
    * builderAddress must be the operator address of **the specific Builder being queried**:
    * nexus compares it byte-for-byte against its own configuration, and a mismatch is an
@@ -442,9 +456,7 @@ export class IngressClient {
    * The contract is explicit that "signature length is not sniffed, and the caller's public
    * key is not trusted": requester_kind alone determines the verification path, and USER
    * always means EIP-712 plus a 65-byte signature, with service_authorization_nonce fixed
-   * at 0. So there is no fallback to `signer` here -- if eip712Signer isn't configured, this
-   * throws immediately rather than producing a 64-byte signature that would be silently
-   * rejected.
+   * at 0. The signature is checked to recover to requester_address before it is sent.
    */
   private async signTaskDataRequest(
     auth: IngressAuth,
@@ -455,13 +467,6 @@ export class IngressClient {
       bodyDigest: Uint8Array;
     },
   ): Promise<ReturnType<typeof create<typeof TaskDataRequestAuthV1Schema>>> {
-    if (auth.eip712Signer === undefined || auth.evmChainId === undefined) {
-      throw new TrueOpenError(
-        'SDK_AUTH',
-        'SDK_AUTH_NO_EIP712_SIGNER',
-        'the USER branch of the task data plane requires IngressAuth.eip712Signer and evmChainId (EIP-712, 65-byte signature)',
-      );
-    }
     const fields = {
       schemaVersion: TASK_DATA_AUTH_SCHEMA_VERSION,
       chainId: auth.chainId,
@@ -471,10 +476,15 @@ export class IngressClient {
       requesterKind: TASK_DATA_REQUESTER_KIND.USER,
       requesterAddress: auth.userAddress,
       serviceAuthorizationNonce: 0n,
-      requestNonce: requestNonce32(auth.nonce()),
+      requestNonce: nonce32(auth),
       expiryHeight: p.expiresAtHeight,
     };
-    const signature = await auth.eip712Signer(taskDataRequestEip712Digest(fields, auth.evmChainId));
+    const data = taskDataRequestTypedData(fields, await resolveEvmChainId(auth));
+    const signature = await signTypedDataAs(
+      auth.wallet,
+      data,
+      canonicalOperatorAddressBytes('requester_address', auth.userAddress),
+    );
     return create(TaskDataRequestAuthV1Schema, {
       schemaVersion: fields.schemaVersion,
       chainId: fields.chainId,
@@ -518,57 +528,46 @@ export class IngressClient {
     taskId: string,
     bodyDigest: Uint8Array,
   ): Promise<SignedSdkRequestEnvelope> {
-    if (!this.auth) {
-      throw new TrueOpenError('SDK_AUTH', 'SDK_AUTH_NO_SIGNER', `${method} requires IngressClient auth context`);
+    const a = this.requireAuth(method);
+    const expiry = a.expiry();
+    // Only OpenTask may use a chain-height expiry; everything else is Unix milliseconds.
+    if (expiry < HEIGHT_EXPIRY_THRESHOLD) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_EXPIRY_NOT_TIME',
+        `${method} expiry must be Unix milliseconds (>= ${HEIGHT_EXPIRY_THRESHOLD}), got ${expiry}`,
+      );
     }
-    const a = this.auth;
     return signSdkRequestEnvelope(
-      {
-        chainId: a.chainId,
-        method,
-        endpoint: `/nexus.v1.IngressAPI/${method}`,
-        sessionId,
-        taskId,
-        requestNonce: a.nonce(),
-        expiryHeightOrTime: a.expiry(),
-        bodyDigest,
-      },
-      a.userAddress,
-      a.signerPubKey,
-      a.signer,
+      { chainId: a.chainId, method, sessionId, taskId, requestNonce: nonce32(a), expiryHeightOrTime: expiry, bodyDigest },
+      { signerAddress: a.userAddress, signer: a.wallet, evmChainId: await resolveEvmChainId(a) },
     );
   }
 
   private envelopeMsg(e: SignedSdkRequestEnvelope) {
-    return create(SDKRequestEnvelopeV2Schema, {
-      requestDomain: e.requestDomain,
-      chainId: e.chainId,
-      method: e.method,
-      endpoint: e.endpoint,
-      sessionId: e.sessionId,
-      taskId: e.taskId,
-      requestNonce: e.requestNonce,
-      expiryHeightOrTime: e.expiryHeightOrTime,
-      bodyDigest: e.bodyDigest,
-      signerAddress: e.signerAddress,
-      signature: e.signature,
-      signerPubkey: e.signerPubKey,
-    });
+    return envelopeMessage(e);
   }
+}
+
+/** SDKRequestEnvelopeV2 on the wire. signer_pubkey (deprecated, ignored) is never sent. */
+export function envelopeMessage(e: SignedSdkRequestEnvelope) {
+  return create(SDKRequestEnvelopeV2Schema, {
+    requestDomain: e.requestDomain,
+    chainId: e.chainId,
+    method: e.method,
+    endpoint: e.endpoint,
+    sessionId: e.sessionId,
+    taskId: e.taskId,
+    requestNonce: e.requestNonce,
+    expiryHeightOrTime: e.expiryHeightOrTime,
+    bodyDigest: e.bodyDigest,
+    signerAddress: e.signerAddress,
+    signature: e.signature,
+  });
 }
 
 /** The only value currently accepted for TaskDataRequestAuthV1.schema_version. */
 const TASK_DATA_AUTH_SCHEMA_VERSION = 1;
-
-/**
- * request_nonce must be **exactly 32 bytes** (an earlier revision only required >= 16).
- * IngressAuth.nonce() is a generic nonce source whose length isn't guaranteed to comply,
- * so this normalizes it to 32 bytes: if it's shorter, pad it out with sha256 (preserving
- * entropy rather than truncating); if it's longer, also collapse it with sha256.
- */
-function requestNonce32(nonce: Uint8Array): Uint8Array {
-  return nonce.length === 32 ? nonce : sha256(nonce);
-}
 
 /** TaskDataObjectRefV1: the SDK view uses canonical lowercase hex, and the proto also uses string. */
 function toProtoObjectRef(ref: TaskDataObjectRef): ReturnType<typeof create<typeof TaskDataObjectRefV1Schema>> {
@@ -584,16 +583,6 @@ function toProtoObjectRef(ref: TaskDataObjectRef): ReturnType<typeof create<type
     // Sent and signed as the same value: the body digest binds evidence_kind.
     evidenceKind: ref.evidenceKind ?? 0,
   });
-}
-
-/** nexus only accepts a 64-byte R||S; the signer may return 65 bytes (with a recovery id). */
-async function sig64(signer: CosmosSecp256k1Signer, bytes: Uint8Array): Promise<Uint8Array> {
-  const full = await signer(bytes);
-  const sig = full.length === 65 ? full.subarray(0, 64) : full;
-  if (sig.length !== 64) {
-    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BAD_SIGNATURE_LEN', `signature must be 64 bytes R||S, got ${sig.length}`);
-  }
-  return sig;
 }
 
 /**

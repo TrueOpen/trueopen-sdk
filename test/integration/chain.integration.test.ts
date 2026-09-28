@@ -7,10 +7,12 @@ import { RestChainReader } from '../../src/transport/rest-chain-reader';
 import { HubReader } from '../../src/transport/hub-reader';
 import { IngressClient } from '../../src/transport/ingress-client';
 import type { IngressAuth } from '../../src/transport/ingress-client';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { TrueOpenError } from '../../src/errors/errors';
 import { fromHex } from '../../src/util/bytes';
+import { randomBytes } from '@noble/hashes/utils';
 
 /**
  * Node devnet integration tests. Skipped by default; they run only when the environment
@@ -48,7 +50,10 @@ const writeEnabled = Boolean(RPC && REST && MNEMONIC && ALLOW_BROADCAST);
 // nexus IngressAPI (Connect over http; see TRUEOPEN_NEXUS_URL, for example http://host:8080)
 const NEXUS = process.env['TRUEOPEN_NEXUS_URL'];
 const NEXUS_CHAIN_ID = process.env['TRUEOPEN_CHAIN_ID'] ?? 'trueopen-localnet-1';
-const NEXUS_SESSION = process.env['TRUEOPEN_NEXUS_SESSION_ID'] ?? 'nonexistent-session';
+// Hash32 ids: a request body decodes them strictly as 64-character lowercase hex.
+const NEXUS_SESSION = process.env['TRUEOPEN_NEXUS_SESSION_ID'] ?? '00'.repeat(32);
+// The EIP-712 domain chainId; read from REST when not given.
+const EVM_CHAIN_ID = process.env['TRUEOPEN_EVM_CHAIN_ID'];
 const nexusEnabled = Boolean(NEXUS);
 
 // The read-only part runs only when fetch is available (the Node 18+ global fetch).
@@ -159,19 +164,22 @@ describe.skipIf(!nexusEnabled)('nexus integration (Connect over http)', () => {
   }, 30_000);
 
   it('a real nexus accepts the SDKRequestEnvelope: GetTaskEvents fails for reasons other than auth', async () => {
-    // Self-consistent identity: signer_address must equal the EVM-style address of signer_pubkey, otherwise nexus rejects the signature.
+    // The Builder recovers the signer from the EIP-712 signature and compares it with signer_address.
     const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-    const pub = secp256k1PublicKey(PRIV);
-    const addr = ethSecp256k1Address(pub, 'trueopen');
+    const addr = ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen');
     const auth: IngressAuth = {
-      chainId: NEXUS_CHAIN_ID, userAddress: addr, signerPubKey: pub,
-      signer: privKeySecp256k1Signer(PRIV),
-      nonce: () => new Uint8Array([1, 2, 3, 4]), expiry: () => BigInt(Date.now() + 300_000),
+      chainId: NEXUS_CHAIN_ID, userAddress: addr,
+      wallet: privateKeyTypedDataSigner(PRIV),
+      evmChainId: async () =>
+        EVM_CHAIN_ID !== undefined
+          ? BigInt(EVM_CHAIN_ID)
+          : new HubReader({ baseUrl: REST ?? '', fetch: (u) => fetch(u) }).getEvmChainId(),
+      nonce: () => randomBytes(32), expiry: () => BigInt(Date.now() + 300_000),
     };
     const client = new IngressClient(makeTransport(), auth);
     let caught: unknown;
     try {
-      for await (const _ev of client.getTaskEvents({ sessionId: NEXUS_SESSION, taskId: 'nonexistent-task' })) break;
+      for await (const _ev of client.getTaskEvents({ sessionId: NEXUS_SESSION, taskId: 'ff'.repeat(32) })) break;
     } catch (e) {
       caught = e;
     }

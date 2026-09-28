@@ -5,18 +5,18 @@ import { signAndEncodeOrder, OPEN_TASK_HEADER_SIGNATURE_SCHEME } from './signed-
 import type { OrderEip712Context } from './signed-order';
 import { payloadRefFor } from './task-order-input';
 import { orderEnvelopeSigningBytes } from './order-signing';
-import { signSdkRequestEnvelope } from '../transport/sdk-request-envelope';
+import { signSdkRequestEnvelope, ingressEndpoint, HEIGHT_EXPIRY_THRESHOLD } from '../transport/sdk-request-envelope';
 import { openTaskBodyDigest } from '../transport/sdk-request-body';
 import type { TaskOrderV3 } from './task-order';
 import type { OpenTaskInput } from '../transport/ingress-client';
 import type { CosmosSecp256k1Signer } from '../signer/secp256k1';
-import type { Eip712Signer } from '../signer/eth-secp256k1';
+import type { TypedDataSigner } from '../signer/typed-data-signer';
 
 /** OpenTask's Connect procedure path (goes into the SDKRequestEnvelope's endpoint field). */
-export const OPEN_TASK_ENDPOINT = '/nexus.v1.IngressAPI/OpenTask';
+export const OPEN_TASK_ENDPOINT = ingressEndpoint('OpenTask');
 
-/** nexus's threshold for distinguishing expiry values: >= 1e12 is treated as a unix millisecond timestamp; OpenTask only accepts a chain height. */
-export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
+/** Values >= 1e12 are Unix milliseconds; OpenTask is signed with a chain height below it. */
+export { HEIGHT_EXPIRY_THRESHOLD };
 
 const DEFAULT_MEDIA_TYPE = 'application/octet-stream';
 
@@ -39,15 +39,13 @@ export interface BuildOpenTaskInput {
   /** Required; must stay identical across retries. */
   readonly idempotencyKey: string;
   readonly inputMediaType?: string;
-  /** The signer that signs the order's EIP-712 digest (the user's identity; the Keeper recovers the address from the recoverable signature). */
-  readonly orderSigner: Eip712Signer;
-  /** The "hash-then-sign" signer that signs the outer order envelope and the request envelope (verified by nexus). */
+  /**
+   * The user's wallet. Signs the order's EIP-712 digest and the request envelope, both as
+   * order.userAddress (the Keeper and the Builder recover the address from the signature).
+   */
+  readonly wallet: TypedDataSigner;
+  /** The "hash-then-sign" signer for the outer order envelope signature (verified by nexus). */
   readonly signer: CosmosSecp256k1Signer;
-  readonly signerPubKey: Uint8Array;
-  /** The request envelope's identity; defaults back to the order's user. */
-  readonly sdkSigner?: CosmosSecp256k1Signer;
-  readonly sdkSignerPubKey?: Uint8Array;
-  readonly sdkSignerAddress?: string;
   readonly chunkSizeBytes?: number;
 }
 
@@ -78,8 +76,8 @@ export interface BuildOpenTaskResult {
  * The two differ in hash function (keccak vs sha256), signature length (65 vs 64),
  * and signed object, and are not interchangeable.
  *
- * The third signature is the request envelope (SDKRequestEnvelopeV1), whose identity
- * can be separate from the user's.
+ * The third signature is the request envelope (SDKRequestEnvelopeV2, EIP-712 SDKRequest),
+ * signed by the same wallet as the order user.
  */
 export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<BuildOpenTaskResult> {
   if (input.payload.length === 0) {
@@ -113,7 +111,7 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
   }
 
   // (1) Inner: sign the order's EIP-712 digest (task_hash is one of its fields), encode as SignedOrderV2.
-  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.orderSigner);
+  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.wallet);
   const orderEnvelopeHex = toHex(signed.bytes);
 
   // (2) Outer: on the nexus side, order_envelope is fed into domainHash as hex text.
@@ -150,21 +148,18 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
     idempotencyKey: input.idempotencyKey,
   });
 
-  // (3) Request envelope: identity can be separate from the user, defaulting back to the user.
+  // (3) Request envelope: EIP-712 SDKRequest, wallet-signed as the order user, never a session key.
   const requestEnvelope = await signSdkRequestEnvelope(
     {
       chainId: input.order.chainId,
       method: 'OpenTask',
-      endpoint: OPEN_TASK_ENDPOINT,
       sessionId: input.sessionId,
       taskId: input.taskId,
       requestNonce: input.requestNonce,
       expiryHeightOrTime: input.expiryHeight,
       bodyDigest,
     },
-    input.sdkSignerAddress ?? input.order.userAddress,
-    input.sdkSignerPubKey ?? input.signerPubKey,
-    input.sdkSigner ?? input.signer,
+    { signerAddress: input.order.userAddress, signer: input.wallet, evmChainId: BigInt(input.orderEip712.evmChainId) },
   );
 
   return {

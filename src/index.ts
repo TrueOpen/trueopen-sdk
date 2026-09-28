@@ -121,6 +121,7 @@ export {
   encodeSignedOrder,
   decodeSignedOrder,
   taskOrderEip712Digest,
+  taskOrderTypedData,
   SIGNATURE_SCHEME,
   ORDER_EIP712_TYPES,
   ORDER_EIP712_DOMAIN_NAME,
@@ -173,6 +174,16 @@ export {
 } from './signer/eth-secp256k1';
 export type { Eip712Signer } from './signer/eth-secp256k1';
 export {
+  privateKeyTypedDataSigner,
+  eip1193TypedDataSigner,
+  keplrTypedDataSigner,
+  typedDataDigest,
+  typedDataJson,
+  normalizeWalletSignature,
+  signTypedDataAs,
+} from './signer/typed-data-signer';
+export type { TypedData, TypedDataSigner, Eip1193Provider, KeplrEthereumSigner } from './signer/typed-data-signer';
+export {
   EthSecp256k1DirectSigner,
   ethSecp256k1SignerFromMnemonic,
   ethAccountParser,
@@ -191,8 +202,16 @@ export type { CosmosSecp256k1Signer, Secp256k1DigestSigner } from './signer/secp
 
 export {
   SDK_REQUEST_DOMAIN,
-  sdkRequestSignBytes,
+  SDK_REQUEST_EIP712_DOMAIN_NAME,
+  SDK_REQUEST_EIP712_DOMAIN_VERSION,
+  SDK_REQUEST_EIP712_TYPES,
+  INGRESS_SERVICE_PATH,
+  sdkRequestEip712Domain,
+  sdkRequestTypedData,
+  sdkRequestEip712Digest,
   signSdkRequestEnvelope,
+  ingressEndpoint,
+  strictHash32,
 } from './transport/sdk-request-envelope';
 export {
   SDK_BODY_DOMAIN,
@@ -205,12 +224,13 @@ export {
   prepareChallengeBodyDigest,
 } from './transport/sdk-request-body';
 export type { OpenTaskBody } from './transport/sdk-request-body';
-export type { SdkRequestEnvelopeFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
+export type { SdkRequestFields, SignedSdkRequestEnvelope } from './transport/sdk-request-envelope';
 
-export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES } from './transport/ingress-client';
+export { IngressClient, DEFAULT_OPEN_TASK_CHUNK_BYTES, envelopeMessage } from './transport/ingress-client';
 export {
   taskDataRequestSignBytes,
   taskDataRequestEip712Digest,
+  taskDataRequestTypedData,
   taskDataMetadataBodyDigest,
   taskDataFetchBodyDigest,
   canonicalObjectRefFrame,

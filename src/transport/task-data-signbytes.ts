@@ -1,6 +1,7 @@
 import { canonicalFrameBytes, canonicalHashBytes, optionalV1, uint32BE, uint64BE, enumBE } from '../codec/domain-hash';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { eip712Digest } from '../codec/eip712';
+import { typedDataDigest } from '../signer/typed-data-signer';
+import type { TypedData } from '../signer/typed-data-signer';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
 import { fromHex, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
@@ -263,14 +264,11 @@ export const TASK_DATA_EIP712_TYPES: Eip712Types = {
 };
 
 /**
- * Signature digest for the USER branch (EIP-712, keccak). The signature is 65
- * bytes R‖S‖V. evmChainId is the numeric chain ID in the EIP-712 domain, and
- * is a different thing from the cosmos chain-ID string in fields.chainId.
+ * The USER branch as EIP-712 typed data, for a TypedDataSigner (a wallet signs this). evmChainId
+ * is the numeric chain ID in the EIP-712 domain, a different thing from the cosmos chain-ID
+ * string in fields.chainId.
  */
-export function taskDataRequestEip712Digest(
-  f: TaskDataRequestAuthFields,
-  evmChainId: bigint | number | string,
-): Uint8Array {
+export function taskDataRequestTypedData(f: TaskDataRequestAuthFields, evmChainId: bigint | number | string): TypedData {
   validateAuthFields(f);
   const message: Eip712Struct = {
     schemaVersion: f.schemaVersion,
@@ -284,16 +282,24 @@ export function taskDataRequestEip712Digest(
     requestNonce: f.requestNonce,
     expiryHeight: f.expiryHeight,
   };
-  return eip712Digest(
-    TASK_DATA_EIP712_TYPES,
-    {
+  return {
+    types: TASK_DATA_EIP712_TYPES,
+    primaryType: 'TaskDataRequest',
+    domain: {
       name: TASK_DATA_EIP712_DOMAIN_NAME,
       version: TASK_DATA_EIP712_DOMAIN_VERSION,
-      chainId: typeof evmChainId === 'number' ? BigInt(evmChainId) : evmChainId,
+      chainId: BigInt(evmChainId),
     },
-    'TaskDataRequest',
     message,
-  );
+  };
+}
+
+/** Signature digest for the USER branch (EIP-712, keccak). The signature is 65 bytes R‖S‖V. */
+export function taskDataRequestEip712Digest(
+  f: TaskDataRequestAuthFields,
+  evmChainId: bigint | number | string,
+): Uint8Array {
+  return typedDataDigest(taskDataRequestTypedData(f, evmChainId));
 }
 
 /**

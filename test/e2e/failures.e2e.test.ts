@@ -11,7 +11,7 @@ import type { OpenTaskInput } from '../../src/transport/ingress-client';
 import { resolveTaskOrderContext, buildTaskOrder } from '../../src/order/task-order-input';
 import { buildOpenTaskRequest } from '../../src/order/build-open-task';
 import { privKeySecp256k1Signer } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { startWorld, acceptOnChain, drawWinner, landReceipt, outputText, STREAM, REFERENCE_STREAM } from './support/harness';
 import type { World } from './support/harness';
 import * as w from './support/world';
@@ -319,9 +319,9 @@ describe('e2e: the fake nexus checks are not vacuous', () => {
     const order = buildTaskOrder(ctx, { ...w.orderIntent(), userAddress: w.USER.address, sessionId, orderSequence: 0n }, undefined);
     const built = await buildOpenTaskRequest({
       order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
-      requestNonce: new Uint8Array(16).fill(7), idempotencyKey: 'k',
-      orderSigner: privKeyEip712Signer(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
-      signer: privKeySecp256k1Signer(w.USER.privKey), signerPubKey: w.USER.pubKey,
+      requestNonce: new Uint8Array(32).fill(7), idempotencyKey: 'k',
+      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
+      signer: privKeySecp256k1Signer(w.USER.privKey),
     });
     return built.input;
   }

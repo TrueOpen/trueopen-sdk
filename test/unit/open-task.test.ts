@@ -10,7 +10,8 @@ import type { TaskOrderChainContext, TaskOrderRequest } from '../../src/order/ta
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS, taskOrderHashHex } from '../../src/order/task-order';
 import { decodeSignedOrder } from '../../src/order/signed-order';
 import { orderEnvelopeSigningBytes, deriveTaskId } from '../../src/order/order-signing';
-import { sdkRequestSignBytes } from '../../src/transport/sdk-request-envelope';
+import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { openTaskBodyDigest } from '../../src/transport/sdk-request-body';
 import {
   privKeySecp256k1Signer,
@@ -18,9 +19,9 @@ import {
   verifyCosmosSecp256k1,
 } from '../../src/signer/secp256k1';
 import {
-  privKeyEip712Signer,
   ethSecp256k1Address,
   recoverEip712PubKey,
+  recoverEip712Address,
 } from '../../src/signer/eth-secp256k1';
 import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import { sha256 } from '../../src/codec/hash';
@@ -28,7 +29,7 @@ import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const signer = privKeySecp256k1Signer(PRIV);
-const orderSigner = privKeyEip712Signer(PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
 
@@ -84,12 +85,11 @@ const base = {
   sessionId: SESSION,
   taskId: TASK_ID,
   expiryHeight: 1_000n,
-  requestNonce: rep(0xab, 16),
+  requestNonce: rep(0xab, 32),
   idempotencyKey: 'idem-1',
-  orderSigner,
+  wallet,
   orderEip712: ORDER_EIP712,
   signer,
-  signerPubKey: pub,
 };
 
 describe('buildOpenTaskRequest', () => {
@@ -139,7 +139,9 @@ describe('buildOpenTaskRequest', () => {
       idempotencyKey: 'idem-1',
     });
     expect(toHex(env.bodyDigest)).toBe(toHex(expected));
-    expect(verifyCosmosSecp256k1(sdkRequestSignBytes(env), env.signature, pub)).toBe(true);
+    expect(env.signature).toHaveLength(65);
+    expect(env.signerAddress).toBe(USER);
+    expect(recoverEip712Address(sdkRequestEip712Digest(env, ORDER_EIP712.evmChainId), env.signature, 'trueopen')).toBe(USER);
   });
 
   it('payload_ref / input_hash match the payload', async () => {

@@ -19,9 +19,10 @@ import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
 import { privKeySecp256k1DigestSigner } from '../../src/signer/secp256k1';
 import { deriveTaskId } from '../../src/order/order-signing';
-import { sdkRequestSignBytes } from '../../src/transport/sdk-request-envelope';
-import { privKeySecp256k1Signer, secp256k1PublicKey, verifyCosmosSecp256k1 } from '../../src/signer/secp256k1';
-import { privKeyEip712Signer, ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
+import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { ethSecp256k1Address, recoverEip712Address } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex } from '../../src/util/bytes';
 
 // deriveTaskId requires canonical 64-hex; the raw Hash32 enters the preimage.
@@ -150,12 +151,12 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     const chainCap: ChainCap = {};
     const ingressCap: IngressCap = {};
     const client = new TrueOpenClient({
-      chainId: 'trueopen-devnet-1', userAddress: USER, signerPubKey: pub, signer,
+      chainId: 'trueopen-devnet-1', userAddress: USER, signer,
       chain: fakeChain(chainCap), ingressTransport: fakeTransport(ingressCap),
-      orderSigner: privKeyEip712Signer(PRIV),
+      wallet: privateKeyTypedDataSigner(PRIV),
       evmChainId: 424242n, feeDenom: 'utrueopen',
       hub, ingressTransportFactory: () => fakeTransport(ingressCap),
-      nonce: () => new Uint8Array([1, 2, 3]), expiry: () => 1893456000000n,
+      nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
     });
 
     // 1) session
@@ -177,13 +178,14 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     const env = ingressCap.openHeader?.requestEnvelope;
     expect(env).toBeDefined();
     if (env) {
-      const signBytes = sdkRequestSignBytes({
-        chainId: env.chainId, method: env.method, endpoint: env.endpoint,
+      const digest = sdkRequestEip712Digest({
+        chainId: env.chainId, method: env.method,
         sessionId: env.sessionId, taskId: env.taskId,
         requestNonce: env.requestNonce, expiryHeightOrTime: env.expiryHeightOrTime,
         bodyDigest: env.bodyDigest,
-      });
-      expect(verifyCosmosSecp256k1(signBytes, env.signature, env.signerPubkey)).toBe(true);
+      }, 424242n);
+      expect(recoverEip712Address(digest, env.signature, 'trueopen')).toBe(USER);
+      expect(env.signerPubkey).toHaveLength(0);
       expect(env.method).toBe('OpenTask');
     }
 
@@ -214,35 +216,4 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     expect(chainCap.cancel?.ownerSignature).toBeUndefined();
   });
 
-  it('separate SDK identity: the request envelope is signed by sdkSigner and verifies against the SDK public key', async () => {
-    const sdkPriv = fromHex('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40');
-    const sdkSigner = privKeySecp256k1Signer(sdkPriv);
-    const sdkPub = secp256k1PublicKey(sdkPriv);
-    const ingressCap: IngressCap = {};
-    const client = new TrueOpenClient({
-      chainId: 'trueopen-devnet-1', userAddress: USER, signerPubKey: pub, signer,
-      sdkSigner, sdkSignerPubKey: sdkPub, sdkSignerAddress: ethSecp256k1Address(sdkPub, 'trueopen'),
-      chain: fakeChain({}), ingressTransport: fakeTransport(ingressCap),
-      orderSigner: privKeyEip712Signer(PRIV),
-      evmChainId: 424242n, feeDenom: 'utrueopen',
-      hub, ingressTransportFactory: () => fakeTransport(ingressCap),
-      nonce: () => new Uint8Array([9, 9, 9]), expiry: () => 1893456000000n,
-    });
-
-    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'sdk-identity-1' });
-    const env = ingressCap.openHeader?.requestEnvelope;
-    expect(env?.signerAddress).toBe(ethSecp256k1Address(sdkPub, 'trueopen'));
-    expect(env).toBeDefined();
-    if (env) {
-      const signBytes = sdkRequestSignBytes({
-        chainId: env.chainId, method: env.method, endpoint: env.endpoint,
-        sessionId: env.sessionId, taskId: env.taskId,
-        requestNonce: env.requestNonce, expiryHeightOrTime: env.expiryHeightOrTime,
-        bodyDigest: env.bodyDigest,
-      });
-      // the request envelope verifies against the SDK public key, not the user public key
-      expect(verifyCosmosSecp256k1(signBytes, env.signature, sdkPub)).toBe(true);
-      expect(verifyCosmosSecp256k1(signBytes, env.signature, pub)).toBe(false);
-    }
-  });
 });

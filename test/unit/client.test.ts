@@ -12,6 +12,7 @@ import type {
 } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { TrueOpenClient } from '../../src/client';
 import { sha256 } from '../../src/codec/hash';
 import type { ChainClient } from '../../src/transport/chain-client';
@@ -31,10 +32,8 @@ const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d
 const signer = privKeySecp256k1Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 
-// A separate SDK request-signing identity (a different private key from the user's).
-const SDK_PRIV = fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021');
-const sdkSigner = privKeySecp256k1Signer(SDK_PRIV);
-const sdkPub = secp256k1PublicKey(SDK_PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
+const USER = ethSecp256k1Address(pub, 'trueopen');
 
 const PAYLOAD = new TextEncoder().encode('trueopen-input');
 
@@ -143,9 +142,9 @@ function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: un
 
 function makeClient(chainCap = {}, ingressCap = {}): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-devnet-1', userAddress: 'trueopen1u', signerPubKey: pub, signer,
+    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, signer, evmChainId: 424242n,
     chain: fakeChain(chainCap), ingressTransport: fakeTransport(ingressCap),
-    nonce: () => new Uint8Array([1, 2, 3]), expiry: () => 1893456000000n,
+    nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
   });
 }
 
@@ -172,9 +171,9 @@ function scriptedStreamTransport(
 
 function makeClientWithTransport(transport: Transport): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-devnet-1', userAddress: 'trueopen1u', signerPubKey: pub, signer,
+    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, signer, evmChainId: 424242n,
     chain: fakeChain(), ingressTransport: transport,
-    nonce: () => new Uint8Array([1, 2, 3]), expiry: () => 1893456000000n,
+    nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
   });
 }
 
@@ -582,26 +581,17 @@ describe('TrueOpenClient facade', () => {
     await expect(it.next()).rejects.toThrow(/signature invalid/);
   });
 
-  it('addressPrefix: construction throws when signer_address does not match the pubkey', () => {
-    expect(
-      () =>
-        new TrueOpenClient({
-          chainId: 'trueopen-devnet-1', userAddress: 'trueopen1u', signerPubKey: pub, signer,
-          chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',
-        }),
-    ).toThrowError(/ADDRESS_PUBKEY_MISMATCH|does not match/);
-  });
-
-  it('addressPrefix: construction succeeds when the address is derived from the pubkey', () => {
-    expect(
-      () =>
-        new TrueOpenClient({
-          chainId: 'trueopen-devnet-1',
-          // The address is keccak-derived; the derivation rule itself is anchored against the official vectors in eth-secp256k1.test.ts.
-          userAddress: ethSecp256k1Address(pub, 'trueopen'),
-          signerPubKey: pub, signer,
-          chain: fakeChain(), ingressTransport: fakeTransport(), addressPrefix: 'trueopen',
-        }),
-    ).not.toThrow();
+  it('a wallet that does not hold userAddress is refused before a request is sent', async () => {
+    const cap: { ack?: AckOutputRequest } = {};
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-devnet-1', userAddress: USER, signer, evmChainId: 424242n,
+      wallet: privateKeyTypedDataSigner(fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021')),
+      chain: fakeChain(), ingressTransport: scriptedStreamTransport(async function* () {}, cap),
+      expiry: () => 1893456000000n,
+    });
+    await expect(client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
+    });
+    expect(cap.ack).toBeUndefined();
   });
 });

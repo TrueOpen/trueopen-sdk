@@ -1,3 +1,4 @@
+import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { describe, it, expect } from 'vitest';
 import { bech32 } from '@scure/base';
 import { toBinary } from '@bufbuild/protobuf';
@@ -17,6 +18,7 @@ import {
   PAYLOAD_MODE,
 } from '../../src/order/task-order';
 import type { TaskOrderV3, AmountV1 } from '../../src/order/task-order';
+import { taskOrderHash } from '../../src/order/task-order';
 import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import {
   privKeySecp256k1Signer,
@@ -33,6 +35,9 @@ import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const signer = privKeyEip712Signer(PRIV);
+const wallet = privateKeyTypedDataSigner(PRIV);
+/** The fixture order placed by the PRIV account. */
+const ownOrder = () => ({ ...fixture(), userAddress: ethSecp256k1Address(pub, 'trueopen') });
 const hashingSigner = privKeySecp256k1Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 
@@ -169,9 +174,10 @@ describe('SignedOrderV2 encoding', () => {
   });
 
   it("signAndEncodeOrder: the inner signature is a 65-byte recoverable signature over the order's EIP-712 digest", async () => {
-    const order = fixture();
-    const r = await signAndEncodeOrder(order, ORDER_EIP712, signer);
-    expect(toHex(r.taskHash)).toBe(GOLDEN);
+    // The wallet must be the order user: signAndEncodeOrder checks the signature recovers to it.
+    const order = ownOrder();
+    const r = await signAndEncodeOrder(order, ORDER_EIP712, wallet);
+    expect(toHex(r.taskHash)).toBe(toHex(taskOrderHash(order)));
     expect(r.userSignature.length).toBe(65);
     // What's signed is the EIP-712 digest, not the raw task_hash; task_hash is covered as one of its bytes32 fields.
     expect(toHex(r.signingDigest)).toBe(toHex(taskOrderEip712Digest(order, ORDER_EIP712)));
@@ -181,6 +187,10 @@ describe('SignedOrderV2 encoding', () => {
     expect(verifyEip712(r.signingDigest, r.userSignature, ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(true);
     // The signature does end up in the envelope.
     expect(toHex(decodeSignedOrder(r.bytes).userSignature)).toBe(toHex(r.userSignature));
+  });
+
+  it('signAndEncodeOrder refuses a wallet that is not the order user', async () => {
+    await expect(signAndEncodeOrder(fixture(), ORDER_EIP712, wallet)).rejects.toMatchObject({ code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH' });
   });
 
   // Regression guard: the two signing conventions (keccak/EIP-712's 65 bytes vs sha256's 64-byte Cosmos signature)
@@ -195,8 +205,8 @@ describe('SignedOrderV2 encoding', () => {
   });
 
   it('changing any field of the order changes both the encoded bytes and the task_hash', async () => {
-    const a = await signAndEncodeOrder(fixture(), ORDER_EIP712, signer);
-    const b = await signAndEncodeOrder({ ...fixture(), orderSequence: 8n }, ORDER_EIP712, signer);
+    const a = await signAndEncodeOrder(ownOrder(), ORDER_EIP712, wallet);
+    const b = await signAndEncodeOrder({ ...ownOrder(), orderSequence: 8n }, ORDER_EIP712, wallet);
     expect(toHex(b.taskHash)).not.toBe(toHex(a.taskHash));
     expect(toHex(b.bytes)).not.toBe(toHex(a.bytes));
   });

@@ -10,9 +10,9 @@ import type {
 import type { TaskOrderV3 } from './task-order';
 import { taskOrderHash } from './task-order';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
-import { eip712Digest } from '../codec/eip712';
-import type { Eip712Signer } from '../signer/eth-secp256k1';
-import { TrueOpenError } from '../errors/errors';
+import type { TypedData, TypedDataSigner } from '../signer/typed-data-signer';
+import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
+import { canonicalOperatorAddressBytes } from '../codec/address';
 
 /**
  * The **inner** SignedOrderV2.signature_scheme: only this lowercase literal is accepted.
@@ -77,8 +77,8 @@ export interface OrderEip712Context {
   readonly feeDenom: string;
 }
 
-/** The order's EIP-712 signing digest (32 bytes). */
-export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Context): Uint8Array {
+/** The order's EIP-712 typed data, as a wallet signs it. */
+export function taskOrderTypedData(order: TaskOrderV3, ctx: OrderEip712Context): TypedData {
   const message: Eip712Struct = {
     chainId: order.chainId,
     user: order.userAddress,
@@ -92,16 +92,21 @@ export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Contex
     orderExpireHeight: order.orderExpireHeight,
     taskHash: taskOrderHash(order),
   };
-  return eip712Digest(
-    ORDER_EIP712_TYPES,
-    {
+  return {
+    types: ORDER_EIP712_TYPES,
+    primaryType: 'TaskOrder',
+    domain: {
       name: ORDER_EIP712_DOMAIN_NAME,
       version: ORDER_EIP712_DOMAIN_VERSION,
-      chainId: typeof ctx.evmChainId === 'number' ? BigInt(ctx.evmChainId) : ctx.evmChainId,
+      chainId: BigInt(ctx.evmChainId),
     },
-    'TaskOrder',
     message,
-  );
+  };
+}
+
+/** The order's EIP-712 signing digest (32 bytes). */
+export function taskOrderEip712Digest(order: TaskOrderV3, ctx: OrderEip712Context): Uint8Array {
+  return typedDataDigest(taskOrderTypedData(order, ctx));
 }
 
 /**
@@ -192,18 +197,13 @@ export interface EncodedSignedOrder {
 export async function signAndEncodeOrder(
   order: TaskOrderV3,
   ctx: OrderEip712Context,
-  signer: Eip712Signer,
+  signer: TypedDataSigner,
 ): Promise<EncodedSignedOrder> {
   const taskHash = taskOrderHash(order);
-  const signingDigest = taskOrderEip712Digest(order, ctx);
-  const userSignature = await signer(signingDigest);
-  if (userSignature.length !== 65) {
-    throw new TrueOpenError(
-      'SDK_LOCAL',
-      'SDK_LOCAL_BAD_SIGNATURE_LEN',
-      `user_signature must be 65 bytes R||S||V, got ${userSignature.length}`,
-    );
-  }
+  const data = taskOrderTypedData(order, ctx);
+  const signingDigest = typedDataDigest(data);
+  // The Keeper recovers the order user from this signature; check it here, not on chain.
+  const userSignature = await signTypedDataAs(signer, data, canonicalOperatorAddressBytes('user_address', order.userAddress));
   const signed = create(SignedOrderV2Schema, {
     order: toProtoTaskOrder(order),
     signatureScheme: SIGNATURE_SCHEME,

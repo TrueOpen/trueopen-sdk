@@ -37,6 +37,33 @@
 
 ### Changed
 
+- **Breaking:** the order fee denom comes from the chain. `openTask` reads
+  `params.phase0.business_denom` (`HubReader.getBusinessDenom`) and signs it; `feeDenom` in the
+  config is now an optional check, and an order is refused locally
+  (`SDK_LOCAL_FEE_DENOM_MISMATCH`) when it disagrees with the chain. The CLI no longer defaults
+  to `uusdc`: `--fee-denom` / `TRUEOPEN_FEE_DENOM` is an optional check, and `--gas-price` is an
+  amount whose denom is the chain `business_denom` (any other denom is refused).
+- **Breaking:** `openTask` runs the profile pricing checks before signing. It reads the
+  profile through `hub.getProfile` (or takes `params.pricing`) and refuses an order below
+  `min_order_value` or whose `order_value + tx_fee_reserve` exceeds `max_fee`. It also refuses a
+  zero `max_fee` and a non-zero `assignment_priority_fee`. Without pricing it fails with
+  `SDK_LOCAL_PRICING_UNAVAILABLE` instead of skipping the checks.
+- `openTask` returns `builders` (every selected Builder's address, rank, endpoint and ack or
+  error), `unresolvedBuilders` and `feeDenom`. The first accepted ack stays at the top level.
+- Output trust anchors come from the chain. New `resolveOutputTrustAnchors(taskId)` reads the
+  accepted task_hash and winner Worker, the Worker's current service key (must be ACTIVE) and
+  the accepted InferReceipt. `fetchTaskOutput` and `streamOutput` use it when `taskHash` /
+  `outputHash` / `workerServicePubKey` are not given (new `taskReader` config), and the CLI
+  `output get` / `output stream` no longer take them as required arguments.
+- `fetchTaskOutput` fetches in ranges of at most 8 MiB (nexus's default max range), checks each
+  range's `served_range` and chunk offsets, retries a range that failed on transport, checks
+  the metadata against the accepted receipt, and does not fetch a size-0 object.
+  `expiresAtHeight` defaults to latest height + 10.
+- **Breaking:** the CLI order file requires every field and rejects unknown fields and unknown
+  `taskType` / `latencyClass` values (`CLI_ORDER_FILE_INVALID`). The docs now use the parser's
+  field names (`priceBid`, `maxFee`, `assignmentPriorityFee`, `txFeeReserve`).
+- CLI `output get` requests expire at latest height + 10 instead of + 20 (nexus's TTL edge).
+
 - **Breaking:** `streamOutput` requires a Worker-signed Fin by default
   (`finSignaturePolicy: 'require'`). An unsigned Fin no longer ends the stream, since a Builder
   could send one after any verified prefix and truncate the output. The `fin` event now carries

@@ -425,9 +425,9 @@ export class IngressClient {
    * FetchTaskDataHeaderV1 first (echoing the actual returned range and media type), then
    * some number of FetchTaskDataChunkV1 frames, until eof.
    *
-   * An unset range means read the whole object -- **don't** rewrite this as an explicit
-   * offset=0/length=size form, since the two produce different body digests and the
-   * signature won't verify.
+   * An unset range means read the whole object. nexus refuses a whole-object read of an
+   * object larger than its max range, so callers fetching output should use
+   * `TrueOpenClient.fetchTaskOutput`, which splits the object into ranges.
    *
    * Callers are responsible for validating the content after fetching (this
    * means re-chunking by chunk_lengths and computing the MMR root, no longer a whole-object
@@ -439,6 +439,25 @@ export class IngressClient {
     expiresAtHeight: bigint;
     range?: ByteRange;
   }): Promise<Uint8Array> {
+    return (await this.fetchTaskDataRange(p)).bytes;
+  }
+
+  /**
+   * Same as fetchTaskData, but also returns the header, and checks that the bytes are the
+   * ones asked for:
+   *  - the header's `served_range` equals the requested range (or the whole object when no
+   *    range was requested) and lies inside `total_size_bytes`;
+   *  - every chunk's absolute `offset` continues exactly where the previous one ended;
+   *  - the bytes received add up to exactly `served_range.length`, never more.
+   * A peer that answers with a different slice would otherwise be spliced into the wrong
+   * place and only caught much later by the MMR root, with a far less useful error.
+   */
+  async fetchTaskDataRange(p: {
+    objectRef: TaskDataObjectRef;
+    builderAddress: string;
+    expiresAtHeight: bigint;
+    range?: ByteRange;
+  }): Promise<{ bytes: Uint8Array; totalSizeBytes: bigint; servedRange: ByteRange; mediaType: string }> {
     const auth = this.requireAuth('FetchTaskData');
     const requestAuth = await this.signTaskDataRequest(auth, {
       builderAddress: p.builderAddress,
@@ -456,47 +475,82 @@ export class IngressClient {
       }),
     );
 
+    const bad = (message: string): TrueOpenError =>
+      new TrueOpenError('NEXUS_INGRESS', 'NEXUS_FETCH_TASK_DATA_RANGE_INVALID', message);
     const chunks: Uint8Array[] = [];
-    let total = 0;
-    let sawHeader = false;
+    let header: { totalSizeBytes: bigint; servedRange: ByteRange; mediaType: string } | undefined;
+    let next = 0n; // absolute offset the next chunk must start at
+    let received = 0n;
+    let sawEof = false;
     for await (const msg of stream) {
       const frame = msg.frame;
       if (frame.case === 'header') {
-        sawHeader = true;
+        if (header !== undefined) throw bad('FetchTaskData sent a second header');
+        const h = frame.value;
+        const served = h.servedRange;
+        if (served === undefined) throw bad('FetchTaskData header carries no served_range');
+        const want = p.range ?? { offset: 0n, length: h.totalSizeBytes };
+        if (served.offset !== want.offset || served.length !== want.length) {
+          throw bad(
+            `FetchTaskData served [${served.offset}, +${served.length}) but [${want.offset}, +${want.length}) was requested`,
+          );
+        }
+        if (served.offset + served.length > h.totalSizeBytes) {
+          throw bad(`served range [${served.offset}, +${served.length}) exceeds total_size_bytes ${h.totalSizeBytes}`);
+        }
+        header = {
+          totalSizeBytes: h.totalSizeBytes,
+          servedRange: { offset: served.offset, length: served.length },
+          mediaType: h.mediaType,
+        };
+        next = served.offset;
         continue;
       }
       if (frame.case !== 'chunk') continue;
       // The contract requires the header to arrive before any chunk; if the order is
       // reversed, the peer is violating the contract, so don't silently accept it.
-      if (!sawHeader) {
+      if (header === undefined) {
         throw new TrueOpenError(
           'NEXUS_INGRESS',
           'NEXUS_FETCH_TASK_DATA_NO_HEADER',
           'FetchTaskData sent a chunk before its header',
         );
       }
-      const data = frame.value.data;
-      if (data.length > 0) {
-        chunks.push(data);
-        total += data.length;
+      if (sawEof) throw bad('FetchTaskData sent a chunk after eof');
+      const c = frame.value;
+      if (c.offset !== next) throw bad(`chunk offset ${c.offset}, expected ${next}`);
+      const len = BigInt(c.data.length);
+      if (received + len > header.servedRange.length) {
+        throw bad(`FetchTaskData sent more than the served length ${header.servedRange.length}`);
       }
-      if (frame.value.eof) break;
+      if (c.data.length > 0) chunks.push(c.data);
+      received += len;
+      next += len;
+      if (c.eof) sawEof = true;
     }
-    if (!sawHeader) {
+    if (header === undefined) {
       throw new TrueOpenError(
         'NEXUS_INGRESS',
         'NEXUS_FETCH_TASK_DATA_EMPTY',
         'FetchTaskData stream ended without a header frame',
       );
     }
+    if (received !== header.servedRange.length) {
+      throw new TrueOpenError(
+        'NEXUS_INGRESS',
+        'NEXUS_FETCH_TASK_DATA_SHORT',
+        `FetchTaskData ended after ${received} of ${header.servedRange.length} bytes`,
+        { retriable: true },
+      );
+    }
 
-    const out = new Uint8Array(total);
+    const out = new Uint8Array(Number(received));
     let off = 0;
     for (const c of chunks) {
       out.set(c, off);
       off += c.length;
     }
-    return out;
+    return { bytes: out, ...header };
   }
 
   /**

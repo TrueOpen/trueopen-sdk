@@ -254,10 +254,22 @@ export function buildTaskOrder(
         `the current value needs to be >= ${minPriceBidFor(1n, req.generationParams.maxOutputTokens)}`,
     );
   }
-  // If profile pricing was given, also catch "below the profile minimum" locally - this
-  // is likewise a rejection that only happens on chain after nexus has accepted the
-  // order (node: "order_value is below the profile minimum").
-  if (pricing !== undefined && pricing.minOrderValue > 0n) {
+  // The chain requires a positive max_fee and a zero assignment_priority_fee ("task order
+  // amounts are invalid"); both are rejected only after nexus has accepted the order.
+  if (BigInt(req.amounts.maxFee.atomicUnits) === 0n) {
+    throw invalid('SDK_LOCAL_MAX_FEE_ZERO', 'max_fee must be positive');
+  }
+  if (BigInt(req.amounts.assignmentPriorityFee.atomicUnits) !== 0n) {
+    throw invalid(
+      'SDK_LOCAL_PRIORITY_FEE_NOT_ZERO',
+      `assignment_priority_fee must be 0 (got ${req.amounts.assignmentPriorityFee.atomicUnits}); the chain rejects any other value`,
+    );
+  }
+  // If profile pricing was given, also catch "below the profile minimum" and "order_value +
+  // tx_fee_reserve > max_fee" locally - both are rejections that only happen on chain after
+  // nexus has accepted the order (node TaskOrderCosts and "order_value is below the profile
+  // minimum"). The max_fee bound applies even when the profile sets no minimum.
+  if (pricing !== undefined) {
     const orderValue = workerMax + (workerMax * pricing.verifyRatioBps) / 10_000n;
     if (orderValue < pricing.minOrderValue) {
       throw invalid(

@@ -39,7 +39,8 @@ All global options go **before the subcommand**. Priority: `flag` > environment 
 | - | `TRUEOPEN_ALLOW_INSECURE_HTTP` | off | `1` allows plaintext `http://` / `grpc://` nexus endpoints; localnet only, logs a warning per endpoint |
 | `--chain-id <id>` | `TRUEOPEN_CHAIN_ID` | - | chain ID; required for any command that signs |
 | `--prefix <p>` | `TRUEOPEN_ADDR_PREFIX` | `trueopen` | bech32 address prefix |
-| `--gas-price <p>` | `TRUEOPEN_GAS_PRICE` | `0.025utrueopen` | gas price (only used for on-chain writes) |
+| `--gas-price <p>` | `TRUEOPEN_GAS_PRICE` | `0.025` + chain denom | gas price amount (only used for on-chain writes). The denom is the chain's `business_denom`, the only fee denom it accepts; a different denom is refused |
+| `--fee-denom <denom>` | `TRUEOPEN_FEE_DENOM` | - | optional check on the order fee denom. The chain's `business_denom` is always used; a different value is refused before signing |
 | `--key-file <path>` | - | - | path to the mnemonic file |
 | `--json` | - | off | **only affects error output format** (see below) |
 | `--verbose` | - | off | also prints the stack trace on error |
@@ -137,8 +138,8 @@ Commands that need no key: `builders`, `session get`, `task status`.
 | `task status <s> <t>` | | v | | | v | none |
 | `task watch <s> <t>` | v | v | | v | v | none |
 | `output ref <s> <t>` | v | v | | v | v | none |
-| `output get <s> <t> <task-hash> <output-hash>` | v | v | | v | v | none |
-| `output stream <s> <t> <task-hash> <worker-pubkey>` | v | v | | v | v | none |
+| `output get <s> <t> [task-hash] [output-hash]` | v | v | | v | v | none |
+| `output stream <s> <t> [task-hash] [worker-pubkey]` | v | v | | v | v | none |
 | `challenge prepare <s> <t> <kind>` | v | v | | v | v | none |
 
 [^1]: `order submit` itself does not write to the chain; it only hands a signed order to nexus.
@@ -312,19 +313,20 @@ Fetches a retrieval credential and its commitment.
 | `--access-level <l>` | `package` \| `sealed_key` (default `sealed_key`) |
 | `--usage <u>` | a usage tag |
 
-### `trueopen output get <session> <task> <task-hash> <output-hash>`
+### `trueopen output get <session> <task> [task-hash] [output-hash]`
 
 Fetches the full output package over the task data plane: `GetTaskDataMetadata`
 fetches `size_bytes` / `chunk_lengths` / `output_leaf_count` -> `FetchTaskData` fetches the bytes
--> re-chunks per `chunk_lengths` -> computes the MMR root under `TRUEOPEN_OUTPUT_MMR_V1` and
-compares it to `<output-hash>`. Outputs
-`{endpoint, builderAddress, sizeBytes, mediaType, outputHash, chunkCount, text}`.
+in ranges of at most 8 MiB (nexus's default max range) -> re-chunks per `chunk_lengths` ->
+computes the MMR root under `TRUEOPEN_OUTPUT_MMR_V1` and compares it to the output hash. Outputs
+`{endpoint, builderAddress, taskHash, sizeBytes, mediaType, outputHash, chunkCount, text}`.
 
-`<task-hash>` is the on-chain `accepted_task_hash`, and `<output-hash>` is the on-chain
-`InferReceipt.output_hash` (an MMR root). The latter is both the verification
-target and `TaskDataObjectRefV1.content_hash` -- retrieval is content-addressed, and
-without it the object cannot even be located. Both values only exist on-chain; the CLI never
-guesses them.
+The trust anchors come from chain, so nothing needs to be pasted in: the accepted `task_hash`
+from `task/{task_id}`, and the output hash, size and leaf count from the accepted
+`task/{task_id}/infer_receipt`. The metadata must match the receipt. The optional positional
+arguments override the two hashes. Until the receipt is on chain the command fails with the
+retriable `OUTPUT_TRUST_ANCHOR_PENDING`; run it again later. A size-0 output is not fetched at all.
+Each request expires at the latest height + 10 blocks, inside nexus's 20-block window.
 
 **`--auto` is required**: nexus compares the `builder_operator_address` in the request against
 its own configuration byte-for-byte, and a manually given `--nexus-url` has no on-chain
@@ -333,11 +335,11 @@ produces `CLI_OUTPUT_NEEDS_AUTO`). It queries candidate endpoints one by one unt
 the object only exists on the Task Builder(s) that received that order.
 
 ```bash
-trueopen output get 845ae6e6...bf8a 22284f6b...62a7 <task-hash> <output-hash> \
+trueopen output get 845ae6e6...bf8a 22284f6b...62a7 \
   --key-file /tmp/trueopen-key.txt --rest-url ... --chain-id ... --auto --json
 ```
 
-### `trueopen output stream <session> <task> <task-hash> <worker-pubkey> [--no-ack]`
+### `trueopen output stream <session> <task> [task-hash] [worker-pubkey] [--no-ack]`
 
 Streams output via subscription, verifying each frame locally as it
 arrives: the locally computed root over the first `seq+1` leaves must equal the frame's
@@ -346,24 +348,14 @@ arrives: the locally computed root over the first `seq+1` leaves must equal the 
 the current endpoint and resumes from the local checkpoint against the next Builder; duplicate
 frames are re-verified and deduplicated, and frames with a sequence gap are not delivered. A
 single endpoint switches after 20 seconds idle, up to three rotations. Outputs
-`{frameCount, frames, text}`.
+`{frameCount, frames, text, finishReason}`.
 
-`<worker-pubkey>` is the selected Worker's service public key for this Task (33-byte compressed,
-hex). It must be supplied by the caller; there is no switch to skip verification -- accepting
-output without verifying it discards all of the streamed-output guarantees.
-
-How to obtain it (both steps are on-chain; usable as soon as `winner_confirm` lands, **no need
-to wait for `InferReceipt`**):
-
-```bash
-# 1) get winner_worker
-curl -s "$REST/TrueOpen/task/v1/task/$TASK_ID" | jq -r .task.active.assignment.winner_worker
-# 2) get its service public key (the Worker's participant type is CORTEX)
-curl -s "$REST/TrueOpen/hub/v1/current_service_key/PARTICIPANT_TYPE_CORTEX/$WINNER" \
-  | jq -r .binding.service_pubkey
-```
-
-In code this corresponds to `hub.getCurrentServiceKey(PARTICIPANT_TYPE.CORTEX, winnerWorker)`.
+The frames are verified against the winner Worker's current service key and the accepted
+`task_hash`, both read from chain as soon as `winner_confirm` lands (**no need to wait for
+`InferReceipt`**): `task/{task_id}` gives `winner_worker`, and
+`current_service_key/PARTICIPANT_TYPE_CORTEX/{winner}` gives its key, which must be `ACTIVE`.
+The optional positional arguments override them. There is no switch to skip verification.
+In code this is `client.resolveOutputTrustAnchors(taskId, { withReceipt: false })`.
 
 `--no-ack` turns off reporting local delivery progress after receiving (`AckOutput` is only local
 progress; it plays no part in settlement, retention, or accountability).
@@ -402,11 +394,7 @@ Since `TaskOrderV2`/`TaskOrderV3`, the fields have changed materially:
   "outputBudgetBucket": 1,
   "maxOutputTokens": 128,
   "maxOutputDurationMs": 60000,
-  "inferInputUnitPriceBid": "2",
-  "inferOutputUnitPriceBid": "3",
-  "verifyUnitPriceBid": "4",
-  "inferFeeCap": "600",
-  "verifyFeeCap": "300",
+  "priceBid": "100000",
   "maxFee": "1000",
   "assignmentPriorityFee": "0",
   "txFeeReserve": "0",
@@ -418,13 +406,21 @@ Since `TaskOrderV2`/`TaskOrderV3`, the fields have changed materially:
 
 | Field | Values |
 |---|---|
-| `taskType` | `TEXT_GENERATION` \| `CHAT` \| `EMBEDDING` \| `CLASSIFICATION` \| `IMAGE_GENERATION` \| `MULTIMODAL` |
+| `taskType` | `TEXT_GENERATION` \| `CHAT` \| `EMBEDDING` \| `CLASSIFICATION` \| `IMAGE_GENERATION` \| `MULTIMODAL` (the chain currently accepts only `TEXT_GENERATION` and `CHAT`) |
 | `latencyClass` | `ECONOMY` \| `STANDARD` \| `FAST` \| `EXPRESS` |
 | `outputBudgetBucket` | must be non-zero |
 | `maxOutputTokens` / `maxOutputDurationMs` | required, positive integers |
 | `earliestSubmitHeight` / `orderExpireHeight` | must be non-zero, and the former must be less than the latter |
 
-Fee fields that are not given are treated as `"0"`.
+| `priceBid` | price per million output tokens, must be positive; `floor(maxOutputTokens x priceBid / 1e6)` must be at least 1 |
+| `maxFee` | must cover `order_value + txFeeReserve`, where `order_value` includes the profile's verify ratio |
+| `assignmentPriorityFee` | must be `"0"` |
+
+**Every field above is required, and no other field is accepted.** Each one goes into
+`task_hash`, so the CLI never fills in a default; a missing field, an unknown enum value, or an
+unknown key (for example a fee field from an older order format) is `CLI_ORDER_FILE_INVALID`.
+Before signing, `order submit` also reads the model profile's pricing and refuses an order the
+chain would reject (`SDK_LOCAL_ORDER_VALUE_BELOW_PROFILE_MIN`, `SDK_LOCAL_MAX_FEE_TOO_LOW`).
 
 `maxOutputTokens` / `maxOutputDurationMs` are **required** (missing values raise an error rather
 than falling back to a default): both feed into `GenerationParamsV1` -> `task_hash`, so they are
@@ -469,11 +465,7 @@ cat > /tmp/order.json <<'JSON'
   "outputBudgetBucket": 1,
   "maxOutputTokens": 128,
   "maxOutputDurationMs": 60000,
-  "inferInputUnitPriceBid": "2",
-  "inferOutputUnitPriceBid": "3",
-  "verifyUnitPriceBid": "4",
-  "inferFeeCap": "600",
-  "verifyFeeCap": "300",
+  "priceBid": "100000",
   "maxFee": "1000",
   "assignmentPriorityFee": "0",
   "txFeeReserve": "0",

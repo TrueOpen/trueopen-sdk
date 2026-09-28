@@ -78,6 +78,8 @@ const hub = {
   getParameterBucket: async (kind: string): Promise<ParameterBucketView> => ({
     bucketKind: kind, bucketKey: 'default', version: 1n, currentVersion: 1n, effectiveHeight: 0n,
   }),
+  getBusinessDenom: async (): Promise<string> => 'utrueopen',
+  getProfile: async () => ({ pricing: { minOrderValue: 1n, verifyRatioBps: 0n, initialOutputPrice: 0n } }),
   getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => ({
     participantType: 'PARTICIPANT_TYPE_BUILDER', participantId: id, descriptorVersion: 2n,
     endpoints: [{ endpointKind: 'SERVICE_ENDPOINT_KIND_NEXUS_GRPC', uri: `grpc://${id}:8080`, protocolVersion: 'v1' }],

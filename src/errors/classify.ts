@@ -149,18 +149,28 @@ export function classifyNexusError(err: unknown): unknown {
   });
 }
 
-/** CosmJS BroadcastTxError, matched by shape so a second copy of @cosmjs/stargate still matches. */
+/** CosmJS BroadcastTxError, matched by shape so a second copy of @cosmjs/stargate still matches (no instanceof). */
 interface BroadcastTxErrorLike {
   readonly code: number;
   readonly codespace: string;
   readonly log: string | undefined;
 }
 
+/**
+ * Matched on shape alone, deliberately.
+ *
+ * CosmJS never assigns `this.name`, so the only name available is `constructor.name` -- which a
+ * bundler renames whenever it minifies class names (terser and esbuild both do by default). A
+ * name test would therefore hold in this repo and quietly stop holding in a consumer's build,
+ * taking CHAIN_TX_REJECTED and the retriable sequence-mismatch with it.
+ *
+ * The shape is specific enough to stand on its own: `codespace` is a Cosmos concept, and the
+ * only call site wraps a single signAndBroadcastSync, so nothing else can reach it.
+ */
 function isBroadcastTxError(e: unknown): e is Error & BroadcastTxErrorLike {
   if (!(e instanceof Error)) return false;
   const o = e as unknown as Record<string, unknown>;
-  return (e.name === 'BroadcastTxError' || e.constructor?.name === 'BroadcastTxError') &&
-    typeof o['code'] === 'number' && typeof o['codespace'] === 'string';
+  return typeof o['code'] === 'number' && typeof o['codespace'] === 'string';
 }
 
 /**

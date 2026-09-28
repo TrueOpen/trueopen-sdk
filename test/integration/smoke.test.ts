@@ -4,7 +4,7 @@ import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest as GenOpenTaskRequest,
-  SDKRequestEnvelopeV1 as GenSDKEnvelope,
+  SDKRequestEnvelopeV2 as GenSDKEnvelope,
   PrepareChallengeRequest,
   GetTaskEventsRequest,
   SubscribeOutputRequest,

@@ -6,7 +6,7 @@ import {
   IngressAPI,
   OpenTaskHeaderSchema,
   OpenTaskRequestSchema,
-  SDKRequestEnvelopeV1Schema,
+  SDKRequestEnvelopeV2Schema,
   GetTaskStatusRequestSchema,
   PrepareChallengeRequestSchema,
   GetTaskEventsRequestSchema,
@@ -540,7 +540,7 @@ export class IngressClient {
   }
 
   private envelopeMsg(e: SignedSdkRequestEnvelope) {
-    return create(SDKRequestEnvelopeV1Schema, {
+    return create(SDKRequestEnvelopeV2Schema, {
       requestDomain: e.requestDomain,
       chainId: e.chainId,
       method: e.method,

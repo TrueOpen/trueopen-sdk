@@ -1,42 +1,17 @@
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { sha256 } from '../codec/hash';
 import { TrueOpenError } from '../errors/errors';
-
-/**
- * Cosmos-style secp256k1 signer: sha256 the message, then ECDSA-sign it,
- * returning 64-byte r‖s (low-S, RFC6979-deterministic). Equivalent to
- * priv.Sign(message) on-chain.
- */
-export type CosmosSecp256k1Signer = (message: Uint8Array) => Uint8Array | Promise<Uint8Array>;
-
-/**
- * Builds a signer from a raw private key.
- * For tests/examples only; production should inject a wallet/HSM-backed
- * signer instead, so the SDK never holds the private key directly.
- */
-export function privKeySecp256k1Signer(privKey: Uint8Array): CosmosSecp256k1Signer {
-  return (message) => secp256k1.sign(sha256(message), privKey).toCompactRawBytes();
-}
 
 /** 33-byte compressed pubkey (matches on-chain secp256k1.PubKey.Bytes()). */
 export function secp256k1PublicKey(privKey: Uint8Array): Uint8Array {
   return secp256k1.getPublicKey(privKey, true);
 }
 
-/** Verifies a Cosmos-style signature (sha256 the message first). sig may be 64 or 65 bytes. */
-export function verifyCosmosSecp256k1(message: Uint8Array, sig: Uint8Array, pubKey: Uint8Array): boolean {
-  const raw = sig.length === 65 ? sig.subarray(0, 64) : sig;
-  return secp256k1.verify(raw, sha256(message), pubKey);
-}
-
 /**
  * A signer that ECDSA-signs an **already-derived 32-byte digest** directly
  * (no internal sha256).
  *
- * The difference from CosmosSecp256k1Signer is critical: the latter sha256s
- * its input before signing, so using it to sign task_hash would produce a
- * signature over sha256(task_hash), which will never verify on-chain. node's
- * contract for this "sign SIGN_DIGEST" style goes through
+ * It never hashes its input again: signing sha256(digest) instead would never
+ * verify. node's contract for this "sign SIGN_DIGEST" style goes through
  * VerifyStrictSecp256k1Digest (x/shared/types/signature.go), whose comment
  * states:
  *   "verifies ECDSA directly over an already-derived Hash32. Cosmos SDK's

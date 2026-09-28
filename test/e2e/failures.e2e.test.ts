@@ -10,7 +10,6 @@ import { TASK_DATA_OBJECT_KIND } from '../../src/transport/task-data-signbytes';
 import type { OpenTaskInput } from '../../src/transport/ingress-client';
 import { resolveTaskOrderContext, buildTaskOrder } from '../../src/order/task-order-input';
 import { buildOpenTaskRequest } from '../../src/order/build-open-task';
-import { privKeySecp256k1Signer } from '../../src/signer/secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { startWorld, acceptOnChain, drawWinner, landReceipt, outputText, STREAM, REFERENCE_STREAM } from './support/harness';
 import type { World } from './support/harness';
@@ -321,7 +320,6 @@ describe('e2e: the fake nexus checks are not vacuous', () => {
       order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
       requestNonce: new Uint8Array(32).fill(7), idempotencyKey: 'k',
       wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
-      signer: privKeySecp256k1Signer(w.USER.privKey),
     });
     return built.input;
   }
@@ -334,7 +332,6 @@ describe('e2e: the fake nexus checks are not vacuous', () => {
   const tamper: [string, (i: OpenTaskInput) => OpenTaskInput, string][] = [
     ['a header field outside the order (media type)', (i) => ({ ...i, inputMediaType: 'text/plain' }), 'body_digest mismatch'],
     ['the payload bytes', (i) => ({ ...i, payload: Uint8Array.from(i.payload, (b, n) => (n === 0 ? b ^ 1 : b)) }), 'NEXUS_DATA_HASH_MISMATCH'],
-    ['the outer order signature', (i) => ({ ...i, signature: Uint8Array.from(i.signature, (b, n) => (n === 5 ? b ^ 1 : b)) }), 'body_digest mismatch'],
     ['the envelope signature', (i) => ({ ...i, requestEnvelope: { ...i.requestEnvelope, signature: Uint8Array.from(i.requestEnvelope.signature, (b, n) => (n === 5 ? b ^ 1 : b)) } }), 'envelope signature'],
   ];
   for (const [what, change, want] of tamper) {

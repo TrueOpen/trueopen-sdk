@@ -1,3 +1,5 @@
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { sha256 } from '../../src/codec/hash';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { describe, it, expect } from 'vitest';
 import { bech32 } from '@scure/base';
@@ -21,9 +23,7 @@ import type { TaskOrderV3, AmountV1 } from '../../src/order/task-order';
 import { taskOrderHash } from '../../src/order/task-order';
 import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import {
-  privKeySecp256k1Signer,
   secp256k1PublicKey,
-  verifyCosmosSecp256k1,
 } from '../../src/signer/secp256k1';
 import {
   privKeyEip712Signer,
@@ -38,7 +38,6 @@ const signer = privKeyEip712Signer(PRIV);
 const wallet = privateKeyTypedDataSigner(PRIV);
 /** The fixture order placed by the PRIV account. */
 const ownOrder = () => ({ ...fixture(), userAddress: ethSecp256k1Address(pub, 'trueopen') });
-const hashingSigner = privKeySecp256k1Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 
 const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fill(byte);
@@ -193,15 +192,14 @@ describe('SignedOrderV2 encoding', () => {
     await expect(signAndEncodeOrder(fixture(), ORDER_EIP712, wallet)).rejects.toMatchObject({ code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH' });
   });
 
-  // Regression guard: the two signing conventions (keccak/EIP-712's 65 bytes vs sha256's 64-byte Cosmos signature)
-  // must never verify against each other. Mixing them up even once shows up on chain as "invalid signature", with no local symptom at all.
-  it('the two signing conventions never verify against each other', async () => {
+  // Regression guard: a signature over sha256(digest) (a hash-then-sign signer, or a double hash)
+  // never verifies as the EIP-712 signature, even with a valid recovery byte.
+  it('a signature over a re-hashed digest never verifies', async () => {
     const digest = taskOrderEip712Digest(fixture(), ORDER_EIP712);
-    const cosmosSig = await hashingSigner(digest);
-    expect(verifyEip712(digest, cosmosSig, ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(false);
-    // Conversely: an EIP-712 65-byte signature does not satisfy the "sha256 first, then verify" convention.
-    const eip712Sig = await signer(digest);
-    expect(verifyCosmosSecp256k1(digest, eip712Sig, pub)).toBe(false);
+    const rehashed = secp256k1.sign(sha256(digest), PRIV);
+    const sig65 = Uint8Array.from([...rehashed.toCompactRawBytes(), 27 + rehashed.recovery!]);
+    expect(verifyEip712(digest, sig65, ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(false);
+    expect(verifyEip712(digest, await signer(digest), ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(true);
   });
 
   it('changing any field of the order changes both the encoded bytes and the task_hash', async () => {

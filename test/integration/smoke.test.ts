@@ -20,7 +20,7 @@ import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBuc
 import { privKeySecp256k1DigestSigner } from '../../src/signer/secp256k1';
 import { deriveTaskId } from '../../src/order/order-signing';
 import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { ethSecp256k1Address, recoverEip712Address } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex } from '../../src/util/bytes';
@@ -36,7 +36,6 @@ const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b988
  */
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-const signer = privKeySecp256k1Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 
 // task_hash signs the address codec bytes into the preimage, so this must be a real decodable bech32 address.
@@ -151,7 +150,7 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     const chainCap: ChainCap = {};
     const ingressCap: IngressCap = {};
     const client = new TrueOpenClient({
-      chainId: 'trueopen-devnet-1', userAddress: USER, signer,
+      chainId: 'trueopen-devnet-1', userAddress: USER,
       chain: fakeChain(chainCap), ingressTransport: fakeTransport(ingressCap),
       wallet: privateKeyTypedDataSigner(PRIV),
       evmChainId: 424242n, feeDenom: 'utrueopen',

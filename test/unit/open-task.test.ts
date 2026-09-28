@@ -9,14 +9,12 @@ import { buildTaskOrder, defaultGenerationParams } from '../../src/order/task-or
 import type { TaskOrderChainContext, TaskOrderRequest } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS, taskOrderHashHex } from '../../src/order/task-order';
 import { decodeSignedOrder } from '../../src/order/signed-order';
-import { orderEnvelopeSigningBytes, deriveTaskId } from '../../src/order/order-signing';
+import { deriveTaskId } from '../../src/order/order-signing';
 import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { openTaskBodyDigest } from '../../src/transport/sdk-request-body';
 import {
-  privKeySecp256k1Signer,
   secp256k1PublicKey,
-  verifyCosmosSecp256k1,
 } from '../../src/signer/secp256k1';
 import {
   ethSecp256k1Address,
@@ -28,7 +26,6 @@ import { sha256 } from '../../src/codec/hash';
 import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-const signer = privKeySecp256k1Signer(PRIV);
 const wallet = privateKeyTypedDataSigner(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
@@ -89,36 +86,47 @@ const base = {
   idempotencyKey: 'idem-1',
   wallet,
   orderEip712: ORDER_EIP712,
-  signer,
 };
 
 describe('buildOpenTaskRequest', () => {
-  it("produces two signatures: the inner one signs the order's EIP-712 digest, the outer one signs hex(SignedOrderV2)", async () => {
+  it('one wallet signs the order and the envelope; there is no outer order signature', async () => {
     const r = await buildOpenTaskRequest(base);
 
-    // Inner: the EIP-712 digest, a 65-byte recoverable signature that recovers back to the same account's public key.
+    // The order: the EIP-712 digest, a 65-byte recoverable signature by the account.
     expect(r.taskHash).toBe(taskOrderHashHex(order));
     const inner = decodeSignedOrder(r.input.orderEnvelope).userSignature;
     expect(inner).toHaveLength(65);
     const digest = taskOrderEip712Digest(order, ORDER_EIP712);
     expect(toHex(recoverEip712PubKey(digest, inner))).toBe(toHex(pub));
-
-    // Outer: per the nexus convention, the 5th field of domainHash is the hex text of the SignedOrderV2 bytes, a 64-byte signature.
-    const outerBytes = orderEnvelopeSigningBytes(
-      order.chainId, USER, SESSION, order.orderSequence, r.orderEnvelopeHex,
-    );
-    expect(verifyCosmosSecp256k1(outerBytes, r.input.signature, pub)).toBe(true);
+    expect(decodeSignedOrder(r.input.orderEnvelope).signatureScheme).toBe('eip712');
     expect(r.orderEnvelopeHex).toBe(toHex(r.input.orderEnvelope));
 
-    // The two signatures must differ -- they sign completely different bytes.
-    expect(toHex(inner)).not.toBe(toHex(r.input.signature));
-    expect(r.input.signature).toHaveLength(64);
+    // No outer signature and no signature scheme on the header input.
+    expect('signature' in r.input).toBe(false);
+    expect('signatureScheme' in r.input).toBe(false);
+  });
 
-    // The header's signature_scheme describes the **outer** 64-byte signature, and is still "secp256k1";
-    // the order's inner EIP-712 signature is "eip712". nexus's validateOpenTaskHeader strictly checks the former,
-    // and it also feeds into the 7th field of openTaskBodyDigest -- mixing the two up breaks both checks at once.
-    expect(r.input.signatureScheme).toBe('secp256k1');
-    expect(decodeSignedOrder(r.input.orderEnvelope).signatureScheme).toBe('eip712');
+  it('the header sends signature and signature_scheme empty', async () => {
+    const seen = { frames: [] as OpenTaskRequest[] };
+    const transport = createRouterTransport(({ service }) => {
+      service(IngressAPI, {
+        async openTask(reqs: AsyncIterable<OpenTaskRequest>) {
+          for await (const f of reqs) seen.frames.push(f);
+          return { taskId: TASK_ID, accepted: true, reason: '', sessionId: SESSION };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+    await new IngressClient(transport).openTask((await buildOpenTaskRequest(base)).input);
+    const h = seen.frames[0]?.frame.value as { signature: Uint8Array; signatureScheme: string; requestEnvelope?: { sessionGrant?: unknown } };
+    expect(h.signature).toHaveLength(0);
+    expect(h.signatureScheme).toBe('');
+    expect(h.requestEnvelope?.sessionGrant).toBeUndefined();
+  });
+
+  it('refuses a task_id not derived from the order, and a session other than the order\'s', async () => {
+    await expect(buildOpenTaskRequest({ ...base, taskId: '11'.repeat(32) })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_ID_NOT_DERIVED' });
+    await expect(buildOpenTaskRequest({ ...base, sessionId: hexOf(0x13) })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH' });
   });
 
   it('request envelope: method/endpoint are correct, body_digest can be recomputed field by field, and the signature verifies', async () => {

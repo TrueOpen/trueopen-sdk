@@ -18,7 +18,7 @@ import { TrueOpenError } from '../errors/errors';
  *      only ever uses METADATA and FETCH.
  *   2. outer signature -- **routed by requester_kind, never sniffed by
  *      length**:
- *        USER            EIP-712 "TrueOpen Task Data Request" v1, exactly 65 bytes R‖S‖V
+ *        USER            EIP-712 "TrueOpen Task Data Request" v2, exactly 65 bytes R‖S‖V
  *        CORTEX_SERVICE  the H_FIELDS_V1 digest of TRUEOPEN_TASK_DATA_REQUEST_V1, exactly 64 bytes
  *      USER must also carry service_authorization_nonce = 0.
  *
@@ -45,9 +45,12 @@ export const TASK_DATA_BODY_DOMAIN = {
 /** The outer signature domain for the CORTEX_SERVICE branch; the USER branch doesn't use it (it uses EIP-712 instead). */
 export const TASK_DATA_REQUEST_DOMAIN = 'TRUEOPEN_TASK_DATA_REQUEST_V1';
 
-/** EIP-712 domain for the USER branch; the values are frozen by account_signing_v1.json. */
+/**
+ * EIP-712 domain for the USER branch; the values are frozen by account_signing_v1.json. Version 2
+ * adds sessionGrantHash; a version 1 signature is no longer accepted.
+ */
 export const TASK_DATA_EIP712_DOMAIN_NAME = 'TrueOpen Task Data Request';
-export const TASK_DATA_EIP712_DOMAIN_VERSION = '1';
+export const TASK_DATA_EIP712_DOMAIN_VERSION = '2';
 
 /** rpc_method must be byte-for-byte equal to the fully qualified name of the actual call, not a bare method name. */
 export const TASK_DATA_RPC_METHOD = {
@@ -260,16 +263,23 @@ export const TASK_DATA_EIP712_TYPES: Eip712Types = {
     { name: 'serviceAuthorizationNonce', type: 'uint64' },
     { name: 'requestNonce', type: 'bytes32' },
     { name: 'expiryHeight', type: 'uint64' },
+    { name: 'sessionGrantHash', type: 'bytes32' },
   ],
 };
 
 /**
  * The USER branch as EIP-712 typed data, for a TypedDataSigner (a wallet signs this). evmChainId
  * is the numeric chain ID in the EIP-712 domain, a different thing from the cosmos chain-ID
- * string in fields.chainId.
+ * string in fields.chainId. sessionGrantHash is 32 zero bytes when the wallet signs directly,
+ * and hashStruct(SessionGrant) when a session key signs under that grant.
  */
-export function taskDataRequestTypedData(f: TaskDataRequestAuthFields, evmChainId: bigint | number | string): TypedData {
+export function taskDataRequestTypedData(
+  f: TaskDataRequestAuthFields,
+  evmChainId: bigint | number | string,
+  sessionGrantHash: Uint8Array = new Uint8Array(HASH32),
+): TypedData {
   validateAuthFields(f);
+  if (sessionGrantHash.length !== HASH32) throw malformed('sessionGrantHash must be 32 bytes');
   const message: Eip712Struct = {
     schemaVersion: f.schemaVersion,
     chainId: f.chainId,
@@ -281,6 +291,7 @@ export function taskDataRequestTypedData(f: TaskDataRequestAuthFields, evmChainI
     serviceAuthorizationNonce: f.serviceAuthorizationNonce,
     requestNonce: f.requestNonce,
     expiryHeight: f.expiryHeight,
+    sessionGrantHash,
   };
   return {
     types: TASK_DATA_EIP712_TYPES,
@@ -298,8 +309,9 @@ export function taskDataRequestTypedData(f: TaskDataRequestAuthFields, evmChainI
 export function taskDataRequestEip712Digest(
   f: TaskDataRequestAuthFields,
   evmChainId: bigint | number | string,
+  sessionGrantHash?: Uint8Array,
 ): Uint8Array {
-  return typedDataDigest(taskDataRequestTypedData(f, evmChainId));
+  return typedDataDigest(taskDataRequestTypedData(f, evmChainId, sessionGrantHash));
 }
 
 /**

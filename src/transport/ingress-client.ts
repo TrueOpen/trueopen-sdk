@@ -20,6 +20,7 @@ import {
 } from '../gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest,
+  TaskDataRequestAuthV1,
   TaskDataObjectMetadataV1,
   PrepareChallengeResponse,
   GetTaskEventsResponse,
@@ -31,8 +32,8 @@ import type { TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs } from '../signer/typed-data-signer';
 import { canonicalOperatorAddressBytes } from '../codec/address';
 import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD, SESSION_SDK_METHODS } from './sdk-request-envelope';
-import { sessionGrantMessage } from '../session/session-grant';
-import type { SessionAuthority } from '../session/session-grant';
+import { sessionGrantMessage, SESSION_TASK_DATA_METHODS } from '../session/session-grant';
+import type { SessionAuthority, SignedSessionGrant } from '../session/session-grant';
 import {
   getTaskEventsBodyDigest,
   prepareChallengeBodyDigest,
@@ -48,6 +49,7 @@ import {
   TASK_DATA_RPC_METHOD,
   TASK_DATA_REQUESTER_KIND,
   EVIDENCE_PRODUCER_KIND,
+  TASK_DATA_OBJECT_KIND,
 } from './task-data-signbytes';
 import type { TaskDataObjectRef, ByteRange } from './task-data-signbytes';
 
@@ -62,14 +64,13 @@ export const DEFAULT_OPEN_TASK_CHUNK_BYTES = 64 * 1024;
 export interface OpenTaskInput {
   /** Protobuf bytes of the frozen SignedOrderV2. */
   readonly orderEnvelope: Uint8Array;
+  /** "nexus://sha256/" || lowercase_hex(input_hash). Not signed, but checked by the Builder. */
   readonly payloadRef: string;
-  /** The outer user order signature, 64 raw bytes. */
-  readonly signature: Uint8Array;
+  /** Wallet-signed by the order user; never carries a session grant. */
   readonly requestEnvelope: SignedSdkRequestEnvelope;
   readonly sessionId: string;
   readonly orderSequence: bigint;
   readonly userAddress: string;
-  readonly signatureScheme: string;
   /** Canonical lowercase 64-hex = hex(sha256(payload)). */
   readonly inputHash: string;
   readonly inputMediaType: string;
@@ -169,14 +170,17 @@ export class IngressClient {
    * non-empty and within the server's chunk size cap, 256 KiB by default -- see nexus
    * internal/config chunk_size_bytes).
    *
-   * Key differences from the deprecated SubmitOrder:
+   * Key points:
    *  - order_envelope must be the frozen SignedOrderV2 protobuf bytes (no longer canonical JSON);
    *  - the input body goes over chunk frames and is not part of body_digest;
-   *  - request_envelope's expiry **must be a block height** (nexus taskdata.go:221-224
-   *    requires 0 < expiry < 1e12; anything above that is treated as a unix millisecond
-   *    timestamp and rejected). Callers must pass expiryHeight.
+   *  - request_envelope's expiry **must be a block height** (0 < expiry < 1e12; anything above
+   *    that is Unix milliseconds, which OpenTask does not accept);
+   *  - the envelope is wallet-signed and never carries a session grant.
    */
   async openTask(req: OpenTaskInput): Promise<OpenTaskAck> {
+    if (req.requestEnvelope.sessionGrant !== undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_MALFORMED', 'OpenTask must be signed by the wallet, never under a session grant');
+    }
     const chunkSize = req.chunkSizeBytes ?? DEFAULT_OPEN_TASK_CHUNK_BYTES;
     if (chunkSize <= 0) {
       throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_CHUNK_SIZE_INVALID', 'chunkSizeBytes must be positive');
@@ -187,12 +191,11 @@ export class IngressClient {
     const header = create(OpenTaskHeaderSchema, {
       orderEnvelope: req.orderEnvelope,
       payloadRef: req.payloadRef,
-      signature: req.signature,
+      // signature and signature_scheme (deprecated) stay empty: there is no outer order signature.
       requestEnvelope: envelopeMessage(req.requestEnvelope),
       sessionId: req.sessionId,
       orderSequence: req.orderSequence,
       userAddress: req.userAddress,
-      signatureScheme: req.signatureScheme,
       inputSizeBytes: BigInt(req.payload.length),
       inputHash: req.inputHash,
       inputMediaType: req.inputMediaType,
@@ -317,18 +320,27 @@ export class IngressClient {
     expiresAtHeight: bigint;
   }): Promise<TaskDataObjectMetadataV1 | undefined> {
     const auth = this.requireAuth('GetTaskDataMetadata');
-    const requestAuth = await this.signTaskDataRequest(auth, {
-      builderAddress: p.builderAddress,
-      expiresAtHeight: p.expiresAtHeight,
-      rpcMethod: TASK_DATA_RPC_METHOD.GetTaskDataMetadata,
-      bodyDigest: taskDataMetadataBodyDigest(p.objectRef),
-    });
-    const res = await this.client.getTaskDataMetadata(
-      create(GetTaskDataMetadataRequestSchema, {
-        objectRef: toProtoObjectRef(p.objectRef),
-        requestAuth,
-      }),
-    );
+    const sign = (): Promise<SignedTaskDataAuth> =>
+      this.signTaskDataRequest(auth, {
+        builderAddress: p.builderAddress,
+        expiresAtHeight: p.expiresAtHeight,
+        rpcMethod: TASK_DATA_RPC_METHOD.GetTaskDataMetadata,
+        bodyDigest: taskDataMetadataBodyDigest(p.objectRef),
+        objectKind: p.objectRef.objectKind,
+      });
+    const send = (signed: SignedTaskDataAuth) =>
+      this.client.getTaskDataMetadata(
+        create(GetTaskDataMetadataRequestSchema, { objectRef: toProtoObjectRef(p.objectRef), requestAuth: signed.requestAuth }),
+      );
+    const first = await sign();
+    let res;
+    try {
+      res = await send(first);
+    } catch (e) {
+      if (first.grant === undefined || !isSessionGrantExpired(e)) throw e;
+      auth.session?.expired(first.grant);
+      res = await send(await sign());
+    }
     return res.metadata;
   }
 
@@ -371,21 +383,25 @@ export class IngressClient {
     range?: ByteRange;
   }): Promise<{ bytes: Uint8Array; totalSizeBytes: bigint; servedRange: ByteRange; mediaType: string }> {
     const auth = this.requireAuth('FetchTaskData');
-    const requestAuth = await this.signTaskDataRequest(auth, {
-      builderAddress: p.builderAddress,
-      expiresAtHeight: p.expiresAtHeight,
-      rpcMethod: TASK_DATA_RPC_METHOD.FetchTaskData,
-      bodyDigest: taskDataFetchBodyDigest(p.objectRef, p.range),
-    });
-    const stream = this.client.fetchTaskData(
-      create(FetchTaskDataRequestSchema, {
-        objectRef: toProtoObjectRef(p.objectRef),
-        ...(p.range !== undefined
-          ? { range: create(ByteRangeV1Schema, { offset: p.range.offset, length: p.range.length }) }
-          : {}),
-        requestAuth,
-      }),
-    );
+    const sign = (): Promise<SignedTaskDataAuth> =>
+      this.signTaskDataRequest(auth, {
+        builderAddress: p.builderAddress,
+        expiresAtHeight: p.expiresAtHeight,
+        rpcMethod: TASK_DATA_RPC_METHOD.FetchTaskData,
+        bodyDigest: taskDataFetchBodyDigest(p.objectRef, p.range),
+        objectKind: p.objectRef.objectKind,
+      });
+    const open = (signed: SignedTaskDataAuth) =>
+      this.client.fetchTaskData(
+        create(FetchTaskDataRequestSchema, {
+          objectRef: toProtoObjectRef(p.objectRef),
+          ...(p.range !== undefined
+            ? { range: create(ByteRangeV1Schema, { offset: p.range.offset, length: p.range.length }) }
+            : {}),
+          requestAuth: signed.requestAuth,
+        }),
+      );
+    const stream = retryExpiredGrantOnce(auth, sign, open);
 
     // The peer answered with bytes other than the ones asked for: do not trust it again.
     const bad = (message: string): TrueOpenError =>
@@ -481,8 +497,9 @@ export class IngressClient {
       expiresAtHeight: bigint;
       rpcMethod: string;
       bodyDigest: Uint8Array;
+      objectKind: number;
     },
-  ): Promise<ReturnType<typeof create<typeof TaskDataRequestAuthV1Schema>>> {
+  ): Promise<SignedTaskDataAuth> {
     const fields = {
       schemaVersion: TASK_DATA_AUTH_SCHEMA_VERSION,
       chainId: auth.chainId,
@@ -495,13 +512,20 @@ export class IngressClient {
       requestNonce: nonce32(auth),
       expiryHeight: p.expiresAtHeight,
     };
-    const data = taskDataRequestTypedData(fields, await resolveEvmChainId(auth));
-    const signature = await signTypedDataAs(
-      auth.wallet,
-      data,
-      canonicalOperatorAddressBytes('requester_address', auth.userAddress),
-    );
-    return create(TaskDataRequestAuthV1Schema, {
+    // A session key may read only an OUTPUT object; everything else is wallet-signed.
+    const session =
+      auth.session !== undefined &&
+      SESSION_TASK_DATA_METHODS.includes(p.rpcMethod) &&
+      p.objectKind === TASK_DATA_OBJECT_KIND.OUTPUT
+        ? await auth.session.current()
+        : undefined;
+    const evmChainId = await resolveEvmChainId(auth);
+    const data = taskDataRequestTypedData(fields, evmChainId, session?.grantHash);
+    const signature =
+      session === undefined
+        ? await signTypedDataAs(auth.wallet, data, canonicalOperatorAddressBytes('requester_address', auth.userAddress))
+        : await signTypedDataAs(session.key, data, session.grant.sessionKey);
+    const requestAuth = create(TaskDataRequestAuthV1Schema, {
       schemaVersion: fields.schemaVersion,
       chainId: fields.chainId,
       builderOperatorAddress: fields.builderOperatorAddress,
@@ -513,7 +537,9 @@ export class IngressClient {
       requestNonce: fields.requestNonce,
       expiryHeight: fields.expiryHeight,
       signature,
+      ...(session !== undefined ? { sessionGrant: sessionGrantMessage(session.grant) } : {}),
     });
+    return session === undefined ? { requestAuth } : { requestAuth, grant: session.grant };
   }
 
   private requireAuth(method: string): IngressAuth {
@@ -561,28 +587,16 @@ export class IngressClient {
   }
 
   /** Same as signedCall for a server stream: retried only when the stream failed before its first message. */
-  private async *signedStream<T>(
+  private signedStream<T>(
     method: string,
     sessionId: string,
     taskId: string,
     bodyDigest: Uint8Array,
     open: (env: SignedSdkRequestEnvelope) => AsyncIterable<T>,
   ): AsyncGenerator<T> {
-    let env = await this.signEnvelope(method, sessionId, taskId, bodyDigest);
-    for (let attempt = 0; ; attempt += 1) {
-      let received = false;
-      try {
-        for await (const msg of open(env)) {
-          received = true;
-          yield msg;
-        }
-        return;
-      } catch (e) {
-        if (received || attempt > 0 || env.sessionGrant === undefined || !isSessionGrantExpired(e)) throw e;
-        this.auth?.session?.expired(env.sessionGrant);
-        env = await this.signEnvelope(method, sessionId, taskId, bodyDigest);
-      }
-    }
+    const env = (): Promise<SignedSdkRequestEnvelope & { readonly grant?: SignedSessionGrant }> =>
+      this.signEnvelope(method, sessionId, taskId, bodyDigest).then((e) => (e.sessionGrant !== undefined ? { ...e, grant: e.sessionGrant } : e));
+    return retryExpiredGrantOnce(this.requireAuth(method), env, open);
   }
 
   private async signEnvelope(
@@ -630,6 +644,38 @@ export function envelopeMessage(e: SignedSdkRequestEnvelope) {
     signature: e.signature,
     ...(e.sessionGrant !== undefined ? { sessionGrant: sessionGrantMessage(e.sessionGrant) } : {}),
   });
+}
+
+/** A signed TaskDataRequestAuthV1, and the grant it carries when a session key signed it. */
+interface SignedTaskDataAuth {
+  readonly requestAuth: TaskDataRequestAuthV1;
+  readonly grant?: SignedSessionGrant;
+}
+
+/**
+ * Opens a server stream; when a session key signed the request and the stream fails with an
+ * expired grant before its first message, renews the grant and opens it once more.
+ */
+async function* retryExpiredGrantOnce<A extends { readonly grant?: SignedSessionGrant }, T>(
+  auth: IngressAuth,
+  sign: () => Promise<A>,
+  open: (signed: A) => AsyncIterable<T>,
+): AsyncGenerator<T> {
+  let signed = await sign();
+  for (let attempt = 0; ; attempt += 1) {
+    let received = false;
+    try {
+      for await (const msg of open(signed)) {
+        received = true;
+        yield msg;
+      }
+      return;
+    } catch (e) {
+      if (received || attempt > 0 || signed.grant === undefined || !isSessionGrantExpired(e)) throw e;
+      auth.session?.expired(signed.grant);
+      signed = await sign();
+    }
+  }
 }
 
 /** The only value currently accepted for TaskDataRequestAuthV1.schema_version. */

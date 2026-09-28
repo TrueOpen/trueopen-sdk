@@ -1,6 +1,5 @@
 import type { Transport } from '@connectrpc/connect';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
-import type { CosmosSecp256k1Signer } from './signer/secp256k1';
 import type { TypedDataSigner } from './signer/typed-data-signer';
 import { IngressClient } from './transport/ingress-client';
 import type { OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
@@ -53,8 +52,6 @@ export interface TrueOpenClientConfig {
    * keplrTypedDataSigner (Keplr).
    */
   readonly wallet: TypedDataSigner;
-  /** The "hash-then-sign" signer for the outer OpenTask order signature. */
-  readonly signer: CosmosSecp256k1Signer;
   readonly chain: ChainClient; // chain read+write (createTrueOpenChainClient)
   readonly ingressTransport: Transport; // nexus IngressAPI Connect transport
   /** Request nonce generator; must return exactly 32 bytes. Defaults to 32 bytes from the platform's secure RNG. */
@@ -459,7 +456,7 @@ export class TrueOpenClient {
    * Place an order through OpenTask, the order-placement entry point.
    *
    * Full flow: read the on-chain context -> assemble the frozen TaskOrderV3 -> sign the order's
-   * inner EIP-712 digest, sign the outer order envelope, then sign the request envelope -> select
+   * EIP-712 digest, then the request envelope (no outer order signature) -> select
    * Task Builders via task_builder_seed -> submit concurrently to all selected endpoints,
    * succeeding as soon as any one is accepted.
    *
@@ -510,7 +507,6 @@ export class TrueOpenClient {
       idempotencyKey: params.idempotencyKey,
       wallet: this.cfg.wallet,
       orderEip712: { evmChainId, feeDenom },
-      signer: this.cfg.signer,
       ...(params.inputMediaType !== undefined ? { inputMediaType: params.inputMediaType } : {}),
       ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),
     });

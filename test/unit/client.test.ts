@@ -17,7 +17,7 @@ import { TrueOpenClient } from '../../src/client';
 import { sha256 } from '../../src/codec/hash';
 import type { ChainClient } from '../../src/transport/chain-client';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { privKeySecp256k1Signer, secp256k1PublicKey } from '../../src/signer/secp256k1';
+import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outputFinSigningDigest } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
@@ -29,7 +29,6 @@ const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b988
 const TASK = 'e4'.repeat(32);
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
-const signer = privKeySecp256k1Signer(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 
 const wallet = privateKeyTypedDataSigner(PRIV);
@@ -142,7 +141,7 @@ function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: un
 
 function makeClient(chainCap = {}, ingressCap = {}): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, signer, evmChainId: 424242n,
+    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, evmChainId: 424242n,
     chain: fakeChain(chainCap), ingressTransport: fakeTransport(ingressCap),
     nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
   });
@@ -171,7 +170,7 @@ function scriptedStreamTransport(
 
 function makeClientWithTransport(transport: Transport): TrueOpenClient {
   return new TrueOpenClient({
-    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, signer, evmChainId: 424242n,
+    chainId: 'trueopen-devnet-1', userAddress: USER, wallet, evmChainId: 424242n,
     chain: fakeChain(), ingressTransport: transport,
     nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
   });
@@ -584,7 +583,7 @@ describe('TrueOpenClient facade', () => {
   it('a wallet that does not hold userAddress is refused before a request is sent', async () => {
     const cap: { ack?: AckOutputRequest } = {};
     const client = new TrueOpenClient({
-      chainId: 'trueopen-devnet-1', userAddress: USER, signer, evmChainId: 424242n,
+      chainId: 'trueopen-devnet-1', userAddress: USER, evmChainId: 424242n,
       wallet: privateKeyTypedDataSigner(fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021')),
       chain: fakeChain(), ingressTransport: scriptedStreamTransport(async function* () {}, cap),
       expiry: () => 1893456000000n,

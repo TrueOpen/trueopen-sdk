@@ -10,7 +10,6 @@ import {
   HubReader,
   resolveBuilderEndpoints,
   connectTrueOpenChainClient,
-  privKeySecp256k1Signer,
   secp256k1PublicKey,
   privateKeyTypedDataSigner,
   ethSecp256k1Address,
@@ -18,7 +17,7 @@ import {
   TRUEOPEN_HD_PATH,
 
 } from '../index';
-import type { ChainClient, CosmosSecp256k1Signer } from '../index';
+import type { ChainClient } from '../index';
 export { TRUEOPEN_HD_PATH };
 import { TrueOpenError } from '../errors/errors';
 import type { CliConfig } from './config';
@@ -26,7 +25,6 @@ import { resolveGasPrice } from './config';
 
 export interface Identity {
   readonly privkey: Uint8Array;
-  readonly signer: CosmosSecp256k1Signer;
   readonly pubKey: Uint8Array;
   readonly address: string;
 }
@@ -34,17 +32,15 @@ export interface Identity {
 export async function deriveIdentity(mnemonic: string, prefix: string): Promise<Identity> {
   const seed = await Bip39.mnemonicToSeed(new EnglishMnemonic(mnemonic));
   const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, stringToPath(TRUEOPEN_HD_PATH));
-  const signer = privKeySecp256k1Signer(privkey);
   const pubKey = secp256k1PublicKey(privkey);
-  return { privkey, signer, pubKey, address: ethSecp256k1Address(pubKey, prefix) };
+  return { privkey, pubKey, address: ethSecp256k1Address(pubKey, prefix) };
 }
 
 /** A throwaway identity (a fixed dummy key), used only to satisfy TrueOpenClient construction for read-only commands; it never signs anything for real. */
 const EPHEMERAL_PRIV = new Uint8Array(32).fill(1);
 function ephemeralIdentity(prefix: string): Identity {
-  const signer = privKeySecp256k1Signer(EPHEMERAL_PRIV);
   const pubKey = secp256k1PublicKey(EPHEMERAL_PRIV);
-  return { privkey: EPHEMERAL_PRIV, signer, pubKey, address: ethSecp256k1Address(pubKey, prefix) };
+  return { privkey: EPHEMERAL_PRIV, pubKey, address: ethSecp256k1Address(pubKey, prefix) };
 }
 
 /** FetchLike: Node's global fetch, structurally compatible with RestChainReader/HubReader. */
@@ -268,7 +264,6 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
     new TrueOpenClient({
       chainId: signing ? cfg.requireChainId() : (cfg.chainId ?? 'trueopen'),
       userAddress: identity.address,
-      signer: identity.signer,
       chain,
       ingressTransport: cfg.nexusUrl === serviceEndpoint
         ? explicitNexusTransport(serviceEndpoint, pinFor(serviceEndpoint))

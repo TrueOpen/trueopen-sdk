@@ -10,6 +10,7 @@ import {
 import type { Eip712Types } from '../../src/codec/eip712';
 import { toHex, fromHex } from '../../src/util/bytes';
 import { ORDER_EIP712_TYPES, ORDER_EIP712_DOMAIN_NAME, ORDER_EIP712_DOMAIN_VERSION } from '../../src/order/signed-order';
+import { TASK_DATA_EIP712_TYPES, TASK_DATA_EIP712_DOMAIN_VERSION } from '../../src/transport/task-data-signbytes';
 
 /**
  * Anchor: wire's testdata/v1/shared/account_signing_v1.json, a cross-language vector
@@ -133,47 +134,69 @@ describe('TrueOpen Task Order', () => {
 });
 
 describe('TrueOpen Task Data Request', () => {
-  const TYPES: Eip712Types = {
-    ...SHORT_DOMAIN,
-    TaskDataRequest: [
-      { name: 'schemaVersion', type: 'uint32' },
-      { name: 'chainId', type: 'string' },
-      { name: 'builderOperatorAddress', type: 'string' },
-      { name: 'rpcMethod', type: 'string' },
-      { name: 'bodyDigest', type: 'bytes32' },
-      { name: 'requesterKind', type: 'uint32' },
-      { name: 'requesterAddress', type: 'string' },
-      { name: 'serviceAuthorizationNonce', type: 'uint64' },
-      { name: 'requestNonce', type: 'bytes32' },
-      { name: 'expiryHeight', type: 'uint64' },
-    ],
-  };
-  const m = v.task_data_request.message;
-  const message = {
-    schemaVersion: m.schemaVersion,
-    chainId: m.chainId,
-    builderOperatorAddress: m.builderOperatorAddress,
-    rpcMethod: m.rpcMethod,
-    bodyDigest: fromHex(m.bodyDigest),
-    requesterKind: m.requesterKind,
-    requesterAddress: m.requesterAddress,
-    serviceAuthorizationNonce: m.serviceAuthorizationNonce,
-    requestNonce: fromHex(m.requestNonce),
-    expiryHeight: m.expiryHeight,
-  };
+  const V1_FIELDS = [
+    { name: 'schemaVersion', type: 'uint32' },
+    { name: 'chainId', type: 'string' },
+    { name: 'builderOperatorAddress', type: 'string' },
+    { name: 'rpcMethod', type: 'string' },
+    { name: 'bodyDigest', type: 'bytes32' },
+    { name: 'requesterKind', type: 'uint32' },
+    { name: 'requesterAddress', type: 'string' },
+    { name: 'serviceAuthorizationNonce', type: 'uint64' },
+    { name: 'requestNonce', type: 'bytes32' },
+    { name: 'expiryHeight', type: 'uint64' },
+  ];
+  const messageOf = (m: Record<string, string>) => ({
+    schemaVersion: m['schemaVersion']!,
+    chainId: m['chainId']!,
+    builderOperatorAddress: m['builderOperatorAddress']!,
+    rpcMethod: m['rpcMethod']!,
+    bodyDigest: fromHex(m['bodyDigest']!),
+    requesterKind: m['requesterKind']!,
+    requesterAddress: m['requesterAddress']!,
+    serviceAuthorizationNonce: m['serviceAuthorizationNonce']!,
+    requestNonce: fromHex(m['requestNonce']!),
+    expiryHeight: m['expiryHeight']!,
+    ...(m['sessionGrantHash'] !== undefined ? { sessionGrantHash: fromHex(m['sessionGrantHash']) } : {}),
+  });
 
-  it('encode_type', () =>
-    expect(eip712EncodeType('TaskDataRequest', TYPES)).toBe(v.task_data_request.encode_type));
-  it('type_hash', () =>
-    expect(toHex(eip712TypeHash('TaskDataRequest', TYPES))).toBe(v.task_data_request.type_hash));
-  it('hash_struct', () =>
-    expect(toHex(eip712HashStruct('TaskDataRequest', TYPES, message))).toBe(v.task_data_request.hash_struct));
-  it('signing_digest', () => {
-    const d = v.task_data_request.domain;
-    const sep = eip712DomainSeparator(SHORT_DOMAIN, { name: d.name, version: d.version, chainId: d.chain_id });
-    expect(toHex(eip712SigningDigest(sep, eip712HashStruct('TaskDataRequest', TYPES, message)))).toBe(
-      v.task_data_request.signing_digest,
-    );
+  describe('version 2 (current, with sessionGrantHash)', () => {
+    const TYPES: Eip712Types = { ...SHORT_DOMAIN, TaskDataRequest: [...V1_FIELDS, { name: 'sessionGrantHash', type: 'bytes32' }] };
+    for (const name of ['task_data_request', 'task_data_request_session']) {
+      const t = v[name];
+      it(`${name}: encode_type, type_hash, hash_struct and signing_digest`, () => {
+        expect(eip712EncodeType('TaskDataRequest', TYPES)).toBe(t.encode_type);
+        expect(toHex(eip712TypeHash('TaskDataRequest', TYPES))).toBe(t.type_hash);
+        expect(toHex(eip712HashStruct('TaskDataRequest', TYPES, messageOf(t.message)))).toBe(t.hash_struct);
+        const d = t.domain;
+        const sep = eip712DomainSeparator(SHORT_DOMAIN, { name: d.name, version: d.version, chainId: d.chain_id });
+        expect(toHex(sep)).toBe(d.domain_separator);
+        expect(toHex(eip712SigningDigest(sep, eip712HashStruct('TaskDataRequest', TYPES, messageOf(t.message))))).toBe(t.signing_digest);
+      });
+    }
+    it('the SDK type table matches the version 2 vector', () => {
+      expect(eip712EncodeType('TaskDataRequest', TASK_DATA_EIP712_TYPES)).toBe(v.task_data_request.encode_type);
+      expect(TASK_DATA_EIP712_DOMAIN_VERSION).toBe('2');
+      expect(v.task_data_request.domain.version).toBe('2');
+    });
+  });
+
+  describe('version 1 (obsolete, expect reject)', () => {
+    const TYPES: Eip712Types = { ...SHORT_DOMAIN, TaskDataRequest: V1_FIELDS };
+    const t = v.task_data_request_v1_obsolete;
+    it('is reproduced, and is not what the SDK signs', () => {
+      expect(t.expect).toBe('reject');
+      expect(eip712EncodeType('TaskDataRequest', TYPES)).toBe(t.encode_type);
+      expect(toHex(eip712TypeHash('TaskDataRequest', TYPES))).toBe(t.type_hash);
+      const d = t.domain;
+      const sep = eip712DomainSeparator(SHORT_DOMAIN, { name: d.name, version: d.version, chainId: d.chain_id });
+      expect(toHex(sep)).toBe(d.domain_separator);
+      const hs = eip712HashStruct('TaskDataRequest', TYPES, messageOf(t.message));
+      expect(toHex(hs)).toBe(t.hash_struct);
+      expect(toHex(eip712SigningDigest(sep, hs))).toBe(t.signing_digest);
+      expect(t.signing_digest).not.toBe(v.task_data_request.signing_digest);
+      expect(eip712EncodeType('TaskDataRequest', TASK_DATA_EIP712_TYPES)).not.toBe(t.encode_type);
+    });
   });
 });
 

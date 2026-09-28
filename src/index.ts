@@ -161,10 +161,7 @@ export {
 } from './codec/domain-hash';
 export { canonicalOperatorAddressBytes } from './codec/address';
 export { SIGN_DOMAINS } from './codec/domains';
-export {
-  orderEnvelopeSigningBytes,
-  deriveTaskId,
-} from './order/order-signing';
+export { deriveTaskId } from './order/order-signing';
 
 // ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme) ----
 export {
@@ -208,13 +205,11 @@ export {
 } from './signer/eth-direct-signer';
 
 export {
-  privKeySecp256k1Signer,
   privKeySecp256k1DigestSigner,
   secp256k1PublicKey,
-  verifyCosmosSecp256k1,
   verifySecp256k1Digest,
 } from './signer/secp256k1';
-export type { CosmosSecp256k1Signer, Secp256k1DigestSigner } from './signer/secp256k1';
+export type { Secp256k1DigestSigner } from './signer/secp256k1';
 
 export {
   SDK_REQUEST_DOMAIN,

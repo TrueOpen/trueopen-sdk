@@ -18,6 +18,6 @@ describe('sha256', () => {
 
 describe('SIGN_DOMAINS', () => {
   it('fixed domain separator constants', () => {
-    expect(SIGN_DOMAINS).toEqual({ order: 'TRUEOPEN_ORDER_V1', taskId: 'TRUEOPEN_TASK_ID_V1' });
+    expect(SIGN_DOMAINS).toEqual({ taskId: 'TRUEOPEN_TASK_ID_V1' });
   });
 });

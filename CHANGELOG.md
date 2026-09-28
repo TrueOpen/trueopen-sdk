@@ -5,9 +5,8 @@
 ### Breaking: EIP-712 request signing and session grants (wire v0.4.0)
 
 Requests to Builder Ingress and USER Task data requests are signed as EIP-712 typed data that
-a browser wallet can sign, following wire `ea2f230` (the untagged v0.4.0 revision, see the
-submodule note below). A Builder on the previous rules rejects this SDK, and the other way
-round.
+a browser wallet can sign, following wire v0.4.0 (see the submodule note below). A Builder
+on the previous rules rejects this SDK, and the other way round.
 
 - **Breaking:** `TrueOpenClientConfig.wallet` (a `TypedDataSigner`) signs everything the user
   signs: the order, the request envelopes and the Task data requests. It replaces `signer`,
@@ -115,10 +114,8 @@ round.
 
 ### Changed
 
-- The `third_party/wire` submodule temporarily points at wire commit `ea2f230` (wire PRs #38
-  and #39, merged to wire main): the EIP-712 request signing and session grants intended for
-  wire v0.4.0, which is not tagged yet. It will move to the `v0.4.0` tag once that is published.
-  This revision renames `SDKRequestEnvelopeV1` to `SDKRequestEnvelopeV2` and adds
+- The `third_party/wire` submodule is pinned to wire **v0.4.0** (`586ea8f`): the EIP-712
+  request signing and session grants. This release renames `SDKRequestEnvelopeV1` to `SDKRequestEnvelopeV2` and adds
   `SessionGrantV1`; see the breaking entries above.
 - The examples and the README quick start are rewritten against the current facade:
   `create-session`, `open-task` and `fetch-output` read the EVM chain ID and fee denom from chain,

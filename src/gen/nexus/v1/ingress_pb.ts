@@ -329,14 +329,33 @@ export const BuilderStorageConfirmationV1Schema: GenMessage<BuilderStorageConfir
  * session_key, rpc_method must be GetTaskDataMetadata or FetchTaskData, and the
  * object reference must have object_kind OUTPUT.
  *
- * A USER request is checked in the five steps of SDKRequestEnvelopeV2:
- * format -> NEXUS_INGRESS_MALFORMED; with a grant, an rpc_method or object
- * outside the session-allowed set -> DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED;
- * the grant -> DATA_ACCESS_SESSION_GRANT_INVALID or
- * DATA_ACCESS_SESSION_GRANT_EXPIRED; the request signature, including a wrong
- * derived grant hash, a wrong domain chainId or a version 1 signature ->
- * DATA_ACCESS_INVALID_SIGNATURE; then expiry and replay. A caller without the
- * Task duty is DATA_ACCESS_DENIED.
+ * A USER request is checked in the five steps of SDKRequestEnvelopeV2 and
+ * stops at the first failure:
+ *   1. Format -> NEXUS_INGRESS_MALFORMED.
+ *   2. With a grant, an rpc_method or object outside the session-allowed set ->
+ *      DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED.
+ *   3. The grant -> DATA_ACCESS_SESSION_GRANT_INVALID or
+ *      DATA_ACCESS_SESSION_GRANT_EXPIRED.
+ *   4. The request signature, over the digest the verifier rebuilds with its
+ *      own chain_id and evm_chain_id -> DATA_ACCESS_INVALID_SIGNATURE. The
+ *      chain_id field must also equal the verifier's own chain_id; a mismatch
+ *      is rejected here with DATA_ACCESS_INVALID_SIGNATURE even though it could
+ *      be detected earlier, never as a format error. This covers a wrong
+ *      derived grant hash, a wrong domain chainId, a chainId
+ *      string of another chain and a version 1 signature. Without a grant it
+ *      also covers the account check of SDKRequestEnvelopeV2: requester_address
+ *      must be an existing account holding an eth_secp256k1 public key equal to
+ *      the recovered one. A stored key never changes, so a verifier may cache it
+ *      by address, but a cache miss it cannot fill is a rejection.
+ *   5. In order: builder_operator_address other than this Builder ->
+ *      DATA_ACCESS_DENIED; expiry_height outside
+ *      current_height <= expiry_height <= current_height + max_service_material_expiry_blocks,
+ *      with checked addition -> NEXUS_DATA_EXPIRED, and an unavailable chain
+ *      height is a rejection; replay; then a caller without the Task duty ->
+ *      DATA_ACCESS_DENIED.
+ * NEXUS_DATA_EXPIRED means the request itself expired and must be signed
+ * again; it is not the retention-expired DATA_EXPIRED of a stored object. The
+ * replay key uses the verifier's own chain_id.
  *
  * @generated from message nexus.v1.TaskDataRequestAuthV1
  */
@@ -432,7 +451,8 @@ export const TaskDataRequestAuthV1Schema: GenMessage<TaskDataRequestAuthV1> = /*
  * that carries a grant binds it through sessionGrantHash = hashStruct(SessionGrant).
  *
  * A verifier rejects the grant unless:
- *   - chain_id equals the request chain_id and the current chain, and user
+ *   - chain_id equals the verifier's own chain_id (whether the request's
+ *     chain_id field matches is checked at the signature step), and user
  *     equals the request's signer (signer_address or requester_address);
  *   - user_signature recovers over the SessionGrant signing digest to user, user
  *     is an existing on-chain account, and the recovered public key equals the
@@ -542,8 +562,13 @@ export const SessionGrantV1Schema: GenMessage<SessionGrantV1> = /*@__PURE__*/
  * The verifier runs five steps in order and stops at the first failure:
  *   1. Format: session_id and task_id in 64-character lowercase hex, a 32-byte
  *      request_nonce, expiry_height_or_time above zero, endpoint matching
- *      method, for OpenTask the derived task_id and payload_ref, and a body
- *      that projects -> NEXUS_INGRESS_MALFORMED.
+ *      method, for OpenTask a chain-height expiry (below 10^12; a Unix
+ *      millisecond value is rejected here) and the derived task_id and
+ *      payload_ref, signer_address
+ *      (and the OpenTask body user_address) in canonical lowercase Bech32 with
+ *      the chain's account prefix, trueopen, decoding to exactly 20 bytes, and
+ *      a body that projects -> NEXUS_INGRESS_MALFORMED. A chain_id other than
+ *      the verifier's could be seen here but is not a format error; see step 4.
  *   2. With session_grant, a method outside the session-allowed set ->
  *      SDK_AUTH_SESSION_METHOD_NOT_ALLOWED.
  *   3. With session_grant, a grant whose chain, user, user signature or stored
@@ -552,8 +577,16 @@ export const SessionGrantV1Schema: GenMessage<SessionGrantV1> = /*@__PURE__*/
  *   4. The request signature, over the digest rebuilt with the sessionGrantHash
  *      the verifier derives, recovering to anything but the expected address,
  *      or a wallet-signed request whose account key does not match ->
- *      SDK_AUTH_INVALID_SIGNATURE. A wrong grant hash shows up only here.
+ *      SDK_AUTH_INVALID_SIGNATURE. A wrong grant hash shows up only here. The
+ *      verifier rebuilds the digest with its own chain_id (typed chainId) and
+ *      evm_chain_id (domain chainId), never with the envelope's chain_id, and
+ *      the envelope chain_id must equal the verifier's own chain_id. A request
+ *      signed for another chain, or whose chain_id field names another chain,
+ *      fails here with SDK_AUTH_INVALID_SIGNATURE.
  *   5. Request expiry -> SDK_AUTH_EXPIRED; nonce replay -> SDK_AUTH_REPLAY.
+ *      An OpenTask chain-height expiry must satisfy
+ *      current_height <= expiry <= current_height + request_ttl_blocks, with
+ *      checked addition; request_ttl_blocks is Builder configuration, default 20.
  * Steps 3 and 5 need the current chain height and reject when it is unavailable.
  * An account public key never changes once stored, so a verifier may cache it
  * by address, but a cache miss it cannot fill is a rejection.
@@ -564,7 +597,8 @@ export const SessionGrantV1Schema: GenMessage<SessionGrantV1> = /*@__PURE__*/
  * TRUEOPEN_SDK_BODY_PREPARE_CHALLENGE_V1 (registry/v1/domains.json lists the
  * fields).
  *
- * Replay key: request_domain \x00 chain_id \x00 signer_address \x00 hex(request_nonce).
+ * Replay key: request_domain \x00 chain_id \x00 signer_address \x00 hex(request_nonce),
+ * where chain_id is the verifier's own chain_id, not the envelope field.
  * A session-key request is still keyed by signer_address, the granting user.
  *
  * @generated from message nexus.v1.SDKRequestEnvelopeV2
@@ -578,6 +612,10 @@ export type SDKRequestEnvelopeV2 = Message<"nexus.v1.SDKRequestEnvelopeV2"> & {
   requestDomain: string;
 
   /**
+   * Must equal the verifier's own chain_id. The verifier never builds the
+   * digest or the replay key from it; a mismatch is rejected at the signature
+   * step with SDK_AUTH_INVALID_SIGNATURE, not as a format error.
+   *
    * @generated from field: string chain_id = 2;
    */
   chainId: string;
@@ -623,7 +661,11 @@ export type SDKRequestEnvelopeV2 = Message<"nexus.v1.SDKRequestEnvelopeV2"> & {
   /**
    * Above zero; 0 and negative values are rejected before projection into the
    * uint64 typed field. Values of 10^12 and above are Unix milliseconds;
-   * smaller values are a chain height, accepted only for OpenTask.
+   * smaller values are a chain height, accepted only for OpenTask. OpenTask
+   * accepts only a chain height: a Unix millisecond value is
+   * NEXUS_INGRESS_MALFORMED at the format step, and the height must satisfy
+   * current_height <= expiry <= current_height + request_ttl_blocks (see
+   * OpenTaskHeader).
    *
    * @generated from field: int64 expiry_height_or_time = 8;
    */
@@ -637,7 +679,9 @@ export type SDKRequestEnvelopeV2 = Message<"nexus.v1.SDKRequestEnvelopeV2"> & {
   bodyDigest: Uint8Array;
 
   /**
-   * Canonical Bech32 address of the user. Not signed: it is the address the
+   * Canonical lowercase Bech32 address of the user with the chain's account
+   * prefix, trueopen, decoding to exactly 20 bytes; anything else is
+   * NEXUS_INGRESS_MALFORMED at the format step. Not signed: it is the address the
    * recovered signer must match, and the granting user when session_grant is present.
    *
    * @generated from field: string signer_address = 10;
@@ -683,6 +727,14 @@ export const SDKRequestEnvelopeV2Schema: GenMessage<SDKRequestEnvelopeV2> = /*@_
  * request is rejected with SDK_AUTH_INVALID_SIGNATURE. The order itself is
  * authorized only by the SignedOrder EIP-712 user signature, which the Keeper
  * verifies; there is no outer order signature.
+ *
+ * expiry_height_or_time on request_envelope must be a chain height (below
+ * 10^12); a Unix millisecond value is rejected at the format step with
+ * NEXUS_INGRESS_MALFORMED. The height must satisfy
+ * current_height <= expiry <= current_height + request_ttl_blocks, with checked
+ * addition. request_ttl_blocks is Builder configuration with a default of 20
+ * blocks. Outside the window the request is rejected with SDK_AUTH_EXPIRED; a
+ * Builder that cannot read the current chain height rejects the request.
  *
  * body_digest is H_FIELDS_V1("TRUEOPEN_SDK_BODY_OPEN_TASK_V1", task_hash,
  * session_id, order_sequence, user_address, input_size_bytes, input_hash,
@@ -735,6 +787,10 @@ export type OpenTaskHeader = Message<"nexus.v1.OpenTaskHeader"> & {
   orderSequence: bigint;
 
   /**
+   * Canonical lowercase Bech32 with the chain's account prefix, trueopen,
+   * decoding to exactly 20 bytes; anything else is NEXUS_INGRESS_MALFORMED at
+   * the format step. Must equal the SignedOrder user.
+   *
    * @generated from field: string user_address = 7;
    */
   userAddress: string;

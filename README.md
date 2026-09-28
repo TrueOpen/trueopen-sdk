@@ -626,10 +626,8 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire`. It currently points at wire commit **`ea2f230`**
-(wire PRs #38 and #39, merged to wire main), the EIP-712 request signing and session grants
-intended for wire v0.4.0. That release is not tagged yet, so the pin is temporary: it will move to the
-`v0.4.0` tag once that is published. **This repo no longer keeps
+pinned as a submodule at `third_party/wire` to wire **v0.4.0** (`586ea8f`), the release with
+the EIP-712 request signing and session grants. **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -643,8 +641,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (commit `ea2f230`) |
-| `task.v1` / `shared.v1` | `third_party/wire` (commit `ea2f230`) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (tag `v0.4.0`) |
+| `task.v1` / `shared.v1` | `third_party/wire` (tag `v0.4.0`) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

@@ -57,6 +57,11 @@ const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
   NEXUS_INGRESS_MALFORMED: rule('invalid', false, false),
   NEXUS_DATA_RANGE_INVALID: rule('invalid', false, false),
   NEXUS_INGRESS_ORDER_HAS_NO_TASK_HASH: rule('invalid', false, false),
+  // The Builder already holds another version of this task (pending or finished) and keeps it;
+  // replacing an order is not supported yet. Sending the refused version to a Builder that has not
+  // seen the first one would leave the Builders holding different versions, so do not switch source.
+  NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED: rule('conflict', false, false),
+  NEXUS_INGRESS_TASK_TERMINAL: rule('conflict', false, false),
   NEXUS_DATA_CONFLICT: rule('conflict', false, false),
   NEXUS_DATA_HASH_MISMATCH: rule('data-corrupt', false, true),
   NEXUS_DATA_STORAGE: rule('internal', false, true),

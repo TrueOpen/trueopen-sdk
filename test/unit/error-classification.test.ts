@@ -47,6 +47,9 @@ describe('classifyNexusError', () => {
       [new ConnectError('DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED: INPUT', Code.PermissionDenied), 'DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED', 'auth', false, false],
       [new ConnectError('NEXUS_INGRESS_CONTRACT_NOT_FROZEN: ConfirmOpenTask', Code.FailedPrecondition), 'NEXUS_INGRESS_CONTRACT_NOT_FROZEN', 'invalid', false, false],
       [new ConnectError('NEXUS_INGRESS_METHOD_RETIRED: SubmitOrder', Code.Unimplemented), 'NEXUS_INGRESS_METHOD_RETIRED', 'invalid', false, false],
+      // Another version of the task is already held: no retry, and no other Builder either.
+      [new ConnectError('NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED: tracked', Code.FailedPrecondition), 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED', 'conflict', false, false],
+      [new ConnectError('NEXUS_INGRESS_TASK_TERMINAL: finished', Code.FailedPrecondition), 'NEXUS_INGRESS_TASK_TERMINAL', 'conflict', false, false],
     ];
     for (const [err, code, category, retriable, switchSource] of cases) {
       const c = classify(err);

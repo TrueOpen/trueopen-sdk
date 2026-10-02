@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Expired order code
+
+- `NEXUS_INGRESS_ORDER_EXPIRED` is classified as `expired`, not retriable and not to be sent to
+  another Builder. A Builder returns it (`FailedPrecondition`) for an `OpenTask` whose
+  `order_expire_height` has passed; the chain would not admit the order either.
+
 ### Order version refusal codes
 
 - `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` and `NEXUS_INGRESS_TASK_TERMINAL` are classified

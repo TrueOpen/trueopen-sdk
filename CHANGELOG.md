@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Order version refusal codes
+
+- `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` and `NEXUS_INGRESS_TASK_TERMINAL` are classified
+  as `conflict`, not retriable, and not to be sent to another Builder. A Builder returns them
+  (`FailedPrecondition`) for an `OpenTask` whose `task_hash` differs from the version it already
+  holds for the same task, pending or finished; replacing a pending order is not supported yet.
+  In `openTask` they appear as the per-Builder `error` of the refusing Builder.
+
 ### Breaking: EIP-712 request signing and session grants (wire v0.4.0)
 
 Requests to Builder Ingress and USER Task data requests are signed as EIP-712 typed data that

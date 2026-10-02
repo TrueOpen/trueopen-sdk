@@ -50,6 +50,7 @@ describe('classifyNexusError', () => {
       // Another version of the task is already held: no retry, and no other Builder either.
       [new ConnectError('NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED: tracked', Code.FailedPrecondition), 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED', 'conflict', false, false],
       [new ConnectError('NEXUS_INGRESS_TASK_TERMINAL: finished', Code.FailedPrecondition), 'NEXUS_INGRESS_TASK_TERMINAL', 'conflict', false, false],
+      [new ConnectError('NEXUS_INGRESS_ORDER_EXPIRED: height 501 is past order_expire_height 500', Code.FailedPrecondition), 'NEXUS_INGRESS_ORDER_EXPIRED', 'expired', false, false],
     ];
     for (const [err, code, category, retriable, switchSource] of cases) {
       const c = classify(err);

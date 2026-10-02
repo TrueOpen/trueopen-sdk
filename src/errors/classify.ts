@@ -62,6 +62,9 @@ const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
   // seen the first one would leave the Builders holding different versions, so do not switch source.
   NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED: rule('conflict', false, false),
   NEXUS_INGRESS_TASK_TERMINAL: rule('conflict', false, false),
+  // The signed order is past its order_expire_height: the chain no longer admits it, so neither a
+  // new request nor another Builder helps. A new order (a new sequence) is needed.
+  NEXUS_INGRESS_ORDER_EXPIRED: rule('expired', false, false),
   NEXUS_DATA_CONFLICT: rule('conflict', false, false),
   NEXUS_DATA_HASH_MISMATCH: rule('data-corrupt', false, true),
   NEXUS_DATA_STORAGE: rule('internal', false, true),

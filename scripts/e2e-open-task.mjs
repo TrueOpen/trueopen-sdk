@@ -52,17 +52,15 @@
  *                                into task_hash, and the worker must honor it; too
  *                                small a value hard-truncates the answer mid-sentence
  *   --max-output-duration-ms <n>  max generation duration in ms (default 60000)
- *   --prompt <text>       prefix for the input body (default "trueopen e2e open-task");
- *                         the script always appends " @ <ISO timestamp>" because nexus
- *                         dedupes payloads by content hash, so resending the same text
- *                         would be rejected
+ *   --prompt <text>       the input body, sent exactly as given (default
+ *                         "trueopen e2e open-task"). Nothing is appended; nexus dedupes by
+ *                         content hash, so re-running the same text is rejected.
  *   --chat                send an OpenAI chat-completions-shaped `messages` object instead
  *                         of raw text. cortex routes by input shape: a JSON object carrying
  *                         a `messages` field is served over /v1/chat/completions (messages
  *                         forwarded verbatim to vLLM, which applies the model's chat
  *                         template), while anything else is the legacy raw-text inferV0
- *                         path. The dedup timestamp goes into a system message so the user
- *                         message stays clean.
+ *                         path.
  *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
  *                         winner_confirm lands on chain, verify signatures and the MMR
  *                         root frame by frame as output is generated, without waiting
@@ -134,19 +132,15 @@ const MODEL_ID = await (async () => {
 const REUSE_SESSION = flag('--session', undefined);
 const SEQ_OVERRIDE = flag('--seq', undefined);
 const POLL_TIMES = Number(flag('--poll', '18'));
-// The input body. Always append a timestamp: nexus's payload store dedupes by content
-// hash, so resending the same sentence would collide with NEXUS_DATA_CONFLICT.
-// --prompt only changes the prefix, it doesn't remove this constraint.
+// The input body, sent verbatim. Nothing is appended: nexus dedupes by content hash, so
+// re-running the same input collides with NEXUS_DATA_CONFLICT -- vary the input yourself.
 const PROMPT = flag('--prompt', 'trueopen e2e open-task');
 // OpenAI chat-completions-shaped input (see --chat in the header): cortex routes a JSON
 // object with a `messages` field to its /v1/chat/completions path instead of inferV0.
 const CHAT = has('--chat');
-// Overrides the chat system message (default "trueopen e2e chat"); the dedup timestamp is
-// still appended so the content hash stays unique.
+// Overrides the chat system message (default "trueopen e2e chat").
 const SYSTEM_PROMPT = flag('--system-prompt', undefined);
-// Full chat `messages` array (JSON) to send verbatim, for multi-turn history. No extra
-// message is injected; the dedup timestamp is a top-level `_dedup` field that cortex ignores
-// (it only reads `messages`), so the content hash stays unique without polluting the input.
+// Full chat `messages` array (JSON) to send verbatim, for multi-turn history.
 const MESSAGES_JSON = flag('--messages-json', undefined);
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
@@ -321,9 +315,9 @@ const ORDER_SEQ = SEQ_OVERRIDE === undefined ? await client.nextOrderSequence(se
 log(`order_sequence=${ORDER_SEQ}${SEQ_OVERRIDE === undefined ? ' (read from chain)' : ' (overridden by --seq)'}`);
 
 // ---- 2) payload (plaintext V1) ----
-// The timestamp keeps every run's content hash unique (nexus dedupes by it). For the chat
-// shapes it goes into a system message so the user's messages stay exactly what was asked.
-const ts = new Date().toISOString();
+// The payload is sent exactly as given, with nothing appended. Note nexus dedupes by content
+// hash, so re-running the same input collides with NEXUS_DATA_CONFLICT; vary the input
+// yourself (the caller owns uniqueness in the normal flow too).
 let payload;
 if (MESSAGES_JSON !== undefined) {
   const raw = JSON.parse(MESSAGES_JSON);
@@ -332,16 +326,16 @@ if (MESSAGES_JSON !== undefined) {
     console.error('--messages-json must be a JSON array or an object with a messages array');
     process.exit(2);
   }
-  payload = new TextEncoder().encode(JSON.stringify({ messages: msgs, _dedup: ts }));
+  payload = new TextEncoder().encode(JSON.stringify({ messages: msgs }));
 } else if (CHAT) {
   payload = new TextEncoder().encode(JSON.stringify({
     messages: [
-      { role: 'system', content: `${SYSTEM_PROMPT ?? 'trueopen e2e chat'} @ ${ts}` },
+      { role: 'system', content: SYSTEM_PROMPT ?? 'trueopen e2e chat' },
       { role: 'user', content: PROMPT },
     ],
   }));
 } else {
-  payload = new TextEncoder().encode(`${PROMPT} @ ${ts}`);
+  payload = new TextEncoder().encode(PROMPT);
 }
 const payloadHash = hex(sha256(payload));
 

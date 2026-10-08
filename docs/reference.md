@@ -34,7 +34,7 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `wallet` | `TypedDataSigner` | Signs the order, the OpenTask request envelope, and every other Builder request, all as EIP-712 typed data (65-byte R‖S‖V, each recovered and checked against `userAddress` before sending). Use `privateKeyTypedDataSigner` (CLI/servers), `eip1193TypedDataSigner` (browser wallets) or `keplrTypedDataSigner` (Keplr). |
 | `chain` | `ChainClient` | Chain read+write (use `connectTrueOpenChainClient`). |
 | `ingressTransport` | `Transport` | Connect transport for nexus `IngressAPI`. |
-| `evmChainId` | `bigint \| number \| string` | The numeric EVM chain ID for every EIP-712 domain. Defaults to reading it once from `hub.getEvmChainId()`. |
+| `signatureChainId` | `bigint \| number \| string` | The signer-chosen EIP-712 domain chainId (the wallet's active network). Defaults to `1` (Ethereum mainnet) for session keys and servers. |
 | `feeDenom` | `string` | Optional override; checked against the chain `business_denom` (§3). |
 | `hub` | `FacadeHubReader` | Needed by `openTask` (builder set, order context, pricing). |
 | `taskReader` | `OutputTaskReader` | Needed to derive output trust anchors (§10). |
@@ -210,9 +210,9 @@ buildOpenTaskRequest(input): Promise<BuildOpenTaskResult>
 The order is authorized by the **inner** EIP-712 signature (`SignedOrderV2.user_signature`,
 65-byte R‖S‖V recovering to the order user). There is no outer order signature;
 `OpenTaskHeader.signature` stays empty. Domain: name `"TrueOpen Task Order"`, version `3`,
-`chainId = evmChainId`. Checked byte-for-byte against wire's golden vectors.
+`chainId = signature_chain_id`. Checked byte-for-byte against wire's golden vectors.
 
-`OrderEip712Context` = `{ evmChainId, feeDenom }`.
+`OrderEip712Context` = `{ signatureChainId, feeDenom }`.
 
 ---
 
@@ -228,10 +228,10 @@ const INGRESS_SERVICE_PATH = '/nexus.v1.IngressAPI'
 const SESSION_SDK_METHODS = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge']
 const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n
 
-function sdkRequestEip712Domain(evmChainId): { name, version, chainId }
-function sdkRequestTypedData(f: SdkRequestFields, evmChainId, sessionGrantHash?): TypedData
-function sdkRequestEip712Digest(f: SdkRequestFields, evmChainId, sessionGrantHash?): Uint8Array
-async function signSdkRequestEnvelope(f, wallet, evmChainId, sessionGrantHash?): Promise<SignedSdkRequestEnvelope>
+function sdkRequestEip712Domain(signatureChainId): { name, version, chainId }
+function sdkRequestTypedData(f: SdkRequestFields, signatureChainId, sessionGrantHash?): TypedData
+function sdkRequestEip712Digest(f: SdkRequestFields, signatureChainId, sessionGrantHash?): Uint8Array
+async function signSdkRequestEnvelope(f, wallet, signatureChainId, sessionGrantHash?): Promise<SignedSdkRequestEnvelope>
 function ingressEndpoint(method: string): string
 function strictHash32(value: string): string
 ```
@@ -274,8 +274,8 @@ const EVIDENCE_KIND = { UNSPECIFIED, WORKER_VALUE_OPENING, VERIFIER_VALUE_OPENIN
 function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array
 function taskDataMetadataBodyDigest(ref: TaskDataObjectRef): Uint8Array
 function taskDataFetchBodyDigest(ref: TaskDataObjectRef, range?: ByteRange): Uint8Array
-function taskDataRequestTypedData(f, evmChainId, sessionGrantHash?): TypedData
-function taskDataRequestEip712Digest(f, evmChainId, sessionGrantHash?): Uint8Array
+function taskDataRequestTypedData(f, signatureChainId, sessionGrantHash?): TypedData
+function taskDataRequestEip712Digest(f, signatureChainId, sessionGrantHash?): Uint8Array
 function taskDataRequestSignBytes(f: TaskDataRequestAuthFields): Uint8Array
 ```
 
@@ -299,14 +299,14 @@ interface SessionHandle         // { sessionId, ... }
 const SESSION_GRANT_EIP712_TYPES
 const SESSION_SDK_METHODS
 const SESSION_TASK_DATA_METHODS
-function sessionGrantTypedData(f: SessionGrantFields, evmChainId): TypedData
+function sessionGrantTypedData(f: SessionGrantFields, signatureChainId): TypedData
 function sessionGrantHash(f: SessionGrantFields): Uint8Array
 function sessionGrantMessage(g: SignedSessionGrant): SessionGrantV1
 class SessionKeyManager implements SessionAuthority
 ```
 
-`SessionGrantFields` = `{ chainId, user, sessionKeyAddress, sessionId, methods,
-grantBlocks, sessionNonce, grantExpiry }`; `SignedSessionGrant` adds `signature`.
+`SessionGrantFields` = `{ chainId, user, sessionKey, expiryHeight, grantNonce, signatureChainId }`;
+`SignedSessionGrant` adds `userSignature`.
 `SessionKeyManager` signs a `SessionGrant` with the wallet once, then signs the permitted
 methods with an in-memory session key, so a browser wallet prompts once per grant instead
 of once per request. `maxGrantBlocks` must equal the Builders' `max_session_grant_blocks`.
@@ -491,7 +491,7 @@ class RestChainReader  // task.v1.Query (session / task / infer receipt)
 `HubReader` (`baseUrl`, `fetch`, `retry?`) reads: models (`listModels`), profiles
 (`getProfile`), pricing, builder set by height (`getBuilderSetAtHeight`), service
 descriptors (`getServiceDescriptor`), current service keys (`getCurrentServiceKey`),
-`business_denom` (`getBusinessDenom`), `evm_chain_id` (`getEvmChainId`), and manifest state
+`business_denom` (`getBusinessDenom`), and manifest state
 (`getProfileManifestState`). Hash32 fields decode to lowercase 64-hex through `hash32ToHex`.
 
 `RestChainReader` reads session state, session nonce, the task snapshot (`queryTask`), and

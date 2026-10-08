@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Breaking: signer-selected signature_chain_id (wire pre-v0.5.0)
+
+The EIP-712 domain `chainId` is no longer the chain's `evm_chain_id`; it is now a signer-chosen
+`signature_chain_id` carried next to each signature (ADR-0033), so a browser wallet signs under its
+active network and the chain needs no `eth_chainId` endpoint.
+
+- **Breaking:** `TrueOpenClientConfig.evmChainId` becomes `signatureChainId`
+  (`bigint | number | string`), defaulting to `1` (Ethereum mainnet) for session keys and server-side
+  keys instead of reading `params.phase0.evm_chain_id` from the hub. `HubReader.getEvmChainId` is
+  removed. `0`, negatives and values above `2^63-1` are refused locally
+  (`SDK_LOCAL_SIGNATURE_CHAIN_ID_INVALID`).
+- `SignedOrderV2`, `SessionGrantV1`, `TaskDataRequestAuthV1` and `SDKRequestEnvelopeV2` now carry
+  `signature_chain_id` (fields 4, 7, 13, 14), equal to the domain chainId each digest was built with.
+- Pinned to wire `feat/signature-chain-id` @ `8a4d726` (pre-v0.5.0); re-pin to the v0.5.0 tag once it
+  ships. This is a breaking signing change with no transition window: the SDK must be upgraded
+  together with node, Nexus and Cortex.
+
 ### Expired order code
 
 - `NEXUS_INGRESS_ORDER_EXPIRED` is classified as `expired`, not retriable and not to be sent to

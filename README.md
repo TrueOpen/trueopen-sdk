@@ -23,7 +23,8 @@ signed through one interface, `TypedDataSigner`, so a browser wallet can sign it
 3. **Task data requests** -- `TaskDataRequest` under "TrueOpen Task Data Request" v2
    (GetTaskDataMetadata, FetchTaskData).
 
-Every EIP-712 domain uses the chain's `evm_chain_id` as its `chainId`. Optionally, the wallet signs
+Every EIP-712 domain's `chainId` is a signer-chosen `signature_chain_id` (ADR-0033): a browser wallet
+signs under its active network, so it needs no `eth_chainId` RPC. Optionally, the wallet signs
 one **session grant** and an in-memory session key signs the read and delivery-progress
 requests after that (see [Wallets and session grants](#wallets-and-session-grants)).
 
@@ -98,11 +99,10 @@ const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, stringToPath(
 const pubKey = secp256k1PublicKey(privkey);
 const address = ethSecp256k1Address(pubKey, prefix);
 
-// --- 2. Chain reads, and the two values that go into signatures ---
+// --- 2. Chain reads, and the values that go into signatures ---
 const fetchLike = (url: string) => fetch(url);
 const hub = new HubReader({ baseUrl: restUrl, fetch: fetchLike });
 const taskReader = new RestChainReader({ baseUrl: restUrl, fetch: fetchLike });
-const evmChainId = await hub.getEvmChainId(); // EIP-712 domain; never a constant
 const businessDenom = await hub.getBusinessDenom(); // order fee denom and the only tx fee denom
 
 // --- 3. Chain writes: ethsecp256k1 direct signing, explicit fee in business_denom ---
@@ -124,7 +124,7 @@ const makeClient = (ingressTransport: ReturnType<typeof nexus>) =>
     // Signs the order and every request as EIP-712 typed data. In a browser, use
     // keplrTypedDataSigner or eip1193TypedDataSigner instead (see "Wallets and session grants").
     wallet: privateKeyTypedDataSigner(privkey),
-    evmChainId, // no feeDenom: openTask signs business_denom read through the hub
+    signatureChainId: 1n, // signer-chosen EIP-712 domain chainId; no feeDenom: openTask signs business_denom via the hub
     chain, hub, taskReader,
     ingressTransport, // default transport for calls not routed by the SDK
     ingressTransportFactory: nexus, // openTask picks Builders by task_builder_seed
@@ -261,12 +261,11 @@ This section states plainly **which capabilities are already aligned with the re
   `testdata/v1/shared/account_signing_v1.json`.
 - **Task data plane authentication** -- the two body digests (METADATA / FETCH, V2 domains), together with their preimages, are anchored to `testdata/v1/task/task_data_auth_v1.json`, and illegal object_kind / evidence_kind combinations are refused before hashing; the USER branch's EIP-712 and the CORTEX_SERVICE branch's H_FIELDS_V1 are each cross-checked separately. **Verified against a live chain**: the EIP-712 signature for `GetTaskDataMetadata` was verified by a real nexus, the body digest matched nexus's recomputation, and authorization matched the contract (a User can query OUTPUT but not INPUT).
 
-> ⚠️ `evm_chain_id` must match **nexus's configuration**, not just the on-chain
-> `params.phase0`. It goes into the EIP-712 domain separator; when the two differ, the only
-> symptom is nexus reporting "USER signature recovers `<some random address>`, not `<your
-> address>`" -- which looks like a signing bug but is actually just a mismatched domain
-> separator. The SDK reads this from the chain by default (`HubReader.getEvmChainId()`); if you
-> hit this error during integration testing, check nexus's configured value first.
+> ⚠️ The `signature_chain_id` you sign under must match the value you pass as
+> `TrueOpenClientConfig.signatureChainId` (the wallet's active network). It goes into the
+> EIP-712 domain separator; when the two differ, the only symptom is nexus reporting "USER
+> signature recovers `<some random address>`, not `<your address>`" -- which looks like a signing
+> bug but is actually just a mismatched domain separator.
 - **MMR_ROOT_V1 and output commitments** -- anchored to `testdata/v1/shared/mmr_primitive_v1.json` and `testdata/v1/task/output_mmr_v1.json`, including 7-leaf discriminating vectors for fold direction and all negative cases.
 - **`task_builder_rank`** -- anchored to all four vectors (preimage and rank) in `testdata/v1/task/task_builder_rank_v1.json`.
 
@@ -454,9 +453,8 @@ Every signature is recovered and checked against `userAddress` before it is sent
 
 - **Keplr** works today: it signs with the chain's account key and needs no EVM network.
 - **MetaMask (EIP-1193)** refuses typed data whose domain `chainId` differs from its active
-  network, and every domain here uses the chain's `evm_chain_id`. It therefore needs a network
-  whose RPC answers `eth_chainId` with that ID. **No such RPC endpoint is available yet**, so
-  MetaMask cannot be used until one is.
+  network, so pass the wallet's active network chain ID as `signatureChainId`. Each domain signs
+  under that value (ADR-0033), so no network switch or `eth_chainId` RPC on the chain is needed.
 
 **Session grants (opt-in).** With `session: { maxGrantBlocks }` in the config, the wallet signs
 one `SessionGrant` for an in-memory session key, and that key signs `SubscribeOutput`,
@@ -672,8 +670,8 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to wire **v0.4.0** (`586ea8f`), the release with
-the EIP-712 request signing and session grants. **This repo no longer keeps
+pinned as a submodule at `third_party/wire` to the `feat/signature-chain-id` branch
+(`8a4d726`, pre-v0.5.0), carrying the signer-chosen `signature_chain_id`. **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -687,8 +685,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (tag `v0.4.0`) |
-| `task.v1` / `shared.v1` | `third_party/wire` (tag `v0.4.0`) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (`feat/signature-chain-id` @ `8a4d726`) |
+| `task.v1` / `shared.v1` | `third_party/wire` (`feat/signature-chain-id` @ `8a4d726`) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

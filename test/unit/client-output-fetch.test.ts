@@ -144,7 +144,7 @@ function makeClient(transport: Transport, reader: OutputTaskReader | null = task
   return new TrueOpenClient({
     chainId: CHAIN_ID, userAddress: ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen'),
     wallet: privateKeyTypedDataSigner(PRIV),
-    chain: fakeChain, ingressTransport: transport, evmChainId: 424242n,
+    chain: fakeChain, ingressTransport: transport, signatureChainId: 424242n,
     nonce: () => new Uint8Array(32).fill(7),
     ...(reader !== null ? { taskReader: reader } : {}),
     hub: h as never,

@@ -59,7 +59,7 @@ describe('TaskDataRequest version 2 (USER path)', () => {
     name: string;
     base: string;
     error?: string;
-    signed?: { signer?: string; message?: Record<string, string> };
+    signed?: { signer?: string; message?: Record<string, string>; domain?: { chain_id?: string; version?: string } };
     verified?: { message?: Record<string, string>; domain?: { chain_id?: string; version?: string } };
     signing_digest?: string;
     signature_65?: string;
@@ -69,9 +69,11 @@ describe('TaskDataRequest version 2 (USER path)', () => {
 
   it('covers the Task data rows', () => {
     expect(rows.map((r) => r.name).sort()).toEqual([
+      'cortex_service_signature_chain_id_nonzero',
       'task_data_input_object_with_session_grant',
       'task_data_request_domain_version_1',
-      'task_data_request_other_evm_chain_id',
+      'task_data_request_tampered_signature_chain_id',
+      'task_data_request_wallet_network_signature_chain_id',
       'task_data_upload_with_session_grant',
     ]);
   });
@@ -80,7 +82,7 @@ describe('TaskDataRequest version 2 (USER path)', () => {
     it(`${r.name}: signature, verifier digest and recovery`, async () => {
       const base = section(r.base);
       if (r.signed !== undefined) {
-        const data = fixtureTypedData(base, { message: r.signed.message ?? {} });
+        const data = fixtureTypedData(base, { message: r.signed.message ?? {}, domain: r.signed.domain ?? {} });
         expect(toHex(await privateKeyTypedDataSigner(fixtureKey(r.signed.signer ?? 'account')).signTypedData(data))).toBe(r.signature_65);
       }
       const verified = fixtureTypedData(base, { message: r.verified?.message ?? {}, domain: r.verified?.domain ?? {} });
@@ -122,11 +124,11 @@ describe('IngressClient Task data requests with a session', () => {
       } as any);
     });
     const session = new SessionKeyManager({
-      chainId: 'trueopen-golden-1', userAddress: USER, wallet, evmChainId: async () => EVM,
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet, signatureChainId: EVM,
       latestHeight: async () => 1000n, maxGrantBlocks: 400,
     });
     const auth: IngressAuth = {
-      chainId: 'trueopen-golden-1', userAddress: USER, wallet, evmChainId: EVM,
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet, signatureChainId: EVM,
       nonce: () => new Uint8Array(32).fill(9), expiry: () => 1_790_000_000_000n, session,
     };
     return { client: new IngressClient(transport, auth), meta, fetches };
@@ -150,7 +152,8 @@ describe('IngressClient Task data requests with a session', () => {
       const g = a.sessionGrant!;
       expect(g).toBeDefined();
       expect(a.requesterAddress).toBe(USER);
-      const grant = { chainId: g.chainId, user: g.user, sessionKey: g.sessionKey, expiryHeight: g.expiryHeight, grantNonce: g.grantNonce, userSignature: g.userSignature };
+      expect(a.signatureChainId).toBe(EVM);
+      const grant = { chainId: g.chainId, user: g.user, sessionKey: g.sessionKey, expiryHeight: g.expiryHeight, grantNonce: g.grantNonce, signatureChainId: g.signatureChainId, userSignature: g.userSignature };
       expect(recoversTo(a, grant)).toBe(toHex(g.sessionKey));
     }
   });
@@ -177,11 +180,11 @@ describe('IngressClient Task data requests with a session', () => {
     // The session key manager is bound to USER; the auth context claims a different user. The
     // grant must be rejected before anything is signed, mirroring signSdkRequestEnvelope.
     const session = new SessionKeyManager({
-      chainId: 'trueopen-golden-1', userAddress: USER, wallet, evmChainId: async () => EVM,
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet, signatureChainId: EVM,
       latestHeight: async () => 1000n, maxGrantBlocks: 400,
     });
     const auth: IngressAuth = {
-      chainId: 'trueopen-golden-1', userAddress: 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man', wallet, evmChainId: EVM,
+      chainId: 'trueopen-golden-1', userAddress: 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man', wallet, signatureChainId: EVM,
       nonce: () => new Uint8Array(32).fill(9), expiry: () => 1_790_000_000_000n, session,
     };
     const transport = createRouterTransport(({ service }) => {

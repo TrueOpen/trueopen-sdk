@@ -355,7 +355,6 @@ export class FakeNode {
     const body = shapeBody('hub_v1_queryhubparamsresponse_default');
     const phase0 = (body['params'] as Json)['phase0'] as Json;
     phase0['business_denom'] = this.businessDenom;
-    phase0['evm_chain_id'] = w.EVM_CHAIN_ID.toString();
     return body;
   }
 

@@ -9,7 +9,7 @@ export interface CliOptions {
   nexusTlsPubkeyHash?: string;
   auto?: boolean;
   chainId?: string;
-  evmChainId?: string;
+  signatureChainId?: string;
   feeDenom?: string;
   prefix?: string;
   gasPrice?: string;
@@ -28,11 +28,10 @@ export interface CliConfig {
   readonly auto: boolean;
   readonly chainId?: string;
   /**
-   * The numeric EVM chain ID used in the EIP-712 domain. When not provided, it's read from
-   * `params.phase0.evm_chain_id` on chain -- there is no hardcoded default, since wire test vectors use
-   * 424242 while devnet is actually 31337, and getting it wrong just produces "invalid signature".
+   * The signer-chosen EIP-712 domain chainId (the wallet's active network). Optional; defaults
+   * to 1 (Ethereum mainnet), which is right for session keys and server-side keys.
    */
-  readonly evmChainId?: bigint;
+  readonly signatureChainId?: bigint;
   /**
    * Optional override for the order's EIP-712 feeDenom. The chain's
    * `params.phase0.business_denom` is authoritative; an override that disagrees with it is
@@ -90,8 +89,8 @@ export function resolveConfig(o: CliOptions, env: NodeJS.ProcessEnv): CliConfig 
   const nexusUrl = pick(o.nexusUrl, env['TRUEOPEN_NEXUS_URL']);
   const nexusTlsPubkeyHash = pick(o.nexusTlsPubkeyHash, env['TRUEOPEN_NEXUS_TLS_PUBKEY_HASH']);
   const chainId = pick(o.chainId, env['TRUEOPEN_CHAIN_ID']);
-  const evmChainIdRaw = pick(o.evmChainId, env['TRUEOPEN_EVM_CHAIN_ID']);
-  const evmChainId = evmChainIdRaw === undefined ? undefined : BigInt(evmChainIdRaw);
+  const signatureChainIdRaw = pick(o.signatureChainId, env['TRUEOPEN_SIGNATURE_CHAIN_ID']);
+  const signatureChainId = signatureChainIdRaw === undefined ? undefined : BigInt(signatureChainIdRaw);
   const feeDenom = pick(o.feeDenom, env['TRUEOPEN_FEE_DENOM']);
   const prefix = pick(o.prefix, env['TRUEOPEN_ADDR_PREFIX']) ?? 'trueopen';
   const gasPrice = pick(o.gasPrice, env['TRUEOPEN_GAS_PRICE']);
@@ -103,7 +102,7 @@ export function resolveConfig(o: CliOptions, env: NodeJS.ProcessEnv): CliConfig 
     ...(nexusTlsPubkeyHash !== undefined ? { nexusTlsPubkeyHash } : {}),
     auto: o.auto === true,
     ...(chainId !== undefined ? { chainId } : {}),
-    ...(evmChainId !== undefined ? { evmChainId } : {}),
+    ...(signatureChainId !== undefined ? { signatureChainId } : {}),
     ...(feeDenom !== undefined ? { feeDenom } : {}),
     prefix,
     ...(gasPrice !== undefined ? { gasPrice } : {}),

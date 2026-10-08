@@ -52,7 +52,8 @@ describe('SDKRequest EIP-712 (account_signing_v1.json sdk_request)', () => {
   });
 
   it('signs the exact fixture signature, which recovers to the account', async () => {
-    const env = await signSdkRequestEnvelope(fields, { signerAddress: USER, signer: wallet, evmChainId: EVM });
+    const env = await signSdkRequestEnvelope(fields, { signerAddress: USER, signer: wallet, signatureChainId: EVM });
+    expect(env.signatureChainId).toBe(EVM);
     expect(toHex(env.signature)).toBe(V.signature_65);
     expect(recover(V.signing_digest, V.signature_65)).toBe(V.recovered_address);
     expect(env.requestDomain).toBe(SDK_REQUEST_DOMAIN);
@@ -64,7 +65,7 @@ describe('SDKRequest EIP-712 (account_signing_v1.json sdk_request)', () => {
 
   it('refuses to sign as an address the wallet does not hold', async () => {
     const other = privateKeyTypedDataSigner(fixtureKey('wrong_key'));
-    await expect(signSdkRequestEnvelope(fields, { signerAddress: USER, signer: other, evmChainId: EVM })).rejects.toMatchObject({
+    await expect(signSdkRequestEnvelope(fields, { signerAddress: USER, signer: other, signatureChainId: EVM })).rejects.toMatchObject({
       code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
     });
   });
@@ -76,7 +77,7 @@ describe('request_auth_negative_cases on sdk_request', () => {
     name: string;
     base: string;
     error?: string;
-    signed?: { signer?: string; message?: Record<string, string> };
+    signed?: { signer?: string; message?: Record<string, string>; domain?: { chain_id?: string; version?: string } };
     verified?: { message?: Record<string, string>; domain?: { chain_id?: string; version?: string } };
     signing_digest?: string;
     signature_65?: string;
@@ -89,19 +90,22 @@ describe('request_auth_negative_cases on sdk_request', () => {
     expect(rows.map((r) => r.name).sort()).toEqual([
       'expiry_negative',
       'open_task_task_id_not_derived',
-      'open_task_with_session_grant',
       'sdk_request_expiry_zero',
       'sdk_request_grant_hash_without_grant',
       'sdk_request_other_chain_id',
-      'sdk_request_other_evm_chain_id',
       'sdk_request_signed_by_wrong_key',
+      'sdk_request_signed_under_other_signature_chain_id',
+      'sdk_request_tampered_signature_chain_id',
+      'sdk_request_wallet_network_signature_chain_id',
+      'signature_chain_id_above_max_int64',
+      'signature_chain_id_zero',
     ]);
   });
 
   for (const r of rows.filter((x) => x.signing_digest !== undefined)) {
     it(`${r.name}: signature and verifier digest`, async () => {
       if (r.signed !== undefined) {
-        const signedData = fixtureTypedData(V, { message: r.signed.message ?? {} });
+        const signedData = fixtureTypedData(V, { message: r.signed.message ?? {}, domain: r.signed.domain ?? {} });
         const sig = await privateKeyTypedDataSigner(fixtureKey(r.signed.signer ?? 'account')).signTypedData(signedData);
         expect(toHex(sig)).toBe(r.signature_65);
       }

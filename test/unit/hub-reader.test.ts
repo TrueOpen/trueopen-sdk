@@ -128,10 +128,9 @@ describe('HubReader (REST field mapping)', () => {
   });
 
   it('getBusinessDenom reads params.phase0.business_denom (the order feeDenom and the only fee denom)', async () => {
-    const params = { params: { phase0: { business_denom: 'uusdc', evm_chain_id: '31337' } } };
+    const params = { params: { phase0: { business_denom: 'uusdc' } } };
     const r = readerFor({ '/hub/v1/params': params });
     expect(await r.getBusinessDenom()).toBe('uusdc');
-    expect(await r.getEvmChainId()).toBe(31337n);
     const empty = readerFor({ '/hub/v1/params': { params: { phase0: { business_denom: '' } } } });
     await expect(empty.getBusinessDenom()).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
   });

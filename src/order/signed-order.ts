@@ -13,6 +13,7 @@ import type { Eip712Types, Eip712Struct } from '../codec/eip712';
 import type { TypedData, TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs, typedDataDigest } from '../signer/typed-data-signer';
 import { canonicalAccountAddressBytes } from '../codec/address';
+import { signatureChainIdBigInt } from '../signature-chain-id';
 
 /**
  * SignedOrderV2.signature_scheme: only this lowercase literal is accepted. It describes the
@@ -55,11 +56,11 @@ export const ORDER_EIP712_TYPES: Eip712Types = {
 /** Two values the order's EIP-712 payload needs but that don't live on TaskOrderV3. */
 export interface OrderEip712Context {
   /**
-   * The chainId in the EIP-712 domain is the **EVM numeric chain ID** (424242 in the
-   * test vectors), which is distinct from TaskOrderV3.chain_id (the cosmos string chain
-   * ID) - both are included in the signature.
+   * The chainId in the EIP-712 domain is the **signer-chosen chain ID** (424242 in the
+   * test vectors, 1 for a wallet on Ethereum mainnet), which is distinct from
+   * TaskOrderV3.chain_id (the cosmos string chain ID) - both are included in the signature.
    */
-  readonly evmChainId: bigint | number | string;
+  readonly signatureChainId: bigint | number | string;
   /** Fee denom. shared.v1.Amount only carries atomic_units; the denom comes from chain params. */
   readonly feeDenom: string;
 }
@@ -85,7 +86,7 @@ export function taskOrderTypedData(order: TaskOrderV3, ctx: OrderEip712Context):
     domain: {
       name: ORDER_EIP712_DOMAIN_NAME,
       version: ORDER_EIP712_DOMAIN_VERSION,
-      chainId: BigInt(ctx.evmChainId),
+      chainId: signatureChainIdBigInt(ctx.signatureChainId),
     },
     message,
   };
@@ -193,6 +194,7 @@ export async function signAndEncodeOrder(
   const signed = create(SignedOrderV2Schema, {
     order: toProtoTaskOrder(order),
     signatureScheme: SIGNATURE_SCHEME,
+    signatureChainId: signatureChainIdBigInt(ctx.signatureChainId),
     userSignature,
   });
   return { bytes: toBinary(SignedOrderV2Schema, signed), userSignature, taskHash, signingDigest };
@@ -204,12 +206,13 @@ export async function signAndEncodeOrder(
  * user_signature gets it omitted by proto3, and nexus will reject it outright because
  * the length isn't 65 - so this function is only used on the local validation path.
  */
-export function encodeSignedOrder(order: TaskOrderV3, userSignature: Uint8Array): Uint8Array {
+export function encodeSignedOrder(order: TaskOrderV3, ctx: OrderEip712Context, userSignature: Uint8Array): Uint8Array {
   return toBinary(
     SignedOrderV2Schema,
     create(SignedOrderV2Schema, {
       order: toProtoTaskOrder(order),
       signatureScheme: SIGNATURE_SCHEME,
+      signatureChainId: signatureChainIdBigInt(ctx.signatureChainId),
       userSignature,
     }),
   );

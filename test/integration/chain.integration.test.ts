@@ -170,10 +170,7 @@ describe.skipIf(!nexusEnabled)('nexus integration (Connect over http)', () => {
     const auth: IngressAuth = {
       chainId: NEXUS_CHAIN_ID, userAddress: addr,
       wallet: privateKeyTypedDataSigner(PRIV),
-      evmChainId: async () =>
-        EVM_CHAIN_ID !== undefined
-          ? BigInt(EVM_CHAIN_ID)
-          : new HubReader({ baseUrl: REST ?? '', fetch: (u) => fetch(u) }).getEvmChainId(),
+      signatureChainId: EVM_CHAIN_ID !== undefined ? BigInt(EVM_CHAIN_ID) : 1n,
       nonce: () => randomBytes(32), expiry: () => BigInt(Date.now() + 300_000),
     };
     const client = new IngressClient(makeTransport(), auth);

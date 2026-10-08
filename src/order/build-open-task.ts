@@ -6,6 +6,7 @@ import type { OrderEip712Context } from './signed-order';
 import { deriveTaskId } from './order-signing';
 import { canonicalAccountAddressBytes } from '../codec/address';
 import { signSdkRequestEnvelope, ingressEndpoint, HEIGHT_EXPIRY_THRESHOLD } from '../transport/sdk-request-envelope';
+import { signatureChainIdBigInt } from '../signature-chain-id';
 import { openTaskBodyDigest, openTaskPayloadRef } from '../transport/sdk-request-body';
 import type { TaskOrderV3 } from './task-order';
 import type { OpenTaskInput } from '../transport/ingress-client';
@@ -22,7 +23,7 @@ const DEFAULT_MEDIA_TYPE = 'application/octet-stream';
 export interface BuildOpenTaskInput {
   /** The already-assembled, frozen order (see buildTaskOrder). */
   readonly order: TaskOrderV3;
-  /** Two values the order's EIP-712 signing needs but that aren't part of the order itself: the EVM numeric chain ID and the fee denomination. */
+  /** Two values the order's EIP-712 signing needs but that aren't part of the order itself: the signer-chosen chain ID and the fee denomination. */
   readonly orderEip712: OrderEip712Context;
   /** The plaintext input payload itself; must match order.inputHash / inputSizeBytes. */
   readonly payload: Uint8Array;
@@ -155,7 +156,7 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
     {
       signerAddress: input.order.userAddress,
       signer: input.wallet,
-      evmChainId: BigInt(input.orderEip712.evmChainId),
+      signatureChainId: signatureChainIdBigInt(input.orderEip712.signatureChainId),
       ...(input.chainId !== undefined ? { chainId: input.chainId } : {}),
     },
   );

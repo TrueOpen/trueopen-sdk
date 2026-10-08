@@ -181,7 +181,6 @@ export class FakeNexus {
   private ctx(): v.AuthContext {
     return {
       chainId: w.CHAIN_ID,
-      evmChainId: w.EVM_CHAIN_ID,
       height: this.node.height + this.heightAhead,
       nowMs: BigInt(Date.now()),
       maxSessionGrantBlocks: this.maxSessionGrantBlocks,

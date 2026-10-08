@@ -18,7 +18,7 @@ import { TrueOpenError } from '../errors/errors';
  * once, and that key then signs the read and delivery-progress requests without a wallet prompt.
  *
  * The grant is EIP-712 typed data under the SDK Request domain ("TrueOpen SDK Request" v1,
- * chainId = evm_chain_id), always, including when a Task data request carries it:
+ * chainId = signature_chain_id), always, including when a Task data request carries it:
  *   SessionGrant(string chainId,string user,address sessionKey,uint64 expiryHeight,bytes32 grantNonce)
  * A request carrying a grant binds it through sessionGrantHash = hashStruct(SessionGrant), and its
  * own signature recovers to sessionKey.
@@ -62,6 +62,8 @@ export interface SessionGrantFields {
   readonly expiryHeight: bigint;
   /** 32 bytes from a CSPRNG. */
   readonly grantNonce: Uint8Array;
+  /** The signer-chosen EIP-712 domain chainId (field 7 on the wire). */
+  readonly signatureChainId: bigint;
 }
 
 export interface SignedSessionGrant extends SessionGrantFields {
@@ -74,7 +76,7 @@ function malformed(what: string): TrueOpenError {
 }
 
 /** The SessionGrant typed data the wallet signs. */
-export function sessionGrantTypedData(f: SessionGrantFields, evmChainId: bigint): TypedData {
+export function sessionGrantTypedData(f: SessionGrantFields, signatureChainId: bigint): TypedData {
   if (f.chainId === '') throw malformed('chain_id must not be empty');
   if (f.sessionKey.length !== 20) throw malformed(`session_key must be 20 bytes, got ${f.sessionKey.length}`);
   if (f.grantNonce.length !== 32) throw malformed(`grant_nonce must be 32 bytes, got ${f.grantNonce.length}`);
@@ -82,7 +84,7 @@ export function sessionGrantTypedData(f: SessionGrantFields, evmChainId: bigint)
   return {
     types: SESSION_GRANT_EIP712_TYPES,
     primaryType: 'SessionGrant',
-    domain: sdkRequestEip712Domain(evmChainId),
+    domain: sdkRequestEip712Domain(signatureChainId),
     message: {
       chainId: f.chainId,
       user: f.user,
@@ -107,6 +109,7 @@ export function sessionGrantMessage(g: SignedSessionGrant): SessionGrantV1 {
     sessionKey: g.sessionKey,
     expiryHeight: g.expiryHeight,
     grantNonce: g.grantNonce,
+    signatureChainId: g.signatureChainId,
     userSignature: g.userSignature,
   });
 }
@@ -134,7 +137,7 @@ export interface SessionKeyManagerOptions {
   readonly userAddress: string;
   /** The user's wallet: signs each grant (one prompt per grant). */
   readonly wallet: TypedDataSigner;
-  readonly evmChainId: () => Promise<bigint>;
+  readonly signatureChainId: bigint;
   readonly latestHeight: () => Promise<bigint>;
   /**
    * The Builders' max_session_grant_blocks (off-chain configuration, the same on every Task
@@ -212,8 +215,9 @@ export class SessionKeyManager implements SessionAuthority {
       sessionKey: ethAddressBytes(secp256k1.getPublicKey(privKey, true)),
       expiryHeight: (await this.opts.latestHeight()) + this.grantBlocks,
       grantNonce: randomBytes(32),
+      signatureChainId: this.opts.signatureChainId,
     };
-    const data = sessionGrantTypedData(fields, await this.opts.evmChainId());
+    const data = sessionGrantTypedData(fields, this.opts.signatureChainId);
     const userSignature = await signTypedDataAs(
       this.opts.wallet,
       data,

@@ -34,6 +34,7 @@ const grantFields = {
   sessionKey: fromHex(T.session_key_hex),
   expiryHeight: BigInt(T.expiry_height),
   grantNonce: fromHex(T.grant_nonce_hex),
+  signatureChainId: EVM,
 };
 const grant: SignedSessionGrant = { ...grantFields, userSignature: fromHex(G.signature_65) };
 const fixtureSession: ActiveSession = {
@@ -75,7 +76,7 @@ describe('SessionGrant EIP-712 (account_signing_v1.json session_grant)', () => {
 
   it('SessionGrantV1 on the wire carries the transport columns', () => {
     const m = sessionGrantMessage(grant);
-    expect(m).toMatchObject({ chainId: T.chain_id, user: T.user, expiryHeight: BigInt(T.expiry_height) });
+    expect(m).toMatchObject({ chainId: T.chain_id, user: T.user, expiryHeight: BigInt(T.expiry_height), signatureChainId: EVM });
     expect(toHex(m.sessionKey)).toBe(T.session_key_hex);
     expect(toHex(m.grantNonce)).toBe(T.grant_nonce_hex);
     expect(toHex(m.userSignature)).toBe(G.signature_65);
@@ -84,7 +85,7 @@ describe('SessionGrant EIP-712 (account_signing_v1.json session_grant)', () => {
 
 describe('session-signed SDKRequest (account_signing_v1.json sdk_request_session)', () => {
   it('the session key signs the exact fixture signature with sessionGrantHash = hashStruct(grant)', async () => {
-    const env = await signSdkRequestEnvelope(reqFields, { signerAddress: USER, signer: wallet, evmChainId: EVM, session: fixtureSession });
+    const env = await signSdkRequestEnvelope(reqFields, { signerAddress: USER, signer: wallet, signatureChainId: EVM, session: fixtureSession });
     expect(toHex(sdkRequestEip712Digest(reqFields, EVM, fixtureSession.grantHash))).toBe(R.signing_digest);
     expect(R.message.sessionGrantHash).toBe(G.hash_struct);
     expect(toHex(env.signature)).toBe(R.signature_65);
@@ -97,17 +98,17 @@ describe('session-signed SDKRequest (account_signing_v1.json sdk_request_session
 
   it('refuses a grant made for another chain', async () => {
     await expect(
-      signSdkRequestEnvelope({ ...reqFields, chainId: 'trueopen-golden-2' }, { signerAddress: USER, signer: wallet, evmChainId: EVM, session: fixtureSession }),
+      signSdkRequestEnvelope({ ...reqFields, chainId: 'trueopen-golden-2' }, { signerAddress: USER, signer: wallet, signatureChainId: EVM, session: fixtureSession }),
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
   });
 
   it('refuses to session-sign OpenTask or a grant for another user', async () => {
     await expect(
-      signSdkRequestEnvelope({ ...reqFields, method: 'OpenTask' }, { signerAddress: USER, signer: wallet, evmChainId: EVM, session: fixtureSession }),
+      signSdkRequestEnvelope({ ...reqFields, method: 'OpenTask' }, { signerAddress: USER, signer: wallet, signatureChainId: EVM, session: fixtureSession }),
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
     await expect(
       signSdkRequestEnvelope(reqFields, {
-        signerAddress: 'trueopen15zs69gay5kn2029f4246etdw47ctrv4ns6facc', signer: wallet, evmChainId: EVM, session: fixtureSession,
+        signerAddress: 'trueopen15zs69gay5kn2029f4246etdw47ctrv4ns6facc', signer: wallet, signatureChainId: EVM, session: fixtureSession,
       }),
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
   });
@@ -117,8 +118,8 @@ describe('request_auth_negative_cases on session_grant and sdk_request_session',
   type Row = {
     name: string;
     base: string;
-    signed?: { signer?: string; message?: Record<string, string> };
-    verified?: { message?: Record<string, string> };
+    signed?: { signer?: string; message?: Record<string, string>; domain?: { chain_id?: string } };
+    verified?: { message?: Record<string, string>; domain?: { chain_id?: string } };
     signing_digest?: string;
     signature_65?: string;
     recovered_address?: string;
@@ -135,6 +136,7 @@ describe('request_auth_negative_cases on session_grant and sdk_request_session',
       'sdk_request_session_tampered_body_digest',
       'session_grant_other_chain',
       'session_grant_signed_by_wrong_key',
+      'session_grant_wallet_network_signature_chain_id',
     ]);
   });
 
@@ -142,11 +144,11 @@ describe('request_auth_negative_cases on session_grant and sdk_request_session',
     it(`${r.name}: signature, verifier digest and recovery`, async () => {
       const base = section(r.base);
       if (r.signed !== undefined) {
-        const data = fixtureTypedData(base, { message: r.signed.message ?? {} });
+        const data = fixtureTypedData(base, { message: r.signed.message ?? {}, domain: r.signed.domain ?? {} });
         const sig = await privateKeyTypedDataSigner(fixtureKey(r.signed.signer ?? 'account')).signTypedData(data);
         expect(toHex(sig)).toBe(r.signature_65);
       }
-      const verified = fixtureTypedData(base, { message: r.verified?.message ?? {} });
+      const verified = fixtureTypedData(base, { message: r.verified?.message ?? {}, domain: r.verified?.domain ?? {} });
       expect(toHex(typedDataDigest(verified))).toBe(r.signing_digest);
       expect(recover(r.signing_digest!, r.signature_65 ?? base.signature_65)).toBe(r.recovered_address);
     });
@@ -162,7 +164,7 @@ function countingWallet(inner: TypedDataSigner): TypedDataSigner & { prompts: Ty
 describe('SessionKeyManager', () => {
   const manager = (height: { h: bigint }, w: TypedDataSigner = wallet, extra: Partial<{ grantBlocks: number; renewBeforeBlocks: number }> = {}) =>
     new SessionKeyManager({
-      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, evmChainId: async () => EVM,
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, signatureChainId: EVM,
       latestHeight: async () => height.h, maxGrantBlocks: 400, ...extra,
     });
 
@@ -254,11 +256,11 @@ describe('IngressClient with a session', () => {
     const height = { h: 1000n };
     const w = countingWallet(wallet);
     const session = new SessionKeyManager({
-      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, evmChainId: async () => EVM,
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, signatureChainId: EVM,
       latestHeight: async () => height.h, maxGrantBlocks: 400,
     });
     const auth: IngressAuth = {
-      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, evmChainId: EVM,
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, signatureChainId: EVM,
       nonce: (() => { let n = 0; return () => new Uint8Array(32).fill(++n); })(),
       expiry: () => 1_790_000_000_000n, session,
     };
@@ -272,7 +274,7 @@ describe('IngressClient with a session', () => {
     expect(env.sessionGrant).toBeDefined();
     expect(env.signerAddress).toBe(USER);
     const g = env.sessionGrant!;
-    const hash = sessionGrantHash({ chainId: g.chainId, user: g.user, sessionKey: g.sessionKey, expiryHeight: g.expiryHeight, grantNonce: g.grantNonce });
+    const hash = sessionGrantHash({ chainId: g.chainId, user: g.user, sessionKey: g.sessionKey, expiryHeight: g.expiryHeight, grantNonce: g.grantNonce, signatureChainId: g.signatureChainId });
     const digest = sdkRequestEip712Digest(
       { chainId: env.chainId, method: env.method, sessionId: env.sessionId, taskId: env.taskId, requestNonce: env.requestNonce, expiryHeightOrTime: env.expiryHeightOrTime, bodyDigest: env.bodyDigest },
       EVM, hash,

@@ -243,7 +243,6 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
     chain = readOnlyChain(cfg.requireRest());
   }
 
-  const evmChainId = cfg.evmChainId ?? (await paramsReader.getEvmChainId());
   // On-chain task reads for the output trust anchors (accepted task_hash, winner, receipt).
   const taskReader = new RestChainReader({ baseUrl: cfg.requireRest(), fetch: fetchLike });
 
@@ -271,7 +270,7 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
       // Every user signature (order, request envelope, task data request) is EIP-712 typed
       // data signed with the account key: 65 bytes R||S||V.
       wallet: privateKeyTypedDataSigner(identity.privkey),
-      evmChainId,
+      ...(cfg.signatureChainId !== undefined ? { signatureChainId: cfg.signatureChainId } : {}),
       // Only an override: the facade reads business_denom from the hub and refuses a mismatch.
       ...(cfg.feeDenom !== undefined ? { feeDenom: cfg.feeDenom } : {}),
       taskReader,

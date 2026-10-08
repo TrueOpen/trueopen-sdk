@@ -92,7 +92,6 @@ describe('e2e: SDK readers accept the wire REST shape bodies verbatim', () => {
     world.node.verbatim.set(`/TrueOpen/hub/v1/profile/${model}/1`, shapeBody('hub_v1_queryprofileresponse'));
     try {
       expect(await world.hub.getBusinessDenom()).toBe('uusdc');
-      expect(await world.hub.getEvmChainId()).toBe(31337n);
       expect((await world.hub.getTaskGenerationLimits()).maxOutputTokens).toBe(131072n);
       expect((await world.hub.getProfile(model, 1n)).pricing).toEqual({ minOrderValue: 1n, verifyRatioBps: 1n, initialOutputPrice: 1n });
     } finally {

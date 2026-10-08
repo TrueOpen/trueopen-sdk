@@ -121,7 +121,7 @@ function makeClient(hub: unknown, seen: { pins: string[] }): TrueOpenClient {
   const factory = pinAwareFactory(seen);
   return new TrueOpenClient({
     chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n, feeDenom: 'utrueopen',
+      signatureChainId: 424242n, feeDenom: 'utrueopen',
     // The default transport used for construction is not counted in seen: openTask only goes through ingressTransportFactory.
     chain: fakeChain(), ingressTransport: pinAwareFactory({ pins: [] })('unused', FRESH),
     hub: hub as never, ingressTransportFactory: factory,

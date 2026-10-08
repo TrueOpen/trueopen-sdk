@@ -5,6 +5,7 @@ import type { TypedData } from '../signer/typed-data-signer';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
 import { fromHex, toHex } from '../util/bytes';
 import { TrueOpenError } from '../errors/errors';
+import { signatureChainIdBigInt } from '../signature-chain-id';
 
 /**
  * Authentication for the nexus task data plane.
@@ -268,14 +269,14 @@ export const TASK_DATA_EIP712_TYPES: Eip712Types = {
 };
 
 /**
- * The USER branch as EIP-712 typed data, for a TypedDataSigner (a wallet signs this). evmChainId
- * is the numeric chain ID in the EIP-712 domain, a different thing from the cosmos chain-ID
+ * The USER branch as EIP-712 typed data, for a TypedDataSigner (a wallet signs this). signatureChainId
+ * is the signer-chosen chain ID in the EIP-712 domain, a different thing from the cosmos chain-ID
  * string in fields.chainId. sessionGrantHash is 32 zero bytes when the wallet signs directly,
  * and hashStruct(SessionGrant) when a session key signs under that grant.
  */
 export function taskDataRequestTypedData(
   f: TaskDataRequestAuthFields,
-  evmChainId: bigint | number | string,
+  signatureChainId: bigint | number | string,
   sessionGrantHash: Uint8Array = new Uint8Array(HASH32),
 ): TypedData {
   validateAuthFields(f);
@@ -299,7 +300,7 @@ export function taskDataRequestTypedData(
     domain: {
       name: TASK_DATA_EIP712_DOMAIN_NAME,
       version: TASK_DATA_EIP712_DOMAIN_VERSION,
-      chainId: BigInt(evmChainId),
+      chainId: signatureChainIdBigInt(signatureChainId),
     },
     message,
   };
@@ -308,10 +309,10 @@ export function taskDataRequestTypedData(
 /** Signature digest for the USER branch (EIP-712, keccak). The signature is 65 bytes R‖S‖V. */
 export function taskDataRequestEip712Digest(
   f: TaskDataRequestAuthFields,
-  evmChainId: bigint | number | string,
+  signatureChainId: bigint | number | string,
   sessionGrantHash?: Uint8Array,
 ): Uint8Array {
-  return typedDataDigest(taskDataRequestTypedData(f, evmChainId, sessionGrantHash));
+  return typedDataDigest(taskDataRequestTypedData(f, signatureChainId, sessionGrantHash));
 }
 
 /**

@@ -62,7 +62,7 @@ export async function startWorld(): Promise<World> {
       chainId: w.CHAIN_ID,
       userAddress: w.USER.address,
       wallet: privateKeyTypedDataSigner(w.USER.privKey),
-      evmChainId: w.EVM_CHAIN_ID,
+      signatureChainId: w.EVM_CHAIN_ID,
       chain: readOnlyChain,
       hub,
       taskReader,

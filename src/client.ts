@@ -5,6 +5,7 @@ import { IngressClient } from './transport/ingress-client';
 import type { OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
 import { SessionKeyManager } from './session/session-grant';
 import { toAccountAddress } from './codec/address';
+import { DEFAULT_SIGNATURE_CHAIN_ID, signatureChainIdBigInt } from './signature-chain-id';
 import type {
   PrepareChallengeResponse,
   GetTaskEventsResponse,
@@ -83,11 +84,13 @@ export interface TrueOpenClientConfig {
    */
   readonly taskDataExpiryBlocks?: number;
   /**
-   * The chain's numeric EVM chain ID (`params.phase0.evm_chain_id`): the chainId of every
-   * EIP-712 domain (order, SDK request, Task data request, session grant), a different thing
-   * from the cosmos chainId string above. Defaults to reading it once from `hub.getEvmChainId()`.
+   * The signer-chosen EIP-712 domain chainId: the `chainId` of every EIP-712 domain (order, SDK
+   * request, Task data request, session grant), a different thing from the cosmos chainId string
+   * above. A browser wallet signs under its active network, so pass that network's numeric chain
+   * ID here. Defaults to `1` (Ethereum mainnet) for session keys and server-side keys, where
+   * there is no wallet network to ask (ADR-0033).
    */
-  readonly evmChainId?: bigint | number | string;
+  readonly signatureChainId?: bigint | number | string;
   /**
    * Opt-in session grants, off by default. When set, the wallet signs one SessionGrant for an
    * in-memory session key, and that key signs SubscribeOutput, AckOutput, GetTaskEvents,
@@ -153,8 +156,6 @@ export type FacadeHubReader = TaskBuilderReader &
     getCurrentServiceKey?(participantType: ParticipantTypeName, operatorAddress: string): Promise<ServiceKeyBinding>;
     /** Latest height, for the task-data request expiry. */
     getLatestHeight(): Promise<bigint>;
-    /** params.phase0.evm_chain_id, when config.evmChainId is not given. */
-    getEvmChainId?(): Promise<bigint>;
   };
 
 /** On-chain task reads needed to derive the output trust anchors (RestChainReader satisfies it). */
@@ -392,7 +393,6 @@ export class TrueOpenClient {
 
   /** The session key and its grant, when config.session is set. */
   readonly sessionGrants: SessionKeyManager | undefined;
-  private evmChainIdPromise: Promise<bigint> | undefined;
 
   constructor(cfg: TrueOpenClientConfig) {
     // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
@@ -407,7 +407,7 @@ export class TrueOpenClient {
             chainId: cfg.chainId,
             userAddress: cfg.userAddress,
             wallet: cfg.wallet,
-            evmChainId: () => this.resolveEvmChainId(),
+            signatureChainId: this.signatureChainId(),
             latestHeight: () => this.latestHeight('a session grant expiry'),
             ...cfg.session,
           });
@@ -424,7 +424,7 @@ export class TrueOpenClient {
       chainId: this.cfg.chainId,
       userAddress: this.cfg.userAddress,
       wallet: this.cfg.wallet,
-      evmChainId: () => this.resolveEvmChainId(),
+      signatureChainId: this.signatureChainId(),
       nonce: () => this.nextNonce(),
       expiry: () => this.nextExpiry(),
       ...(this.sessionGrants !== undefined ? { session: this.sessionGrants } : {}),
@@ -439,25 +439,9 @@ export class TrueOpenClient {
     return hub.getLatestHeight();
   }
 
-  /**
-   * The chain's EVM chain ID: config.evmChainId, else read once from the hub. It never changes
-   * for a chain, so the first successful read is kept.
-   */
-  async resolveEvmChainId(): Promise<bigint> {
-    if (this.cfg.evmChainId !== undefined) return BigInt(this.cfg.evmChainId);
-    const read = this.cfg.hub?.getEvmChainId;
-    if (read === undefined) {
-      throw new TrueOpenError(
-        'SDK_LOCAL',
-        'SDK_LOCAL_EVM_CHAIN_ID_UNCONFIGURED',
-        'the EVM chain ID feeds every EIP-712 signature: set config.evmChainId or a hub reader with getEvmChainId',
-      );
-    }
-    this.evmChainIdPromise ??= read.call(this.cfg.hub).catch((e: unknown) => {
-      this.evmChainIdPromise = undefined;
-      throw e;
-    });
-    return this.evmChainIdPromise;
+  /** The signer-chosen EIP-712 domain chainId: config.signatureChainId, else the default 1. */
+  signatureChainId(): bigint {
+    return signatureChainIdBigInt(this.cfg.signatureChainId ?? DEFAULT_SIGNATURE_CHAIN_ID);
   }
 
   createSession(label?: string): Promise<SessionHandle> {
@@ -491,7 +475,7 @@ export class TrueOpenClient {
         'openTask requires config.hub and config.ingressTransportFactory',
       );
     }
-    const evmChainId = await this.resolveEvmChainId();
+    const signatureChainId = this.signatureChainId();
     // Both go into the signature or decide whether the chain accepts the order, and a
     // mistake in either only surfaces after nexus accepted the order: the task just vanishes.
     const feeDenom = await this.resolveFeeDenom();
@@ -522,7 +506,7 @@ export class TrueOpenClient {
       requestNonce: this.nextNonce(),
       idempotencyKey: params.idempotencyKey,
       wallet: this.cfg.wallet,
-      orderEip712: { evmChainId, feeDenom },
+      orderEip712: { signatureChainId, feeDenom },
       chainId: this.cfg.chainId,
       ...(params.inputMediaType !== undefined ? { inputMediaType: params.inputMediaType } : {}),
       ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),

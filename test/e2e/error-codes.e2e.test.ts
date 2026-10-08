@@ -45,7 +45,7 @@ async function caught(p: Promise<unknown>): Promise<TrueOpenError> {
 /** A raw envelope signed by the user's key over exactly `fields`. */
 async function rawEnvelope(fields: SdkRequestFields, signerAddress = w.USER.address): Promise<SDKRequestEnvelopeV2> {
   const signature = await wallet().signTypedData(sdkRequestTypedData(fields, w.EVM_CHAIN_ID));
-  return envelopeMessage({ ...fields, requestDomain: 'TRUEOPEN_SDK_REQUEST_V2', endpoint: `/nexus.v1.IngressAPI/${fields.method}`, signerAddress, signature });
+  return envelopeMessage({ ...fields, requestDomain: 'TRUEOPEN_SDK_REQUEST_V2', endpoint: `/nexus.v1.IngressAPI/${fields.method}`, signerAddress, signatureChainId: w.EVM_CHAIN_ID, signature });
 }
 
 async function signedOpenTask(): Promise<OpenTaskInput> {
@@ -54,7 +54,7 @@ async function signedOpenTask(): Promise<OpenTaskInput> {
   const built = await buildOpenTaskRequest({
     order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
     requestNonce: new Uint8Array(32).fill(4), idempotencyKey: 'k', wallet: wallet(),
-    orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
+    orderEip712: { signatureChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
   });
   return built.input;
 }

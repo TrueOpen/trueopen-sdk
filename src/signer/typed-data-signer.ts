@@ -135,9 +135,11 @@ export interface Eip1193Provider {
  * (b) A browser wallet through EIP-1193 `eth_signTypedData_v4`.
  *
  * `address` is the 0x account that signs (the EVM form of the user's Bech32 address). The
- * wallet's active network must have chain ID equal to the chain's `evm_chain_id`: a wallet such
- * as MetaMask refuses to sign typed data whose domain chainId differs from its active chain.
- * That means adding a network whose RPC answers `eth_chainId` with the TrueOpen EVM chain ID.
+ * wallet signs under its active network's chain ID, carried as the signer-chosen
+ * `signature_chain_id` (ADR-0033): pass the wallet's network chain ID as
+ * `TrueOpenClientConfig.signatureChainId`. A wallet such as MetaMask refuses to sign typed data
+ * whose domain chainId differs from its active chain, so the caller must supply the value the
+ * wallet is on; no network switch or `eth_chainId` RPC on the chain is needed.
  */
 export function eip1193TypedDataSigner(opts: { readonly provider: Eip1193Provider; readonly address: string }): TypedDataSigner {
   if (!/^0x[0-9a-fA-F]{40}$/.test(opts.address)) {

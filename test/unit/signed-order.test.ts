@@ -44,7 +44,7 @@ const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fil
 const amount = (atomicUnits: string): AmountV1 => ({ atomicUnits });
 const accAddress = (raw: Uint8Array): string => bech32.encode('trueopen', bech32.toWords(raw));
 /** The two fields the order's EIP-712 signing needs that are not in TaskOrderV3. */
-const ORDER_EIP712 = { evmChainId: 424242n, feeDenom: 'utrueopen' };
+const ORDER_EIP712 = { signatureChainId: 424242n, feeDenom: 'utrueopen' };
 
 // The same order as the node golden fixture in task-order.test.ts.
 function fixture(): TaskOrderV3 {
@@ -155,19 +155,19 @@ describe('SignedOrderV2 encoding', () => {
   const GOLDEN = 'a3eba489b6de7e92cdc00a445c1bcc5744ed76ee358fd885300ae285168441b7';
 
   it('task_hash is unchanged after a proto round trip (a drift gate between the hand-written view and the generated type)', () => {
-    const bytes = encodeSignedOrder(fixture(), rep(0xaa, 64));
+    const bytes = encodeSignedOrder(fixture(), ORDER_EIP712, rep(0xaa, 64));
     expect(taskOrderHashHex(viewFromProto(bytes))).toBe(GOLDEN);
   });
 
   it("round-tripped bytes are byte-for-byte identical -- no unknown fields (matches nexus's DiscardUnknown + proto.Equal check)", () => {
-    const bytes = encodeSignedOrder(fixture(), rep(0xaa, 64));
+    const bytes = encodeSignedOrder(fixture(), ORDER_EIP712, rep(0xaa, 64));
     const reencoded = toBinary(SignedOrderV2Schema, decodeSignedOrder(bytes));
     expect(toHex(reencoded)).toBe(toHex(bytes));
   });
 
   it('signature_scheme is secp256k1, and user_signature keeps its 64 bytes', () => {
     const sig = rep(0xbb, 64);
-    const decoded = decodeSignedOrder(encodeSignedOrder(fixture(), sig));
+    const decoded = decodeSignedOrder(encodeSignedOrder(fixture(), ORDER_EIP712, sig));
     expect(decoded.signatureScheme).toBe(SIGNATURE_SCHEME);
     expect(toHex(decoded.userSignature)).toBe(toHex(sig));
   });
@@ -186,6 +186,7 @@ describe('SignedOrderV2 encoding', () => {
     expect(verifyEip712(r.signingDigest, r.userSignature, ethSecp256k1Address(pub, 'trueopen'), 'trueopen')).toBe(true);
     // The signature does end up in the envelope.
     expect(toHex(decodeSignedOrder(r.bytes).userSignature)).toBe(toHex(r.userSignature));
+    expect(decodeSignedOrder(r.bytes).signatureChainId).toBe(ORDER_EIP712.signatureChainId);
   });
 
   it('signAndEncodeOrder refuses a wallet that is not the order user', async () => {

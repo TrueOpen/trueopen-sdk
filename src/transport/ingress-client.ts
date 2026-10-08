@@ -110,10 +110,11 @@ export interface IngressAuth {
   /** The user's wallet: signs EIP-712 typed data (65 bytes R||S||V) as userAddress. */
   readonly wallet: TypedDataSigner;
   /**
-   * The chain's EVM chain ID (`params.phase0.evm_chain_id`), the chainId of every EIP-712
-   * domain. A function is called for each request, so the caller decides how to cache it.
+   * The signer-chosen EIP-712 domain chainId (1..MaxInt64): the chainId of every EIP-712
+   * domain. A browser wallet signs under its active network; a session key or server uses a
+   * fixed value (see DEFAULT_SIGNATURE_CHAIN_ID).
    */
-  readonly evmChainId: bigint | (() => Promise<bigint>);
+  readonly signatureChainId: bigint;
   /** Exactly 32 bytes from a CSPRNG per call. */
   readonly nonce: () => Uint8Array;
   /** Request expiry as Unix milliseconds (at or above 10^12). */
@@ -131,10 +132,6 @@ export interface IngressAuth {
 /** The Builder refused the attached session grant as outside its height window. */
 export function isSessionGrantExpired(e: unknown): boolean {
   return e instanceof TrueOpenError && (e.code === 'SDK_AUTH_SESSION_GRANT_EXPIRED' || e.code === 'DATA_ACCESS_SESSION_GRANT_EXPIRED');
-}
-
-async function resolveEvmChainId(auth: IngressAuth): Promise<bigint> {
-  return typeof auth.evmChainId === 'function' ? auth.evmChainId() : auth.evmChainId;
 }
 
 function nonce32(auth: IngressAuth): Uint8Array {
@@ -526,8 +523,8 @@ export class IngressClient {
         `the session grant is for ${session.grant.user}, not ${auth.userAddress}`,
       );
     }
-    const evmChainId = await resolveEvmChainId(auth);
-    const data = taskDataRequestTypedData(fields, evmChainId, session?.grantHash);
+    const signatureChainId = auth.signatureChainId;
+    const data = taskDataRequestTypedData(fields, signatureChainId, session?.grantHash);
     const signature =
       session === undefined
         ? await signTypedDataAs(auth.wallet, data, canonicalAccountAddressBytes('requester_address', auth.userAddress))
@@ -543,6 +540,7 @@ export class IngressClient {
       serviceAuthorizationNonce: fields.serviceAuthorizationNonce,
       requestNonce: fields.requestNonce,
       expiryHeight: fields.expiryHeight,
+      signatureChainId,
       signature,
       ...(session !== undefined ? { sessionGrant: sessionGrantMessage(session.grant) } : {}),
     });
@@ -628,7 +626,7 @@ export class IngressClient {
       {
         signerAddress: a.userAddress,
         signer: a.wallet,
-        evmChainId: await resolveEvmChainId(a),
+        signatureChainId: a.signatureChainId,
         chainId: a.chainId,
         ...(session !== undefined ? { session } : {}),
       },
@@ -648,6 +646,7 @@ export function envelopeMessage(e: SignedSdkRequestEnvelope) {
     requestNonce: e.requestNonce,
     expiryHeightOrTime: e.expiryHeightOrTime,
     bodyDigest: e.bodyDigest,
+    signatureChainId: e.signatureChainId,
     signerAddress: e.signerAddress,
     signature: e.signature,
     ...(e.sessionGrant !== undefined ? { sessionGrant: sessionGrantMessage(e.sessionGrant) } : {}),

@@ -132,21 +132,6 @@ export class HubReader {
   }
 
   /**
-   * The **numeric EVM chain ID** registered on chain (`params.phase0.evm_chain_id`).
-   *
-   * This feeds the EIP-712 domain separator, and both order signing and the task-data
-   * retrieval-credential signature depend on it. **Do not hardcode a default**: the wire
-   * golden vectors use 424242, while devnet actually uses 31337 -- getting this wrong
-   * produces a different domain separator so the signature fails to verify, and the
-   * error will just say "invalid signature" with no pointer back to this value. The
-   * node side reads it from the same place (`d.hub.GetHubParams(ctx).EVMChainID` in
-   * app/account_ante.go).
-   */
-  async getEvmChainId(): Promise<bigint> {
-    return u64(await this.getPhase0Params(), 'evm_chain_id');
-  }
-
-  /**
    * The chain's business denomination (`params.phase0.business_denom`).
    *
    * The order's EIP-712 `feeDenom` must equal it: the Keeper rebuilds the digest with this

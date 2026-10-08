@@ -17,9 +17,8 @@ afterEach(async () => { await world.close(); });
 
 describe('e2e: full flow through the SDK facade', () => {
   it('reads params, creates a session, opens a task on 3 Builders, streams, fetches and sees it settle', async () => {
-    // 1. Chain params: both signature inputs come from chain, never from constants.
+    // 1. Chain params: the fee denom comes from chain, never from constants.
     expect(await world.hub.getBusinessDenom()).toBe(w.BUSINESS_DENOM);
-    expect(await world.hub.getEvmChainId()).toBe(w.EVM_CHAIN_ID);
 
     // 2. createSession: a real ethsecp256k1 DIRECT signature over a real TxRaw, sent to the fake RPC.
     const writer = await world.connectWriter();

@@ -118,7 +118,7 @@ describe('e2e: session grants', () => {
     const built = await buildOpenTaskRequest({
       order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
       requestNonce: new Uint8Array(32).fill(8), idempotencyKey: 'k',
-      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
+      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { signatureChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
     });
     // The SDK never does this; re-sign the envelope with the session key and attach the grant by hand.
     const e = built.input.requestEnvelope;
@@ -154,7 +154,7 @@ describe('e2e: session grants', () => {
           chainId: w.CHAIN_ID, method: 'AckOutput', sessionId, taskId: STREAM.task_id, requestNonce: new Uint8Array(32).fill(signedBy === 'wallet' ? 1 : 2),
           expiryHeightOrTime: BigInt(Date.now() + 60_000), bodyDigest: ackOutputBodyDigest(sessionId, STREAM.task_id, 3n),
         },
-        { signerAddress: w.USER.address, signer: privateKeyTypedDataSigner(w.USER.privKey), evmChainId: w.EVM_CHAIN_ID, ...(session !== undefined ? { session } : {}) },
+        { signerAddress: w.USER.address, signer: privateKeyTypedDataSigner(w.USER.privKey), signatureChainId: w.EVM_CHAIN_ID, ...(session !== undefined ? { session } : {}) },
       );
       const err = await caught(client.ingress.raw.ackOutput({ sessionId, taskId: STREAM.task_id, lastSeq: 2n, requestEnvelope: envelopeMessage(env) }));
       expect(err).toMatchObject({ code: 'SDK_AUTH_INVALID_SIGNATURE', category: 'auth' });

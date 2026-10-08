@@ -274,7 +274,7 @@ describe('e2e failures: nexus error codes map to typed categories', () => {
     const body = ackOutputBodyDigest(sessionId, STREAM.task_id, 0n);
     const fields = { chainId: w.CHAIN_ID, method: 'AckOutput', sessionId, taskId: STREAM.task_id, requestNonce: new Uint8Array(32).fill(5), expiryHeightOrTime: BigInt(Date.now() + 60_000), bodyDigest: body };
     const signature = await privateKeyTypedDataSigner(w.BUILDERS[5]!.privKey).signTypedData(sdkRequestTypedData(fields, w.EVM_CHAIN_ID));
-    const env = envelopeMessage({ ...fields, requestDomain: 'TRUEOPEN_SDK_REQUEST_V2', endpoint: '/nexus.v1.IngressAPI/AckOutput', signerAddress: w.USER.address, signature });
+    const env = envelopeMessage({ ...fields, requestDomain: 'TRUEOPEN_SDK_REQUEST_V2', endpoint: '/nexus.v1.IngressAPI/AckOutput', signerAddress: w.USER.address, signatureChainId: w.EVM_CHAIN_ID, signature });
     const e = await caught(world.client(0).ingress.raw.ackOutput({ sessionId, taskId: STREAM.task_id, lastSeq: 0n, requestEnvelope: env }));
     expect(e).toMatchObject({ family: 'SDK_AUTH', code: 'SDK_AUTH_INVALID_SIGNATURE', category: 'auth', retriable: false });
     expect(world.nexus[0]!.verifications.at(-1)?.outcome).toContain('does not recover to signer_address');
@@ -325,7 +325,7 @@ describe('e2e: the fake nexus checks are not vacuous', () => {
     const built = await buildOpenTaskRequest({
       order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
       requestNonce: new Uint8Array(32).fill(7), idempotencyKey: 'k',
-      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { evmChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
+      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { signatureChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
     });
     return built.input;
   }

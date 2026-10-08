@@ -73,7 +73,7 @@ const req: TaskOrderRequest = {
 
 const order = buildTaskOrder(ctx, req);
 /** The two extra fields the order's EIP-712 signing needs: the numeric EVM chain ID and the fee denom, neither of which lives in TaskOrderV2. */
-const ORDER_EIP712 = { evmChainId: 424242n, feeDenom: 'utrueopen' };
+const ORDER_EIP712 = { signatureChainId: 424242n, feeDenom: 'utrueopen' };
 const TASK_ID = deriveTaskId(SESSION, 1n);
 
 const base = {
@@ -155,7 +155,7 @@ describe('buildOpenTaskRequest', () => {
     expect(toHex(env.bodyDigest)).toBe(toHex(expected));
     expect(env.signature).toHaveLength(65);
     expect(env.signerAddress).toBe(USER);
-    expect(recoverEip712Address(sdkRequestEip712Digest(env, ORDER_EIP712.evmChainId), env.signature, 'trueopen')).toBe(USER);
+    expect(recoverEip712Address(sdkRequestEip712Digest(env, ORDER_EIP712.signatureChainId), env.signature, 'trueopen')).toBe(USER);
   });
 
   it('payload_ref / input_hash match the payload', async () => {

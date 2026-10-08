@@ -119,6 +119,7 @@ export type {
   DecodingParamsV1,
   DeadlinePolicyV1,
 } from './order/task-order';
+export { DEFAULT_SIGNATURE_CHAIN_ID, signatureChainIdBigInt } from './signature-chain-id';
 export {
   buildTaskOrder,
   resolveTaskOrderContext,

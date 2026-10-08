@@ -38,7 +38,7 @@ describe('account addresses: canonical lowercase Bech32, prefix trueopen, 20 byt
   });
 
   it('the client converts a 0x userAddress and refuses a non-account prefix', () => {
-    const base = { chainId: 'trueopen-golden-1', wallet: privateKeyTypedDataSigner(fixtureKey('account')), evmChainId: 424242n, chain: {} as never, ingressTransport: createRouterTransport(() => {}) };
+    const base = { chainId: 'trueopen-golden-1', wallet: privateKeyTypedDataSigner(fixtureKey('account')), signatureChainId: 424242n, chain: {} as never, ingressTransport: createRouterTransport(() => {}) };
     const client = new TrueOpenClient({ ...base, userAddress: ACCOUNT_SIGNING.account.address_0x });
     expect(client.ingressAuth().userAddress).toBe(USER);
     expect(() => new TrueOpenClient({ ...base, userAddress: ACCOUNT_SIGNING.account.operator_bech32 })).toThrow(/account prefix/);
@@ -50,11 +50,11 @@ describe('account addresses: canonical lowercase Bech32, prefix trueopen, 20 byt
       requestNonce: new Uint8Array(32), expiryHeightOrTime: 1_790_000_000_000n, bodyDigest: new Uint8Array(32),
     };
     const signer = privateKeyTypedDataSigner(fixtureKey('account'));
-    await expect(signSdkRequestEnvelope(fields, { signerAddress: ACCOUNT_SIGNING.account.operator_bech32, signer, evmChainId: 424242n }))
+    await expect(signSdkRequestEnvelope(fields, { signerAddress: ACCOUNT_SIGNING.account.operator_bech32, signer, signatureChainId: 424242n }))
       .rejects.toMatchObject({ code: 'SDK_LOCAL_ADDRESS_NOT_CANONICAL' });
-    await expect(signSdkRequestEnvelope({ ...fields, chainId: 'trueopen-golden-2' }, { signerAddress: USER, signer, evmChainId: 424242n, chainId: 'trueopen-golden-1' }))
+    await expect(signSdkRequestEnvelope({ ...fields, chainId: 'trueopen-golden-2' }, { signerAddress: USER, signer, signatureChainId: 424242n, chainId: 'trueopen-golden-1' }))
       .rejects.toMatchObject({ code: 'SDK_LOCAL_CHAIN_ID_MISMATCH' });
-    await expect(signSdkRequestEnvelope(fields, { signerAddress: USER, signer, evmChainId: 424242n, chainId: 'trueopen-golden-1' })).resolves.toBeDefined();
+    await expect(signSdkRequestEnvelope(fields, { signerAddress: USER, signer, signatureChainId: 424242n, chainId: 'trueopen-golden-1' })).resolves.toBeDefined();
   });
 });
 

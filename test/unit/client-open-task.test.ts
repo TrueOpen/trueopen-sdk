@@ -104,13 +104,13 @@ function acceptTransport(seen: { calls: number; frames: OpenTaskRequest[] }): Tr
   });
 }
 
-function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }, opts: { noEvmChainId?: boolean } = {}): TrueOpenClient {
+function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }): TrueOpenClient {
   return new TrueOpenClient({
     chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
     chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
     hub, ingressTransportFactory: () => acceptTransport(seen),
     nonce: () => new Uint8Array(32).fill(1),
-    ...(opts.noEvmChainId === true ? {} : { evmChainId: 424242n }),
+    signatureChainId: 424242n,
     feeDenom: 'utrueopen',
   });
 }
@@ -153,7 +153,7 @@ describe('TrueOpenClient.openTask', () => {
     const contacted: string[] = [];
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n, feeDenom: 'utrueopen',
+      signatureChainId: 424242n, feeDenom: 'utrueopen',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub: rotatingHub,
       ingressTransportFactory: (uri) => {
@@ -231,7 +231,7 @@ describe('TrueOpenClient.openTask', () => {
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER,
       wallet: privateKeyTypedDataSigner(fromHex('02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021')),
-      evmChainId: 424242n, feeDenom: 'utrueopen',
+      signatureChainId: 424242n, feeDenom: 'utrueopen',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub, ingressTransportFactory: () => acceptTransport(seen),
     });
@@ -241,23 +241,18 @@ describe('TrueOpenClient.openTask', () => {
     expect(seen.calls).toBe(0);
   });
 
-  it('the EVM chain ID defaults to the hub, and without either source openTask refuses to sign', async () => {
-    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
-    await expect(
-      makeClient(seen, { noEvmChainId: true }).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
-    ).rejects.toMatchObject({ code: 'SDK_LOCAL_EVM_CHAIN_ID_UNCONFIGURED' });
-    const fromHub = new TrueOpenClient({
-      chainId: 'trueopen-localnet-1', userAddress: USER, wallet, feeDenom: 'utrueopen',
+  it('signature_chain_id defaults to 1 when not configured', () => {
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
-      hub: Object.assign(Object.create(hub) as object, { getEvmChainId: async () => 424242n }) as never, ingressTransportFactory: () => acceptTransport(seen),
     });
-    expect(await fromHub.resolveEvmChainId()).toBe(424242n);
+    expect(client.signatureChainId()).toBe(1n);
   });
 
   it('throws when hub/transportFactory is not configured', async () => {
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n, feeDenom: 'utrueopen',
+      signatureChainId: 424242n, feeDenom: 'utrueopen',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       nonce: () => new Uint8Array(32).fill(1),
     });
@@ -279,7 +274,7 @@ describe('TrueOpenClient.openTask', () => {
     });
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n,
+      signatureChainId: 424242n,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub,
       ingressTransportFactory: (uri) => (uri.includes(ADDRS[1]!) ? rejecting : acceptTransport(seen)),
@@ -309,7 +304,7 @@ describe('TrueOpenClient.openTask', () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n,
+      signatureChainId: 424242n,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub: { ...(hub as object), getBusinessDenom: async () => 'uchain' } as never,
       ingressTransportFactory: () => acceptTransport(seen),
@@ -323,7 +318,7 @@ describe('TrueOpenClient.openTask', () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n, feeDenom: 'uusdc',
+      signatureChainId: 424242n, feeDenom: 'uusdc',
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub, ingressTransportFactory: () => acceptTransport(seen),
       nonce: () => new Uint8Array(32).fill(1),
@@ -338,7 +333,7 @@ describe('TrueOpenClient.openTask', () => {
     const withPricing = (minOrderValue: bigint, verifyRatioBps: bigint): TrueOpenClient =>
       new TrueOpenClient({
         chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-        evmChainId: 424242n,
+        signatureChainId: 424242n,
         chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
         hub: {
           ...(hub as object),
@@ -363,7 +358,7 @@ describe('TrueOpenClient.openTask', () => {
     const { getProfile: _drop, ...noProfile } = hub as unknown as Record<string, unknown>;
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-      evmChainId: 424242n,
+      signatureChainId: 424242n,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub: noProfile as never, ingressTransportFactory: () => acceptTransport(seen),
       nonce: () => new Uint8Array(32).fill(1),
@@ -392,7 +387,7 @@ describe('request nonce without globalThis.crypto (node 18)', () => {
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
       hub, ingressTransportFactory: () => acceptTransport(seen),
-      evmChainId: 424242n, feeDenom: 'utrueopen',
+      signatureChainId: 424242n, feeDenom: 'utrueopen',
       // No `nonce`: the SDK has to find its own random source.
     });
 

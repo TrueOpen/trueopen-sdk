@@ -153,7 +153,7 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
       chainId: 'trueopen-devnet-1', userAddress: USER,
       chain: fakeChain(chainCap), ingressTransport: fakeTransport(ingressCap),
       wallet: privateKeyTypedDataSigner(PRIV),
-      evmChainId: 424242n, feeDenom: 'utrueopen',
+      signatureChainId: 424242n, feeDenom: 'utrueopen',
       hub, ingressTransportFactory: () => fakeTransport(ingressCap),
       nonce: () => new Uint8Array(32).fill(1), expiry: () => 1893456000000n,
     });

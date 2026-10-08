@@ -5,6 +5,7 @@ import { canonicalAccountAddressBytes } from '../codec/address';
 import { strictHash32 } from '../codec/hash32';
 export { strictHash32 };
 import { TrueOpenError } from '../errors/errors';
+import { signatureChainIdBigInt } from '../signature-chain-id';
 import type { ActiveSession, SignedSessionGrant } from '../session/session-grant';
 
 /**
@@ -13,7 +14,7 @@ import type { ActiveSession, SignedSessionGrant } from '../session/session-grant
  *
  * The signature is EIP-712 typed data under the domain
  *   EIP712Domain(string name,string version,uint256 chainId)
- *   name "TrueOpen SDK Request", version "1", chainId = the chain's evm_chain_id
+ *   name "TrueOpen SDK Request", version "1", chainId = signature_chain_id
  * over
  *   SDKRequest(string chainId,string method,string endpoint,bytes32 sessionId,bytes32 taskId,
  *     bytes32 requestNonce,uint64 expiryHeightOrTime,bytes32 bodyDigest,bytes32 sessionGrantHash)
@@ -60,9 +61,9 @@ export const SDK_REQUEST_EIP712_TYPES: Eip712Types = {
   ],
 };
 
-/** The SDK Request EIP-712 domain for an EVM chain ID. */
-export function sdkRequestEip712Domain(evmChainId: bigint): { name: string; version: string; chainId: bigint } {
-  return { name: SDK_REQUEST_EIP712_DOMAIN_NAME, version: SDK_REQUEST_EIP712_DOMAIN_VERSION, chainId: evmChainId };
+/** The SDK Request EIP-712 domain for a signer-chosen chain ID. */
+export function sdkRequestEip712Domain(signatureChainId: bigint): { name: string; version: string; chainId: bigint } {
+  return { name: SDK_REQUEST_EIP712_DOMAIN_NAME, version: SDK_REQUEST_EIP712_DOMAIN_VERSION, chainId: signatureChainIdBigInt(signatureChainId) };
 }
 
 /** The signed fields of an SDK request, in transport form. */
@@ -94,7 +95,7 @@ export function ingressEndpoint(method: string): string {
 }
 
 /** The SDKRequest typed data; refuses anything the verifier could not project. */
-export function sdkRequestTypedData(f: SdkRequestFields, evmChainId: bigint, sessionGrantHash: Uint8Array = new Uint8Array(32)): TypedData {
+export function sdkRequestTypedData(f: SdkRequestFields, signatureChainId: bigint, sessionGrantHash: Uint8Array = new Uint8Array(32)): TypedData {
   if (f.chainId === '') throw malformed('chain_id must not be empty');
   if (f.requestNonce.length !== 32) throw malformed(`request_nonce must be exactly 32 bytes, got ${f.requestNonce.length}`);
   if (f.expiryHeightOrTime <= 0n || f.expiryHeightOrTime > INT64_MAX) {
@@ -105,7 +106,7 @@ export function sdkRequestTypedData(f: SdkRequestFields, evmChainId: bigint, ses
   return {
     types: SDK_REQUEST_EIP712_TYPES,
     primaryType: 'SDKRequest',
-    domain: sdkRequestEip712Domain(evmChainId),
+    domain: sdkRequestEip712Domain(signatureChainId),
     message: {
       chainId: f.chainId,
       method: f.method,
@@ -121,14 +122,16 @@ export function sdkRequestTypedData(f: SdkRequestFields, evmChainId: bigint, ses
 }
 
 /** The 32-byte signing digest keccak256(0x19 0x01 || domainSeparator || hashStruct(SDKRequest)). */
-export function sdkRequestEip712Digest(f: SdkRequestFields, evmChainId: bigint, sessionGrantHash?: Uint8Array): Uint8Array {
-  return typedDataDigest(sdkRequestTypedData(f, evmChainId, sessionGrantHash));
+export function sdkRequestEip712Digest(f: SdkRequestFields, signatureChainId: bigint, sessionGrantHash?: Uint8Array): Uint8Array {
+  return typedDataDigest(sdkRequestTypedData(f, signatureChainId, sessionGrantHash));
 }
 
 /** A signed SDKRequestEnvelopeV2, ready to put on the wire. */
 export interface SignedSdkRequestEnvelope extends SdkRequestFields {
   readonly requestDomain: typeof SDK_REQUEST_DOMAIN;
   readonly endpoint: string;
+  /** The signer-chosen EIP-712 domain chainId (field 14 on the wire). */
+  readonly signatureChainId: bigint;
   /** The user's canonical Bech32 address (the granting user when a session key signed). */
   readonly signerAddress: string;
   /** 65 bytes R||S||V. */
@@ -150,7 +153,7 @@ export async function signSdkRequestEnvelope(
   opts: {
     readonly signerAddress: string;
     readonly signer: TypedDataSigner;
-    readonly evmChainId: bigint;
+    readonly signatureChainId: bigint;
     readonly session?: ActiveSession;
     /**
      * The configured chain. The envelope chain_id must be the chain's own ID; a request built
@@ -178,7 +181,7 @@ export async function signSdkRequestEnvelope(
   if (s !== undefined && s.grant.chainId !== fields.chainId) {
     throw malformed(`the session grant is for chain ${s.grant.chainId}, not ${fields.chainId}`);
   }
-  const data = sdkRequestTypedData(fields, opts.evmChainId, s?.grantHash);
+  const data = sdkRequestTypedData(fields, opts.signatureChainId, s?.grantHash);
   const signature =
     s === undefined
       ? await signTypedDataAs(opts.signer, data, canonicalAccountAddressBytes('signer_address', opts.signerAddress))
@@ -187,6 +190,7 @@ export async function signSdkRequestEnvelope(
     requestDomain: SDK_REQUEST_DOMAIN,
     ...fields,
     endpoint: ingressEndpoint(fields.method),
+    signatureChainId: opts.signatureChainId,
     signerAddress: opts.signerAddress,
     signature,
     ...(s !== undefined ? { sessionGrant: s.grant } : {}),

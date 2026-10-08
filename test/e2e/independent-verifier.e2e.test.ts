@@ -17,7 +17,6 @@ const ACCOUNT_PUB = unhex(F.account.pub_compressed);
 function ctx(over: Partial<v.AuthContext> = {}): v.AuthContext {
   return {
     chainId: 'trueopen-golden-1',
-    evmChainId: 424242n,
     height: 1200n,
     // The session vector's expiry is Unix ms 1790000000000; the verifier's clock is before it.
     nowMs: 1_700_000_000_000n,
@@ -32,7 +31,7 @@ function ctx(over: Partial<v.AuthContext> = {}): v.AuthContext {
 const T = F.session_grant.transport;
 const grant = (over: Partial<v.GrantLike> = {}): v.GrantLike => ({
   chainId: T.chain_id, user: T.user, sessionKey: unhex(T.session_key_hex), expiryHeight: BigInt(T.expiry_height),
-  grantNonce: unhex(T.grant_nonce_hex), userSignature: unhex(F.session_grant.signature_65), ...over,
+  grantNonce: unhex(T.grant_nonce_hex), userSignature: unhex(F.session_grant.signature_65), signatureChainId: BigInt(F.session_grant.signature_chain_id), ...over,
 });
 
 /** The envelope of a request section, with transport overrides. */
@@ -42,7 +41,7 @@ function envelope(name: 'sdk_request' | 'sdk_request_session', over: Partial<v.E
   return {
     requestDomain: s.envelope.request_domain, chainId: m.chainId, method: m.method, endpoint: m.endpoint,
     sessionId: m.sessionId, taskId: m.taskId, requestNonce: unhex(m.requestNonce), expiryHeightOrTime: BigInt(m.expiryHeightOrTime),
-    bodyDigest: unhex(m.bodyDigest), signerAddress: s.envelope.signer_address, signature: unhex(s.signature_65),
+    bodyDigest: unhex(m.bodyDigest), signerAddress: s.envelope.signer_address, signature: unhex(s.signature_65), signatureChainId: BigInt(s.signature_chain_id),
     ...(name === 'sdk_request_session' ? { sessionGrant: grant() } : {}),
     ...over,
   };
@@ -108,13 +107,13 @@ function decide(r: Row): string {
       const c = ctx({
         height: 1000n,
         ...(vm['chainId'] !== undefined ? { chainId: vm['chainId'] } : {}),
-        ...(r.verified?.domain?.chain_id !== undefined ? { evmChainId: BigInt(r.verified.domain.chain_id) } : {}),
       });
       const over: { -readonly [K in keyof v.EnvelopeLike]?: v.EnvelopeLike[K] } = { ...sig };
       if (sm['taskId'] !== undefined) over.taskId = sm['taskId'];
       if (sm['expiryHeightOrTime'] !== undefined) over.expiryHeightOrTime = BigInt(sm['expiryHeightOrTime']);
       if (r.transport?.['expiry_height_or_time'] !== undefined) over.expiryHeightOrTime = BigInt(r.transport['expiry_height_or_time']);
-      if (r.name === 'open_task_with_session_grant') over.sessionGrant = grant();
+      if (r.verified?.domain?.chain_id !== undefined) over.signatureChainId = BigInt(r.verified.domain.chain_id);
+      if (r.transport?.['signature_chain_id'] !== undefined) over.signatureChainId = BigInt(r.transport['signature_chain_id']);
       return code(() => verifyRequest(envelope('sdk_request', over), c));
     }
     case 'sdk_request_session': {
@@ -129,7 +128,12 @@ function decide(r: Row): string {
     case 'session_grant': {
       const vc = r.verification_context;
       const c = vc !== undefined ? ctx({ height: BigInt(vc.current_height), maxSessionGrantBlocks: BigInt(vc.max_session_grant_blocks) }) : ctx();
-      const g = grant({ ...(sm['chainId'] !== undefined ? { chainId: sm['chainId'] } : {}), ...(r.signature_65 !== undefined ? { userSignature: unhex(r.signature_65) } : {}) });
+      const g = grant({
+        ...(sm['chainId'] !== undefined ? { chainId: sm['chainId'] } : {}),
+        ...(r.signature_65 !== undefined ? { userSignature: unhex(r.signature_65) } : {}),
+        ...(r.verified?.domain?.chain_id !== undefined ? { signatureChainId: BigInt(r.verified.domain.chain_id) } : {}),
+        ...(r.transport?.['signature_chain_id'] !== undefined ? { signatureChainId: BigInt(r.transport['signature_chain_id']) } : {}),
+      });
       return code(() => verifyRequest(envelope('sdk_request_session', { sessionGrant: g }), c));
     }
     default:
@@ -144,7 +148,7 @@ function taskAuth(name: 'task_data_request' | 'task_data_request_session', over:
     schemaVersion: Number(m.schemaVersion), chainId: m.chainId, builderOperatorAddress: m.builderOperatorAddress, rpcMethod: m.rpcMethod,
     bodyDigest: m.bodyDigest, requesterKind: Number(m.requesterKind), requesterAddress: m.requesterAddress,
     serviceAuthorizationNonce: BigInt(m.serviceAuthorizationNonce), requestNonce: unhex(m.requestNonce), expiryHeight: BigInt(m.expiryHeight),
-    signature: unhex(s.signature_65), ...(name === 'task_data_request_session' ? { sessionGrant: grant() } : {}), ...over,
+    signature: unhex(s.signature_65), signatureChainId: BigInt(s.signature_chain_id), ...(name === 'task_data_request_session' ? { sessionGrant: grant() } : {}), ...over,
   };
 }
 
@@ -158,11 +162,15 @@ function decideTaskData(r: Row): string {
   const sig = r.signature_65 !== undefined ? { signature: unhex(r.signature_65) } : {};
   const sm = r.signed?.message ?? {};
   switch (r.name) {
-    case 'task_data_request_other_evm_chain_id':
-      return code(() => verifyTaskData(taskAuth('task_data_request'), ctx({ evmChainId: 424243n })));
     case 'task_data_request_domain_version_1':
       // The verifier only knows version 2; the version 1 signature of the same request fails.
       return code(() => verifyTaskData(taskAuth('task_data_request', { signature: unhex(F.task_data_request_v1_obsolete.signature_65) }), ctx()));
+    case 'task_data_request_tampered_signature_chain_id':
+      return code(() => verifyTaskData(taskAuth('task_data_request', { signatureChainId: BigInt(r.verified!.domain!.chain_id!) }), ctx()));
+    case 'task_data_request_wallet_network_signature_chain_id':
+      return code(() => verifyTaskData(taskAuth('task_data_request', { signatureChainId: BigInt(r.verified!.domain!.chain_id!), ...sig }), ctx()));
+    case 'cortex_service_signature_chain_id_nonzero':
+      return code(() => verifyTaskData(taskAuth('task_data_request', { requesterKind: 2, signatureChainId: 1n }), ctx()));
     case 'task_data_upload_with_session_grant':
       return code(() => verifyTaskData(taskAuth('task_data_request_session', { ...sig, rpcMethod: sm['rpcMethod']!, bodyDigest: sm['bodyDigest']! }), ctx()));
     case 'task_data_input_object_with_session_grant':
@@ -173,7 +181,10 @@ function decideTaskData(r: Row): string {
 }
 
 describe('independent verifier: request_auth_negative_cases', () => {
-  for (const r of ROWS.filter((x) => x.name !== 'confirm_open_task_not_callable')) {
+  // Rows the ingress verifier can't decide are skipped: the order's EIP-712 signature is the
+  // Keeper's check, and the session-OpenTask grant-user/order-user rule needs the order body.
+  const SKIP = ['confirm_open_task_not_callable', 'task_order_wallet_network_signature_chain_id', 'open_task_session_grant_user_not_order_user'];
+  for (const r of ROWS.filter((x) => !SKIP.includes(x.name))) {
     it(`${r.name} -> ${r.expect === 'accept' ? 'accepted' : r.error}`, () => {
       expect(decide(r)).toBe(r.expect === 'accept' ? 'accepted' : r.error);
     });

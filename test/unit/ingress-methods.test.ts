@@ -53,7 +53,7 @@ const auth: IngressAuth = {
   chainId: 'trueopen-devnet-1',
   userAddress: USER,
   wallet: privateKeyTypedDataSigner(PRIV),
-  evmChainId: 424242n,
+  signatureChainId: 424242n,
   nonce: () => new Uint8Array(32).fill(3),
   expiry: () => 1893456000000n,
 };

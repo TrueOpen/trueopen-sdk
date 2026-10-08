@@ -120,12 +120,12 @@ function addressWord(a20: Uint8Array): Uint8Array {
 }
 
 /** domain_separator = hashStruct(EIP712Domain(string name,string version,uint256 chainId)). */
-export function domainSeparator(name: string, version: string, evmChainId: bigint): Uint8Array {
+export function domainSeparator(name: string, version: string, signatureChainId: bigint): Uint8Array {
   return keccak_256(concat([
     keccakText('EIP712Domain(string name,string version,uint256 chainId)'),
     keccakText(name),
     keccakText(version),
-    word(evmChainId),
+    word(signatureChainId),
   ]));
 }
 function signingDigest(domain: Uint8Array, struct: Uint8Array): Uint8Array {
@@ -147,7 +147,7 @@ export interface SdkRequestTyped {
   readonly sessionGrantHash: Uint8Array;
 }
 
-export function sdkRequestDigest(m: SdkRequestTyped, evmChainId: bigint): Uint8Array {
+export function sdkRequestDigest(m: SdkRequestTyped, signatureChainId: bigint): Uint8Array {
   const struct = keccak_256(concat([
     keccakText(
       'SDKRequest(string chainId,string method,string endpoint,bytes32 sessionId,bytes32 taskId,' +
@@ -163,7 +163,7 @@ export function sdkRequestDigest(m: SdkRequestTyped, evmChainId: bigint): Uint8A
     m.bodyDigest,
     m.sessionGrantHash,
   ]));
-  return signingDigest(domainSeparator(SDK_REQUEST_DOMAIN_NAME, '1', evmChainId), struct);
+  return signingDigest(domainSeparator(SDK_REQUEST_DOMAIN_NAME, '1', signatureChainId), struct);
 }
 
 /** nexus.v1.SessionGrantV1 as the fakes see it. */
@@ -174,6 +174,7 @@ export interface GrantLike {
   readonly expiryHeight: bigint;
   readonly grantNonce: Uint8Array;
   readonly userSignature: Uint8Array;
+  readonly signatureChainId: bigint;
 }
 
 /** hashStruct(SessionGrant(string chainId,string user,address sessionKey,uint64 expiryHeight,bytes32 grantNonce)). */
@@ -189,8 +190,8 @@ export function sessionGrantHashStruct(g: GrantLike): Uint8Array {
 }
 
 /** A grant is always signed under the SDK Request domain. */
-export function sessionGrantDigest(g: GrantLike, evmChainId: bigint): Uint8Array {
-  return signingDigest(domainSeparator(SDK_REQUEST_DOMAIN_NAME, '1', evmChainId), sessionGrantHashStruct(g));
+export function sessionGrantDigest(g: GrantLike, signatureChainId: bigint): Uint8Array {
+  return signingDigest(domainSeparator(SDK_REQUEST_DOMAIN_NAME, '1', signatureChainId), sessionGrantHashStruct(g));
 }
 
 /**
@@ -398,13 +399,13 @@ export interface EnvelopeLike {
   readonly bodyDigest: Uint8Array;
   readonly signerAddress: string;
   readonly signature: Uint8Array;
+  readonly signatureChainId: bigint;
   readonly sessionGrant?: GrantLike | undefined;
 }
 
 /** What the verifier knows about the chain and itself. */
 export interface AuthContext {
   readonly chainId: string;
-  readonly evmChainId: bigint;
   readonly height: bigint;
   readonly nowMs: bigint;
   readonly maxSessionGrantBlocks: bigint;
@@ -419,6 +420,8 @@ export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
 const SESSION_SDK_METHODS = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 const SESSION_DATA_METHODS = ['/nexus.v1.IngressAPI/GetTaskDataMetadata', '/nexus.v1.IngressAPI/FetchTaskData'];
 const zero32 = new Uint8Array(32);
+/** signature_chain_id must be in 1..MaxInt64 (0 is CORTEX_SERVICE only). */
+const SIGNATURE_CHAIN_ID_MAX = (1n << 63n) - 1n;
 
 /**
  * SessionGrantV1 checks (step 3): chain, user, user signature, stored account key, then the
@@ -429,7 +432,7 @@ function verifyGrant(g: GrantLike, user: string, requestChainId: string, ctx: Au
   if (g.chainId !== requestChainId || g.chainId !== ctx.chainId) invalid('grant chain_id is not this chain');
   if (g.user !== user) invalid('grant user is not the request signer');
   if (g.sessionKey.length !== 20 || g.grantNonce.length !== 32) invalid('grant fields have the wrong length');
-  const rec = recover65(sessionGrantDigest(g, ctx.evmChainId), g.userSignature);
+  const rec = recover65(sessionGrantDigest(g, g.signatureChainId), g.userSignature);
   if (rec === undefined || hex(rec.address20) !== hex(addressBytes('grant user', g.user, `${prefix}_SESSION_GRANT_INVALID`))) {
     invalid('user_signature does not recover to user');
   }
@@ -461,6 +464,8 @@ export function verifySdkRequest(
   if (e.sessionId !== want.sessionId || e.taskId !== want.taskId) malformed('envelope session/task is not the request');
   if (e.requestNonce.length !== 32) malformed('request_nonce must be 32 bytes');
   if (e.expiryHeightOrTime <= 0n) malformed('expiry must be above zero');
+  if (e.signatureChainId < 1n || e.signatureChainId > SIGNATURE_CHAIN_ID_MAX) malformed('signature_chain_id must be in 1..MaxInt64');
+  if (e.sessionGrant !== undefined && (e.sessionGrant.signatureChainId < 1n || e.sessionGrant.signatureChainId > SIGNATURE_CHAIN_ID_MAX)) malformed('session grant signature_chain_id must be in 1..MaxInt64');
   const heightExpiry = e.expiryHeightOrTime < HEIGHT_EXPIRY_THRESHOLD;
   if (heightExpiry && want.openTaskSequence === undefined) malformed('a height expiry is accepted only for OpenTask');
   if (!heightExpiry && want.openTaskSequence !== undefined) malformed('OpenTask expiry must be a chain height, not Unix milliseconds');
@@ -478,7 +483,7 @@ export function verifySdkRequest(
   const digest = sdkRequestDigest({
     chainId: ctx.chainId, method: e.method, endpoint: e.endpoint, sessionId, taskId, requestNonce: e.requestNonce,
     expiryHeightOrTime: e.expiryHeightOrTime, bodyDigest: body, sessionGrantHash: g === undefined ? zero32 : sessionGrantHashStruct(g),
-  }, ctx.evmChainId);
+  }, e.signatureChainId);
   const rec = recover65(digest, e.signature);
   const bad = (why: string): never => { throw new VerifyError('SDK_AUTH_INVALID_SIGNATURE', why); };
   if (rec === undefined) bad('signature is not 65 bytes, V 27/28, low S');
@@ -555,11 +560,12 @@ export interface RequestAuthLike {
   readonly requestNonce: Uint8Array;
   readonly expiryHeight: bigint;
   readonly signature: Uint8Array;
+  readonly signatureChainId: bigint;
   readonly sessionGrant?: GrantLike | undefined;
 }
 
 /** The USER TaskDataRequest digest, EIP-712 "TrueOpen Task Data Request" version 2. */
-export function userTaskDataDigest(a: RequestAuthLike, chainId: string, evmChainId: bigint, sessionGrantHash: Uint8Array): Uint8Array {
+export function userTaskDataDigest(a: RequestAuthLike, chainId: string, signatureChainId: bigint, sessionGrantHash: Uint8Array): Uint8Array {
   const struct = keccak_256(concat([
     keccakText(
       'TaskDataRequest(uint32 schemaVersion,string chainId,string builderOperatorAddress,string rpcMethod,' +
@@ -578,7 +584,7 @@ export function userTaskDataDigest(a: RequestAuthLike, chainId: string, evmChain
     word(a.expiryHeight),
     sessionGrantHash,
   ]));
-  return signingDigest(domainSeparator('TrueOpen Task Data Request', '2', evmChainId), struct);
+  return signingDigest(domainSeparator('TrueOpen Task Data Request', '2', signatureChainId), struct);
 }
 
 /**
@@ -595,6 +601,8 @@ export function verifyUserTaskDataAuth(
   if (a === undefined) return malformed('request_auth required');
   if (a.schemaVersion !== 1 || a.rpcMethod !== want.rpcMethod) malformed('request_auth fields');
   if (a.requesterKind !== 1 || a.serviceAuthorizationNonce !== 0n) malformed('USER branch');
+  if (a.signatureChainId < 1n || a.signatureChainId > SIGNATURE_CHAIN_ID_MAX) malformed('signature_chain_id must be in 1..MaxInt64');
+  if (a.sessionGrant !== undefined && (a.sessionGrant.signatureChainId < 1n || a.sessionGrant.signatureChainId > SIGNATURE_CHAIN_ID_MAX)) malformed('session grant signature_chain_id must be in 1..MaxInt64');
   if (a.requestNonce.length !== 32) malformed('request_nonce must be 32 bytes');
   if (a.bodyDigest !== hex(want.body)) malformed('body_digest mismatch');
   addressBytes('requester_address', a.requesterAddress);
@@ -604,7 +612,7 @@ export function verifyUserTaskDataAuth(
     throw new VerifyError('DATA_ACCESS_SESSION_METHOD_NOT_ALLOWED', 'a session key may read only an OUTPUT object');
   }
   if (g !== undefined) verifyGrant(g, a.requesterAddress, a.chainId, ctx, 'DATA_ACCESS');
-  const digest = userTaskDataDigest(a, ctx.chainId, ctx.evmChainId, g === undefined ? zero32 : sessionGrantHashStruct(g));
+  const digest = userTaskDataDigest(a, ctx.chainId, a.signatureChainId, g === undefined ? zero32 : sessionGrantHashStruct(g));
   const rec = recover65(digest, a.signature);
   const expected = g === undefined ? addressBytes('requester_address', a.requesterAddress) : g.sessionKey;
   if (rec === undefined || hex(rec.address20) !== hex(expected)) {

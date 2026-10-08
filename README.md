@@ -179,6 +179,51 @@ for (const b of res.builders.filter((x) => x.ack?.accepted)) {
 signingClient.disconnect();
 ```
 
+### Streaming output
+
+The same order, delivered as verified frames as the Worker generates them, instead of
+fetching the whole object after the receipt lands:
+
+```ts
+// streamOutput streams from a specific Builder, so build a per-Builder client exactly like
+// the non-streaming path above. It derives the trust anchors from chain when `taskReader`
+// and `hub.getCurrentServiceKey` are configured (they are).
+let text = '';
+ç
+  try {
+    const bc = makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash));
+    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId })) {
+      if (event.kind === 'chunk') {
+        text += event.text;                   // per-frame Worker signature + MMR root verified
+      } else {
+        console.error(`fin: attested=${event.attested} finish_reason=${event.finishReason}`);
+      }
+    }
+    break;
+  } catch (e) {
+    // try the next Builder
+  }
+}
+console.log(text);                            // the presented view (chat-template EOS marker stripped)
+```
+
+To resume after a disconnect, persist the checkpoint and pass it back (same per-Builder
+client pattern):
+
+```ts
+let cp;
+for await (const e of makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).streamOutput({
+  sessionId, taskId: res.taskId, onCheckpoint: (c) => { cp = c; },
+})) { /* ... */ }
+// later, in a fresh process:
+for await (const e of makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).streamOutput({
+  sessionId, taskId: res.taskId, checkpoint: cp, resumeAfterSeq: cp.leafCount - 1n,
+})) { /* ... */ }
+```
+
+The full API — every exported symbol plus both complete flows (with the retry-on-pending
+loop) — is in [docs/reference.md](docs/reference.md).
+
 Without the order result at hand, `resolveBuilderEndpoints(hub)` lists every active Builder's
 endpoint to try instead (that is what `examples/fetch-output.mjs` does).
 
@@ -187,6 +232,7 @@ endpoint to try instead (that is what `examples/fetch-output.mjs` does).
 | Method | Description |
 |---|---|
 | `createSession(label?)` / `getSession(sessionId)` | create / retrieve a session |
+| `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
 | `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |

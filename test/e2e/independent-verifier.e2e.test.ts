@@ -35,24 +35,25 @@ const grant = (over: Partial<v.GrantLike> = {}): v.GrantLike => ({
 });
 
 /** The envelope of a request section, with transport overrides. */
-function envelope(name: 'sdk_request' | 'sdk_request_session', over: Partial<v.EnvelopeLike> = {}): v.EnvelopeLike {
+function envelope(name: 'sdk_request' | 'sdk_request_session' | 'sdk_request_open_task_session', over: Partial<v.EnvelopeLike> = {}): v.EnvelopeLike {
   const s = F[name];
   const m = s.message;
   return {
     requestDomain: s.envelope.request_domain, chainId: m.chainId, method: m.method, endpoint: m.endpoint,
     sessionId: m.sessionId, taskId: m.taskId, requestNonce: unhex(m.requestNonce), expiryHeightOrTime: BigInt(m.expiryHeightOrTime),
     bodyDigest: unhex(m.bodyDigest), signerAddress: s.envelope.signer_address, signature: unhex(s.signature_65), signatureChainId: BigInt(s.signature_chain_id),
-    ...(name === 'sdk_request_session' ? { sessionGrant: grant() } : {}),
+    ...(name !== 'sdk_request' ? { sessionGrant: grant() } : {}),
     ...over,
   };
 }
 
-function verifyRequest(e: v.EnvelopeLike, c: v.AuthContext, body?: Uint8Array): string {
+function verifyRequest(e: v.EnvelopeLike, c: v.AuthContext, body?: Uint8Array, orderUser?: string): string {
   const isOpenTask = e.method === 'OpenTask';
   return v.verifySdkRequest(e, {
     method: F[isOpenTask ? 'sdk_request' : 'sdk_request_session'].message.method,
     sessionId: e.sessionId, taskId: e.taskId, body: () => body ?? e.bodyDigest,
-    ...(isOpenTask ? { openTaskSequence: 7n } : {}),
+    // The OpenTask rows sign order sequence 7, and the SignedOrder user is the account.
+    ...(isOpenTask ? { openTaskSequence: 7n, orderUser: orderUser ?? ACCOUNT } : {}),
   }, c);
 }
 
@@ -72,6 +73,13 @@ describe('independent verifier: positive sections', () => {
   });
   it('sdk_request_session (SubscribeOutput, session key) is accepted', () => {
     expect(code(() => verifyRequest(envelope('sdk_request_session'), ctx()))).toBe('accepted');
+  });
+  it('sdk_request_open_task_session (OpenTask, session key) is accepted by a Builder with wire PR #43', () => {
+    // The row assumes current_height 1100: inside the grant window and the OpenTask window.
+    expect(code(() => verifyRequest(envelope('sdk_request_open_task_session'), ctx({ height: 1100n, sessionOpenTask: true })))).toBe('accepted');
+  });
+  it('...and refused by one that predates it', () => {
+    expect(code(() => verifyRequest(envelope('sdk_request_open_task_session'), ctx({ height: 1100n })))).toBe('SDK_AUTH_SESSION_METHOD_NOT_ALLOWED');
   });
   it('replaying the same nonce is SDK_AUTH_REPLAY', () => {
     const c = ctx();
@@ -124,6 +132,10 @@ function decide(r: Row): string {
       if (r.transport?.['request_nonce_hex'] !== undefined) over.requestNonce = unhex(r.transport['request_nonce_hex']);
       const body = vm['bodyDigest'] !== undefined ? unhex(vm['bodyDigest']) : undefined;
       return code(() => verifyRequest(envelope('sdk_request_session', over), ctx(), body));
+    }
+    case 'sdk_request_open_task_session': {
+      const orderUser = r.transport?.['order_user_address'];
+      return code(() => verifyRequest(envelope('sdk_request_open_task_session'), ctx({ height: 1100n, sessionOpenTask: true }), undefined, orderUser));
     }
     case 'session_grant': {
       const vc = r.verification_context;
@@ -183,7 +195,8 @@ function decideTaskData(r: Row): string {
 describe('independent verifier: request_auth_negative_cases', () => {
   // Rows the ingress verifier can't decide are skipped: the order's EIP-712 signature is the
   // Keeper's check, and the session-OpenTask grant-user/order-user rule needs the order body.
-  const SKIP = ['confirm_open_task_not_callable', 'task_order_wallet_network_signature_chain_id', 'open_task_session_grant_user_not_order_user'];
+  // The order's EIP-712 signature is the Keeper's check, not the ingress verifier's.
+  const SKIP = ['confirm_open_task_not_callable', 'task_order_wallet_network_signature_chain_id'];
   for (const r of ROWS.filter((x) => !SKIP.includes(x.name))) {
     it(`${r.name} -> ${r.expect === 'accept' ? 'accepted' : r.error}`, () => {
       expect(decide(r)).toBe(r.expect === 'accept' ? 'accepted' : r.error);

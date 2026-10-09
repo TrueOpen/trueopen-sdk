@@ -125,6 +125,8 @@ export class FakeNexus {
   /** How far this Builder's view of the chain is ahead of the node the SDK reads. */
   heightAhead = 0n;
   maxSessionGrantBlocks = MAX_SESSION_GRANT_BLOCKS;
+  /** Accept a session-signed OpenTask (wire PR #43). Off models a Builder that predates it. */
+  sessionOpenTask = true;
   private readonly nonces = new Set<string>();
 
   constructor(
@@ -187,6 +189,7 @@ export class FakeNexus {
       requestTtlBlocks: REQUEST_TTL_BLOCKS,
       accountPubKey: (address) => this.node.accounts.get(address)?.pubKey,
       seenNonces: this.nonces,
+      sessionOpenTask: this.sessionOpenTask,
     };
   }
 
@@ -245,6 +248,7 @@ export class FakeNexus {
     const taskId = env?.taskId ?? '';
     const requester = this.check(M, () => v.verifySdkRequest(env, {
       method: M, sessionId: h.sessionId, taskId, body: () => v.openTaskBody(h, taskHash), openTaskSequence: h.orderSequence,
+      orderUser: order.userAddress,
     }, this.ctx()));
     if (requester !== h.userAddress) this.fail(M, Code.PermissionDenied, 'SDK_AUTH_INVALID_SIGNATURE: the request signer is not the order user');
 
@@ -263,7 +267,7 @@ export class FakeNexus {
     if (BigInt(payload.length) !== h.inputSizeBytes || hex(sha256(payload)) !== h.inputHash) {
       this.fail(M, Code.DataLoss, 'NEXUS_DATA_HASH_MISMATCH: OpenTask input does not match its commitment');
     }
-    this.accepted(M, undefined);
+    this.accepted(M, env?.sessionGrant);
     this.taskHashes.push(hex(taskHash));
     this.opened.push({ taskId, requester, idempotencyKey: h.idempotencyKey, chunkCount: chunks.length, payload: Uint8Array.from(payload) });
     return {

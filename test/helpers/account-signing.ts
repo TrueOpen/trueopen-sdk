@@ -22,6 +22,8 @@ export interface Section {
   readonly recovered_address?: string;
   readonly message: Record<string, string>;
   readonly signer?: string;
+  /** The domain chainId the section's digest was built with, carried next to the signature. */
+  readonly signature_chain_id?: number | string;
 }
 
 export const section = (name: string): Section => ACCOUNT_SIGNING[name] as Section;

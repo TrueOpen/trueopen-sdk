@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Breaking: session-signed OpenTask
+
+- **Breaking:** with `session` configured, the session key now signs the OpenTask request
+  envelope too, under a grant for the order's own user (wire PR #43). The order itself is still
+  signed by the wallet, so a browser wallet prompts once per order instead of twice. A Builder
+  that predates wire PR #43 refuses it with `SDK_AUTH_SESSION_METHOD_NOT_ALLOWED`; without
+  `session`, OpenTask is wallet-signed as before.
+- **Changed:** `SESSION_SDK_METHODS` includes `OpenTask`. `buildOpenTaskRequest` takes an
+  optional `session`. `IngressClient.openTask` no longer refuses every session grant, only one
+  whose user is not the order user (`SDK_LOCAL_REQUEST_MALFORMED`).
+
 ### Breaking: signer-selected signature_chain_id (wire pre-v0.5.0)
 
 The EIP-712 domain `chainId` is no longer the chain's `evm_chain_id`; it is now a signer-chosen

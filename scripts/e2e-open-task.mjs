@@ -63,6 +63,10 @@
  *                         path.
  *   --tools-json <json>   OpenAI function tools (a JSON array) offered on a chat input; implies
  *                         --chat. The chat body is encoded by the SDK (chatInferInputBytes).
+ *   --assistant           after the receipt confirms the streamed output, derive the assistant
+ *                         view with confirmAssistantMessage, using the profile's on-chain
+ *                         tool_call_parser and reasoning_parser. The parsers are unverified
+ *                         (no shared vectors yet), so this opts in with allowUnverified.
  *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
  *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
  *                         into task_hash, and the profile's task_types must list it.
@@ -104,6 +108,7 @@ const {
   taskOrderHashHex, deriveTaskId,
   decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, RestChainReader,
   TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom, chatInferInputBytes,
+  createToolCallRegistry, hermesParser,
 } = await import(SDK);
 
 // ---- args ----
@@ -149,6 +154,9 @@ const SYSTEM_PROMPT = flag('--system-prompt', undefined);
 const MESSAGES_JSON = flag('--messages-json', undefined);
 // OpenAI function tools (JSON array) offered on a chat input; implies chat.
 const TOOLS_JSON = flag('--tools-json', undefined);
+// Derive the assistant view (reasoning / content / tool calls) from the confirmed output, through
+// TrueOpenClient.confirmAssistantMessage with the profile's on-chain parsers.
+const ASSISTANT = has('--assistant');
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
 // get hard-truncated mid-sentence (observed in practice), hence it's tunable.
@@ -808,6 +816,28 @@ if (streamInfo?.frame_count > 0 && streamCheckpoint !== null) {
         output_size_bytes: event.outputSizeBytes.toString(),
       };
       log(`Receipt confirmation: root/count/size all match`);
+      if (ASSISTANT) {
+        try {
+          const m = client.confirmAssistantMessage({
+            taskId, taskHash: built.taskHash, checkpoint: streamCheckpoint, receipt,
+            toolCallParser: profile.toolCallParser,
+            reasoningParser: profile.reasoningParser,
+            // hermes ships unregistered until its vectors exist; the built-in reasoning registry has qwen3.
+            registry: createToolCallRegistry([{ parser: hermesParser, conformance: 'unverified' }]),
+            allowUnverified: true,
+          });
+          streamConfirmation.assistant = {
+            tool_call_parser: profile.toolCallParser,
+            reasoning_parser: profile.reasoningParser,
+            reasoning_content: m.reasoningContent ?? null,
+            content: m.content,
+            tool_calls: m.toolCalls,
+          };
+          log(`Assistant view: ${m.toolCalls.length} tool call(s)${m.reasoningContent !== undefined ? ', reasoning separated' : ''}`);
+        } catch (e) {
+          streamConfirmation.assistant = { error: String(e?.message || e).slice(0, 300) };
+        }
+      }
     } catch (e) {
       streamConfirmation = {
         confirmed: false,

@@ -61,6 +61,8 @@
  *                         forwarded verbatim to vLLM, which applies the model's chat
  *                         template), while anything else is the legacy raw-text inferV0
  *                         path.
+ *   --tools-json <json>   OpenAI function tools (a JSON array) offered on a chat input; implies
+ *                         --chat. The chat body is encoded by the SDK (chatInferInputBytes).
  *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
  *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
  *                         into task_hash, and the profile's task_types must list it.
@@ -101,7 +103,7 @@ const {
   buildOpenTaskRequest, resolveTaskBuilderEndpoints,
   taskOrderHashHex, deriveTaskId,
   decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, RestChainReader,
-  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom,
+  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom, chatInferInputBytes,
 } = await import(SDK);
 
 // ---- args ----
@@ -143,8 +145,10 @@ const PROMPT = flag('--prompt', 'trueopen e2e open-task');
 const CHAT = has('--chat');
 // Overrides the chat system message (default "trueopen e2e chat").
 const SYSTEM_PROMPT = flag('--system-prompt', undefined);
-// Full chat `messages` array (JSON) to send verbatim, for multi-turn history.
+// Full chat `messages` array (JSON) for multi-turn history.
 const MESSAGES_JSON = flag('--messages-json', undefined);
+// OpenAI function tools (JSON array) offered on a chat input; implies chat.
+const TOOLS_JSON = flag('--tools-json', undefined);
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
 // get hard-truncated mid-sentence (observed in practice), hence it's tunable.
@@ -322,6 +326,17 @@ log(`order_sequence=${ORDER_SEQ}${SEQ_OVERRIDE === undefined ? ' (read from chai
 // The payload is sent exactly as given, with nothing appended. Note nexus dedupes by content
 // hash, so re-running the same input collides with NEXUS_DATA_CONFLICT; vary the input
 // yourself (the caller owns uniqueness in the normal flow too).
+// Chat input is encoded once by the SDK (canonical_json_v1), so a rerun of the same request
+// yields the same bytes and the same input_hash.
+function chatTools() {
+  if (TOOLS_JSON === undefined) return {};
+  const tools = JSON.parse(TOOLS_JSON);
+  if (!Array.isArray(tools) || tools.length === 0) {
+    console.error('--tools-json must be a non-empty JSON array of OpenAI function tools');
+    process.exit(2);
+  }
+  return { tools };
+}
 let payload;
 if (MESSAGES_JSON !== undefined) {
   const raw = JSON.parse(MESSAGES_JSON);
@@ -330,14 +345,15 @@ if (MESSAGES_JSON !== undefined) {
     console.error('--messages-json must be a JSON array or an object with a messages array');
     process.exit(2);
   }
-  payload = new TextEncoder().encode(JSON.stringify({ messages: msgs }));
-} else if (CHAT) {
-  payload = new TextEncoder().encode(JSON.stringify({
+  payload = chatInferInputBytes({ messages: msgs, ...chatTools() });
+} else if (CHAT || TOOLS_JSON !== undefined) {
+  payload = chatInferInputBytes({
     messages: [
       { role: 'system', content: SYSTEM_PROMPT ?? 'trueopen e2e chat' },
       { role: 'user', content: PROMPT },
     ],
-  }));
+    ...chatTools(),
+  });
 } else {
   payload = new TextEncoder().encode(PROMPT);
 }
@@ -345,7 +361,7 @@ const payloadHash = hex(sha256(payload));
 // The order declares what the payload is. A chat-shaped body defaults to TASK_TYPE_CHAT;
 // cortex routes on the body's shape either way, so a mismatch would still run but would
 // sign a task_type that misdescribes the input.
-const TASK_TYPE_NAME = flag('--task-type', CHAT || MESSAGES_JSON !== undefined ? 'CHAT' : 'TEXT_GENERATION');
+const TASK_TYPE_NAME = flag('--task-type', CHAT || MESSAGES_JSON !== undefined || TOOLS_JSON !== undefined ? 'CHAT' : 'TEXT_GENERATION');
 if (!['TEXT_GENERATION', 'CHAT'].includes(TASK_TYPE_NAME)) {
   console.error(`--task-type must be TEXT_GENERATION or CHAT, got ${TASK_TYPE_NAME}`);
   process.exit(2);

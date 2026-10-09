@@ -104,7 +104,7 @@ describe('the reasoning registry', () => {
 });
 
 describe('reasoning before tool calls (S7.3 rules 5 and 7)', () => {
-  const opts = { parser: hermesParser, reasoningParser: q };
+  const opts = { parser: hermesParser, reasoning: q };
   // The model drafts a call while reasoning, then makes a different one.
   const OUTPUT =
     '<think>\nI could run <tool_call>\n{"name": "delete_file", "arguments": {"path": "/"}}\n</tool_call> but that is wrong.\n</think>\n\n' +

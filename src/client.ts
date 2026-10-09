@@ -423,7 +423,7 @@ const NO_TOOL_CALLS: ToolCallParser = {
  * to this build, or unverified without the caller's opt-in -- is simply not used (S7.3 rule 8,
  * design S6): the output still arrives, without that view.
  */
-function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoningParser?: ReasoningParser } {
+function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser } {
   const allow = p.allowUnverified === true ? { allowUnverified: true } : undefined;
   const tool = resolveToolCalling({
     toolCallParser: p.toolCallParser,
@@ -433,7 +433,7 @@ function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoningP
   const reasoning = (p.reasoningRegistry ?? BUILTIN_REASONING_PARSERS).lookup(p.reasoningParser ?? { name: '', version: 0 }, allow);
   return {
     parser: tool.supported ? tool.parser : NO_TOOL_CALLS,
-    ...(reasoning.supported ? { reasoningParser: reasoning.parser } : {}),
+    ...(reasoning.supported ? { reasoning: reasoning.parser } : {}),
   };
 }
 
@@ -1196,12 +1196,21 @@ export class TrueOpenClient {
    * belongs to the caller, which is what lets the stream run against a Builder while the caller
    * decides when to reach the node.
    *
-   * It takes an already-resolved `parser` (Decision 3): resolve once via `resolveToolCalling`
-   * before streaming, then pass that same parser here. This method stays synchronous because the
-   * resolution is the caller's job, not a second async hop hidden inside a receipt check.
+   * It takes the same two shapes as `streamAssistantMessage`, and should be given the same
+   * values: an already-resolved `parser`, or the profile's `toolCallParser` / `reasoningParser`
+   * refs, resolved here exactly as the stream resolved them. This is the step that yields
+   * executable calls, so it must not parse more permissively than the stream did -- in
+   * particular, a reasoning parser the stream applied must be applied here too, or a call the
+   * model only drafted while reasoning would become executable (Manifest S7.3 rule 7). Resolution
+   * is a registry lookup, so the method stays synchronous.
    */
-  confirmAssistantMessage(p: ConfirmOutputParams & DerivedViewOptions): ConfirmedAssistantMessage {
-    return confirmAssistantMessageWithReceipt({ chainId: this.cfg.chainId, ...p }, p);
+  confirmAssistantMessage(p: ConfirmOutputParams & (DerivedViewOptions | ToolCallParams)): ConfirmedAssistantMessage {
+    const receiptInput = { chainId: this.cfg.chainId, taskId: p.taskId, taskHash: p.taskHash, checkpoint: p.checkpoint, receipt: p.receipt };
+    if ('parser' in p) return confirmAssistantMessageWithReceipt(receiptInput, p);
+    return confirmAssistantMessageWithReceipt(receiptInput, {
+      ...resolveParsers(p),
+      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+    });
   }
 
   /**

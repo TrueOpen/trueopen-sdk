@@ -35,13 +35,13 @@ export interface DerivedViewOptions {
    * tool-call marker written while reasoning is never a call (rule 7). Omit it when the profile
    * pins no reasoning parser.
    */
-  readonly reasoningParser?: ReasoningParser;
+  readonly reasoning?: ReasoningParser;
 }
 
 /** Tool-call parsing over the remainder only, with the reasoning attached (S7.3 rules 5, 7, 8). */
 function parseWithReasoning(text: string, opts: DerivedViewOptions): DerivedAssistantMessage {
-  if (opts.reasoningParser === undefined) return opts.parser.parseComplete(text);
-  const { reasoningContent, remainder } = opts.reasoningParser.split(text);
+  if (opts.reasoning === undefined) return opts.parser.parseComplete(text);
+  const { reasoningContent, remainder } = opts.reasoning.split(text);
   const message = opts.parser.parseComplete(remainder);
   return reasoningContent === '' ? message : { ...message, reasoningContent };
 }
@@ -71,7 +71,7 @@ export async function* deriveAssistantStream(
   const stripper = new TrailingEosStripper(opts.trailingEosMarkers ?? []);
   const state = opts.parser.createStreamState();
   // Chained, not parallel (S7.3 rule 10): reasoning first, the tool parser sees only the remainder.
-  const reasoning = opts.reasoningParser?.createStreamState();
+  const reasoning = opts.reasoning?.createStreamState();
   function* feed(text: string): Iterable<AssistantStreamEvent> {
     if (reasoning === undefined) {
       yield* state.push(text);

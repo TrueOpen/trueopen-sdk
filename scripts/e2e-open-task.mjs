@@ -61,6 +61,9 @@
  *                         forwarded verbatim to vLLM, which applies the model's chat
  *                         template), while anything else is the legacy raw-text inferV0
  *                         path.
+ *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
+ *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
+ *                         into task_hash, and the profile's task_types must list it.
  *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
  *                         winner_confirm lands on chain, verify signatures and the MMR
  *                         root frame by frame as output is generated, without waiting
@@ -339,6 +342,14 @@ if (MESSAGES_JSON !== undefined) {
   payload = new TextEncoder().encode(PROMPT);
 }
 const payloadHash = hex(sha256(payload));
+// The order declares what the payload is. A chat-shaped body defaults to TASK_TYPE_CHAT;
+// cortex routes on the body's shape either way, so a mismatch would still run but would
+// sign a task_type that misdescribes the input.
+const TASK_TYPE_NAME = flag('--task-type', CHAT || MESSAGES_JSON !== undefined ? 'CHAT' : 'TEXT_GENERATION');
+if (!['TEXT_GENERATION', 'CHAT'].includes(TASK_TYPE_NAME)) {
+  console.error(`--task-type must be TEXT_GENERATION or CHAT, got ${TASK_TYPE_NAME}`);
+  process.exit(2);
+}
 
 // ---- 3) on-chain context (anchor / builder set / bucket version, all signed) ----
 const ctx = await resolveTaskOrderContext(hub, CHAIN_ID);
@@ -370,7 +381,7 @@ const order = buildTaskOrder(ctx, {
   userAddress: address, sessionId, orderSequence: ORDER_SEQ,
   modelId: activeModel.model_id,
   profileVersion: Number(activeModel.latest_profile_version || 1),
-  taskType: TASK_TYPE.TEXT_GENERATION,
+  taskType: TASK_TYPE[TASK_TYPE_NAME],
   payload,
   inputBucket: 1, outputBudgetBucket: 1,
   generationParams: defaultGenerationParams(MAX_OUTPUT_TOKENS, MAX_OUTPUT_DURATION_MS),

@@ -249,6 +249,61 @@ describe('TrueOpenClient.openTask', () => {
     expect(client.signatureChainId()).toBe(1n);
   });
 
+  describe('idempotency key', () => {
+    const open = (client: TrueOpenClient, payload: Uint8Array, idempotencyKey = 'idem-1') =>
+      client.openTask({ sessionId: SESSION, orderSequence: 3n, order: { ...order, payload }, idempotencyKey });
+
+    it('a retry with the same payload bytes is sent again', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      const client = makeClient(seen);
+      await open(client, PAYLOAD);
+      await open(client, Uint8Array.from(PAYLOAD));
+      expect(seen.calls).toBe(6);
+    });
+
+    it('a different payload under a used key is refused locally, before anything is sent', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      const client = makeClient(seen);
+      await open(client, PAYLOAD);
+      // The same request re-serialized: a different byte sequence, so a different input_hash.
+      await expect(open(client, new TextEncoder().encode('trueopen-input '))).rejects.toMatchObject({
+        code: 'SDK_LOCAL_IDEMPOTENCY_KEY_REUSED',
+        category: 'conflict',
+      });
+      expect(seen.calls).toBe(3);
+      // A new key is a new request.
+      await open(client, new TextEncoder().encode('trueopen-input '), 'idem-2');
+      expect(seen.calls).toBe(6);
+    });
+
+    it('a call that failed before sending leaves the key free', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      let reachable = false;
+      const client = new TrueOpenClient({
+        chainId: 'trueopen-localnet-1', userAddress: USER, wallet, signatureChainId: 424242n, feeDenom: 'utrueopen',
+        chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+        // Signed and checked, then no Builder resolves: nothing was sent.
+        hub: { ...(hub as object), getServiceDescriptor: async (id: string) => {
+          if (!reachable) throw new Error('descriptor unavailable');
+          return (hub as { getServiceDescriptor: (id: string) => Promise<ServiceDescriptorRef> }).getServiceDescriptor(id);
+        } } as never,
+        ingressTransportFactory: () => acceptTransport(seen),
+        nonce: () => new Uint8Array(32).fill(1),
+      });
+      await expect(open(client, PAYLOAD)).rejects.toMatchObject({ code: 'TASK_BUILDER_NO_REACHABLE_ENDPOINT' });
+      reachable = true;
+      await open(client, new TextEncoder().encode('trueopen-input '));
+      expect(seen.calls).toBe(3);
+    });
+
+    it('the record is per client', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      await open(makeClient(seen), PAYLOAD);
+      await open(makeClient(seen), new TextEncoder().encode('other-input'));
+      expect(seen.calls).toBe(6);
+    });
+  });
+
   it('throws when hub/transportFactory is not configured', async () => {
     const client = new TrueOpenClient({
       chainId: 'trueopen-localnet-1', userAddress: USER, wallet,

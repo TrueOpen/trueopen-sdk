@@ -445,6 +445,13 @@ export class TrueOpenClient {
 
   /** The session key and its grant, when config.session is set. */
   readonly sessionGrants: SessionKeyManager | undefined;
+  /**
+   * input_hash first sent under each idempotency key by this client. A Builder answers a retry
+   * under the same key with the first result only when the input is the same and refuses it
+   * otherwise; re-serializing the payload on retry changes the bytes and hits that refusal. This
+   * refuses it before anything is signed. It lives as long as this client, not across processes.
+   */
+  private readonly inputHashByIdempotencyKey = new Map<string, string>();
 
   constructor(cfg: TrueOpenClientConfig) {
     // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
@@ -546,6 +553,8 @@ export class TrueOpenClient {
       pricing,
     );
     const taskId = deriveTaskId(params.sessionId, orderSequence);
+    const inputHash = toHex(order.inputHash);
+    this.checkIdempotencyKey(params.idempotencyKey, inputHash);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     const expiryHeight = params.expiryHeight ?? ctx.latestHeight + BigInt(this.cfg.requestTtlBlocks ?? 10);
 
@@ -582,6 +591,9 @@ export class TrueOpenClient {
       );
     }
 
+    // From here a Builder may hold the input under this key, so a different input is refused.
+    // A failure before this point sent nothing, and leaves the key free.
+    this.inputHashByIdempotencyKey.set(params.idempotencyKey, inputHash);
     // Where each Builder was actually reached: a certificate re-read can move it.
     const usedEndpoint = new Map<string, { uri: string; tlsPubkeyHash: string }>();
     const fan = await fanOutToEndpoints(built.input, endpoints, async (endpoint: TaskBuilderEndpoint, req) => {
@@ -1235,6 +1247,19 @@ export class TrueOpenClient {
    * unflagged `globalThis.crypto`) and to `globalThis.crypto` in browsers, which covers both
    * without importing a Node built-in into the browser bundle.
    */
+  private checkIdempotencyKey(key: string, inputHash: string): void {
+    const first = this.inputHashByIdempotencyKey.get(key);
+    if (first !== undefined && first !== inputHash) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_IDEMPOTENCY_KEY_REUSED',
+        `idempotency_key ${JSON.stringify(key)} was first used with input_hash ${first}, not ${inputHash}: ` +
+          'a retry must resend the same payload bytes, and a different input needs a new key',
+        { category: 'conflict' },
+      );
+    }
+  }
+
   private nextNonce(): Uint8Array {
     if (this.cfg.nonce) return this.cfg.nonce();
     try {

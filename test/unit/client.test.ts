@@ -22,6 +22,9 @@ import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outputFinSigningDigest } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
+import { createMarkerStreamState } from '../../src/toolcall/stream-state';
+import { createToolCallRegistry } from '../../src/toolcall/registry';
+import type { AssistantStreamEvent, ParserRef, ToolCallParser } from '../../src/toolcall/types';
 
 // deriveTaskId requires canonical 64-hex (raw Hash32 goes into the preimage).
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
@@ -592,5 +595,69 @@ describe('TrueOpenClient facade', () => {
       code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
     });
     expect(cap.ack).toBeUndefined();
+  });
+});
+
+describe('TrueOpenClient tool-call views', () => {
+  // `<tc>name|args</tc>`: a small marker grammar so the facade wiring is tested apart from hermes.
+  const parseCall = (inner: string) => {
+    const at = inner.indexOf('|');
+    return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+  };
+  const markerParser = (name: string): ToolCallParser => ({
+    name,
+    version: 1,
+    createStreamState: () => createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall }),
+    parseComplete: (text: string) => ({ role: 'assistant' as const, content: text, toolCalls: [] }),
+  });
+
+  // The start marker is split between the two frames, so a per-frame parse would find neither.
+  const toolCallChunks = ['weather <t', 'c>get_weather|{"city":"London"}</tc> done'].map((t) => new TextEncoder().encode(t));
+  const toolCallTransport = (): Transport =>
+    scriptedStreamTransport(async function* () {
+      const built = signedFrames('trueopen-devnet-1', toolCallChunks);
+      for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+      yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+    });
+
+  const drain = async (p: { parser: ToolCallParser } | { toolCallParser: ParserRef }): Promise<AssistantStreamEvent[]> => {
+    const events: AssistantStreamEvent[] = [];
+    for await (const e of makeClientWithTransport(toolCallTransport()).streamAssistantMessage({
+      sessionId: SESSION,
+      taskId: TASK,
+      taskHash: TASK_HASH,
+      workerServicePubKey: WORKER_PUB,
+      ...('parser' in p ? p : { ...p, registry: createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]) }),
+    })) {
+      events.push(e);
+    }
+    return events;
+  };
+  const text = (events: AssistantStreamEvent[]) => events.map((e) => (e.kind === 'content' ? e.text : '')).join('');
+
+  it('streamAssistantMessage derives provisional calls over the verified frame stream', async () => {
+    const events = await drain({ parser: markerParser('test-markers') });
+    expect(events).toEqual([
+      { kind: 'content', text: 'weather ' },
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"city":"London"}' } },
+      { kind: 'content', text: ' done' },
+    ]);
+    // Nothing executable came out of the stream: that requires confirmAssistantMessage.
+    expect(events.some((e) => 'confirmation' in e)).toBe(false);
+  });
+
+  it('resolves the profile parser and yields a provisional call when it is vector-verified', async () => {
+    expect(await drain({ toolCallParser: { name: 'hermes', version: 1 } })).toContainEqual({
+      kind: 'tool-call-provisional',
+      call: { name: 'get_weather', arguments: '{"city":"London"}' },
+    });
+  });
+
+  it('degrades to content-only when the profile pins no parser, or one the registry lacks', async () => {
+    for (const toolCallParser of [{ name: '', version: 0 }, { name: 'unknown-parser', version: 1 }]) {
+      const events = await drain({ toolCallParser });
+      expect(events.every((e) => e.kind === 'content')).toBe(true);
+      expect(text(events)).toBe('weather <tc>get_weather|{"city":"London"}</tc> done');
+    }
   });
 });

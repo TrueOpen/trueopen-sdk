@@ -100,8 +100,16 @@ export interface ModelState {
 }
 
 /** Trimmed-down SDK view of hub.v1 ProfileState (the Profile query; only discovery-relevant scalar fields, verification/pricing and other nested config are not expanded). */
+/** node shared.v1.ParserRefV1 projected on chain. The zero value is the sole "absent parser" encoding. */
+export interface ParserRefV1 {
+  readonly name: string;
+  readonly version: number;
+}
+
 export interface ProfileInfo {
   readonly modelId: string;
+  /** The projected tool-call parser (name/version). The zero value (`name === ''`) is the sole "no tool calling" encoding. */
+  readonly toolCallParser: ParserRefV1;
   readonly profileVersion: bigint;
   readonly status: string; // MODEL_PROFILE_STATUS_* (may be unset)
   readonly runtimeClass: string;

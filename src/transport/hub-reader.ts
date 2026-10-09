@@ -8,6 +8,7 @@ import type {
   ServiceDescriptorRef,
   ServiceEndpointV1,
   ModelState,
+  ParserRefV1,
   ProfileInfo,
   ProfilePricing,
   TaskGenerationLimits,
@@ -428,11 +429,19 @@ function toModel(o: Record<string, unknown>): ModelState {
   };
 }
 
+/** nested ParserRefV1; the zero value (name='') is the "absent parser" encoding. */
+function toParserRef(raw: unknown): ParserRefV1 {
+  if (raw === undefined || raw === null) return { name: '', version: 0 };
+  const o = asObject(raw);
+  return { name: strOpt(o, 'name'), version: Number(u32(o, 'version')) };
+}
+
 function toProfile(o: Record<string, unknown>): ProfileInfo {
   const raw = o['task_types'] ?? o['taskTypes'];
   const taskTypes = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
   return {
     modelId: hash32Hex(o, 'model_id'),
+    toolCallParser: toParserRef(o['tool_call_parser'] ?? o['toolCallParser']),
     profileVersion: u32(o, 'profile_version'),
     status: strOpt(o, 'status'),
     runtimeClass: strOpt(o, 'runtime_class'),

@@ -25,6 +25,9 @@ import {
   outputFinSigningDigest,
 } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { createMarkerStreamState } from '../../src/toolcall/stream-state';
+import { createToolCallRegistry } from '../../src/toolcall/registry';
+import type { ToolCallParser } from '../../src/toolcall/types';
 
 const CHAIN_ID = 'trueopen-localnet-1';
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
@@ -346,5 +349,55 @@ describe('stripChatTemplateEos', () => {
   it('leaves text without the marker untouched, including an embedded marker', () => {
     expect(stripChatTemplateEos('答案是 9')).toBe('答案是 9');
     expect(stripChatTemplateEos('a<|im_end|>b')).toBe('a<|im_end|>b'); // not trailing
+  });
+});
+
+describe('fetchAssistantMessage', () => {
+  const parseCall = (inner: string) => {
+    const at = inner.indexOf('|');
+    return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+  };
+  const newState = () => createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall });
+  // Same marker grammar in both directions, so the fetched full text and the parser agree.
+  const hermes: ToolCallParser = {
+    name: 'hermes',
+    version: 1,
+    createStreamState: newState,
+    parseComplete(text) {
+      const state = newState();
+      const events = [...state.push(text), ...state.finish()];
+      return {
+        role: 'assistant',
+        content: events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join(''),
+        toolCalls: events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call] : [])),
+      };
+    },
+  };
+  const registry = createToolCallRegistry([{ parser: hermes, conformance: 'vector-verified' }]);
+  const TEXT = '<tc>get_weather|{"city":"London"}</tc> done';
+  const fetch = (toolCallParser: { name: string; version: number }) => {
+    const bytes = enc.encode(TEXT);
+    return makeClient(dataTransport(bytes, [bytes.length], newLog()), null).fetchAssistantMessage({
+      sessionId: SESSION,
+      taskId: TASK,
+      taskHash: TASK_HASH,
+      outputHash: toHex(outputMmrRoot([bytes])),
+      builderAddress: BUILDER,
+      expiresAtHeight: 510n,
+      toolCallParser,
+      registry,
+    });
+  };
+
+  it('returns the fetched text with no tool calls when the profile pins no parser', async () => {
+    expect(await fetch({ name: '', version: 0 })).toEqual({ role: 'assistant', content: TEXT, toolCalls: [] });
+  });
+
+  it('parses the fetched text when the profile pins a vector-verified parser', async () => {
+    expect(await fetch({ name: 'hermes', version: 1 })).toEqual({
+      role: 'assistant',
+      content: ' done',
+      toolCalls: [{ name: 'get_weather', arguments: '{"city":"London"}' }],
+    });
   });
 });

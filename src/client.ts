@@ -40,6 +40,20 @@ import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { randomBytes } from '@noble/hashes/utils';
 import { toHex, fromHex } from './util/bytes';
 import { bytesEqual } from './util/bytes';
+import {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+import { TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
+import { BUILTIN_TOOL_CALL_PARSERS, resolveToolCalling, type ToolCallRegistry } from './toolcall/registry';
+import type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+  ParserRef,
+} from './toolcall/types';
 
 export interface TrueOpenClientConfig {
   readonly chainId: string;
@@ -359,6 +373,44 @@ export interface ConfirmOutputParams {
   readonly taskHash: string;
   readonly checkpoint: OutputStreamVerifierCheckpoint;
   readonly receipt: InferReceiptView;
+}
+
+/**
+ * Tool-calling parameters for `streamAssistantMessage` / `fetchAssistantMessage`.
+ *
+ * The alternative to passing an already-resolved `parser` (the phase-1 path). When this shape is
+ * used, the facade resolves the parser from the profile's on-chain `tool_call_parser` projection
+ * (design S5.1), and degrades to `content`-only output when the profile does not support tool
+ * calling. The two shapes are disjoint: this one has no `parser` and a required `toolCallParser`.
+ */
+export interface ToolCallParams {
+  /** The profile's on-chain tool-call parser (ProfileInfo.toolCallParser); zero value = "no tool calling". */
+  readonly toolCallParser: ParserRef;
+  /** Defaults to the built-in registry (empty today); injectable for tests/custom parsers. */
+  readonly registry?: ToolCallRegistry;
+  /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
+  readonly allowUnverified?: boolean;
+  /** Caller-supplied EOS tolerance (design S13.2), carried through to the derive layer. */
+  readonly trailingEosMarkers?: readonly string[];
+}
+
+/**
+ * The degrade path for an unsupported tool-calling resolution (design S6): re-emit the committed
+ * text as `content` events and drop the terminal `fin` marker. The stream is exactly what
+ * `streamOutput` produced, minus tool calls.
+ */
+async function* contentOnly(
+  source: AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'fin' }>,
+  trailingEosMarkers: readonly string[],
+): AsyncIterable<AssistantStreamEvent> {
+  const stripper = new TrailingEosStripper(trailingEosMarkers);
+  for await (const event of source) {
+    if (event.kind !== 'chunk') continue;
+    const safe = stripper.push(event.text);
+    if (safe !== '') yield { kind: 'content', text: safe };
+  }
+  const tail = stripper.finish();
+  if (tail !== '') yield { kind: 'content', text: tail };
 }
 
 async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?: number): Promise<IteratorResult<T>> {
@@ -1071,6 +1123,94 @@ export class TrueOpenClient {
   /** Upgrade a locally verified output to confirmed, using the root/count/size from the on-chain InferReceipt. */
   confirmOutput(p: ConfirmOutputParams): ConfirmedOutputEvent {
     return confirmOutputWithReceipt({ chainId: this.cfg.chainId, ...p });
+  }
+
+  /**
+   * The derived-view counterpart of `streamOutput` (design S4.1, S5).
+   *
+   * Stage one of the execution gate: every tool call it yields is provisional and must not be
+   * executed. Obtain the checkpoint the usual way, via `onCheckpoint`, then call
+   * `confirmAssistantMessage` with the on-chain receipt to get the executable list.
+   *
+   * Two entry shapes, discriminated on `'parser' in p`:
+   *  - pass an already-resolved `parser` (phase-1, backward compatible), or
+   *  - pass `toolCallParser` (the profile's on-chain projection, `ProfileInfo.toolCallParser`)
+   *    and let this method resolve it through the registry up front (design S5.1). When the
+   *    profile does not support tool calling, the stream degrades to `content`-only events and
+   *    never throws.
+   */
+  async *streamAssistantMessage(
+    p: StreamOutputParams & (DerivedViewOptions | ToolCallParams),
+  ): AsyncIterable<AssistantStreamEvent> {
+    if ('parser' in p) {
+      // Phase-1 path, unchanged: the caller already resolved the parser.
+      yield* deriveAssistantStream(this.streamOutput(p), p);
+      return;
+    }
+    const support = resolveToolCalling({
+      toolCallParser: p.toolCallParser,
+      registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
+      ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+    });
+    if (!support.supported) {
+      yield* contentOnly(this.streamOutput(p), p.trailingEosMarkers ?? []);
+      return;
+    }
+    yield* deriveAssistantStream(this.streamOutput(p), {
+      parser: support.parser,
+      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+    });
+  }
+
+  /**
+   * The derived-view counterpart of `confirmOutput` (design S4.1, S5).
+   *
+   * Synchronous and receipt-taking for the same reason `confirmOutput` is: the chain read
+   * belongs to the caller, which is what lets the stream run against a Builder while the caller
+   * decides when to reach the node.
+   *
+   * It takes an already-resolved `parser` (Decision 3): resolve once via `resolveToolCalling`
+   * before streaming, then pass that same parser here. This method stays synchronous because the
+   * resolution is the caller's job, not a second async hop hidden inside a receipt check.
+   */
+  confirmAssistantMessage(p: ConfirmOutputParams & DerivedViewOptions): ConfirmedAssistantMessage {
+    return confirmAssistantMessageWithReceipt({ chainId: this.cfg.chainId, ...p }, p);
+  }
+
+  /**
+   * The derived-view counterpart of `fetchTaskOutput` (design S4.4).
+   *
+   * No provisional stage: `fetchTaskOutput` re-derives the MMR root locally and reconciles it
+   * against `p.outputHash`. But `p.outputHash` is a plain string the caller supplies -- nothing
+   * here reads it from the chain. So the guarantee is conditional on the caller, exactly as
+   * `deriveAssistantMessage`'s docstring spells out: the bytes are reconciled against the
+   * on-chain `InferReceipt.output_hash` if and only if the caller sourced `p.outputHash` from
+   * that on-chain receipt. Pass anything else and this reconciles the bytes against that instead.
+   *
+   * Like `streamAssistantMessage`, it accepts either an already-resolved `parser` (phase-1) or a
+   * `toolCallParser`. When the profile does not support tool calling, the result carries the
+   * text as `content` with an empty `toolCalls` list rather than throwing.
+   */
+  async fetchAssistantMessage(
+    p: Parameters<TrueOpenClient['fetchTaskOutput']>[0] & (DerivedViewOptions | ToolCallParams),
+  ): Promise<DerivedAssistantMessage> {
+    if ('parser' in p) {
+      const got = await this.fetchTaskOutput(p);
+      return deriveAssistantMessage(got.text, p);
+    }
+    const support = resolveToolCalling({
+      toolCallParser: p.toolCallParser,
+      registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
+      ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+    });
+    const got = await this.fetchTaskOutput(p);
+    if (!support.supported) {
+      return { role: 'assistant', content: stripTrailingEos(got.text, p.trailingEosMarkers ?? []), toolCalls: [] };
+    }
+    return deriveAssistantMessage(got.text, {
+      parser: support.parser,
+      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+    });
   }
 
   /** Prepare challenge materials (does not submit a verdict). */

@@ -26,7 +26,7 @@ export type { FetchLike, FetchResponse, RestChainReaderOptions, QueryRetryPolicy
 export { HubReader } from './transport/hub-reader';
 export type { HubReaderOptions } from './transport/hub-reader';
 export { BUILDER_DESCRIPTOR_SCHEMA_V1, SERVICE_ENDPOINT_KIND_NEXUS_GRPC, nexusGrpcUri, nexusGrpcEndpoint, nexusHttpBaseUri } from './types/hub';
-export type { ParticipantType, BuilderInfo, ServiceEndpointV1, ServiceDescriptorRef, BuilderDescriptorDoc, BuilderEndpoint, ModelState, ProfileInfo, ProfilePricing, TaskGenerationLimits, BeaconView, ParameterBucketView } from './types/hub';
+export type { ParticipantType, BuilderInfo, ServiceEndpointV1, ServiceDescriptorRef, BuilderDescriptorDoc, BuilderEndpoint, ModelState, ParserRefV1, ProfileInfo, ProfilePricing, TaskGenerationLimits, BeaconView, ParameterBucketView } from './types/hub';
 export { BUCKET_KIND, DEFAULT_PARAMETER_BUCKET_KEY, PARTICIPANT_TYPE } from './types/hub';
 export type { ParticipantTypeName, ServiceKeyBinding } from './types/hub';
 export { verifyAndParseBuilderDescriptor, resolveBuilderEndpoints } from './hub/builder-discovery';
@@ -328,7 +328,39 @@ export type {
   StreamOutputParams,
   OutputStreamEvent,
   ConfirmOutputParams,
+  ToolCallParams,
 } from './client';
+
+// --- Tool calling: derived views over committed output (ADR-0022). Never part of the protocol. ---
+export {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
+export { assertNoEndMarkerCollision, TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
+export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan';
+export {
+  BUILTIN_TOOL_CALL_PARSERS,
+  createToolCallRegistry,
+  resolveToolCalling,
+  type ParserConformance,
+  type RegistryEntry,
+  type ToolCallRegistry,
+} from './toolcall/registry';
+export { hermesParser } from './toolcall/parsers/hermes';
+export type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+  DerivedToolCall,
+  ParserRef,
+  ToolCallParser,
+  ToolCallStreamState,
+  ToolCallSupport,
+  UnsupportedReason,
+} from './toolcall/types';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----
 export {

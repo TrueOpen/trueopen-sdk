@@ -133,6 +133,8 @@ export type {
   TaskOrderIntent,
   TaskOrderAmounts,
 } from './order/task-order-input';
+export { chatInferInputBytes } from './order/chat-input';
+export type { ChatInferInput, ChatMessage, ChatTool, ChatToolCall, ChatJsonObject, ChatJsonValue } from './order/chat-input';
 export {
   signAndEncodeOrder,
   encodeSignedOrder,

@@ -1,0 +1,101 @@
+import type { ConfirmedOutputEvent } from '../output/output-confirmation';
+
+/**
+ * ADR-0022's "derived assistant message": a view over committed output, never a commitment.
+ * It is not hashed, not in the receipt, not in evidence, and never goes on chain.
+ */
+export interface DerivedAssistantMessage {
+  readonly role: 'assistant';
+  readonly content: string;
+  readonly toolCalls: readonly DerivedToolCall[];
+}
+
+/**
+ * Only what the model's own bytes determine. `id` / `type` / `index` are synthesized by the
+ * Provider layer and are deliberately absent: they carry no model information, and putting them
+ * here would invite treating them as part of the parse.
+ */
+export interface DerivedToolCall {
+  readonly name: string;
+  /**
+   * The argument JSON exactly as the model wrote it. Not re-serialized: round-tripping through
+   * JSON.parse/stringify reorders keys and changes bytes, and these bytes are what a
+   * cross-language shared vector pins.
+   */
+  readonly arguments: string;
+}
+
+/**
+ * Identifies a parser, matching the manifest's `tool_calling.parser` (Manifest S7.2).
+ *
+ * `name` is TrueOpen's **engine-independent canonical** name, drawn from the governance
+ * whitelist `supported_tool_call_parsers`. It is deliberately *not* an engine's own parser
+ * name: those disagree across engines -- Phi-4 is `phi4_mini_json` in vLLM and `phi4` in
+ * Dynamo -- so a node maps the canonical name onto whatever its local engine calls it. An
+ * implementation that looked up an engine's registry by this name would be right on one
+ * engine and wrong on the next.
+ *
+ * `version` is the version of that canonical parser *specification*, not of any engine, and
+ * is `>= 1`. Same name at a different version is a different parser.
+ */
+export interface ParserRef {
+  readonly name: string;
+  readonly version: number;
+}
+
+/**
+ * What the provisional stream yields.
+ *
+ * `tool-call-provisional` means exactly what it says: nothing here has been reconciled with the
+ * chain, so it MUST NOT be executed. The confirmed form is a different type, reachable only
+ * through a function that requires a receipt.
+ */
+export type AssistantStreamEvent =
+  | { readonly kind: 'content'; readonly text: string }
+  | { readonly kind: 'tool-call-provisional'; readonly call: DerivedToolCall };
+
+/** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
+export interface ToolCallStreamState {
+  push(text: string): readonly AssistantStreamEvent[];
+  /** End of stream. An unclosed segment flushes as plain text (design S7 requirement 2). */
+  finish(): readonly AssistantStreamEvent[];
+}
+
+export interface ToolCallParser extends ParserRef {
+  /**
+   * The marker sequences that terminate a tool call (e.g. `</tc>`). Exposed so the
+   * collision guard can reject a parser whose end marker overlaps a configured EOS marker
+   * (design S10.3). Omitted only by parsers that have no explicit end marker.
+   */
+  readonly endMarkers?: readonly string[];
+  parseComplete(text: string): DerivedAssistantMessage;
+  createStreamState(): ToolCallStreamState;
+}
+
+/** Only reachable through `confirmAssistantMessageWithReceipt`, i.e. only after reconciliation. */
+export interface ConfirmedAssistantMessage extends DerivedAssistantMessage {
+  readonly confirmation: ConfirmedOutputEvent;
+}
+
+/**
+ * Why this SDK is not entitled to parse. All are known before any frame arrives, which is why
+ * they are resolved up front rather than delivered as a stream event (design S5.1).
+ *
+ * `parser-unverified` extends the two in design S6: ADR-0022 decision four's shared vectors do
+ * not exist yet (monorepo#11), so a registry that reported an implemented-but-unchecked parser
+ * as supported would claim precisely what cannot be claimed.
+ *
+ * The parser is read from the profile's on-chain `tool_call_parser` projection, which is
+ * authoritative, so there is no manifest fetch/hash/validate step that could fail: the three
+ * manifest failure modes the earlier design carried are gone. Full-document verification (of the
+ * artifacts, `output_decoding`, etc.) is a separate concern handled by `manifestHash` +
+ * `assertManifestMatchesChain`, not by tool-call resolution.
+ */
+export type UnsupportedReason =
+  | 'parser-not-pinned'
+  | 'parser-unknown'
+  | 'parser-unverified';
+
+export type ToolCallSupport =
+  | { readonly supported: true; readonly parser: ToolCallParser }
+  | { readonly supported: false; readonly reason: UnsupportedReason };

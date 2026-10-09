@@ -232,10 +232,11 @@ const userWallet = privateKeyTypedDataSigner(privkey);
 const pubKey = secp256k1PublicKey(privkey);
 // The address is EVM-style: bech32(keccak256(uncompressed_XY)[12:32]).
 const address = ethSecp256k1Address(pubKey, PREFIX);
-// The order's EIP-712 needs a numeric EVM chain ID and a fee denom; neither is part of
-// TaskOrderV2. Both are read from chain params.phase0 (see below), never hardcoded:
-// --evm-chain-id overrides the former, and --fee-denom is only checked against the latter.
-const EVM_CHAIN_ID_FLAG = flag('--evm-chain-id', undefined);
+// The order's EIP-712 needs a signer-chosen signature_chain_id and a fee denom; neither is
+// part of TaskOrderV3. The chain ID defaults to 1 (Ethereum mainnet, ADR-0033) for this
+// server-side key; --signature-chain-id overrides it, and --fee-denom is only checked
+// against the chain's business_denom.
+const SIGNATURE_CHAIN_ID_FLAG = flag('--signature-chain-id', undefined);
 const FEE_DENOM_FLAG = flag('--fee-denom', undefined);
 
 // ---- chain_id (auto) ----
@@ -269,10 +270,10 @@ const noDefaultNexus = {
   stream: () => Promise.reject(new Error('this client has no default nexus endpoint; a per-Builder endpoint should have been resolved')),
 };
 const hub = new HubReader({ baseUrl: REST, fetch: (u) => fetch(u) });
-// On-chain params.phase0.evm_chain_id feeds the EIP-712 domain separator; --evm-chain-id
-// only overrides it.
-const EVM_CHAIN_ID = EVM_CHAIN_ID_FLAG !== undefined ? BigInt(EVM_CHAIN_ID_FLAG) : await hub.getEvmChainId();
-log(`evm_chain_id = ${EVM_CHAIN_ID}${EVM_CHAIN_ID_FLAG !== undefined ? ' (overridden by --evm-chain-id)' : ' (read from chain)'}`);
+// The signer-chosen EIP-712 domain chainId (ADR-0033): default 1 for a server-side key;
+// --signature-chain-id overrides it.
+const SIGNATURE_CHAIN_ID = SIGNATURE_CHAIN_ID_FLAG !== undefined ? BigInt(SIGNATURE_CHAIN_ID_FLAG) : 1n;
+log(`signature_chain_id = ${SIGNATURE_CHAIN_ID}${SIGNATURE_CHAIN_ID_FLAG !== undefined ? ' (overridden by --signature-chain-id)' : ' (default)'}`);
 // business_denom is the order feeDenom and the only tx fee denom; a --fee-denom that
 // disagrees would be rejected on chain after nexus accepted the order, so stop here instead.
 const FEE_DENOM = resolveFeeDenom(await hub.getBusinessDenom(), FEE_DENOM_FLAG);
@@ -291,7 +292,7 @@ const conn = await connectTrueOpenChainClient({
 
 const client = new TrueOpenClient({
   chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
-  evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM,
+  signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM,
   chain: conn.client, ingressTransport: noDefaultNexus,
   hub, ingressTransportFactory: nexusTransport,
 });
@@ -397,7 +398,7 @@ const expiryHeight = ctx.latestHeight + BigInt(flag('--expiry-blocks', '10'));
 // ---- 5) signing: the order and the request envelope, both EIP-712 by the wallet ----
 const built = await buildOpenTaskRequest({
   order, payload, sessionId, taskId, expiryHeight,
-  orderEip712: { evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM },
+  orderEip712: { signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM },
   // TaskDataRequestAuthV1 requires request_nonce to be exactly 32 bytes.
   requestNonce: crypto.getRandomValues(new Uint8Array(32)),
   idempotencyKey, wallet: userWallet,
@@ -413,11 +414,11 @@ const localChecks = {
   // fields); it's a 65-byte recoverable signature.
   inner_signature_length_65: innerSig.length === 65,
   inner_signature_recovers_to_user_pubkey:
-    hex(recoverEip712PubKey(taskOrderEip712Digest(order, { evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM }), innerSig)) ===
+    hex(recoverEip712PubKey(taskOrderEip712Digest(order, { signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM }), innerSig)) ===
     hex(pubKey),
   no_outer_order_signature: !('signature' in built.input),
   request_envelope_recovers_to_user:
-    recoverEip712Address(sdkRequestEip712Digest(re, EVM_CHAIN_ID), re.signature, PREFIX) === address,
+    recoverEip712Address(sdkRequestEip712Digest(re, SIGNATURE_CHAIN_ID), re.signature, PREFIX) === address,
 };
 
 // ---- 6) Task Builder routing (seeded with the same anchor / set hash signed into the order) ----
@@ -583,7 +584,7 @@ async function startStream(winnerWorker) {
       if (resumingFrom !== null && resumedFromSeq === null) resumedFromSeq = resumingFrom.toString();
       const sc = new TrueOpenClient({
         chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
-        evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM, chain: conn.client,
+        signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM, chain: conn.client,
         ingressTransport: nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? ''),
         hub,
       });
@@ -824,7 +825,7 @@ if (FETCH_OUTPUT && DO_SUBMIT && landedOnChain && !streamDelivered) {
       try {
         const oc = new TrueOpenClient({
           chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
-          evmChainId: EVM_CHAIN_ID, feeDenom: FEE_DENOM,
+          signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM,
           chain: conn.client, ingressTransport: nexusTransport(a.endpoint, pinOf(a.endpoint)),
           hub,
         });

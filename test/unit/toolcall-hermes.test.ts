@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { hermesParser } from '../../src/toolcall/parsers/hermes';
-import type { AssistantStreamEvent } from '../../src/toolcall/types';
+import type { ToolCallStreamEvent } from '../../src/toolcall/types';
 
 const call = (name: string, args: string): string =>
   `<tool_call>{"name":"${name}","arguments":${args}}</tool_call>`;
 
 /** Feeds the frames in order through the streaming state and returns every event. */
-function run(frames: readonly string[]): AssistantStreamEvent[] {
+function run(frames: readonly string[]): ToolCallStreamEvent[] {
   const state = hermesParser.createStreamState();
-  const events: AssistantStreamEvent[] = [];
+  const events: ToolCallStreamEvent[] = [];
   for (const frame of frames) events.push(...state.push(frame));
   events.push(...state.finish());
   return events;

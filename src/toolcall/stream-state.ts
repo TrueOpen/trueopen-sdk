@@ -1,6 +1,6 @@
 import { TrueOpenError } from '../errors/errors';
 import { indexOfOutsideQuotes, partialMarkerSuffix, unterminatedQuoteSuffix } from './marker-scan';
-import type { AssistantStreamEvent, DerivedToolCall, ToolCallStreamState } from './types';
+import type { ToolCallStreamEvent, DerivedToolCall, ToolCallStreamState } from './types';
 
 export interface MarkerStreamOptions {
   readonly startMarker: string;
@@ -45,8 +45,8 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
   let buffering = false;
 
   /** Consumes as much of `buffer` as is unambiguous. `atEnd` releases every holdback. */
-  function drain(atEnd: boolean): AssistantStreamEvent[] {
-    const events: AssistantStreamEvent[] = [];
+  function drain(atEnd: boolean): ToolCallStreamEvent[] {
+    const events: ToolCallStreamEvent[] = [];
     for (;;) {
       if (!buffering) {
         const at = indexOfOutsideQuotes(buffer, startMarker);

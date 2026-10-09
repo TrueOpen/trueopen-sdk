@@ -8,6 +8,11 @@ export interface DerivedAssistantMessage {
   readonly role: 'assistant';
   readonly content: string;
   readonly toolCalls: readonly DerivedToolCall[];
+  /**
+   * The leading reasoning span (Manifest S7.3), set only when a reasoning parser ran and found
+   * one. Tool-call markers inside it are reasoning text: they never appear in `toolCalls`.
+   */
+  readonly reasoningContent?: string;
 }
 
 /**
@@ -50,15 +55,21 @@ export interface ParserRef {
  * chain, so it MUST NOT be executed. The confirmed form is a different type, reachable only
  * through a function that requires a receipt.
  */
-export type AssistantStreamEvent =
+export type ToolCallStreamEvent =
   | { readonly kind: 'content'; readonly text: string }
   | { readonly kind: 'tool-call-provisional'; readonly call: DerivedToolCall };
 
+/**
+ * A tool-call stream event, or a piece of the leading reasoning span when a reasoning parser
+ * runs (Manifest S7.3). Reasoning is as provisional as everything else before the receipt.
+ */
+export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reasoning'; readonly text: string };
+
 /** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
 export interface ToolCallStreamState {
-  push(text: string): readonly AssistantStreamEvent[];
+  push(text: string): readonly ToolCallStreamEvent[];
   /** End of stream. An unclosed segment flushes as plain text (design S7 requirement 2). */
-  finish(): readonly AssistantStreamEvent[];
+  finish(): readonly ToolCallStreamEvent[];
 }
 
 export interface ToolCallParser extends ParserRef {

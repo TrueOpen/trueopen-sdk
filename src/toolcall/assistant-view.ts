@@ -10,6 +10,7 @@ import type {
   DerivedAssistantMessage,
   ToolCallParser,
 } from './types';
+import type { ReasoningParser } from './reasoning';
 
 export interface DerivedViewOptions {
   /**
@@ -29,6 +30,20 @@ export interface DerivedViewOptions {
    * itself -- at which point this option should be deleted rather than defaulted.
    */
   readonly trailingEosMarkers?: readonly string[];
+  /**
+   * Splits the leading reasoning span off before tool-call parsing (Manifest S7.3 rule 5), so a
+   * tool-call marker written while reasoning is never a call (rule 7). Omit it when the profile
+   * pins no reasoning parser.
+   */
+  readonly reasoningParser?: ReasoningParser;
+}
+
+/** Tool-call parsing over the remainder only, with the reasoning attached (S7.3 rules 5, 7, 8). */
+function parseWithReasoning(text: string, opts: DerivedViewOptions): DerivedAssistantMessage {
+  if (opts.reasoningParser === undefined) return opts.parser.parseComplete(text);
+  const { reasoningContent, remainder } = opts.reasoningParser.split(text);
+  const message = opts.parser.parseComplete(remainder);
+  return reasoningContent === '' ? message : { ...message, reasoningContent };
 }
 
 /**
@@ -55,13 +70,31 @@ export async function* deriveAssistantStream(
   assertNoEndMarkerCollision(opts.parser.endMarkers ?? [], opts.trailingEosMarkers ?? []);
   const stripper = new TrailingEosStripper(opts.trailingEosMarkers ?? []);
   const state = opts.parser.createStreamState();
+  // Chained, not parallel (S7.3 rule 10): reasoning first, the tool parser sees only the remainder.
+  const reasoning = opts.reasoningParser?.createStreamState();
+  function* feed(text: string): Iterable<AssistantStreamEvent> {
+    if (reasoning === undefined) {
+      yield* state.push(text);
+      return;
+    }
+    for (const e of reasoning.push(text)) {
+      if (e.kind === 'reasoning') yield e;
+      else yield* state.push(e.text);
+    }
+  }
   for await (const event of source) {
     if (event.kind !== 'chunk') continue;
     const safe = stripper.push(event.text);
-    if (safe !== '') yield* state.push(safe);
+    if (safe !== '') yield* feed(safe);
   }
   const tail = stripper.finish();
-  if (tail !== '') yield* state.push(tail);
+  if (tail !== '') yield* feed(tail);
+  if (reasoning !== undefined) {
+    for (const e of reasoning.finish()) {
+      if (e.kind === 'reasoning') yield e;
+      else yield* state.push(e.text);
+    }
+  }
   yield* state.finish();
 }
 
@@ -92,7 +125,7 @@ export function confirmAssistantMessageWithReceipt(
     concatBytes(...input.checkpoint.chunks.map((chunk) => Uint8Array.from(chunk))),
   );
   // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
-  const message = opts.parser.parseComplete(stripTrailingEos(text, opts.trailingEosMarkers ?? []));
+  const message = parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts);
   return { ...message, confirmation };
 }
 
@@ -113,5 +146,5 @@ export function deriveAssistantMessage(
   opts: DerivedViewOptions,
 ): DerivedAssistantMessage {
   // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
-  return opts.parser.parseComplete(stripTrailingEos(text, opts.trailingEosMarkers ?? []));
+  return parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts);
 }

@@ -231,14 +231,15 @@ const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n
 function sdkRequestEip712Domain(signatureChainId): { name, version, chainId }
 function sdkRequestTypedData(f: SdkRequestFields, signatureChainId, sessionGrantHash?): TypedData
 function sdkRequestEip712Digest(f: SdkRequestFields, signatureChainId, sessionGrantHash?): Uint8Array
-async function signSdkRequestEnvelope(f, wallet, signatureChainId, sessionGrantHash?): Promise<SignedSdkRequestEnvelope>
+async function signSdkRequestEnvelope(fields: SdkRequestFields, opts: { signerAddress, signer, signatureChainId, session?, chainId? }): Promise<SignedSdkRequestEnvelope>
 function ingressEndpoint(method: string): string
 function strictHash32(value: string): string
 ```
 
-`SdkRequestFields` = `{ chainId, method, endpoint, sessionId, taskId?, requestNonce,
-expiryHeightOrTime, bodyDigest, signerAddress }`. `SignedSdkRequestEnvelope` adds
-`signature`. Every Builder request carries one; the SDK recovers the signature and checks
+`SdkRequestFields` = `{ chainId, method, sessionId, taskId, requestNonce, expiryHeightOrTime,
+bodyDigest }` (`endpoint` is derived, not a field). `SignedSdkRequestEnvelope` adds
+`requestDomain`, `endpoint`, `signatureChainId`, `signerAddress`, `signature`, and
+`sessionGrant?`. Every Builder request carries one; the SDK recovers the signature and checks
 it against the sender before sending.
 
 ### 4.2 Body digests
@@ -285,8 +286,9 @@ canonical frame gained `evidence_kind` (V2); `producer_operator` enters the prei
 address bytes. `canonicalObjectRefFrame` **throws** on an illegal object_kind /
 evidence_kind combination before computing any digest (fail-closed).
 
-`TaskDataRequestAuthFields` = `{ chainId, sessionId, taskId?, taskHash, objectRef?,
-builderAddress, expiresAtHeight, rpcMethod, bodyDigest, requesterKind?, requester? }`.
+`TaskDataRequestAuthFields` = `{ schemaVersion, chainId, builderOperatorAddress, rpcMethod,
+bodyDigest, requesterKind, requesterAddress, serviceAuthorizationNonce, requestNonce,
+expiryHeight }`.
 
 ---
 
@@ -306,10 +308,32 @@ class SessionKeyManager implements SessionAuthority
 ```
 
 `SessionGrantFields` = `{ chainId, user, sessionKey, expiryHeight, grantNonce, signatureChainId }`;
-`SignedSessionGrant` adds `userSignature`.
-`SessionKeyManager` signs a `SessionGrant` with the wallet once, then signs the permitted
-methods with an in-memory session key, so a browser wallet prompts once per grant instead
-of once per request. `maxGrantBlocks` must equal the Builders' `max_session_grant_blocks`.
+`SignedSessionGrant` adds `userSignature` (65-byte R‖S‖V by the user's wallet).
+
+### The session key
+
+A **session key** is a short-lived secp256k1 private key the SDK generates so a browser wallet
+does not prompt on every request. The flow:
+
+1. `SessionKeyManager` draws the key from the platform CSPRNG. It lives **only in memory** —
+   never persisted and never derived from a signature.
+2. The user's wallet signs one `SessionGrant` (EIP-712 `SessionGrant(string chainId, string user,
+   address sessionKey, uint64 expiryHeight, bytes32 grantNonce)`), authorizing that key.
+3. The session key then signs the session-allowed requests; each such request carries
+   `sessionGrantHash = hashStruct(SessionGrant)` and its signature recovers to
+   `grant.sessionKey`, while `signer_address` stays the granting user.
+4. Before the grant expires — or when a Builder reports it expired — the manager **renews with a
+   fresh key and a fresh grant**; the old key simply lapses. There is no revocation.
+
+A session key may sign only `SubscribeOutput`, `AckOutput`, `GetTaskEvents`, `PrepareChallenge`,
+and `GetTaskDataMetadata` / `FetchTaskData` of an OUTPUT object. `OpenTask` and every other
+request stay wallet-signed. `maxGrantBlocks` must equal the Builders' `max_session_grant_blocks`;
+`grantBlocks` (default `maxGrantBlocks - 2`) and `renewBeforeBlocks` (default a quarter of the
+lifetime) tune the grant window.
+
+Three distinct things: `session_id` is the on-chain stream namespace
+(`TRUEOPEN_SESSION_V1(user_address, session_nonce)`), `SessionGrant` is the signed authorization,
+and the **session key** is the in-memory key that grant authorizes.
 
 ---
 

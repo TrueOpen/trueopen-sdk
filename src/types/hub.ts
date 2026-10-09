@@ -110,6 +110,8 @@ export interface ProfileInfo {
   readonly modelId: string;
   /** The projected tool-call parser (name/version). The zero value (`name === ''`) is the sole "no tool calling" encoding. */
   readonly toolCallParser: ParserRefV1;
+  /** The projected reasoning parser (name/version). The zero value is the sole "no reasoning separation" encoding. */
+  readonly reasoningParser: ParserRefV1;
   readonly profileVersion: bigint;
   readonly status: string; // MODEL_PROFILE_STATUS_* (may be unset)
   readonly runtimeClass: string;

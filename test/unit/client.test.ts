@@ -653,6 +653,27 @@ describe('TrueOpenClient tool-call views', () => {
     });
   });
 
+  it('splits the reasoning off the stream before tool parsing when the profile pins a reasoning parser', async () => {
+    const chunks = ['<thi', 'nk>\nmaybe <tc>rm|{}</tc>\n</think>\n\nweather <tc>get_weather|{"city":"London"}</tc>'].map((t) => new TextEncoder().encode(t));
+    const transport = scriptedStreamTransport(async function* () {
+      const built = signedFrames('trueopen-devnet-1', chunks);
+      for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+      yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+    });
+    const events: AssistantStreamEvent[] = [];
+    for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      toolCallParser: { name: 'hermes', version: 1 },
+      registry: createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]),
+      reasoningParser: { name: 'qwen3', version: 1 },
+      allowUnverified: true,
+    })) {
+      events.push(e);
+    }
+    expect(events.filter((e) => e.kind === 'reasoning').map((e) => (e.kind === 'reasoning' ? e.text : '')).join('')).toBe('maybe <tc>rm|{}</tc>');
+    expect(events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call.name] : []))).toEqual(['get_weather']);
+  });
+
   it('degrades to content-only when the profile pins no parser, or one the registry lacks', async () => {
     for (const toolCallParser of [{ name: '', version: 0 }, { name: 'unknown-parser', version: 1 }]) {
       const events = await drain({ toolCallParser });

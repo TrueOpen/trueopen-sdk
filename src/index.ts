@@ -352,6 +352,20 @@ export {
   type ToolCallRegistry,
 } from './toolcall/registry';
 export { hermesParser } from './toolcall/parsers/hermes';
+export {
+  BUILTIN_REASONING_PARSERS,
+  createMarkerReasoningParser,
+  createReasoningRegistry,
+  qwen3ReasoningParser,
+  type ReasoningMarkers,
+  type ReasoningParser,
+  type ReasoningRegistry,
+  type ReasoningRegistryEntry,
+  type ReasoningSplit,
+  type ReasoningStreamEvent,
+  type ReasoningStreamState,
+  type ReasoningSupport,
+} from './toolcall/reasoning';
 export type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,
@@ -359,6 +373,7 @@ export type {
   DerivedToolCall,
   ParserRef,
   ToolCallParser,
+  ToolCallStreamEvent,
   ToolCallStreamState,
   ToolCallSupport,
   UnsupportedReason,

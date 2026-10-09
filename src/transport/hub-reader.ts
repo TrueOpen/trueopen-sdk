@@ -442,6 +442,7 @@ function toProfile(o: Record<string, unknown>): ProfileInfo {
   return {
     modelId: hash32Hex(o, 'model_id'),
     toolCallParser: toParserRef(o['tool_call_parser'] ?? o['toolCallParser']),
+    reasoningParser: toParserRef(o['reasoning_parser'] ?? o['reasoningParser']),
     profileVersion: u32(o, 'profile_version'),
     status: strOpt(o, 'status'),
     runtimeClass: strOpt(o, 'runtime_class'),

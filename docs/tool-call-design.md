@@ -1,6 +1,6 @@
 # Tool Call Support in the SDK (Design)
 
-> Version: v0.5 / 2026-09-27 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
+> Version: v0.6 / 2026-10-09 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
 > the V3 manifest vectors, and refreshed S12.1 and S12.4, which predated wire v0.2.1. v0.3
 > recorded P1 as delivered and added S10.1, the standing decision to wait for the undefined
 > encodings rather than invent them. v0.4 follows Manifest S7, whose write-back HAS landed:
@@ -8,7 +8,8 @@
 > version is a number), and adds S10.2 on `reasoning_parsing` being deferred and the hazard
 > that leaves open. v0.5 corrects the manifest target from V3 to **V4** throughout -- ADR-0022
 > named V3, but ADR-0028 and ADR-0023 were folded into a single freeze to 4 before V3 shipped
-> -- and removes the claim that `trailingEosMarkers` would ever come from the manifest.
+> -- and removes the claim that `trailingEosMarkers` would ever come from the manifest. v0.6
+> implements `reasoning_parsing` (S10.2, unverified pending wire's vectors).
 > Scope: **How the TypeScript SDK turns committed output text into an OpenAI-compatible
 > `content` + `tool_calls` view** -- module layout, public API, the execution gate,
 > failure semantics, and what is blocked upstream.
@@ -34,7 +35,7 @@
 | What cannot be built yet | **S9 What P2 leaves open** |
 | Order of work, and what is delivered | S10 Phasing |
 | Why we are waiting, and what changes when each blocker clears | **S10.1 Deliberately waiting** |
-| Why reasoning separation is deferred, and what that leaves open | **S10.2 reasoning_parsing** |
+| How reasoning separation works, and what is still unverified | **S10.2 reasoning_parsing** |
 | How this gets tested | S11 Testing |
 | Where `tools[]` goes, who renders the chat template | **S12 The Input Side** |
 | What the producer emits right now, and where it diverges | **S13 What Actually Arrives Today** |
@@ -523,33 +524,43 @@ tolerance for a producer that has not caught up (S13.2), it stays caller-supplie
 correct end state is deleting it once Cortex strips the EOS itself -- not sourcing it from
 anywhere.
 
-### 10.2 `reasoning_parsing` is deliberately not implemented, and that leaves a live hazard
+### 10.2 `reasoning_parsing`
 
 Manifest S7.3 defines a third block alongside `output_decoding` and `tool_calling`:
-`reasoning_parsing`, with its own parser ref and a deterministic pipeline. Standing
-decision: **the SDK does not implement it for now.**
+`reasoning_parsing`, with its own parser ref and a deterministic pipeline. It was deferred in P1;
+it is now implemented in `src/toolcall/reasoning.ts`.
 
-The consequence is not merely a missing feature, and it is not covered by the execution
-gate, so it is written down rather than left implicit.
-
-S7.3 fixes the pipeline order -- the reasoning parser first separates a leading reasoning
-span, and only the *remainder* is handed to the tool-call parser -- and rule 7 makes the
-reason explicit:
+Why it could not stay deferred: S7.3 fixes the pipeline order -- the reasoning parser first
+separates a leading reasoning span, and only the *remainder* is handed to the tool-call parser --
+and rule 7 makes the reason explicit:
 
 > tool markers appearing inside reasoning do not produce an executable call; any
 > tool-call-shaped marker inside `reasoning_content` is treated as reasoning text, yields
 > no `tool_calls`, and triggers no execution.
 
-P1 runs the tool parser over the **whole** committed output. A model that writes a
-`<tool_call>`-shaped marker while reasoning therefore produces a call we surface.
+Without it, the tool parser ran over the **whole** committed output, so a `<tool_call>`-shaped
+marker written while reasoning surfaced as a call. The execution gate did not help: those bytes
+are committed and verified, so `confirmAssistantMessage` promoted such a call exactly like a real
+one. The live devnet profile pins `reasoning_parser = qwen3@1`, and its chat output opens with a
+`<think>` span, so this was reachable today.
 
-**The execution gate does not save this.** The gate withholds calls parsed from bytes that
-have not been reconciled with the receipt; here the bytes are committed and verified, and
-we have merely parsed a region the spec says is out of bounds. `confirmAssistantMessage`
-will promote such a call exactly as it promotes a real one.
+What is implemented:
 
-Until `reasoning_parsing` is implemented, a caller whose profile pins a reasoning parser
-should treat tool calls derived by this SDK as unfiltered by that rule.
+- Rules 5-10: leading span only; whitespace allowed before the start marker and nothing else; an
+  unclosed span is all reasoning with no remainder and no tool parsing; no marker, an unknown
+  parser, or an unverified one without the caller's opt-in means no reasoning. Reasoning and tool
+  state machines are chained, not parallel, and streaming agrees with the full parse under every
+  frame split.
+- `qwen3@1`: `<think>` / `</think>`, with the template's layout newlines around the markers
+  dropped. Qwen3 writes the opening `<think>` itself, so it sits at the start of the output as
+  rule 6 requires.
+- Resolution mirrors tool calling: `ProfileInfo.reasoningParser` is read from the chain, and a
+  registry (`BUILTIN_REASONING_PARSERS`) maps it to an implementation.
+
+**Unverified.** Rule 11 requires shared cross-language vectors, published by wire. None exist
+yet, so `qwen3@1` is registered `unverified` and is used only with `allowUnverified`. Whether the
+layout newlines are trimmed, and exactly which, is the most likely point of disagreement with the
+vectors when they ship.
 
 ### 10.3 P3 prerequisites found while building P1
 

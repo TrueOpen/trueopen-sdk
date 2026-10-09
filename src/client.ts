@@ -46,13 +46,14 @@ import {
   deriveAssistantStream,
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
-import { TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
 import { BUILTIN_TOOL_CALL_PARSERS, resolveToolCalling, type ToolCallRegistry } from './toolcall/registry';
+import { BUILTIN_REASONING_PARSERS, type ReasoningParser, type ReasoningRegistry } from './toolcall/reasoning';
 import type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,
   DerivedAssistantMessage,
   ParserRef,
+  ToolCallParser,
 } from './toolcall/types';
 
 export interface TrueOpenClientConfig {
@@ -392,25 +393,48 @@ export interface ToolCallParams {
   readonly allowUnverified?: boolean;
   /** Caller-supplied EOS tolerance (design S13.2), carried through to the derive layer. */
   readonly trailingEosMarkers?: readonly string[];
+  /**
+   * The profile's on-chain reasoning parser (ProfileInfo.reasoningParser). When it resolves, the
+   * leading reasoning span is split off first and tool calls are parsed from the remainder only
+   * (Manifest S7.3 rule 5). Zero value or absent = no reasoning separation.
+   */
+  readonly reasoningParser?: ParserRef;
+  /** Defaults to the built-in reasoning registry (qwen3@1, unverified). */
+  readonly reasoningRegistry?: ReasoningRegistry;
 }
 
 /**
- * The degrade path for an unsupported tool-calling resolution (design S6): re-emit the committed
- * text as `content` events and drop the terminal `fin` marker. The stream is exactly what
- * `streamOutput` produced, minus tool calls.
+ * The tool parser used when the profile has none, or this build cannot vouch for it: the output
+ * is content, with no calls (design S6). Running it through the same pipeline keeps reasoning
+ * separation working for a profile that pins only a reasoning parser (S7.3 rule 9).
  */
-async function* contentOnly(
-  source: AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'fin' }>,
-  trailingEosMarkers: readonly string[],
-): AsyncIterable<AssistantStreamEvent> {
-  const stripper = new TrailingEosStripper(trailingEosMarkers);
-  for await (const event of source) {
-    if (event.kind !== 'chunk') continue;
-    const safe = stripper.push(event.text);
-    if (safe !== '') yield { kind: 'content', text: safe };
-  }
-  const tail = stripper.finish();
-  if (tail !== '') yield { kind: 'content', text: tail };
+const NO_TOOL_CALLS: ToolCallParser = {
+  name: '',
+  version: 0,
+  parseComplete: (text) => ({ role: 'assistant', content: text, toolCalls: [] }),
+  createStreamState: () => ({
+    push: (text) => (text === '' ? [] : [{ kind: 'content', text }]),
+    finish: () => [],
+  }),
+};
+
+/**
+ * Resolves both parsers the profile pins. A parser that does not resolve -- not pinned, unknown
+ * to this build, or unverified without the caller's opt-in -- is simply not used (S7.3 rule 8,
+ * design S6): the output still arrives, without that view.
+ */
+function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoningParser?: ReasoningParser } {
+  const allow = p.allowUnverified === true ? { allowUnverified: true } : undefined;
+  const tool = resolveToolCalling({
+    toolCallParser: p.toolCallParser,
+    registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
+    ...(allow ?? {}),
+  });
+  const reasoning = (p.reasoningRegistry ?? BUILTIN_REASONING_PARSERS).lookup(p.reasoningParser ?? { name: '', version: 0 }, allow);
+  return {
+    parser: tool.supported ? tool.parser : NO_TOOL_CALLS,
+    ...(reasoning.supported ? { reasoningParser: reasoning.parser } : {}),
+  };
 }
 
 async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?: number): Promise<IteratorResult<T>> {
@@ -1159,17 +1183,8 @@ export class TrueOpenClient {
       yield* deriveAssistantStream(this.streamOutput(p), p);
       return;
     }
-    const support = resolveToolCalling({
-      toolCallParser: p.toolCallParser,
-      registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
-      ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
-    });
-    if (!support.supported) {
-      yield* contentOnly(this.streamOutput(p), p.trailingEosMarkers ?? []);
-      return;
-    }
     yield* deriveAssistantStream(this.streamOutput(p), {
-      parser: support.parser,
+      ...resolveParsers(p),
       ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
     });
   }
@@ -1210,17 +1225,10 @@ export class TrueOpenClient {
       const got = await this.fetchTaskOutput(p);
       return deriveAssistantMessage(got.text, p);
     }
-    const support = resolveToolCalling({
-      toolCallParser: p.toolCallParser,
-      registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
-      ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
-    });
+    const parsers = resolveParsers(p);
     const got = await this.fetchTaskOutput(p);
-    if (!support.supported) {
-      return { role: 'assistant', content: stripTrailingEos(got.text, p.trailingEosMarkers ?? []), toolCalls: [] };
-    }
     return deriveAssistantMessage(got.text, {
-      parser: support.parser,
+      ...parsers,
       ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
     });
   }

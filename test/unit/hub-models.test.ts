@@ -64,13 +64,15 @@ describe('HubReader Models/Profiles discovery queries', () => {
     expect(r[0]?.taskTypes).toEqual(['TASK_TYPE_CHAT', 'TASK_TYPE_TEXT_GENERATION']);
     // No tool_call_parser on the profile: the zero value, the sole "no tool calling" encoding.
     expect(r[0]?.toolCallParser).toEqual({ name: '', version: 0 });
+    expect(r[0]?.reasoningParser).toEqual({ name: '', version: 0 });
   });
 
-  it('getProfile reads the projected tool_call_parser', async () => {
+  it('getProfile reads the projected tool_call_parser and reasoning_parser', async () => {
     const p = (PROFILES as { profiles: Record<string, unknown>[] }).profiles[0];
-    const one = { profile: { ...p, tool_call_parser: { name: 'hermes', version: 1 } } };
+    const one = { profile: { ...p, tool_call_parser: { name: 'hermes', version: 1 }, reasoning_parser: { name: 'qwen3', version: 1 } } };
     const r = await readerFor({ '/hub/v1/profile/': one }).getProfile('ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b', 1n);
     expect(r.toolCallParser).toEqual({ name: 'hermes', version: 1 });
+    expect(r.reasoningParser).toEqual({ name: 'qwen3', version: 1 });
   });
 
   it('listModels tolerates an omitted zero-value uint64, defaulting to 0n', async () => {

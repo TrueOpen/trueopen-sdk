@@ -28,6 +28,7 @@ import { fromHex, toHex } from '../../src/util/bytes';
 import { createMarkerStreamState } from '../../src/toolcall/stream-state';
 import { createToolCallRegistry } from '../../src/toolcall/registry';
 import type { ToolCallParser } from '../../src/toolcall/types';
+import { hermesParser } from '../../src/toolcall/parsers/hermes';
 
 const CHAIN_ID = 'trueopen-localnet-1';
 const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
@@ -399,5 +400,53 @@ describe('fetchAssistantMessage', () => {
       content: ' done',
       toolCalls: [{ name: 'get_weather', arguments: '{"city":"London"}' }],
     });
+  });
+});
+
+describe('fetchAssistantMessage with a reasoning parser (Manifest S7.3 rule 9)', () => {
+  const DRAFT = '<tool_call>\n{"name": "delete_file", "arguments": {"path": "/"}}\n</tool_call>';
+  const CALL = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "London"}}\n</tool_call>';
+  const OUTPUT = `<think>\nI could run ${DRAFT} but no.\n</think>\n\n${CALL}`;
+  const fetch = (toolCallParser: { name: string; version: number }, reasoningParser: { name: string; version: number }) => {
+    const bytes = enc.encode(OUTPUT);
+    return makeClient(dataTransport(bytes, [bytes.length], newLog()), null).fetchAssistantMessage({
+      sessionId: SESSION,
+      taskId: TASK,
+      taskHash: TASK_HASH,
+      outputHash: toHex(outputMmrRoot([bytes])),
+      builderAddress: BUILDER,
+      expiresAtHeight: 510n,
+      toolCallParser,
+      reasoningParser,
+      registry: createToolCallRegistry([{ parser: hermesParser, conformance: 'unverified' }]),
+      allowUnverified: true,
+    });
+  };
+  const NONE = { name: '', version: 0 };
+  const HERMES = { name: 'hermes', version: 1 };
+  const QWEN3 = { name: 'qwen3', version: 1 };
+
+  it('both: reasoning split first, the call drafted inside it is not a call', async () => {
+    const m = await fetch(HERMES, QWEN3);
+    expect(m.toolCalls.map((c) => c.name)).toEqual(['get_weather']);
+    expect(m.reasoningContent).toBe(`I could run ${DRAFT} but no.`);
+    expect(m.content).toBe('');
+  });
+
+  it('tool parser only: no separation, so the drafted call is surfaced too', async () => {
+    const m = await fetch(HERMES, NONE);
+    expect(m.toolCalls.map((c) => c.name)).toEqual(['delete_file', 'get_weather']);
+    expect('reasoningContent' in m).toBe(false);
+  });
+
+  it('reasoning parser only: the remainder is plain content, with no tool parsing', async () => {
+    const m = await fetch(NONE, QWEN3);
+    expect(m.toolCalls).toEqual([]);
+    expect(m.reasoningContent).toBe(`I could run ${DRAFT} but no.`);
+    expect(m.content).toBe(CALL);
+  });
+
+  it('neither: the whole output is content', async () => {
+    expect(await fetch(NONE, NONE)).toEqual({ role: 'assistant', content: OUTPUT, toolCalls: [] });
   });
 });

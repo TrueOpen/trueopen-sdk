@@ -61,6 +61,8 @@
  *                         forwarded verbatim to vLLM, which applies the model's chat
  *                         template), while anything else is the legacy raw-text inferV0
  *                         path.
+ *   --system-prompt <t>   add a system message ahead of the user message on a chat input
+ *                         (default: none -- the input carries only the user message)
  *   --tools-json <json>   OpenAI function tools (a JSON array) offered on a chat input; implies
  *                         --chat. The chat body is encoded by the SDK (chatInferInputBytes).
  *   --assistant           after the receipt confirms the streamed output, derive the assistant
@@ -148,7 +150,7 @@ const PROMPT = flag('--prompt', 'trueopen e2e open-task');
 // OpenAI chat-completions-shaped input (see --chat in the header): cortex routes a JSON
 // object with a `messages` field to its /v1/chat/completions path instead of inferV0.
 const CHAT = has('--chat');
-// Overrides the chat system message (default "trueopen e2e chat").
+// Optional chat system message. Without it the chat input carries only the user message.
 const SYSTEM_PROMPT = flag('--system-prompt', undefined);
 // Full chat `messages` array (JSON) for multi-turn history.
 const MESSAGES_JSON = flag('--messages-json', undefined);
@@ -204,7 +206,10 @@ const jsonSafe = (v) => {
   return v;
 };
 const log = (...a) => { if (!JSON_ONLY) console.error(...a); };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A hoisted declaration: restGet retries with it while MODEL_ID is resolved above.
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 /**
  * A REST read that keeps "the chain answered: absent" apart from "the chain did not
@@ -357,7 +362,7 @@ if (MESSAGES_JSON !== undefined) {
 } else if (CHAT || TOOLS_JSON !== undefined) {
   payload = chatInferInputBytes({
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT ?? 'trueopen e2e chat' },
+      ...(SYSTEM_PROMPT !== undefined ? [{ role: 'system', content: SYSTEM_PROMPT }] : []),
       { role: 'user', content: PROMPT },
     ],
     ...chatTools(),

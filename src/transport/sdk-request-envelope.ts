@@ -33,8 +33,13 @@ export const SDK_REQUEST_EIP712_DOMAIN_VERSION = '1';
 /** The service every endpoint belongs to: endpoint = `${INGRESS_SERVICE_PATH}/<Method>`. */
 export const INGRESS_SERVICE_PATH = '/nexus.v1.IngressAPI';
 
-/** Bare method names a session key may sign on SDKRequestEnvelopeV2. OpenTask is never one. */
-export const SESSION_SDK_METHODS: readonly string[] = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
+/**
+ * Bare method names a session key may sign on SDKRequestEnvelopeV2 (wire's session-allowed set).
+ *
+ * OpenTask joined it in wire PR #43: a session key may sign the OpenTask request envelope, under
+ * a grant whose user is the order's user. The order itself is always signed by the wallet.
+ */
+export const SESSION_SDK_METHODS: readonly string[] = ['OpenTask', 'SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 
 /** Values of 10^12 and above are Unix milliseconds; smaller values are a chain height (OpenTask only). */
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
@@ -146,7 +151,7 @@ export interface SignedSdkRequestEnvelope extends SdkRequestFields {
  * Without `session`, the wallet signs with sessionGrantHash = 32 zero bytes and the signature
  * must recover to `signerAddress`. With `session`, the session key signs with
  * sessionGrantHash = hashStruct(grant), the signature must recover to grant.sessionKey, and the
- * grant travels in the envelope; only the session-allowed methods accept that (never OpenTask).
+ * grant travels in the envelope; only the session-allowed methods accept that.
  */
 export async function signSdkRequestEnvelope(
   fields: SdkRequestFields,

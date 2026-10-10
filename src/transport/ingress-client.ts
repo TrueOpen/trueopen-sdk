@@ -66,7 +66,7 @@ export interface OpenTaskInput {
   readonly orderEnvelope: Uint8Array;
   /** "nexus://sha256/" || lowercase_hex(input_hash). Not signed, but checked by the Builder. */
   readonly payloadRef: string;
-  /** Wallet-signed by the order user; never carries a session grant. */
+  /** Signed by the order user's wallet, or by a session key under a grant for that user. */
   readonly requestEnvelope: SignedSdkRequestEnvelope;
   readonly sessionId: string;
   readonly orderSequence: bigint;
@@ -175,8 +175,15 @@ export class IngressClient {
    *  - the envelope is wallet-signed and never carries a session grant.
    */
   async openTask(req: OpenTaskInput): Promise<OpenTaskAck> {
-    if (req.requestEnvelope.sessionGrant !== undefined) {
-      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_REQUEST_MALFORMED', 'OpenTask must be signed by the wallet, never under a session grant');
+    // A session-signed OpenTask is allowed only under a grant for the order's own user (wire PR
+    // #43); the Builder would refuse any other with SDK_AUTH_SESSION_GRANT_INVALID.
+    const grant = req.requestEnvelope.sessionGrant;
+    if (grant !== undefined && grant.user !== req.userAddress) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_REQUEST_MALFORMED',
+        `the session grant is for ${grant.user}, not the order user ${req.userAddress}`,
+      );
     }
     const chunkSize = req.chunkSizeBytes ?? DEFAULT_OPEN_TASK_CHUNK_BYTES;
     if (chunkSize <= 0) {

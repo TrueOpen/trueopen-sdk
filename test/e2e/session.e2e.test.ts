@@ -9,7 +9,7 @@ import type { OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenError } from '../../src/errors/errors';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import type { TypedData, TypedDataSigner } from '../../src/signer/typed-data-signer';
-import { sdkRequestTypedData, signSdkRequestEnvelope } from '../../src/transport/sdk-request-envelope';
+import { signSdkRequestEnvelope } from '../../src/transport/sdk-request-envelope';
 import { ackOutputBodyDigest } from '../../src/transport/sdk-request-body';
 import { envelopeMessage } from '../../src/transport/ingress-client';
 import { resolveTaskOrderContext, buildTaskOrder } from '../../src/order/task-order-input';
@@ -38,6 +38,21 @@ function countingWallet(): TypedDataSigner & { prompts: string[] } {
 const sessionClient = (wallet: TypedDataSigner, i = 0): TrueOpenClient =>
   world.client(i, { wallet, session: { maxGrantBlocks: Number(MAX_SESSION_GRANT_BLOCKS) } });
 
+/** buildOpenTaskRequest under an arbitrary session, for the refusal paths. */
+const builtOpenTaskAs = (session: Parameters<typeof builtOpenTask>[0]) => builtOpenTask(session);
+
+/** OpenTask built as the SDK builds it, with the envelope signed by `session` when given. */
+async function builtOpenTask(session?: Awaited<ReturnType<NonNullable<TrueOpenClient['sessionGrants']>['current']>>) {
+  const ctx = await resolveTaskOrderContext(world.hub, w.CHAIN_ID);
+  const order = buildTaskOrder(ctx, { ...w.orderIntent(), userAddress: w.USER.address, sessionId, orderSequence: 0n }, undefined);
+  return buildOpenTaskRequest({
+    order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
+    requestNonce: new Uint8Array(32).fill(8), idempotencyKey: 'k',
+    wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { signatureChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
+    ...(session !== undefined ? { session } : {}),
+  });
+}
+
 async function drain(it: AsyncIterable<OutputStreamEvent>): Promise<OutputStreamEvent[]> {
   const out: OutputStreamEvent[] = [];
   for await (const ev of it) out.push(ev);
@@ -55,7 +70,7 @@ async function caught(p: Promise<unknown>): Promise<TrueOpenError> {
 }
 
 describe('e2e: session grants', () => {
-  it('one wallet prompt: subscribe, ack and fetch are signed by the session key; OpenTask by the wallet', async () => {
+  it('one wallet prompt per order: the session key signs the OpenTask envelope, subscribe, ack and fetch', async () => {
     const wallet = countingWallet();
     const client = sessionClient(wallet);
     const opened = await client.openTask({ sessionId, idempotencyKey: `${sessionId}:0`, order: w.orderIntent() });
@@ -69,14 +84,15 @@ describe('e2e: session grants', () => {
     const fetched = await client.fetchTaskOutput({ sessionId, taskId: STREAM.task_id, builderAddress: w.BUILDERS[0]!.address, maxRangeBytes: 16 });
     expect(fetched.text).toBe(outputText(STREAM));
 
-    // The wallet signed the order, the OpenTask envelope and one grant; nothing else.
-    expect(wallet.prompts).toEqual(['TaskOrder', 'SDKRequest', 'SessionGrant']);
+    // The wallet signed one grant and the order; nothing else -- not even the OpenTask envelope.
+    expect(wallet.prompts).toEqual(['SessionGrant', 'TaskOrder']);
     const n = world.nexus[0]!;
     expect(n.verifications.filter((x) => x.outcome !== 'ok')).toEqual([]);
     const byMethod = (m: string) => n.signers.filter((s) => s.method === m);
-    expect(byMethod('OpenTask')).toEqual([{ method: 'OpenTask' }]);
     const key = client.sessionGrants !== undefined ? Buffer.from((await client.sessionGrants.current()).grant.sessionKey).toString('hex') : '';
-    for (const m of ['SubscribeOutput', 'AckOutput', 'GetTaskDataMetadata', 'FetchTaskData']) {
+    // The order's own signature is still the wallet's: the Keeper recovers the user from it.
+    expect(n.taskHashes).toEqual([STREAM.task_hash]);
+    for (const m of ['OpenTask', 'SubscribeOutput', 'AckOutput', 'GetTaskDataMetadata', 'FetchTaskData']) {
       expect(byMethod(m).length, m).toBeGreaterThan(0);
       for (const s of byMethod(m)) expect(s.sessionKey, m).toBe(key);
     }
@@ -110,21 +126,26 @@ describe('e2e: session grants', () => {
     expect(n.signers.filter((s) => s.method === 'SubscribeOutput').map((s) => s.sessionKey)).toEqual([Buffer.from(renewed.sessionKey).toString('hex')]);
   });
 
-  it('a session grant attached to OpenTask is rejected (SDK_AUTH_SESSION_METHOD_NOT_ALLOWED)', async () => {
+  it('a session-signed OpenTask whose grant is for another user is refused (SDK_AUTH_SESSION_GRANT_INVALID)', async () => {
     const client = sessionClient(countingWallet());
     const session = await client.sessionGrants!.current();
-    const ctx = await resolveTaskOrderContext(world.hub, w.CHAIN_ID);
-    const order = buildTaskOrder(ctx, { ...w.orderIntent(), userAddress: w.USER.address, sessionId, orderSequence: 0n }, undefined);
-    const built = await buildOpenTaskRequest({
-      order, payload: w.PAYLOAD, sessionId, taskId: STREAM.task_id, expiryHeight: ctx.latestHeight + 10n,
-      requestNonce: new Uint8Array(32).fill(8), idempotencyKey: 'k',
-      wallet: privateKeyTypedDataSigner(w.USER.privKey), orderEip712: { signatureChainId: w.EVM_CHAIN_ID, feeDenom: w.BUSINESS_DENOM },
-    });
-    // The SDK never does this; re-sign the envelope with the session key and attach the grant by hand.
-    const e = built.input.requestEnvelope;
-    const signature = await session.key.signTypedData(sdkRequestTypedData(e, w.EVM_CHAIN_ID, session.grantHash));
-    const envelope = envelopeMessage({ ...e, signature, sessionGrant: session.grant });
+    const built = await builtOpenTask(session);
     const h = built.input;
+    // The SDK refuses it locally...
+    const other = { ...session.grant, user: w.BUILDERS[0]!.address };
+    await expect(client.ingress.openTask({ ...h, requestEnvelope: { ...h.requestEnvelope, sessionGrant: other } }))
+      .rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+    // ...and signSdkRequestEnvelope will not sign under a grant for someone other than the signer.
+    await expect(builtOpenTaskAs({ ...session, grant: other })).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+  });
+
+  it('a Builder that predates wire PR #43 rejects a session-signed OpenTask (SDK_AUTH_SESSION_METHOD_NOT_ALLOWED)', async () => {
+    for (const n of world.nexus) n.sessionOpenTask = false;
+    const client = sessionClient(countingWallet());
+    const session = await client.sessionGrants!.current();
+    const built = await builtOpenTask(session);
+    const h = built.input;
+    const envelope = envelopeMessage(h.requestEnvelope);
     async function* frames(): AsyncGenerator<OpenTaskRequest> {
       yield create(OpenTaskRequestSchema, {
         frame: {
@@ -140,8 +161,13 @@ describe('e2e: session grants', () => {
     }
     const err = await caught(client.ingress.raw.openTask(frames()));
     expect(err).toMatchObject({ code: 'SDK_AUTH_SESSION_METHOD_NOT_ALLOWED', category: 'auth', retriable: false });
-    // And the SDK refuses to build it in the first place.
-    await expect(client.ingress.openTask({ ...h, requestEnvelope: { ...e, sessionGrant: session.grant } })).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+  });
+
+  it('without a session, OpenTask is wallet-signed as before', async () => {
+    const wallet = countingWallet();
+    await world.client(0, { wallet }).openTask({ sessionId, idempotencyKey: `${sessionId}:0`, order: w.orderIntent() });
+    expect(wallet.prompts).toEqual(['TaskOrder', 'SDKRequest']);
+    expect(world.nexus[0]!.signers.filter((x) => x.method === 'OpenTask')).toEqual([{ method: 'OpenTask' }]);
   });
 
   for (const signedBy of ['wallet', 'session key'] as const) {

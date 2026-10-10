@@ -110,9 +110,10 @@ export interface TrueOpenClientConfig {
    * Opt-in session grants, off by default. When set, the wallet signs one SessionGrant for an
    * in-memory session key, and that key signs SubscribeOutput, AckOutput, GetTaskEvents,
    * PrepareChallenge and the OUTPUT GetTaskDataMetadata / FetchTaskData requests, so a browser
-   * wallet prompts once per grant instead of once per request. OpenTask is always signed by
-   * the wallet. The grant is renewed before it expires (and once more if a Builder reports it
-   * expired). The key is never persisted.
+   * wallet prompts once per grant instead of once per request. The session key also signs the
+   * OpenTask request envelope (wire PR #43); the order itself is always signed by the wallet, so
+   * each order costs one wallet prompt. The grant is renewed before it expires (and once more if a
+   * Builder reports it expired). The key is never persisted.
    *
    * `maxGrantBlocks` must be the Builders' max_session_grant_blocks (off-chain configuration,
    * the same on every Task Builder); see SessionKeyManagerOptions for the other two. Needs
@@ -492,7 +493,9 @@ export class TrueOpenClient {
             wallet: cfg.wallet,
             signatureChainId: this.signatureChainId(),
             latestHeight: () => this.latestHeight('a session grant expiry'),
-            ...cfg.session,
+            maxGrantBlocks: cfg.session.maxGrantBlocks,
+            ...(cfg.session.grantBlocks !== undefined ? { grantBlocks: cfg.session.grantBlocks } : {}),
+            ...(cfg.session.renewBeforeBlocks !== undefined ? { renewBeforeBlocks: cfg.session.renewBeforeBlocks } : {}),
           });
     this.ingress = new IngressClient(cfg.ingressTransport, this.ingressAuth());
   }
@@ -543,8 +546,9 @@ export class TrueOpenClient {
    * Task Builders via task_builder_seed -> submit concurrently to all selected endpoints,
    * succeeding as soon as any one is accepted.
    *
-   * Requires config.hub and config.ingressTransportFactory. The order and the request envelope
-   * are both signed by config.wallet; OpenTask never uses a session key.
+   * Requires config.hub and config.ingressTransportFactory. The order is signed by config.wallet.
+   * So is the request envelope, unless config.session is set, in which case the session key signs
+   * it under a grant for the same user.
    *
    * Hard rule unchanged: an ingress ack is only local acceptance; the on-chain query/event is the
    * source of truth for final state.
@@ -591,6 +595,7 @@ export class TrueOpenClient {
       requestNonce: this.nextNonce(),
       idempotencyKey: params.idempotencyKey,
       wallet: this.cfg.wallet,
+      ...(this.sessionGrants !== undefined ? { session: await this.sessionGrants.current() } : {}),
       orderEip712: { signatureChainId, feeDenom },
       chainId: this.cfg.chainId,
       ...(params.inputMediaType !== undefined ? { inputMediaType: params.inputMediaType } : {}),

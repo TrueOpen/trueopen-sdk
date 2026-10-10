@@ -10,7 +10,7 @@ import {
   sessionGrantTypedData,
 } from '../../src/session/session-grant';
 import type { ActiveSession, SignedSessionGrant } from '../../src/session/session-grant';
-import { signSdkRequestEnvelope, sdkRequestEip712Digest, sdkRequestEip712Domain } from '../../src/transport/sdk-request-envelope';
+import { signSdkRequestEnvelope, sdkRequestEip712Digest, sdkRequestEip712Domain, SESSION_SDK_METHODS } from '../../src/transport/sdk-request-envelope';
 import type { SdkRequestFields } from '../../src/transport/sdk-request-envelope';
 import { IngressClient } from '../../src/transport/ingress-client';
 import type { IngressAuth } from '../../src/transport/ingress-client';
@@ -102,10 +102,7 @@ describe('session-signed SDKRequest (account_signing_v1.json sdk_request_session
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
   });
 
-  it('refuses to session-sign OpenTask or a grant for another user', async () => {
-    await expect(
-      signSdkRequestEnvelope({ ...reqFields, method: 'OpenTask' }, { signerAddress: USER, signer: wallet, signatureChainId: EVM, session: fixtureSession }),
-    ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+  it('refuses a grant for another user', async () => {
     await expect(
       signSdkRequestEnvelope(reqFields, {
         signerAddress: 'trueopen15zs69gay5kn2029f4246etdw47ctrv4ns6facc', signer: wallet, signatureChainId: EVM, session: fixtureSession,
@@ -303,5 +300,36 @@ describe('IngressClient with a session', () => {
     for await (const m of client.subscribeOutput({ sessionId: S, taskId: TASK })) got.push(m);
     expect(got).toHaveLength(1);
     expect(subs).toHaveLength(2);
+  });
+});
+
+describe('session-signed OpenTask (account_signing_v1.json sdk_request_open_task_session, wire PR #43)', () => {
+  const O = section('sdk_request_open_task_session');
+  const fields: SdkRequestFields = {
+    chainId: O.message.chainId!,
+    method: O.message.method!,
+    sessionId: O.message.sessionId!,
+    taskId: O.message.taskId!,
+    requestNonce: fromHex(O.message.requestNonce!),
+    expiryHeightOrTime: BigInt(O.message.expiryHeightOrTime!),
+    bodyDigest: fromHex(O.message.bodyDigest!),
+  };
+
+  it('OpenTask is in the session-allowed set', () => {
+    expect(SESSION_SDK_METHODS).toContain('OpenTask');
+  });
+
+  it('the session key signs the exact fixture signature over an OpenTask envelope', async () => {
+    expect(O.message.method).toBe('OpenTask');
+    expect(O.message.sessionGrantHash).toBe(G.hash_struct);
+    const env = await signSdkRequestEnvelope(fields, {
+      signerAddress: USER, signer: wallet, signatureChainId: BigInt(O.signature_chain_id!), session: fixtureSession,
+    });
+    expect(toHex(sdkRequestEip712Digest(fields, EVM, fixtureSession.grantHash))).toBe(O.signing_digest);
+    expect(toHex(env.signature)).toBe(O.signature_65);
+    expect(recover(O.signing_digest, O.signature_65)).toBe(ACCOUNT_SIGNING.session_key.address_bytes);
+    // signer_address stays the granting user, who must also be the order user.
+    expect(env.signerAddress).toBe(USER);
+    expect(env.sessionGrant).toBe(grant);
   });
 });

@@ -414,10 +414,16 @@ export interface AuthContext {
   /** The compressed public key stored on the account, undefined when there is none. */
   readonly accountPubKey: (address: string) => Uint8Array | undefined;
   readonly seenNonces: Set<string>;
+  /**
+   * Whether OpenTask is in the session-allowed set (wire PR #43). A Builder that predates the
+   * change -- devnet's nexus today -- refuses a session-signed OpenTask.
+   */
+  readonly sessionOpenTask?: boolean;
 }
 
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
 const SESSION_SDK_METHODS = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
+const SESSION_SDK_METHODS_WITH_OPEN_TASK = ['OpenTask', ...SESSION_SDK_METHODS];
 const SESSION_DATA_METHODS = ['/nexus.v1.IngressAPI/GetTaskDataMetadata', '/nexus.v1.IngressAPI/FetchTaskData'];
 const zero32 = new Uint8Array(32);
 /** signature_chain_id must be in 1..MaxInt64 (0 is CORTEX_SERVICE only). */
@@ -451,7 +457,7 @@ function verifyGrant(g: GrantLike, user: string, requestChainId: string, ctx: Au
  */
 export function verifySdkRequest(
   e: EnvelopeLike | undefined,
-  want: { method: string; sessionId: string; taskId: string; body: () => Uint8Array; openTaskSequence?: bigint },
+  want: { method: string; sessionId: string; taskId: string; body: () => Uint8Array; openTaskSequence?: bigint; orderUser?: string },
   ctx: AuthContext,
 ): string {
   const malformed = (why: string): never => { throw new VerifyError('NEXUS_INGRESS_MALFORMED', why); };
@@ -474,11 +480,15 @@ export function verifySdkRequest(
   const body = want.body();
   // 2. Session method set.
   const g = e.sessionGrant;
-  if (g !== undefined && !SESSION_SDK_METHODS.includes(e.method)) {
+  const allowed = ctx.sessionOpenTask === true ? SESSION_SDK_METHODS_WITH_OPEN_TASK : SESSION_SDK_METHODS;
+  if (g !== undefined && !allowed.includes(e.method)) {
     throw new VerifyError('SDK_AUTH_SESSION_METHOD_NOT_ALLOWED', `${e.method} does not accept a session grant`);
   }
-  // 3. Grant.
+  // 3. Grant. For OpenTask the grant user must also be the SignedOrder user.
   if (g !== undefined) verifyGrant(g, e.signerAddress, e.chainId, ctx, 'SDK_AUTH');
+  if (g !== undefined && want.orderUser !== undefined && g.user !== want.orderUser) {
+    throw new VerifyError('SDK_AUTH_SESSION_GRANT_INVALID', 'the grant user is not the SignedOrder user');
+  }
   // 4. Request signature, over the digest rebuilt with this chain and the derived grant hash.
   const digest = sdkRequestDigest({
     chainId: ctx.chainId, method: e.method, endpoint: e.endpoint, sessionId, taskId, requestNonce: e.requestNonce,

@@ -836,6 +836,11 @@ export class TrueOpenClient {
     maxRangeBytes?: number;
     /** Attempts per range for transport failures; default 3. */
     rangeAttempts?: number;
+    /**
+     * The winner Worker's service key, for verifying the stored Fin. Defaults to the anchors'
+     * key, and is resolved from chain when the metadata carries a signed Fin and neither is given.
+     */
+    workerServicePubKey?: Uint8Array;
   }): Promise<{
     bytes: Uint8Array;
     text: string;
@@ -846,6 +851,13 @@ export class TrueOpenClient {
     mediaType: string;
     /** The accepted InferReceipt the output was checked against, when it was read. */
     receipt?: InferReceiptView;
+    /**
+     * The termination reason from the Worker-signed Fin the Builder stored with the object
+     * (TaskDataObjectMetadataV1.fin, ADR-0027), verified against the Worker's service key, the
+     * leaf count and the output root. Undefined when the metadata carries no Fin or an unsigned
+     * one: the reason is then unavailable, never inferred from the text or its length.
+     */
+    finishReason?: FinishReasonV1;
   }> {
     const maxRange = BigInt(p.maxRangeBytes ?? DEFAULT_MAX_RANGE_BYTES);
     if (maxRange <= 0n) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_RANGE_INVALID', 'maxRangeBytes must be positive');
@@ -927,6 +939,14 @@ export class TrueOpenClient {
       );
     }
 
+    const finishReason = await this.verifyStoredFin(meta.fin, {
+      taskId: p.taskId,
+      taskHash,
+      outputHash: got,
+      leafCount: meta.outputLeafCount,
+      workerServicePubKey: p.workerServicePubKey ?? anchors?.workerServicePubKey,
+    });
+
     return {
       // bytes is the committed object verbatim; text is the presented view with the chat
       // template's trailing EOS marker stripped. They differ only by that suffix.
@@ -938,7 +958,41 @@ export class TrueOpenClient {
       sizeBytes: meta.sizeBytes,
       mediaType: meta.mediaType,
       ...(receipt !== undefined ? { receipt } : {}),
+      ...(finishReason !== undefined ? { finishReason } : {}),
     };
+  }
+
+  /**
+   * The finish reason of a stored Fin, checked the way the stream checks its trailing frame:
+   * final_seq is the last leaf, output_mmr_root is the root just verified against the receipt,
+   * and the Worker signed both together with the reason. A Fin that is present and signed but
+   * fails any of these is a fault, not a missing fact, so it throws. An unsigned Fin attests
+   * nothing and yields undefined.
+   */
+  private async verifyStoredFin(
+    fin: { finalSeq: bigint; outputMmrRoot: Uint8Array; finishReason: FinishReasonV1; workerSignature: Uint8Array } | undefined,
+    c: { taskId: string; taskHash: string; outputHash: string; leafCount: bigint; workerServicePubKey: Uint8Array | undefined },
+  ): Promise<FinishReasonV1 | undefined> {
+    if (fin === undefined || fin.workerSignature.length === 0) return undefined;
+    if (fin.finalSeq !== c.leafCount - 1n) {
+      throw dataError('DATA_OUTPUT_FIN_SEQ_MISMATCH', `stored fin says final_seq=${fin.finalSeq} but the object has ${c.leafCount} leaves`);
+    }
+    if (toHex(fin.outputMmrRoot) !== c.outputHash) {
+      throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `stored fin root does not match output_hash for task ${c.taskId}`);
+    }
+    const key = c.workerServicePubKey
+      ?? (await this.resolveOutputTrustAnchors(c.taskId, { withReceipt: false })).workerServicePubKey;
+    const fields = {
+      chainId: this.cfg.chainId,
+      taskHash: fromHex(c.taskHash),
+      finalSeq: fin.finalSeq,
+      outputMmrRoot: Uint8Array.from(fin.outputMmrRoot),
+      finishReason: Number(fin.finishReason),
+    };
+    if (!verifyOutputFinSignature(fields, fin.workerSignature, key)) {
+      throw dataError('DATA_OUTPUT_FIN_SIGNATURE_INVALID', `stored fin signature for task ${c.taskId} did not verify (finish_reason=${fin.finishReason})`);
+    }
+    return fin.finishReason;
   }
 
   /** Task-data request expiry: latest height + taskDataExpiryBlocks (default 10). */

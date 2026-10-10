@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added: finish reason on non-streaming retrieval
+
+- **Added:** `fetchTaskOutput` returns `finishReason` from the Worker-signed Fin the Builder stores
+  with the object (`TaskDataObjectMetadataV1.fin`, ADR-0027). It is checked as the stream checks its
+  trailing frame -- `final_seq` is the last leaf, the root is the verified `output_hash`, and the
+  Worker's signature verifies -- and a signed Fin that fails any of these throws
+  (`DATA_OUTPUT_FIN_SIGNATURE_INVALID` / `_ROOT_MISMATCH` / `_SEQ_MISMATCH`). Without a Fin, or with
+  an unsigned one, `finishReason` is undefined: unavailable, never inferred. A new optional
+  `workerServicePubKey` parameter skips the chain read for the key.
+
 ### Breaking: session-signed OpenTask
 
 - **Breaking:** with `session` configured, the session key now signs the OpenTask request

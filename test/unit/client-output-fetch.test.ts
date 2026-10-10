@@ -99,7 +99,7 @@ function dataTransport(
   object: Uint8Array,
   chunkLengths: number[],
   log: ServeLog,
-  opts: { failOnce?: bigint; lieServed?: boolean; badOffset?: boolean; leafCount?: bigint } = {},
+  opts: { failOnce?: bigint; lieServed?: boolean; badOffset?: boolean; leafCount?: bigint; fin?: Record<string, unknown> } = {},
 ): Transport {
   let failed = false;
   return createRouterTransport(({ service }) => {
@@ -110,6 +110,7 @@ function dataTransport(
           metadata: {
             objectRef: req.objectRef, sizeBytes: BigInt(object.length), mediaType: 'text/plain; charset=utf-8',
             chunkLengths, outputLeafCount: opts.leafCount ?? BigInt(chunkLengths.length),
+            ...(opts.fin !== undefined ? { fin: opts.fin } : {}),
           },
           retainUntilHeight: 1000n,
         };
@@ -287,6 +288,42 @@ describe('fetchTaskOutput', () => {
       }),
     ).rejects.toMatchObject({ code: 'DATA_OUTPUT_SIZE_MISMATCH' });
     expect(log.fetchCalls).toBe(0);
+  });
+
+  describe('stored Fin (ADR-0027)', () => {
+    /** A Fin for BYTES as the Worker signs it; `over` tampers with what is served after signing. */
+    function storedFin(finishReason = 3, over: Record<string, unknown> = {}, signer = WORKER_PRIV) {
+      const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason };
+      const workerSignature = secp256k1.sign(outputFinSigningDigest(fields), signer).toCompactRawBytes();
+      return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason, workerSignature, ...over };
+    }
+    const fetchWith = (fin: Record<string, unknown> | undefined) =>
+      makeClient(dataTransport(BYTES, [6, 6, 6], newLog(), fin !== undefined ? { fin } : {}))
+        .fetchTaskOutput({ sessionId: SESSION, taskId: TASK, builderAddress: BUILDER });
+
+    it('returns the finish reason of a signed Fin that matches the object', async () => {
+      await expect(fetchWith(storedFin(3))).resolves.toMatchObject({ finishReason: 3, text: 'hello final output' });
+    });
+
+    it('verifies against an explicitly given service key without a chain read', async () => {
+      const got = await makeClient(dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(1) }), null).fetchTaskOutput({
+        sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, outputHash: ROOT, builderAddress: BUILDER,
+        expiresAtHeight: 42n, workerServicePubKey: WORKER_PUB,
+      });
+      expect(got.finishReason).toBe(1);
+    });
+
+    it('leaves the reason unavailable without a Fin or with an unsigned one', async () => {
+      expect((await fetchWith(undefined)).finishReason).toBeUndefined();
+      expect((await fetchWith(storedFin(1, { workerSignature: new Uint8Array() }))).finishReason).toBeUndefined();
+    });
+
+    it('refuses a signed Fin whose signature, root or final_seq does not match', async () => {
+      await expect(fetchWith(storedFin(3, {}, PRIV))).rejects.toMatchObject({ code: 'DATA_OUTPUT_FIN_SIGNATURE_INVALID' });
+      await expect(fetchWith(storedFin(3, { finishReason: 1 }))).rejects.toMatchObject({ code: 'DATA_OUTPUT_FIN_SIGNATURE_INVALID' });
+      await expect(fetchWith(storedFin(3, { outputMmrRoot: new Uint8Array(32) }))).rejects.toMatchObject({ code: 'DATA_OUTPUT_FIN_ROOT_MISMATCH' });
+      await expect(fetchWith(storedFin(3, { finalSeq: 1n }))).rejects.toMatchObject({ code: 'DATA_OUTPUT_FIN_SEQ_MISMATCH' });
+    });
   });
 
   it('explicit hashes override the chain and need no chain reads', async () => {

@@ -160,6 +160,30 @@ export function parseModelManifestV4(bytes: Uint8Array): ModelManifestV4 {
   return { raw: doc, modelId: modelId.slice(2), profileVersion, previousProfileVersion };
 }
 
+/**
+ * Manifest `tool_calling.call_id_format` (§7.2, closed enum): how a Provider's tool call ids are
+ * formatted. It is not projected on chain (ADR-0028), so it is read from a verified manifest.
+ */
+export type ToolCallIdFormat = 'OPENAI_CALL_PREFIX' | 'MISTRAL_ALNUM_9';
+
+export const TOOL_CALL_ID_FORMATS: readonly ToolCallIdFormat[] = ['OPENAI_CALL_PREFIX', 'MISTRAL_ALNUM_9'];
+
+/**
+ * The manifest's `tool_calling.call_id_format`, or undefined when `tool_calling` is `{}` (the
+ * profile does not offer tool calling). Pass only a manifest that verified against the chain
+ * (ManifestSource / verifyManifestBytes): the value is trusted because its bytes hash to the
+ * on-chain manifest_hash. A non-empty block without a closed-set format violates §7.2 rule 2.
+ */
+export function toolCallIdFormatOf(manifest: ModelManifestV4): ToolCallIdFormat | undefined {
+  const block = section(manifest.raw, 'tool_calling');
+  if (Object.keys(block).length === 0) return undefined;
+  const format = block['call_id_format'];
+  if (typeof format !== 'string' || !(TOOL_CALL_ID_FORMATS as readonly string[]).includes(format)) {
+    throw schemaError(`tool_calling.call_id_format must be one of ${TOOL_CALL_ID_FORMATS.join(', ')}`);
+  }
+  return format as ToolCallIdFormat;
+}
+
 /** Chain-side inputs of the projection that are not inside the manifest. */
 export interface ProjectionChainInputs {
   /** Canonical lowercase 64-hex manifest_hash. */

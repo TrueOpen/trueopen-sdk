@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added: call_id_format from the verified manifest
+
+- **Added:** `toolCallIdFormatOf(manifest)` reads `tool_calling.call_id_format` from a verified V4
+  manifest (undefined for `tool_calling = {}`; a non-empty block without a closed-set format is
+  `MANIFEST_SCHEMA_INVALID`). `call_id_format` is not projected on chain (ADR-0028).
+- **Added:** `TrueOpenClientConfig.manifestSource` and `client.toolCallIdFormat(modelId,
+  profileVersion)`, which fetch the profile's manifest, verify it against the chain and read the
+  format. `ToolCallIdFormat` / `TOOL_CALL_ID_FORMATS` now live in the manifest module (still
+  exported from the package root).
+
 ### Added: OpenAI rules for the assistant message (sdk_详细设计 §5.5)
 
 - **Added:** `openAIFinishReasonOf(confirmed)`: stop-class -> `"stop"` or `"tool_calls"` when the

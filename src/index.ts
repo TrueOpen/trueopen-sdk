@@ -411,6 +411,7 @@ export {
   DOMAIN_MODEL_CHAIN_PROJECTION_V3,
   DOMAIN_MODEL_REGISTRATION_DIGEST_V3,
   MAX_MANIFEST_BYTES,
+  toolCallIdFormatOf,
 } from './manifest/model-manifest';
 export type {
   ModelManifestV4,

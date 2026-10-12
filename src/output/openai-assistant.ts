@@ -1,6 +1,7 @@
 import { randomBytes } from '@noble/hashes/utils';
 import { TrueOpenError } from '../errors/errors';
 import type { ConfirmedAssistantMessage } from '../toolcall/types';
+import type { ToolCallIdFormat } from '../manifest/model-manifest';
 import { openAIFinishReason } from './openai-sse';
 
 /**
@@ -14,14 +15,10 @@ import { openAIFinishReason } from './openai-sse';
  * nothing derived from unconfirmed frames can become an executable call.
  */
 
-/**
- * Manifest `tool_calling.call_id_format` (closed enum). The id is synthesized, never written by
- * the model; the agent echoes it back next turn as `tool_calls[].id` / `tool_call_id`, and some
- * chat templates validate it (Mistral requires nine alphanumerics), so it follows the model.
- */
-export type ToolCallIdFormat = 'OPENAI_CALL_PREFIX' | 'MISTRAL_ALNUM_9';
-
-export const TOOL_CALL_ID_FORMATS: readonly ToolCallIdFormat[] = ['OPENAI_CALL_PREFIX', 'MISTRAL_ALNUM_9'];
+// The id is synthesized, never written by the model; the agent echoes it back next turn as
+// `tool_calls[].id` / `tool_call_id`, and some chat templates validate it (Mistral requires nine
+// alphanumerics), so its format follows the model's manifest.
+export { TOOL_CALL_ID_FORMATS, type ToolCallIdFormat } from '../manifest/model-manifest';
 
 export type OpenAIAssistantFinishReason = 'stop' | 'length' | 'tool_calls';
 

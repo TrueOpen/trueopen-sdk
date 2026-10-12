@@ -16,6 +16,8 @@ import { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 import type { TaskBuilderReader } from './hub/stage1-routing';
 import { fanOutToEndpoints } from './transport/fan-out-submit';
 import { nexusGrpcEndpoint } from './types/hub';
+import type { ManifestSource } from './manifest/manifest-source';
+import { toolCallIdFormatOf, type ToolCallIdFormat } from './manifest/model-manifest';
 import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
 import { buildTaskOrder, resolveTaskOrderContext } from './order/task-order-input';
@@ -155,6 +157,12 @@ export interface TrueOpenClientConfig {
    * can use nexusIngressTransport directly (transport/nexus-tls).
    */
   readonly ingressTransportFactory?: (serviceEndpoint: string, tlsPubkeyHash?: string) => Transport;
+  /**
+   * Where verified profile manifests come from (Node: createNodeManifestSource from
+   * "trueopen-sdk/node"). Needed for what only the manifest carries -- `tool_calling.call_id_format`,
+   * which is not projected on chain (ADR-0028).
+   */
+  readonly manifestSource?: ManifestSource;
 }
 
 /**
@@ -1432,6 +1440,24 @@ export class TrueOpenClient {
       `no Task Builder returned a verified output for task ${taskId}:\n  ${failures.join('\n  ')}`,
       { retriable: true },
     );
+  }
+
+  /**
+   * The profile's `tool_calling.call_id_format`, from its verified manifest (sdk_详细设计 §5.5):
+   * what newToolCallId needs. Undefined when the profile does not offer tool calling. Fails when
+   * the manifest cannot be fetched or does not verify against the chain -- a guessed format would
+   * break the second turn of a model whose chat template checks it.
+   */
+  async toolCallIdFormat(modelId: string, profileVersion: bigint): Promise<ToolCallIdFormat | undefined> {
+    const source = this.cfg.manifestSource;
+    if (source === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_MANIFEST_SOURCE_UNCONFIGURED',
+        'reading call_id_format needs config.manifestSource (Node: createNodeManifestSource from "trueopen-sdk/node")',
+      );
+    }
+    return toolCallIdFormatOf((await source.fetchManifest(modelId, profileVersion)).manifest);
   }
 
   /** Prepare challenge materials (does not submit a verdict). */

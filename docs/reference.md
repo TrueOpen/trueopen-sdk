@@ -486,8 +486,60 @@ function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifierCheckpo
 function deserializeOutputStreamCheckpoint(json: string): OutputStreamVerifierCheckpoint
 ```
 
-JSON round-trip for a verifier checkpoint (MMR peaks + leaf count + last seq), so a caller
-can persist resumable-stream state across restarts.
+JSON round-trip for a verifier checkpoint (MMR peaks + leaf count + last seq, and since schema 2
+the verified Fin), so a caller can persist resumable-stream state across restarts.
+
+### 8.8 Assistant messages and the OpenAI format
+
+```ts
+// Neutral assistant view (tool calls and reasoning parsed from the committed text)
+client.assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent>
+client.fetchAssistantMessage(p: FetchAssistantMessageParams & ...): Promise<ConfirmedAssistantMessage>
+client.profileParsers(taskId: string): Promise<ProfileParsers>
+client.toolCallIdFormat(modelId: string, profileVersion: bigint): Promise<ToolCallIdFormat | undefined>
+
+// OpenAI rules (sdk_详细设计 §5.5)
+function openAIFinishReasonOf(m: ConfirmedAssistantMessage): 'stop' | 'length' | 'tool_calls' | undefined
+function newToolCallId(format: ToolCallIdFormat): string   // 'OPENAI_CALL_PREFIX' | 'MISTRAL_ALNUM_9'
+```
+
+The SDK parses the committed output with the parsers the task's profile pins on chain
+(`tool_call_parser`, `reasoning_parser`) and confirms it against the receipt. A
+`ConfirmedAssistantMessage` is `{ role, content, toolCalls: [{ name, arguments }],
+reasoningContent?, confirmation, finishReason? }`: only its calls may be executed, and
+`finishReason` is the protocol reason from the Worker-signed Fin (undefined when unavailable). Both
+built-in parsers (`hermes@1`, `qwen3@1`) are unverified until their vectors exist, so pass
+`allowUnverified: true` to use them.
+
+Division of work (sdk_详细设计 §5.5): the SDK supplies the finish_reason mapping and ids in the
+manifest's `call_id_format` (read with `toolCallIdFormat`; needs `config.manifestSource`); the
+Provider decides when to assign each id and builds `type`, `index` and the envelope. A turn cut
+off by `MAX_OUTPUT_TOKENS` keeps the calls it closed and reports `"length"`.
+
+An OpenAI Chat Completions reply from one turn:
+
+```ts
+const callIdFormat = await client.toolCallIdFormat(modelId, profileVersion); // once per profile
+for await (const e of client.assistantTurn({ sessionId, taskId, allowUnverified: true })) {
+  if (e.kind === 'reasoning') send({ delta: { reasoning_content: e.text } });
+  if (e.kind === 'content') send({ delta: { content: e.text } });
+  if (e.kind === 'confirmed') {
+    const m = e.message;
+    const toolCalls = m.toolCalls.map((c, index) => ({
+      index, id: newToolCallId(callIdFormat!), type: 'function',
+      function: { name: c.name, arguments: c.arguments },
+    }));
+    if (toolCalls.length > 0) send({ delta: { tool_calls: toolCalls } });
+    const finish = openAIFinishReasonOf(m);
+    if (finish === undefined) throw new Error('finish_reason unavailable'); // never guess
+    send({ delta: {}, finish_reason: finish });
+  }
+}
+```
+
+For a non-streamed reply, `fetchAssistantMessage({ sessionId, taskId, ... })` returns the same
+`ConfirmedAssistantMessage`; without `builderAddress` it asks the task's Task Builders and prefers
+one that stored the signed Fin. In the message, `content` is `null` on a turn that only made calls.
 
 ---
 

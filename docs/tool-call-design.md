@@ -485,7 +485,7 @@ Three things this plan does **not** resolve:
 | **P1** | All of `src/toolcall/`: registry, state machine, event types. Parser supplied by explicit injection rather than read from a manifest. | nothing | **delivered** (`feat/toolcall-p1`) |
 | **P2** | `src/manifest/`: canonical encoding, hash, validation, types (`fetch.ts` not built -- no source) | (was `monorepo#29`, now resolved) | **delivered** (`feat/toolcall-p1`) |
 | **P3** | Wire them together: `resolveToolCalling` reads the profile's on-chain `tool_call_parser` projection and resolves it through the registry | (was P2) | **delivered** (`feat/toolcall-p1`) |
-| **P4** | Provider layer (lives in `trueopen-proxy`, not the SDK): synthesize `id` per `tool_calling.call_id_format`, plus `type` / `index` / `finish_reason` / SSE | ADR's Provider boundary settling | waiting |
+| **P4** | Provider layer, split by sdk_详细设计 §5.5 (monorepo#56): the SDK supplies the rules -- the confirmed message's protocol `finishReason`, `openAIFinishReasonOf`, `newToolCallId` in the manifest's `call_id_format` (`toolCallIdFormat`) -- and the Provider (`trueopen-proxy`, or any caller) assigns ids and builds `type` / `index` / the envelope / SSE | monorepo#56 (merged) | **delivered** (`feat/toolcall`) |
 
 **P1 shipped without any concrete parser.** Parser behaviour specs and their shared vectors
 belong to wire under ADR-0022 decision four and are unpublished (`monorepo#11`), so a parser

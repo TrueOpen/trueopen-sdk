@@ -138,7 +138,7 @@ describe('confirmOutputWithReceipt', () => {
   it('rejects if the checkpoint schema or Worker key is malformed', async () => {
     const cp = await checkpoint();
     expectCode(
-      () => confirm({ ...cp, schemaVersion: 2 as 1 }),
+      () => confirm({ ...cp, schemaVersion: 3 as 1 }),
       'DATA_OUTPUT_CONFIRMATION_CHECKPOINT_MALFORMED',
     );
     expectCode(

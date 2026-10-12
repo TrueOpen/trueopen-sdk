@@ -2,9 +2,11 @@ import { MmrAccumulator } from '../codec/mmr';
 import { TrueOpenError } from '../errors/errors';
 import type { InferReceiptView } from '../types/node';
 import { bytesEqual, toHex } from '../util/bytes';
+import type { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
 import {
   OUTPUT_MMR_DOMAIN,
   outputHash,
+  verifyOutputFinSignature,
   type OutputStreamVerifierCheckpoint,
 } from './output-commitment';
 
@@ -32,6 +34,12 @@ export interface ConfirmedOutputEvent {
   readonly outputMmrRoot: Uint8Array;
   readonly outputLeafCount: bigint;
   readonly outputSizeBytes: bigint;
+  /**
+   * The termination reason from the Worker-signed Fin the checkpoint kept, re-verified here
+   * against this receipt's root (ADR-0027). Undefined when the checkpoint holds no Fin (a schema-1
+   * checkpoint, or a stream that ended on an unsigned Fin): unavailable, never inferred.
+   */
+  readonly finishReason?: FinishReasonV1;
 }
 
 function confirmationError(code: string, message: string): TrueOpenError {
@@ -52,7 +60,7 @@ function confirmationError(code: string, message: string): TrueOpenError {
  */
 export function confirmOutputWithReceipt(input: ConfirmOutputWithReceiptInput): ConfirmedOutputEvent {
   const { checkpoint, receipt } = input;
-  if (checkpoint.schemaVersion !== 1 || checkpoint.workerServicePubKey.length !== 33) {
+  if ((checkpoint.schemaVersion !== 1 && checkpoint.schemaVersion !== 2) || checkpoint.workerServicePubKey.length !== 33) {
     throw confirmationError(
       'DATA_OUTPUT_CONFIRMATION_CHECKPOINT_MALFORMED',
       'output checkpoint schema or Worker service key is malformed',
@@ -143,5 +151,30 @@ export function confirmOutputWithReceipt(input: ConfirmOutputWithReceiptInput): 
     outputMmrRoot: Uint8Array.from(outputMmrRoot),
     outputLeafCount: leafCount,
     outputSizeBytes: sizeBytes,
+    ...(checkpoint.fin !== undefined ? { finishReason: confirmedFinishReason(checkpoint, outputMmrRoot, leafCount) } : {}),
   };
+}
+
+/**
+ * The kept Fin's reason, after checking it ends this exact output: final_seq is the last leaf, its
+ * root is the receipt-matched root, and the Worker's signature covers them. A kept Fin that fails
+ * is a fault in the checkpoint, so it throws rather than dropping the reason.
+ */
+function confirmedFinishReason(
+  checkpoint: OutputStreamVerifierCheckpoint,
+  outputMmrRoot: Uint8Array,
+  leafCount: bigint,
+): FinishReasonV1 {
+  const fin = checkpoint.fin!;
+  const ok = fin.finalSeq === leafCount - 1n
+    && bytesEqual(fin.outputMmrRoot, outputMmrRoot)
+    && verifyOutputFinSignature(
+      { chainId: checkpoint.chainId, taskHash: checkpoint.taskHash, finalSeq: fin.finalSeq, outputMmrRoot: fin.outputMmrRoot, finishReason: fin.finishReason },
+      fin.workerSignature,
+      checkpoint.workerServicePubKey,
+    );
+  if (!ok) {
+    throw confirmationError('DATA_OUTPUT_CONFIRMATION_FIN_INVALID', 'the checkpoint\'s Fin does not verify against the confirmed output');
+  }
+  return fin.finishReason as FinishReasonV1;
 }

@@ -226,12 +226,27 @@ export interface OutputStreamVerifierConfig {
  * remains the trust anchor for the recovered state.
  */
 export interface OutputStreamVerifierCheckpoint {
-  readonly schemaVersion: 1;
+  /** 2 since the Fin is kept; a schema-1 checkpoint (no `fin`) still restores. */
+  readonly schemaVersion: 1 | 2;
   readonly chainId: string;
   readonly taskHash: Uint8Array;
   readonly workerServicePubKey: Uint8Array;
   readonly mmr: MmrAccumulatorCheckpoint;
   readonly chunks: readonly Uint8Array[];
+  /**
+   * The Worker-signed Fin that ended the stream, once one verified. It is what makes the finish
+   * reason a checkable fact after the stream is gone: confirmation re-verifies it against the
+   * receipt (ADR-0027). Restoring a checkpoint re-verifies it too, so a stored copy is not trusted.
+   */
+  readonly fin?: VerifiedOutputFin;
+}
+
+/** A Fin whose signature, final_seq and root verified against the stream it ended. */
+export interface VerifiedOutputFin {
+  readonly finalSeq: bigint;
+  readonly outputMmrRoot: Uint8Array;
+  readonly finishReason: number;
+  readonly workerSignature: Uint8Array;
 }
 
 export type OutputFrameAcceptance = 'accepted' | 'duplicate';
@@ -250,6 +265,7 @@ export class OutputStreamVerifier {
   private acc: MmrAccumulator;
   private readonly chunks: Uint8Array[];
   private lastRoot: Uint8Array | undefined;
+  private fin: VerifiedOutputFin | undefined;
 
   constructor(cfg: OutputStreamVerifierConfig, checkpoint?: OutputStreamVerifierCheckpoint) {
     if (cfg.taskHash.length !== 32) throw malformed(`task_hash must be 32 bytes, got ${cfg.taskHash.length}`);
@@ -276,6 +292,34 @@ export class OutputStreamVerifier {
     }
     this.chunks = checkpoint.chunks.map((chunk) => Uint8Array.from(chunk));
     if (this.acc.leafCount > 0n) this.lastRoot = this.acc.root();
+    if (checkpoint.fin !== undefined) this.acceptFin(checkpoint.fin);
+  }
+
+  /**
+   * Accepts the Worker-signed Fin that ends the stream: final_seq must be the last verified
+   * frame, output_mmr_root the current root, and the signature must cover them with the reason.
+   * Only then is it kept, and exported by checkpoint().
+   */
+  acceptFin(fin: VerifiedOutputFin): void {
+    if (fin.finalSeq !== this.resumeAfterSeq) {
+      throw malformed(`fin final_seq ${fin.finalSeq} does not match the last verified frame ${this.resumeAfterSeq}`);
+    }
+    if (this.lastRoot === undefined || !bytesEqual(fin.outputMmrRoot, this.lastRoot)) {
+      throw malformed('fin output_mmr_root does not match the verified root');
+    }
+    const ok = verifyOutputFinSignature(
+      {
+        chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, finalSeq: fin.finalSeq,
+        outputMmrRoot: fin.outputMmrRoot, finishReason: fin.finishReason,
+      },
+      fin.workerSignature,
+      this.cfg.workerServicePubKey,
+    );
+    if (!ok) throw malformed(`fin signature did not verify (finish_reason=${fin.finishReason})`);
+    this.fin = {
+      finalSeq: fin.finalSeq, outputMmrRoot: Uint8Array.from(fin.outputMmrRoot),
+      finishReason: fin.finishReason, workerSignature: Uint8Array.from(fin.workerSignature),
+    };
   }
 
   get leafCount(): bigint {
@@ -379,18 +423,28 @@ export class OutputStreamVerifier {
 
   /** Exports an immutable recovery point; every byte array in the return value is a defensive copy. */
   checkpoint(): OutputStreamVerifierCheckpoint {
+    const fin = this.fin;
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       chainId: this.cfg.chainId,
       taskHash: Uint8Array.from(this.cfg.taskHash),
       workerServicePubKey: Uint8Array.from(this.cfg.workerServicePubKey),
       mmr: this.acc.checkpoint(),
       chunks: this.chunks.map((chunk) => Uint8Array.from(chunk)),
+      ...(fin !== undefined ? {
+        fin: {
+          finalSeq: fin.finalSeq, outputMmrRoot: Uint8Array.from(fin.outputMmrRoot),
+          finishReason: fin.finishReason, workerSignature: Uint8Array.from(fin.workerSignature),
+        },
+      } : {}),
     };
   }
 
   private assertCheckpointContext(checkpoint: OutputStreamVerifierCheckpoint): void {
-    if (checkpoint.schemaVersion !== 1) throw malformed(`unsupported checkpoint schema ${checkpoint.schemaVersion}`);
+    if (checkpoint.schemaVersion !== 1 && checkpoint.schemaVersion !== 2) {
+      throw malformed(`unsupported checkpoint schema ${String(checkpoint.schemaVersion)}`);
+    }
+    if (checkpoint.schemaVersion === 1 && checkpoint.fin !== undefined) throw malformed('a schema-1 checkpoint carries no fin');
     if (checkpoint.chainId !== this.cfg.chainId) throw malformed('checkpoint chain_id mismatch');
     if (!bytesEqual(checkpoint.taskHash, this.cfg.taskHash)) throw malformed('checkpoint task_hash mismatch');
     if (!bytesEqual(checkpoint.workerServicePubKey, this.cfg.workerServicePubKey)) {

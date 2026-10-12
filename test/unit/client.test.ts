@@ -453,6 +453,7 @@ describe('TrueOpenClient facade', () => {
     const a = makeClientWithTransport(transportA);
     const b = makeClientWithTransport(transportB);
     const checkpoints: bigint[] = [];
+    let lastCheckpoint: { fin?: { finalSeq: bigint } } | undefined;
     const got: string[] = [];
 
     for await (const frame of a.streamOutput({
@@ -462,11 +463,13 @@ describe('TrueOpenClient facade', () => {
       workerServicePubKey: WORKER_PUB,
       sources: [{ id: 'builder-a', ingress: a.ingress }, { id: 'builder-b', ingress: b.ingress }],
       maxAttempts: 2,
-      onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint.mmr.leafCount); },
+      onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint.mmr.leafCount); lastCheckpoint = checkpoint; },
     })) { if (frame.kind === 'chunk') got.push(frame.text); }
 
     expect(got).toEqual(['hello ', 'final ', 'output']);
-    expect(checkpoints).toEqual([1n, 2n, 3n]);
+    // One checkpoint per new frame, then one more once the signed Fin verified: it carries the Fin.
+    expect(checkpoints).toEqual([1n, 2n, 3n, 3n]);
+    expect(lastCheckpoint?.fin?.finalSeq).toBe(2n);
     expect(capA.subscribes).toHaveLength(1);
     expect(capB.subscribes).toHaveLength(1);
     expect(capB.subscribes?.[0]?.resumeAfterSeq).toBe(0n);

@@ -1,3 +1,4 @@
+import type { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
 import type { ConfirmedOutputEvent } from '../output/output-confirmation';
 
 /**
@@ -86,6 +87,12 @@ export interface ToolCallParser extends ParserRef {
 /** Only reachable through `confirmAssistantMessageWithReceipt`, i.e. only after reconciliation. */
 export interface ConfirmedAssistantMessage extends DerivedAssistantMessage {
   readonly confirmation: ConfirmedOutputEvent;
+  /**
+   * The protocol termination reason from the Worker-signed Fin, verified against the receipt
+   * (the same value as `confirmation.finishReason`). Undefined when no signed Fin was kept: the
+   * reason is unavailable, and must not be guessed.
+   */
+  readonly finishReason?: FinishReasonV1;
 }
 
 /**

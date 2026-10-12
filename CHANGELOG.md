@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added: finish reason on the confirmed stream (sdk_详细设计 §5.5)
+
+- **Added:** the stream keeps the Worker-signed Fin it verified: `OutputStreamVerifierCheckpoint` is
+  now `schemaVersion: 2` with an optional `fin` (`VerifiedOutputFin`), and `onCheckpoint` fires once
+  more after the Fin. Restoring a checkpoint re-verifies its Fin. Schema-1 checkpoints (and schema-1
+  checkpoint JSON) still restore; the JSON codec writes `schema_version: 2` with an optional `fin`.
+- **Added:** `confirmOutputWithReceipt` / `confirmOutput` re-verify a kept Fin against the receipt-
+  matched root and set `ConfirmedOutputEvent.finishReason`; `ConfirmedAssistantMessage.finishReason`
+  carries the same value. A kept Fin that fails is `DATA_OUTPUT_CONFIRMATION_FIN_INVALID`. Without a
+  kept Fin the reason is undefined (unavailable), never inferred.
+
 ### Added: finish reason on non-streaming retrieval
 
 - **Added:** `fetchTaskOutput` returns `finishReason` from the Worker-signed Fin the Builder stores

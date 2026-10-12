@@ -1168,6 +1168,19 @@ export class TrueOpenClient {
                 );
               }
               finishReason = f.finishReason;
+              // Keep the verified Fin in the checkpoint: confirmation reads the finish reason from
+              // there (re-verified against the receipt), and a persisted checkpoint carries it.
+              verifier.acceptFin({
+                finalSeq: f.finalSeq, outputMmrRoot: Uint8Array.from(f.outputMmrRoot),
+                finishReason: Number(f.finishReason), workerSignature: Uint8Array.from(f.workerSignature),
+              });
+              if (p.onCheckpoint !== undefined) {
+                try {
+                  await p.onCheckpoint(verifier.checkpoint());
+                } catch (cause) {
+                  throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED', 'failed to persist checkpoint after fin', { cause });
+                }
+              }
             }
             sawFin = true;
             finSource = source;

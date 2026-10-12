@@ -314,6 +314,7 @@ export type {
   OutputStreamVerifierConfig,
   OutputStreamVerifierCheckpoint,
   OutputFrameAcceptance,
+  VerifiedOutputFin,
 } from './output/output-commitment';
 
 export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS, stripChatTemplateEos } from './client';

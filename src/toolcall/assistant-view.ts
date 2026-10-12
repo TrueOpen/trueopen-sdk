@@ -126,7 +126,11 @@ export function confirmAssistantMessageWithReceipt(
   );
   // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
   const message = parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts);
-  return { ...message, confirmation };
+  return {
+    ...message,
+    confirmation,
+    ...(confirmation.finishReason !== undefined ? { finishReason: confirmation.finishReason } : {}),
+  };
 }
 
 /**

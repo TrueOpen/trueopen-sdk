@@ -65,7 +65,7 @@ describe('output checkpoint JSON codec', () => {
     const parsed = JSON.parse(json) as Record<string, unknown>;
     expect(parsed).toMatchObject({
       format: OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,
-      schema_version: 1,
+      schema_version: 2,
       chain_id: CHAIN_ID,
       task_hash: TASK_HASH,
     });
@@ -97,7 +97,7 @@ describe('output checkpoint JSON codec', () => {
     const value = JSON.parse(serializeOutputStreamCheckpoint(await checkpoint())) as Record<string, unknown>;
     expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({ ...value, extra: true })));
     expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({ ...value, format: 'v2' })));
-    expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({ ...value, schema_version: 2 })));
+    expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({ ...value, schema_version: 3 })));
   });
 
   it('hash/pubkey must be canonical lowercase fixed-length hex', async () => {

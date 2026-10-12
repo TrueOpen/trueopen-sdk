@@ -538,8 +538,8 @@ for await (const e of client.assistantTurn({ sessionId, taskId, allowUnverified:
 ```
 
 For a non-streamed reply, `fetchAssistantMessage({ sessionId, taskId, ... })` returns the same
-`ConfirmedAssistantMessage`; without `builderAddress` it asks the task's Task Builders and prefers
-one that stored the signed Fin. In the message, `content` is `null` on a turn that only made calls.
+`ConfirmedAssistantMessage`; without `builderAddress` it asks the task's Task Builders
+concurrently and takes the first one that stored the signed Fin. In the message, `content` is `null` on a turn that only made calls.
 
 ---
 

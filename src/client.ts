@@ -1536,9 +1536,9 @@ export class TrueOpenClient {
   }
 
   /**
-   * Fetches from the task's frozen Task Builders in rank order, preferring one that stored the
-   * signed Fin (sdk_详细设计 §5.3: a Builder without it leaves the reason unavailable, so ask the
-   * next). Falls back to the first output that verified without one.
+   * Fetches from the task's frozen Task Builders concurrently, preferring one that stored the
+   * signed Fin (sdk_详细设计 §5.3: a Builder without it leaves the reason unavailable). Falls back to
+   * the highest-ranked output that verified without one.
    */
   private async fetchFromSelectedBuilders(
     taskId: string,
@@ -1554,27 +1554,43 @@ export class TrueOpenClient {
     }
     const addresses = await taskReader.queryTaskBuilders(taskId);
     if (addresses.length === 0) throw dataError('DATA_OUTPUT_NO_BUILDERS', `task ${taskId} has no Task Builder selection on chain`);
-    const failures: string[] = [];
-    let withoutFin: Awaited<ReturnType<TrueOpenClient['fetchTaskOutput']>> | undefined;
-    for (const address of addresses) {
-      try {
-        const endpoint = nexusGrpcEndpoint(await hub.getServiceDescriptor(address));
-        if (endpoint === undefined || endpoint.uri === '') throw new Error('descriptor has no NEXUS_GRPC endpoint');
-        const ingress = new IngressClient(ingressTransportFactory(endpoint.uri, endpoint.tlsPubkeyHash ?? ''), this.ingressAuth());
-        const got = await this.fetchTaskOutputVia(ingress, { ...base, builderAddress: address });
-        if (got.finishReason !== undefined) return got;
-        withoutFin ??= got;
-      } catch (e) {
-        failures.push(`${address}: ${(e as { message?: string }).message ?? String(e)}`);
-      }
-    }
-    if (withoutFin !== undefined) return withoutFin;
-    throw new TrueOpenError(
-      'DATA',
-      'DATA_OUTPUT_ALL_BUILDERS_FAILED',
-      `no Task Builder returned a verified output for task ${taskId}:\n  ${failures.join('\n  ')}`,
-      { retriable: true },
-    );
+    type Fetched = Awaited<ReturnType<TrueOpenClient['fetchTaskOutput']>>;
+    const fetchFrom = async (address: string): Promise<Fetched> => {
+      const endpoint = nexusGrpcEndpoint(await hub.getServiceDescriptor(address));
+      if (endpoint === undefined || endpoint.uri === '') throw new Error('descriptor has no NEXUS_GRPC endpoint');
+      const ingress = new IngressClient(ingressTransportFactory(endpoint.uri, endpoint.tlsPubkeyHash ?? ''), this.ingressAuth());
+      return this.fetchTaskOutputVia(ingress, { ...base, builderAddress: address });
+    };
+    // All Builders at once: the first verified output with the signed Fin wins without waiting
+    // for the rest. Only when every one has settled without a Fin does the rank order pick the
+    // output to return; when all failed, every failure is reported.
+    return new Promise<Fetched>((resolve, reject) => {
+      const results: Array<{ got: Fetched } | { error: unknown } | undefined> = new Array(addresses.length);
+      let pending = addresses.length;
+      addresses.forEach((address, i) => {
+        fetchFrom(address).then(
+          (got) => {
+            results[i] = { got };
+            if (got.finishReason !== undefined) resolve(got);
+          },
+          (error: unknown) => { results[i] = { error }; },
+        ).finally(() => {
+          if (--pending > 0) return;
+          const withoutFin = results.find((r): r is { got: Fetched } => r !== undefined && 'got' in r);
+          if (withoutFin !== undefined) {
+            resolve(withoutFin.got);
+            return;
+          }
+          const failures = results.map((r, j) => `${addresses[j]}: ${(r as { error?: { message?: string } }).error?.message ?? String((r as { error?: unknown }).error)}`);
+          reject(new TrueOpenError(
+            'DATA',
+            'DATA_OUTPUT_ALL_BUILDERS_FAILED',
+            `no Task Builder returned a verified output for task ${taskId}:\n  ${failures.join('\n  ')}`,
+            { retriable: true },
+          ));
+        });
+      });
+    });
   }
 
   /**

@@ -565,6 +565,33 @@ describe('fetchAssistantMessage confirmation and Builder choice (sdk_详细设�
       .rejects.toMatchObject({ code: 'DATA_OUTPUT_ALL_BUILDERS_FAILED', retriable: true });
   });
 
+  /** A transport whose every call waits `ms` (or forever) before reaching `inner`. */
+  function delayed(inner: Transport, ms: number | 'never'): Transport {
+    const wait = () => (ms === 'never' ? new Promise<never>(() => {}) : new Promise<void>((r) => setTimeout(r, ms)));
+    return {
+      unary: async (...args: Parameters<Transport['unary']>) => { await wait(); return inner.unary(...args); },
+      stream: async (...args: Parameters<Transport['stream']>) => { await wait(); return inner.stream(...args); },
+    } as Transport;
+  }
+
+  it('asks the Builders at once: a signed Fin wins without waiting for a Builder that hangs', async () => {
+    const { client } = routedClient({
+      [B1]: delayed(dataTransport(BYTES, [6, 6, 6], newLog()), 'never'),
+      [B2]: dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(1) }),
+    });
+    const m = await client.fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER });
+    expect(m.finishReason).toBe(1);
+  });
+
+  it('waits for a slower Builder that stored the signed Fin over a faster one without it', async () => {
+    const { client } = routedClient({
+      [B1]: dataTransport(BYTES, [6, 6, 6], newLog()),
+      [B2]: delayed(dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(3) }), 30),
+    });
+    const m = await client.fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER });
+    expect(m.finishReason).toBe(3);
+  });
+
   it('says what it needs when it cannot choose the Builder', async () => {
     await expect(makeClient(dataTransport(BYTES, [6, 6, 6], newLog())).fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER }))
       .rejects.toMatchObject({ code: 'SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED' });

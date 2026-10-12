@@ -47,8 +47,9 @@
   passed; otherwise `SDK_LOCAL_RECEIPT_REQUIRED`). It no longer takes `taskHash` / `outputHash` /
   `workerServicePubKey`: they always come from the anchors.
 - **Added:** `builderAddress` is optional. Without it the SDK asks the task's frozen Task Builders
-  (`RestChainReader.queryTaskBuilders`, task.v1 `TaskBuilders`) in rank order and prefers one that
-  stored the signed Fin; with none, the output is returned with `finishReason` undefined. Every
+  (`RestChainReader.queryTaskBuilders`, task.v1 `TaskBuilders`) concurrently: the first verified
+  output with the signed Fin wins without waiting for slower Builders; with none, the
+  highest-ranked verified output is returned with `finishReason` undefined. Every
   Builder failing is `DATA_OUTPUT_ALL_BUILDERS_FAILED` (retriable). Needs `taskReader` with
   `queryTaskBuilders`, `hub` and `ingressTransportFactory` (`SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED`).
 - **Added:** `OutputTaskReader.queryTaskBuilders` (optional), and the `FetchTaskOutputParams` /

@@ -23,7 +23,7 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | `TRUEOPEN_ADDR_PREFIX` | bech32 prefix (default `trueopen`) | `trueopen` |
 | `TRUEOPEN_ALLOW_INSECURE_HTTP` | `1` allows plain `http://` / `grpc://` nexus endpoints. **Localnet only.** | `1` |
 | `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
-| `TRUEOPEN_MODEL_ID` | raw Hash32 model ID, 64-hex (open-task) | - |
+| `TRUEOPEN_MODEL_ID` | Hash32 model ID, `0x` + 64 lowercase hex (open-task) | - |
 | `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
 
 Nothing chain-specific is hard-coded: the EVM chain ID and the fee denom (`business_denom`, used
@@ -42,7 +42,7 @@ export TRUEOPEN_ALLOW_INSECURE_HTTP=1   # localnet only
 
 node examples/read.mjs            # 0. read-only: chain params and nexus endpoints
 node examples/create-session.mjs  # 1. create a session (gas); prints TRUEOPEN_SESSION_ID
-TRUEOPEN_MODEL_ID=<64hex> node examples/open-task.mjs   # 2. place an order; prints TRUEOPEN_TASK_ID
+TRUEOPEN_MODEL_ID=<0x+64hex> node examples/open-task.mjs   # 2. place an order; prints TRUEOPEN_TASK_ID
 node examples/fetch-output.mjs    # 3. wait for the receipt, fetch and verify the output
 ```
 

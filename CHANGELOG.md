@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Breaking: Hash32 text is 0x-prefixed (ADR-0034, wire #44)
+
+Every client-facing string form of a Hash32 (a 32-byte digest or ID) is now `0x` followed by
+exactly 64 lowercase hex characters, 66 in all. Input accepts only that form: a bare 64-hex
+string, uppercase hex, `0X` or any other length is refused. There is no fallback for the bare
+spelling, so the SDK must move together with the node and Nexus releases that adopt wire #44.
+
+- **Breaking:** every Hash32 the SDK returns or accepts as a string is `0x` + 64 lowercase hex:
+  `sessionId`, `taskId`, `taskHash`, `modelId`, `inputHash`, `outputHash` (and the output MMR root
+  text), `manifestHash`, `tokenizerHash` / `schemaHash`, `registrationDigest`, `builderSetHash` /
+  `setHash`, the session anchor block hash, `descriptorHash`, `tlsPubkeyHash`, `inferReceiptHash`,
+  `rankHash`, `TaskDataObjectRef` hashes and the task-data `body_digest`. `deriveTaskId`,
+  `deriveModelId`, `taskOrderHashHex`, `domainHashHex` and `tlsPubkeyHashOfCertificate` return
+  that form, and `MODEL_ID_GRAMMAR` is `^0x[0-9a-f]{64}$`.
+- **Breaking:** `strictHash32(field, text)` requires `^0x[0-9a-f]{64}$` and decodes the 64 hex
+  after `0x`. Nexus ingress strings (`session_id`, `task_id`, `input_hash`, `TaskDataObjectRefV1`
+  hashes, `body_digest`) are sent in the `0x` form, and an `OpenTask` ack whose `task_id` or
+  `session_id` is set in any other form is refused (`NEXUS_RESPONSE_MALFORMED`).
+- **Breaking:** `hash32ToHex` is renamed `restHash32`. Node REST Hash32 fields
+  (`HASH32_LOWER_HEX`) are read through it: the `0x` form passes through, a protojson base64 value
+  is converted to it, and a bare 64-hex string is refused. `RestChainReader` now decodes
+  `session_id`, `task_id`, `task_hash`, `accepted_input_hash`, `output_hash` and
+  `infer_receipt_hash` the same way. REST paths carry the `0x` string as is.
+- **Breaking:** the output checkpoint JSON (`OUTPUT_STREAM_CHECKPOINT_JSON_V1`, schema version
+  unchanged) writes and accepts `task_hash` and the MMR peak `hash` only as `0x` + 64 lowercase hex;
+  `worker_service_pubkey` stays bare hex (33 bytes, not a Hash32). A checkpoint persisted by an
+  earlier SDK version no longer deserializes.
+- **Breaking:** a pinned nexus `tls_pubkey_hash` (and `--nexus-tls-pubkey-hash` /
+  `TRUEOPEN_NEXUS_TLS_PUBKEY_HASH`) must be `0x` + 64 lowercase hex; it is no longer trimmed or
+  lowercased.
+- **Added:** `hash32Text(bytes)`, `isHash32Text(value)` and `HASH32_TEXT_RE` are exported.
+- **Unchanged:** raw protobuf bytes, EIP-712 `bytes32` values and every hash or signature preimage
+  stay raw 32 bytes. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. Bech32 and EVM
+  addresses, signatures, the 33-byte service key, nonces and the beacon `randomness_hex` keep
+  their spelling. No digest changes.
+- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); re-pin to the v0.5.0 tag once it ships.
+
 ### Breaking: session-signed OpenTask
 
 - **Breaking:** with `session` configured, the session key now signs the OpenTask request

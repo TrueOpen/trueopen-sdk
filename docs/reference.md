@@ -157,16 +157,17 @@ function validateModelId(modelId: string): void
 identity hash. `provider` is a canonical token (`HUGGINGFACE`); `repoId` is
 `<namespace>/<name>` (NFC, ≤255 bytes); `proposerAddress` is canonical bech32. Non-canonical
 input is rejected, never normalized — the Hub Keeper recomputes the same digest from the
-registration signer. `isValidModelId` accepts a non-zero lowercase 64-hex Hash32.
+registration signer. `deriveModelId` returns, and `isValidModelId` accepts, a non-zero Hash32 in
+its text form: `0x` + 64 lowercase hex (`MODEL_ID_GRAMMAR = '^0x[0-9a-f]{64}$'`).
 
 ### 3.2 Building an order
 
 ```ts
 async function resolveTaskOrderContext(hub, chainId): Promise<TaskOrderChainContext>
 function buildTaskOrder(ctx, req: TaskOrderRequest, pricing?): TaskOrderV3
-function deriveTaskId(sessionId: string, orderSequence: bigint): string
+function deriveTaskId(sessionId: string, orderSequence: bigint): string   // 0x + 64 lowercase hex in and out
 function defaultGenerationParams(maxOutputTokens: bigint, maxOutputDurationMs: bigint): GenerationParamsV1
-function payloadRefFor(payload: Uint8Array): string          // "nexus://sha256/<hex>"
+function payloadRefFor(payload: Uint8Array): string          // "nexus://sha256/<bare 64-hex>"
 ```
 
 `TaskOrderRequest` (the full set of facts signed into `task_hash`):
@@ -174,7 +175,7 @@ function payloadRefFor(payload: Uint8Array): string          // "nexus://sha256/
 | Field | Notes |
 |---|---|
 | `payload` | Raw `Uint8Array`. Its sha256 becomes `input_hash`; must be non-empty. |
-| `modelId` | Lowercase 64-hex Hash32. |
+| `modelId` | Hash32, `0x` + 64 lowercase hex. |
 | `profileVersion` | `number`. |
 | `taskType` | `TASK_TYPE` numeric value. |
 | `inputBucket` / `outputBudgetBucket` | `number`; `outputBudgetBucket` must be non-zero. |
@@ -233,11 +234,13 @@ function sdkRequestTypedData(f: SdkRequestFields, signatureChainId, sessionGrant
 function sdkRequestEip712Digest(f: SdkRequestFields, signatureChainId, sessionGrantHash?): Uint8Array
 async function signSdkRequestEnvelope(fields: SdkRequestFields, opts: { signerAddress, signer, signatureChainId, session?, chainId? }): Promise<SignedSdkRequestEnvelope>
 function ingressEndpoint(method: string): string
-function strictHash32(value: string): string
+function strictHash32(field: string, text: string): Uint8Array
 ```
 
 `SdkRequestFields` = `{ chainId, method, sessionId, taskId, requestNonce, expiryHeightOrTime,
-bodyDigest }` (`endpoint` is derived, not a field). `SignedSdkRequestEnvelope` adds
+bodyDigest }` (`endpoint` is derived, not a field). `sessionId` / `taskId` are Hash32 text,
+`0x` + 64 lowercase hex, sent as is; `strictHash32` refuses any other spelling with
+`SDK_LOCAL_NOT_HASH32` and decodes the 64 hex after `0x` to the raw 32 bytes the digest frames. `SignedSdkRequestEnvelope` adds
 `requestDomain`, `endpoint`, `signatureChainId`, `signerAddress`, `signature`, and
 `sessionGrant?`. Every Builder request carries one; the SDK recovers the signature and checks
 it against the sender before sending.
@@ -516,7 +519,10 @@ class RestChainReader  // task.v1.Query (session / task / infer receipt)
 (`getProfile`), pricing, builder set by height (`getBuilderSetAtHeight`), service
 descriptors (`getServiceDescriptor`), current service keys (`getCurrentServiceKey`),
 `business_denom` (`getBusinessDenom`), and manifest state
-(`getProfileManifestState`). Hash32 fields decode to lowercase 64-hex through `hash32ToHex`.
+(`getProfileManifestState`). Hash32 fields decode to `0x` + 64 lowercase hex through
+`restHash32`: the `0x` form passes through, a protojson base64 value is converted, and a bare
+64-hex string is refused. `RestChainReader` decodes its Hash32 fields (`session_id`, `task_id`,
+`task_hash`, `model_id`, `output_hash`, ...) the same way; REST paths carry the `0x` string as is.
 
 `RestChainReader` reads session state, session nonce, the task snapshot (`queryTask`), and
 the infer receipt (`queryInferReceipt`). `withQueryRetry(policy, run)` retries only
@@ -547,7 +553,7 @@ type registry.
 nexusIngressTransport(uri, tlsPubkeyHash?, policy?): Transport
 nexusTransportOptions(uri, tlsPubkeyHash?, policy?): NexusTransportOptions
 class PinnedHttpsAgent
-tlsPubkeyHashOfCertificate(cert): string   // sha256(SubjectPublicKeyInfo DER), lowercase hex
+tlsPubkeyHashOfCertificate(cert): string   // sha256(SubjectPublicKeyInfo DER), 0x + 64 lowercase hex
 isTLSPubkeyMismatch(err): boolean
 ```
 
@@ -645,7 +651,7 @@ Higher-level domain/typed-data helpers build on this.
 
 ```ts
 function domainHash(domain, ...fields): Uint8Array        // H_FIELDS_V1 over strings
-function domainHashHex(domain, ...fields): string
+function domainHashHex(domain, ...fields): string          // 0x + 64 lowercase hex
 function canonicalFrameBytes(...parts): Uint8Array        // u32 length-prefixed each part
 function canonicalHashBytes(...parts): Uint8Array         // sha256(canonicalFrameBytes)
 function framedV1Preimage(domain, payload): Uint8Array    // TRUEOPEN_FRAME_V1 || u32(domain) || domain || u64(len) || payload
@@ -662,6 +668,20 @@ function canonicalAccountAddressBytes(field, value): Uint8Array
 function toAccountAddress(value): string                           // 0x EVM → bech32
 const ACCOUNT_ADDRESS_PREFIX = 'trueopen'
 ```
+
+### 13.3a Hash32 text
+
+```ts
+const HASH32_TEXT_RE = /^0x[0-9a-f]{64}$/
+function hash32Text(bytes: Uint8Array): string             // 32 bytes -> 0x + 64 lowercase hex
+function isHash32Text(value: unknown): value is string
+function strictHash32(field: string, text: string): Uint8Array   // SDK_LOCAL_NOT_HASH32 on any other spelling
+function restHash32(value: string): string                 // REST: 0x form as is, base64 converted, bare hex refused
+```
+
+ADR-0034: the only client-facing spelling of a Hash32 is `0x` followed by exactly 64 lowercase
+hex characters. Raw protobuf bytes, EIP-712 `bytes32` values and hash preimages stay raw 32
+bytes; the conversion happens at the boundary only. `payload_ref` keeps the bare lowercase hex.
 
 ### 13.4 Canonical JSON
 
@@ -793,7 +813,7 @@ const ctx = await resolveTaskOrderContext(hub, CHAIN_ID);
 
 // 5. The order intent. payload is the raw input (see README for chat vs raw-text shape).
 const order = {
-  modelId: '<64-hex-hash32>',                 // TODO: from hub.listModels()
+  modelId: '0x<64-hex-hash32>',               // TODO: from hub.listModels()
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: new TextEncoder().encode('hello'),

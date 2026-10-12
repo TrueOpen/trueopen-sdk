@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added: OpenAI rules for the assistant message (sdk_详细设计 §5.5)
+
+- **Added:** `openAIFinishReasonOf(confirmed)`: stop-class -> `"stop"` or `"tool_calls"` when the
+  confirmed parse has calls; `MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION` -> `"length"` even with
+  calls (closed calls stay in `toolCalls`); `undefined` when the protocol reason is unavailable.
+- **Added:** `newToolCallId(format)` with `ToolCallIdFormat` (`OPENAI_CALL_PREFIX` /
+  `MISTRAL_ALNUM_9`): a random id in the profile's `call_id_format`. The Provider decides when to
+  assign one and builds `type` / `index` / the envelope.
+
 ### Breaking: fetchAssistantMessage returns the confirmed message and can choose the Builder
 
 - **Breaking:** `fetchAssistantMessage` returns a `ConfirmedAssistantMessage` (with `confirmation`

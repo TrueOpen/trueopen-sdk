@@ -1,5 +1,6 @@
 import { TrueOpenError } from '../errors/errors';
 import type { ParserRef, ToolCallParser, ToolCallSupport } from './types';
+import { hermesParser } from './parsers/hermes';
 
 /**
  * Whether this implementation has passed the cross-language shared vectors for its
@@ -71,12 +72,14 @@ export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolC
 }
 
 /**
- * The parsers this SDK build ships: none.
- *
- * Phase 1 builds the framework, and no concrete parser can be registered before its vectors
- * exist (monorepo#11). Callers inject their own with `createToolCallRegistry`.
+ * The tool-call parsers this SDK build ships, all unverified until wire publishes their vectors
+ * (monorepo#11), like the built-in reasoning parsers: lookup reports them as supported only when
+ * the caller passes `allowUnverified`. Shipping them lets a caller resolve the parser a profile
+ * pins on chain without registering it; callers can still inject their own registry.
  */
-export const BUILTIN_TOOL_CALL_PARSERS: ToolCallRegistry = createToolCallRegistry([]);
+export const BUILTIN_TOOL_CALL_PARSERS: ToolCallRegistry = createToolCallRegistry([
+  { parser: hermesParser, conformance: 'unverified' },
+]);
 
 /**
  * Resolve whether tool calling is available, from the parser the chain projects for a profile.

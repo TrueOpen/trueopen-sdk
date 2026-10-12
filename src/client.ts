@@ -434,7 +434,7 @@ export interface ConfirmOutputParams {
 export interface ToolCallParams {
   /** The profile's on-chain tool-call parser (ProfileInfo.toolCallParser); zero value = "no tool calling". */
   readonly toolCallParser: ParserRef;
-  /** Defaults to the built-in registry (empty today); injectable for tests/custom parsers. */
+  /** Defaults to the built-in registry (hermes@1, unverified); injectable for tests/custom parsers. */
   readonly registry?: ToolCallRegistry;
   /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
   readonly allowUnverified?: boolean;

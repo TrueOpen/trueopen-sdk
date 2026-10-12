@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed: hermes@1 ships in the built-in registry
+
+- **Changed:** `BUILTIN_TOOL_CALL_PARSERS` registers `hermes@1` as `unverified`, as
+  `BUILTIN_REASONING_PARSERS` already does for `qwen3@1`. Lookup still reports it unsupported unless
+  the caller passes `allowUnverified`; a profile's pinned parser now resolves without the caller
+  registering it.
+
 ### Added: call_id_format from the verified manifest
 
 - **Added:** `toolCallIdFormatOf(manifest)` reads `tool_calling.call_id_format` from a verified V4

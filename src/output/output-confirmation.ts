@@ -1,19 +1,18 @@
 import { MmrAccumulator } from '../codec/mmr';
 import { TrueOpenError } from '../errors/errors';
 import type { InferReceiptView } from '../types/node';
-import { bytesEqual, toHex } from '../util/bytes';
+import { bytesEqual } from '../util/bytes';
+import { hash32Text, isHash32Text } from '../codec/hash32';
 import {
   OUTPUT_MMR_DOMAIN,
   outputHash,
   type OutputStreamVerifierCheckpoint,
 } from './output-commitment';
 
-const HASH32_HEX = /^[0-9a-f]{64}$/;
-
 export interface ConfirmOutputWithReceiptInput {
   readonly chainId: string;
   readonly taskId: string;
-  /** The on-chain accepted_task_hash, canonical lowercase 64-hex. */
+  /** The on-chain accepted_task_hash, Hash32 text (`0x` + 64 lowercase hex). */
   readonly taskHash: string;
   readonly checkpoint: OutputStreamVerifierCheckpoint;
   readonly receipt: InferReceiptView;
@@ -26,7 +25,7 @@ export interface ConfirmedOutputEvent {
   readonly taskHash: string;
   readonly winnerWorker: string;
   readonly inferReceiptHash: string;
-  /** Canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly outputHash: string;
   /** The same raw 32 bytes as outputHash, for direct use by later protocol layers. */
   readonly outputMmrRoot: Uint8Array;
@@ -64,10 +63,11 @@ export function confirmOutputWithReceipt(input: ConfirmOutputWithReceiptInput): 
       `checkpoint chain_id ${checkpoint.chainId} does not match ${input.chainId}`,
     );
   }
-  if (!HASH32_HEX.test(input.taskHash) || toHex(checkpoint.taskHash) !== input.taskHash) {
+  const checkpointTaskHash = checkpoint.taskHash.length === 32 ? hash32Text(checkpoint.taskHash) : '';
+  if (!isHash32Text(input.taskHash) || checkpointTaskHash !== input.taskHash) {
     throw confirmationError(
       'DATA_OUTPUT_CONFIRMATION_TASK_HASH_MISMATCH',
-      `checkpoint task_hash ${toHex(checkpoint.taskHash)} does not match ${input.taskHash}`,
+      `checkpoint task_hash ${checkpointTaskHash} does not match ${input.taskHash}`,
     );
   }
   if (input.taskId === '' || receipt.taskId !== input.taskId) {
@@ -106,11 +106,11 @@ export function confirmOutputWithReceipt(input: ConfirmOutputWithReceiptInput): 
       'checkpoint MMR peaks do not match the retained verified chunks',
     );
   }
-  const outputHashHex = toHex(outputMmrRoot);
-  if (!HASH32_HEX.test(receipt.outputHash)) {
+  const outputHashHex = hash32Text(outputMmrRoot);
+  if (!isHash32Text(receipt.outputHash)) {
     throw confirmationError(
       'DATA_OUTPUT_CONFIRMATION_RECEIPT_HASH_MALFORMED',
-      `receipt output_hash must be canonical lowercase 64-hex, got ${receipt.outputHash}`,
+      `receipt output_hash must be 0x followed by 64 lowercase hex characters, got ${receipt.outputHash}`,
     );
   }
   if (receipt.outputHash !== outputHashHex) {

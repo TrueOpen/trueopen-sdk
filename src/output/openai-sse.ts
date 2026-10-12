@@ -1,6 +1,7 @@
 import { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
 import { TrueOpenError } from '../errors/errors';
-import { bytesEqual, toHex } from '../util/bytes';
+import { bytesEqual } from '../util/bytes';
+import { hash32Text, isHash32Text } from '../codec/hash32';
 import type { ConfirmedOutputEvent } from './output-confirmation';
 
 export interface VerifiedOutputChunkEvent {
@@ -57,7 +58,6 @@ interface BufferedChunk {
 }
 
 const encoder = new TextEncoder();
-const HASH32_HEX = /^[0-9a-f]{64}$/;
 export const DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 
 function sseError(code: string, message: string): TrueOpenError {
@@ -111,10 +111,10 @@ export function openAIFinishReason(reason: FinishReasonV1): OpenAIFinishReason {
 }
 
 function validateContext(context: OpenAIChatSseContext): number {
-  if (context.id === '' || context.model === '' || !HASH32_HEX.test(context.taskId) || !HASH32_HEX.test(context.taskHash)) {
+  if (context.id === '' || context.model === '' || !isHash32Text(context.taskId) || !isHash32Text(context.taskHash)) {
     throw sseError(
       'DATA_OPENAI_SSE_CONTEXT_INVALID',
-      'id/model must not be empty and taskId/taskHash must be canonical lowercase 64-hex',
+      'id/model must not be empty and taskId/taskHash must be 0x followed by 64 lowercase hex characters',
     );
   }
   if (!Number.isSafeInteger(context.created) || context.created < 0) {
@@ -180,7 +180,7 @@ function validateConfirmation(
   if (
     confirmed.outputMmrRoot.length !== 32 ||
     !bytesEqual(confirmed.outputMmrRoot, fin.outputMmrRoot) ||
-    confirmed.outputHash !== toHex(confirmed.outputMmrRoot)
+    confirmed.outputHash !== hash32Text(confirmed.outputMmrRoot)
   ) {
     throw sseError('DATA_OPENAI_SSE_CONFIRMATION_ROOT_MISMATCH', 'confirmed root does not match verified Fin');
   }

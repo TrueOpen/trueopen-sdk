@@ -7,11 +7,12 @@ import type { HubReader } from '../../src/transport/hub-reader';
 import type { BuilderSetSnapshot, ServiceDescriptorRef } from '../../src/types/hub';
 import { sha256 } from '../../src/codec/hash';
 import { toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 // Real live-chain descriptor document (196 bytes, no trailing newline) + on-chain committed hash (verified byte-for-byte).
 const GOLDEN_DOC =
   '{"schema_version":"trueopen-builder-descriptor-v1","builder_address":"trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg","service_endpoint":"https://builder.example:8080","moniker":"","p2p_hint":""}';
-const GOLDEN_HASH = 'ac70088f6a4de32fcf2da1f3a319c140f0abc374385e83fee14dd6df3778cd3c';
+const GOLDEN_HASH = '0xac70088f6a4de32fcf2da1f3a319c140f0abc374385e83fee14dd6df3778cd3c';
 const enc = new TextEncoder();
 
 describe('verifyAndParseBuilderDescriptor', () => {
@@ -21,7 +22,9 @@ describe('verifyAndParseBuilderDescriptor', () => {
     expect(doc.schemaVersion).toBe('trueopen-builder-descriptor-v1');
     expect(doc.builderAddress).toBe('trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg');
     // Self-check: confirm GOLDEN_HASH really is the sha256 of the document bytes
-    expect(toHex(sha256(enc.encode(GOLDEN_DOC)))).toBe(GOLDEN_HASH);
+    expect(hash32Text(sha256(enc.encode(GOLDEN_DOC)))).toBe(GOLDEN_HASH);
+    // The retired bare spelling of the same hash no longer matches.
+    expect(() => verifyAndParseBuilderDescriptor(enc.encode(GOLDEN_DOC), GOLDEN_HASH.slice(2))).toThrowError(/mismatch/);
   });
 
   it('tampering with one byte triggers DESCRIPTOR_HASH_MISMATCH', () => {
@@ -31,12 +34,12 @@ describe('verifyAndParseBuilderDescriptor', () => {
 
   it('throws for an unsupported schema (hash is still self-consistent)', () => {
     const bad = enc.encode('{"schema_version":"nope","service_endpoint":"x"}');
-    expect(() => verifyAndParseBuilderDescriptor(bad, toHex(sha256(bad)))).toThrowError(/schema/i);
+    expect(() => verifyAndParseBuilderDescriptor(bad, hash32Text(sha256(bad)))).toThrowError(/schema/i);
   });
 
   it('missing service_endpoint triggers DESCRIPTOR_MALFORMED', () => {
     const bad = enc.encode('{"schema_version":"trueopen-builder-descriptor-v1","service_endpoint":""}');
-    expect(() => verifyAndParseBuilderDescriptor(bad, toHex(sha256(bad)))).toThrowError(/service_endpoint|MALFORMED/);
+    expect(() => verifyAndParseBuilderDescriptor(bad, hash32Text(sha256(bad)))).toThrowError(/service_endpoint|MALFORMED/);
   });
 });
 

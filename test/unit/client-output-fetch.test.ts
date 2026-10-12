@@ -25,11 +25,12 @@ import {
   outputFinSigningDigest,
 } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 const CHAIN_ID = 'trueopen-localnet-1';
-const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
-const TASK = 'd'.repeat(64);
-const TASK_HASH = 'c'.repeat(64);
+const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+const TASK = `0x${'d'.repeat(64)}`;
+const TASK_HASH = `0x${'c'.repeat(64)}`;
 const WINNER = 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man';
 const BUILDER = 'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg';
 
@@ -40,10 +41,10 @@ const WORKER_PUB = secp256k1PublicKey(WORKER_PRIV);
 const enc = new TextEncoder();
 const CHUNKS = ['hello ', 'final ', 'output'].map((t) => enc.encode(t));
 const BYTES = enc.encode('hello final output');
-const ROOT = toHex(outputMmrRoot(CHUNKS));
+const ROOT = hash32Text(outputMmrRoot(CHUNKS));
 
 function receiptFor(root: string, size: bigint, leaves: bigint): InferReceiptView {
-  return { taskId: TASK, winnerWorker: WINNER, inferReceiptHash: 'e'.repeat(64), outputHash: root, outputSizeBytes: size, outputLeafCount: leaves };
+  return { taskId: TASK, winnerWorker: WINNER, inferReceiptHash: `0x${'e'.repeat(64)}`, outputHash: root, outputSizeBytes: size, outputLeafCount: leaves };
 }
 
 function taskReader(over: { task?: Partial<ChainTaskSnapshot>; receipt?: InferReceiptView | null } = {}): OutputTaskReader & { receiptReads: number } {
@@ -51,8 +52,8 @@ function taskReader(over: { task?: Partial<ChainTaskSnapshot>; receipt?: InferRe
     receiptReads: 0,
     async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
       return {
-        view: 'active', taskId, acceptedTaskHash: TASK_HASH, acceptedInputHash: 'a'.repeat(64), winnerWorker: WINNER,
-        receiptStatus: 'RECEIPT_ACCEPTED', assignmentStatus: 'ASSIGNED', modelId: 'b'.repeat(64), profileVersion: 1n, orderSequence: 0n,
+        view: 'active', taskId, acceptedTaskHash: TASK_HASH, acceptedInputHash: `0x${'a'.repeat(64)}`, winnerWorker: WINNER,
+        receiptStatus: 'RECEIPT_ACCEPTED', assignmentStatus: 'ASSIGNED', modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
         ...over.task,
       };
     },
@@ -236,7 +237,7 @@ describe('fetchTaskOutput', () => {
   });
 
   it('does not fetch a size-0 object and returns it verified as one zero-length leaf', async () => {
-    const emptyRoot = toHex(outputMmrRoot([new Uint8Array(0)]));
+    const emptyRoot = hash32Text(outputMmrRoot([new Uint8Array(0)]));
     const log = newLog();
     const got = await makeClient(
       dataTransport(new Uint8Array(0), [0], log),
@@ -300,14 +301,14 @@ describe('streamOutput trust anchors', () => {
   it('verifies frames against the chain-derived task_hash and winner key when none are passed', async () => {
     const frames = CHUNKS.map((text, i) => {
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
-      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), seq: BigInt(i), mmrRoot });
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
       return {
         seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(),
         attachment: new Uint8Array(), attachmentSignature: new Uint8Array(),
       };
     });
     const last = frames[frames.length - 1]!;
-    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
     const transport = createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async *subscribeOutput(_req: SubscribeOutputRequest) {

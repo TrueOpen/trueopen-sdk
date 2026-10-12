@@ -16,7 +16,8 @@ import type { Server as HttpServer } from 'node:http';
 // key sha256 computed independently with openssl, used to verify the SDK's algorithm.
 const CERT = readFileSync(new URL('../helpers/tls/cert.pem', import.meta.url));
 const KEY = readFileSync(new URL('../helpers/tls/key.pem', import.meta.url));
-const EXPECTED_HASH = readFileSync(new URL('../helpers/tls/pubkey_sha256.txt', import.meta.url), 'utf8').trim();
+// The file holds openssl's bare hex; the SDK spells the Hash32 as 0x + 64 lowercase hex.
+const EXPECTED_HASH = `0x${readFileSync(new URL('../helpers/tls/pubkey_sha256.txt', import.meta.url), 'utf8').trim()}`;
 
 let server: Server;
 let port: number;
@@ -78,7 +79,7 @@ describe('verify the nexus certificate against the on-chain tls_pubkey_hash', ()
 
   it('hash mismatch: disconnects immediately after the handshake, not sending a single byte of the request', async () => {
     const before = hits;
-    const wrong = 'ab'.repeat(32);
+    const wrong = `0x${'ab'.repeat(32)}`;
     await expect(get(new PinnedHttpsAgent(wrong))).rejects.toMatchObject({ code: 'NEXUS_TLS_PUBKEY_MISMATCH' });
     expect(hits).toBe(before);
   });
@@ -219,14 +220,17 @@ describe('nexusTransportOptions', () => {
     );
   });
 
-  it('hash must be 64-character lowercase hex', () => {
+  it('hash must be 0x + 64 lowercase hex', () => {
     expect(() => nexusTransportOptions('https://b:1', 'not-hex')).toThrow(/tls_pubkey_hash/);
+    for (const bad of [EXPECTED_HASH.slice(2), `0x${'AB'.repeat(32)}`, `0X${EXPECTED_HASH.slice(2)}`, ` ${EXPECTED_HASH}`]) {
+      expect(() => nexusTransportOptions('https://b:1', bad)).toThrow(/0x followed by 64 lowercase hex/);
+    }
   });
 });
 
 describe('manually specified --nexus-url', () => {
   it('when a fingerprint is given, verification uses it, same as the on-chain discovery path (the nexus cert is self-signed, so CA chain validation cannot work)', async () => {
-    const wrong = new IngressClient(explicitNexusTransport(`https://127.0.0.1:${port}`, 'ab'.repeat(32)));
+    const wrong = new IngressClient(explicitNexusTransport(`https://127.0.0.1:${port}`, `0x${'ab'.repeat(32)}`));
     let caught: unknown;
     try {
       await wrong.getTaskStatus('sess', 'task');
@@ -248,7 +252,7 @@ describe('error classification', () => {
     const fake = new Error(`server said ${'NEXUS_TLS_PUBKEY_MISMATCH'} in its reason`);
     expect(isTLSPubkeyMismatch(fake)).toBe(false);
     // Real path: wrong fingerprint -> PinnedHttpsAgent disconnects after the handshake -> Connect wraps it as ConnectError.cause.
-    const client = new IngressClient(nexusIngressTransport(`https://127.0.0.1:${port}`, 'ab'.repeat(32)));
+    const client = new IngressClient(nexusIngressTransport(`https://127.0.0.1:${port}`, `0x${'ab'.repeat(32)}`));
     let caught: unknown;
     try {
       await client.getTaskStatus('sess', 'task');

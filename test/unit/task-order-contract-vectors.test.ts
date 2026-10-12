@@ -166,7 +166,7 @@ describe('TaskOrderV3 wire vectors (task_order_v3.json)', () => {
     it(`${v.name}: SDK taskOrderHash equals the published digest`, () => {
       const order = toTaskOrder(v);
       expect(order.schemaVersion).toBe(TASK_ORDER_SCHEMA_VERSION_V3);
-      expect(taskOrderHashHex(order)).toBe(v.digest_hex);
+      expect(taskOrderHashHex(order)).toBe(`0x${v.digest_hex}`);
     });
   }
 });

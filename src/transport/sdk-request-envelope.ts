@@ -76,9 +76,9 @@ export interface SdkRequestFields {
   readonly chainId: string;
   /** The bare method name, such as "SubscribeOutput". The endpoint is derived from it. */
   readonly method: string;
-  /** 64-character lowercase hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly sessionId: string;
-  /** 64-character lowercase hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly taskId: string;
   /** Exactly 32 bytes from a CSPRNG, unique per signer. */
   readonly requestNonce: Uint8Array;

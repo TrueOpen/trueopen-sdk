@@ -3,7 +3,8 @@ import { canonicalOperatorAddressBytes } from '../codec/address';
 import { typedDataDigest } from '../signer/typed-data-signer';
 import type { TypedData } from '../signer/typed-data-signer';
 import type { Eip712Types, Eip712Struct } from '../codec/eip712';
-import { fromHex, toHex } from '../util/bytes';
+import { fromHex } from '../util/bytes';
+import { hash32Text, isHash32Text } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 import { signatureChainIdBigInt } from '../signature-chain-id';
 
@@ -91,15 +92,15 @@ function malformed(what: string): TrueOpenError {
   return new TrueOpenError('SDK_LOCAL', 'TASK_DATA_REQUEST_MALFORMED', `task data request: ${what}`);
 }
 
-/** The transport layer represents Hash32 as lowercase hex, but the preimage always uses raw32. */
-function hash32(field: string, hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw malformed(`${field} must be canonical lowercase 64-hex Hash32, got ${JSON.stringify(hex)}`);
+/** The transport layer represents Hash32 as `0x` + 64 lowercase hex, but the preimage always uses raw32. */
+function hash32(field: string, text: string): Uint8Array {
+  if (!isHash32Text(text)) {
+    throw malformed(`${field} must be 0x followed by 64 lowercase hex characters, got ${JSON.stringify(text)}`);
   }
-  return fromHex(hex);
+  return fromHex(text.slice(2));
 }
 
-/** SDK view of nexus.v1.TaskDataObjectRefV1 (Hash32 as canonical lowercase hex). */
+/** SDK view of nexus.v1.TaskDataObjectRefV1 (Hash32 as `0x` + 64 lowercase hex). */
 export interface TaskDataObjectRef {
   readonly taskHash: string;
   readonly sessionId: string;
@@ -347,8 +348,8 @@ export function taskDataRequestSignBytes(f: TaskDataRequestAuthFields): Uint8Arr
   );
 }
 
-/** body_digest is lowercase hex text in the proto, but raw32 in the preimage. */
+/** body_digest is Hash32 text (`0x` + 64 lowercase hex) in the proto, but raw32 in the preimage. */
 export function bodyDigestHex(digest: Uint8Array): string {
   if (digest.length !== HASH32) throw malformed(`body_digest must be 32 bytes, got ${digest.length}`);
-  return toHex(digest);
+  return hash32Text(digest);
 }

@@ -10,6 +10,9 @@ import { fromHex } from '../../src/util/bytes';
 
 const SESSION_HEX = '33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a';
 const TASK_HEX = '0c57743effab15ce41ad3f75e0b190774e544c2ce20f1dd701298f89cfc83e35';
+// The SDK's Hash32 text form of the same bytes (ADR-0034).
+const SESSION_ID = `0x${SESSION_HEX}`;
+const TASK_ID = `0x${TASK_HEX}`;
 
 function indexedTx(typeUrl: string, value: Uint8Array, code = 0): IndexedTx {
   return {
@@ -48,7 +51,7 @@ const fee: StdFee = { amount: [{ denom: 'utrueopen', amount: '1' }], gas: '20000
 
 describe('CosmjsChainWriter', () => {
   // node MsgCreateSessionResponse: bytes session_id=1, uint64 session_nonce=2, status=3.
-  it('createSession: session_id bytes are converted to 64-hex, owner is filled in from the tx signer', async () => {
+  it('createSession: session_id bytes are converted to 0x + 64 lowercase hex, owner is filled in from the tx signer', async () => {
     const respBytes = new ProtoWriter()
       .bytes(1, fromHex(SESSION_HEX)).uint64(2, 7n).uint64(3, 1n)
       .finish();
@@ -56,7 +59,7 @@ describe('CosmjsChainWriter', () => {
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
     const r = await w.createSession();
     expect(r).toEqual({
-      sessionId: SESSION_HEX, owner: 'trueopen1me', nonce: 7n, status: 'MUTATION_STATUS_V1_APPLIED',
+      sessionId: SESSION_ID, owner: 'trueopen1me', nonce: 7n, status: 'MUTATION_STATUS_V1_APPLIED',
     });
     expect(bc.last?.messages[0]?.typeUrl).toBe(TYPE_URL.createSession);
     expect((bc.last?.messages[0]?.value as { signer: string }).signer).toBe('trueopen1me');
@@ -69,8 +72,8 @@ describe('CosmjsChainWriter', () => {
       .finish();
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.cancelOrder, respBytes));
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    const r = await w.cancelOrder({ sessionId: SESSION_HEX, orderSequence: 3n, ownerSignature: 'abcd01' });
-    expect(r.taskId).toBe(TASK_HEX);
+    const r = await w.cancelOrder({ sessionId: SESSION_ID, orderSequence: 3n, ownerSignature: 'abcd01' });
+    expect(r.taskId).toBe(TASK_ID);
     expect(r.nextExpectedSequence).toBe(4n);
     expect(bc.last?.messages[0]?.value).not.toHaveProperty('ownerSignature');
   });
@@ -106,7 +109,7 @@ describe('CosmjsChainWriter', () => {
     );
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
     const r = await w.createSession();
-    expect(r.sessionId).toBe(SESSION_HEX);
+    expect(r.sessionId).toBe(SESSION_ID);
     expect(bc.broadcasts).toBe(1);
     expect(bc.lookups).toBe(4); // three throws, then found
   });

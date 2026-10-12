@@ -23,7 +23,7 @@ export interface CliConfig {
   readonly restUrl?: string;
   readonly rpcUrl?: string;
   readonly nexusUrl?: string;
-  /** The certificate public key sha256 (hex) to use when manually specifying --nexus-url; endpoints discovered on chain get it from the descriptor instead. */
+  /** The certificate public key sha256 (`0x` + 64 lowercase hex) to use when manually specifying --nexus-url; endpoints discovered on chain get it from the descriptor instead. */
   readonly nexusTlsPubkeyHash?: string;
   readonly auto: boolean;
   readonly chainId?: string;

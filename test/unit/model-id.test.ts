@@ -5,9 +5,9 @@ import { buildTaskOrder, defaultGenerationParams } from '../../src/order/task-or
 import type { TaskOrderChainContext, TaskOrderRequest } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import { bech32 } from '@scure/base';
-import { toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
-const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
+const hexOf = (b: number): string => hash32Text(new Uint8Array(32).fill(b));
 const amount = (atomicUnits: string) => ({ atomicUnits });
 
 const CTX: TaskOrderChainContext = {
@@ -34,30 +34,32 @@ const baseOrder = (modelId: string): TaskOrderRequest => ({
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 });
 
-const MODEL = 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b';
+const BARE = 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b';
+const MODEL = `0x${BARE}`;
 
-describe('model_id validation (non-zero canonical lowercase 64-hex Hash32)', () => {
+describe('model_id validation (non-zero Hash32, 0x + 64 lowercase hex)', () => {
   it('accepts a canonical Hash32', () => {
     expect(isValidModelId(MODEL)).toBe(true);
-    expect(isValidModelId('5'.repeat(64))).toBe(true);
+    expect(isValidModelId(`0x${'5'.repeat(64)}`)).toBe(true);
   });
 
   it('rejects legacy slugs, uppercase, prefixes, wrong length and the zero hash', () => {
     expect(isValidModelId(`hf-${MODEL}`)).toBe(false); // legacy text slug
     expect(isValidModelId('qwen3-8b')).toBe(false);
-    expect(isValidModelId(MODEL.toUpperCase())).toBe(false);
-    expect(isValidModelId(`0x${MODEL}`)).toBe(false);
-    expect(isValidModelId(MODEL.slice(1))).toBe(false); // 63
-    expect(isValidModelId(`${MODEL}0`)).toBe(false); // 65
+    expect(isValidModelId(`0x${BARE.toUpperCase()}`)).toBe(false);
+    expect(isValidModelId(`0X${BARE}`)).toBe(false);
+    expect(isValidModelId(BARE)).toBe(false); // bare hex without 0x
+    expect(isValidModelId(MODEL.slice(0, -1))).toBe(false); // 63 hex
+    expect(isValidModelId(`${MODEL}0`)).toBe(false); // 65 hex
     expect(isValidModelId('')).toBe(false);
-    expect(isValidModelId('0'.repeat(64))).toBe(false);
+    expect(isValidModelId(`0x${'0'.repeat(64)}`)).toBe(false);
   });
 
   it('validateModelId throws SDK_LOCAL_MODEL_ID_INVALID', () => {
-    expect(() => validateModelId('hf-ad410')).toThrow(/64-hex Hash32/);
+    expect(() => validateModelId('hf-ad410')).toThrow(/0x followed by 64 lowercase hex/);
     let code: unknown;
     try {
-      validateModelId(MODEL.toUpperCase());
+      validateModelId(BARE);
     } catch (e) {
       code = (e as { code?: string }).code;
     }
@@ -65,9 +67,9 @@ describe('model_id validation (non-zero canonical lowercase 64-hex Hash32)', () 
   });
 
   it('buildTaskOrder fails fast on an invalid model_id and binds the raw 32 bytes otherwise', () => {
-    expect(() => buildTaskOrder(CTX, baseOrder('hf-ad410'))).toThrow(/64-hex Hash32/);
+    expect(() => buildTaskOrder(CTX, baseOrder('hf-ad410'))).toThrow(/0x followed by 64 lowercase hex/);
     const order = buildTaskOrder(CTX, baseOrder(MODEL));
-    expect(toHex(order.modelId)).toBe(MODEL);
+    expect(hash32Text(order.modelId)).toBe(MODEL);
     expect(order.modelId).toHaveLength(32);
   });
 
@@ -101,13 +103,13 @@ function inputOf(v: ModelIdVector) {
 
 describe('deriveModelId against wire model_id_v1 vectors', () => {
   it.each(MODEL_ID_FIXTURE.vectors.map((v) => [v.name, v] as const))('reproduces %s', (_name, v) => {
-    expect(deriveModelId(inputOf(v))).toBe(v.digest_hex);
+    expect(deriveModelId(inputOf(v))).toBe(`0x${v.digest_hex}`);
   });
 
   it('derives a model_id the SDK then accepts as an order model_id', () => {
     const id = deriveModelId(inputOf(MODEL_ID_FIXTURE.vectors[0]!));
     expect(isValidModelId(id)).toBe(true);
-    expect(toHex(buildTaskOrder(CTX, baseOrder(id)).modelId)).toBe(id);
+    expect(hash32Text(buildTaskOrder(CTX, baseOrder(id)).modelId)).toBe(id);
   });
 
   it('is owner-, case- and chain-bound (P1 vs P2/P3/P4 are four distinct identities)', () => {

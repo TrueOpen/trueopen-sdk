@@ -46,7 +46,7 @@ describe('account addresses: canonical lowercase Bech32, prefix trueopen, 20 byt
 
   it('signSdkRequestEnvelope refuses a signer_address with another prefix and a chain_id that is not the configured chain', async () => {
     const fields = {
-      chainId: 'trueopen-golden-1', method: 'AckOutput', sessionId: '77'.repeat(32), taskId: 'bc'.repeat(32),
+      chainId: 'trueopen-golden-1', method: 'AckOutput', sessionId: `0x${'77'.repeat(32)}`, taskId: `0x${'bc'.repeat(32)}`,
       requestNonce: new Uint8Array(32), expiryHeightOrTime: 1_790_000_000_000n, bodyDigest: new Uint8Array(32),
     };
     const signer = privateKeyTypedDataSigner(fixtureKey('account'));

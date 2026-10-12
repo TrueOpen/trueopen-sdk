@@ -110,7 +110,7 @@ export function acceptOnChain(world: World, stream: OutputStreamFixture = STREAM
     sessionId: stream.session_id,
     orderSequence: 0n,
     taskHash: stream.task_hash,
-    inputHash: w.hex(sha256(w.PAYLOAD)),
+    inputHash: w.hash32(sha256(w.PAYLOAD)),
   });
   const s = world.node.sessions.get(stream.session_id);
   if (s !== undefined) s.nextExpectedSequence += 1n;

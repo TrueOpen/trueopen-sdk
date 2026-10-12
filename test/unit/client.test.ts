@@ -21,12 +21,13 @@ import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outputFinSigningDigest } from '../../src/output/output-commitment';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 import { TrueOpenError } from '../../src/errors/errors';
 
-// deriveTaskId requires canonical 64-hex (raw Hash32 goes into the preimage).
-const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
-/** Request bodies decode task_id strictly as a lowercase Hash32. */
-const TASK = 'e4'.repeat(32);
+// deriveTaskId requires Hash32 text, 0x + 64 lowercase hex (raw Hash32 goes into the preimage).
+const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+/** Request bodies decode task_id strictly as 0x + 64 lowercase hex. */
+const TASK = `0x${'e4'.repeat(32)}`;
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const pub = secp256k1PublicKey(PRIV);
@@ -53,7 +54,7 @@ const OUTPUT_TEXT = 'hello final output';
 /** Worker service key (a separate key unrelated to the user's identity). */
 const WORKER_PRIV = fromHex('0302030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(WORKER_PRIV);
-const TASK_HASH = 'c'.repeat(64);
+const TASK_HASH = `0x${'c'.repeat(64)}`;
 
 /** Builds a sequence of validly signed frames: each frame's mmr_root is the root over the first seq+1 leaves, and the signature is the Worker's raw64. */
 function signedFrames(chainId: string, chunks: readonly Uint8Array[] = OUTPUT_CHUNKS) {
@@ -61,7 +62,7 @@ function signedFrames(chainId: string, chunks: readonly Uint8Array[] = OUTPUT_CH
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, chunks, i + 1);
     const digest = outputChunkSigningDigest({
       chainId,
-      taskHash: fromHex(TASK_HASH),
+      taskHash: fromHex(TASK_HASH.slice(2)),
       seq: BigInt(i),
       mmrRoot,
     });
@@ -84,7 +85,7 @@ function signFin(chainId: string, last: { seq: bigint; mmrRoot: Uint8Array }, fi
     finishReason,
     workerSignature: secp256k1
       .sign(
-        outputFinSigningDigest({ chainId, taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason }),
+        outputFinSigningDigest({ chainId, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason }),
         WORKER_PRIV,
       )
       .toCompactRawBytes(),
@@ -283,7 +284,7 @@ describe('TrueOpenClient facade', () => {
       ...signedFin(last, 1),
       workerSignature: secp256k1
         .sign(outputFinSigningDigest({
-          chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1,
+          chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1,
         }), otherPriv)
         .toCompactRawBytes(),
     })));
@@ -502,7 +503,7 @@ describe('TrueOpenClient facade', () => {
   it('streamOutput can resume from a persisted checkpoint, delivering only the frames not yet consumed', async () => {
     const frames = signedFrames('trueopen-devnet-1');
     const verifier = new OutputStreamVerifier({
-      chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH), workerServicePubKey: WORKER_PUB,
+      chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB,
     });
     verifier.accept({
       seq: frames[0]!.seq,
@@ -536,7 +537,7 @@ describe('TrueOpenClient facade', () => {
   it('confirmOutput produces a confirmed event from the on-chain Receipt root/count/size', () => {
     const frames = signedFrames('trueopen-devnet-1');
     const verifier = new OutputStreamVerifier({
-      chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH), workerServicePubKey: WORKER_PUB,
+      chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB,
     });
     for (const frame of frames) {
       verifier.accept({
@@ -555,7 +556,7 @@ describe('TrueOpenClient facade', () => {
         taskId: TASK,
         winnerWorker: 'trueopen1worker',
         inferReceiptHash: 'd'.repeat(64),
-        outputHash: toHex(frames[frames.length - 1]!.mmrRoot),
+        outputHash: hash32Text(frames[frames.length - 1]!.mmrRoot),
         outputSizeBytes: size,
         outputLeafCount: BigInt(frames.length),
       },
@@ -575,7 +576,7 @@ describe('TrueOpenClient facade', () => {
 
   it('flipping one bit in task_hash changes the frame digest and fails signature verification', async () => {
     const it = makeClient({}, {}).streamOutput({
-      sessionId: SESSION, taskId: TASK, taskHash: 'd' + TASK_HASH.slice(1), workerServicePubKey: WORKER_PUB,
+      sessionId: SESSION, taskId: TASK, taskHash: `0xd${TASK_HASH.slice(3)}`, workerServicePubKey: WORKER_PUB,
     })[Symbol.asyncIterator]();
     await expect(it.next()).rejects.toThrow(/signature invalid/);
   });

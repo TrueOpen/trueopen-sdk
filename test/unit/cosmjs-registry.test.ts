@@ -13,7 +13,7 @@ describe('taskRegistry', () => {
     const reg = taskRegistry();
     const value = {
       signer: 'trueopen1x',
-      sessionId: '33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a',
+      sessionId: '0x33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a',
       orderSequence: 7n,
     };
     const bytes = reg.encode({ typeUrl: TYPE_URL.cancelOrder, value });

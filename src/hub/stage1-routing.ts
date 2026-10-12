@@ -3,6 +3,7 @@ import type { BuilderSetMember } from './builder-selection';
 import { nexusGrpcEndpoint } from '../types/hub';
 import type { BuilderSetSnapshot, ServiceDescriptorRef } from '../types/hub';
 import { TrueOpenError } from '../errors/errors';
+import { strictHash32 } from '../codec/hash32';
 
 /** Minimal reader capability needed by resolveTaskBuilderEndpoints (for easy test injection). */
 export interface TaskBuilderReader {
@@ -14,7 +15,7 @@ export interface TaskBuilderReader {
 
 export interface ResolveTaskBuilderInput {
   readonly chainId: string;
-  /** canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly taskId: string;
   /**
    * The builder_set_hash and session_anchor_block_hash signed into the order.
@@ -39,7 +40,7 @@ export interface TaskBuilderEndpoint {
   readonly address: string;
   readonly rank: number;
   readonly serviceEndpoint: string;
-  /** On-chain tls_pubkey_hash (hex); an empty string means it isn't registered, so the https endpoint falls back to normal CA verification. */
+  /** On-chain tls_pubkey_hash (`0x` + 64 lowercase hex); an empty string means it isn't registered, so the https endpoint falls back to normal CA verification. */
   readonly tlsPubkeyHash?: string;
 }
 
@@ -68,10 +69,12 @@ export async function resolveTaskBuilderEndpoints(
   const snapshot = await reader.getBuilderSetAtHeight(input.sessionAnchorHeight);
   // The signed set and the set whose members get contacted must be the same one; if the chain
   // disagrees at the anchor height, the order would be sent to Builders that were never selected.
-  // Both sides are normalized, not just the input: HubReader already yields lowercase hex, but
-  // TaskBuilderReader is an injection point, and folding one side only turns a custom reader's
-  // uppercase hash into a spurious mismatch.
-  if (snapshot.setHash.toLowerCase() !== input.builderSetHash.toLowerCase()) {
+  // Both sides must already be canonical Hash32 text: TaskBuilderReader is an injection point,
+  // and a non-canonical spelling on either side is refused as such rather than reported as a
+  // spurious set mismatch (or folded into a match).
+  strictHash32('builder_set_hash', input.builderSetHash);
+  strictHash32('snapshot set_hash', snapshot.setHash);
+  if (snapshot.setHash !== input.builderSetHash) {
     throw new TrueOpenError(
       'SDK_LOCAL',
       'SDK_LOCAL_BUILDER_SET_MISMATCH',

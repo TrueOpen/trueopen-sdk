@@ -1,6 +1,6 @@
 import { canonicalHashBytes } from '../codec/domain-hash';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { fromHex, toHex } from '../util/bytes';
+import { hash32Text, strictHash32 } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 
 const enc = new TextEncoder();
@@ -21,11 +21,11 @@ export interface BuilderSetMember {
 
 export interface TaskBuilderSelectionInput {
   readonly chainId: string;
-  /** canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly taskId: string;
-  /** canonical lowercase 64-hex, from the builder set snapshot signed into the order. */
+  /** Hash32 text (`0x` + 64 lowercase hex), from the builder set snapshot signed into the order. */
   readonly builderSetHash: string;
-  /** canonical lowercase 64-hex, the **same value** as session_anchor_block_hash in the order. */
+  /** Hash32 text (`0x` + 64 lowercase hex), the **same value** as session_anchor_block_hash in the order. */
   readonly sessionAnchorBlockHash: string;
   readonly members: readonly BuilderSetMember[];
   readonly buildersPerTask?: number;
@@ -35,7 +35,7 @@ export interface SelectedBuilder {
   readonly address: string;
   /** 1-based rank. */
   readonly rank: number;
-  /** Digest of this builder's rank (lowercase 64-hex), useful for debugging. */
+  /** Digest of this builder's rank (`0x` + 64 lowercase hex), useful for debugging. */
   readonly rankHash: string;
 }
 
@@ -58,9 +58,9 @@ export function taskBuilderSeed(
   return canonicalHashBytes(
     enc.encode(DOMAIN_TASK_BUILDERS_V1),
     enc.encode(chainId),
-    hash32('task_id', taskId),
-    hash32('builder_set_hash', builderSetHash),
-    hash32('session_anchor_block_hash', sessionAnchorBlockHash),
+    strictHash32('task_id', taskId),
+    strictHash32('builder_set_hash', builderSetHash),
+    strictHash32('session_anchor_block_hash', sessionAnchorBlockHash),
   );
 }
 
@@ -126,7 +126,7 @@ export function selectTaskBuilders(input: TaskBuilderSelectionInput): SelectedBu
   }
 
   ranked.sort((a, b) => compareBytes(a.rank, b.rank) || compareBytes(a.addressBytes, b.addressBytes));
-  return ranked.slice(0, want).map((r, i) => ({ address: r.address, rank: i + 1, rankHash: toHex(r.rank) }));
+  return ranked.slice(0, want).map((r, i) => ({ address: r.address, rank: i + 1, rankHash: hash32Text(r.rank) }));
 }
 
 function compareBytes(a: Uint8Array, b: Uint8Array): number {
@@ -137,13 +137,6 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
     if (x !== y) return x < y ? -1 : 1;
   }
   return a.length - b.length;
-}
-
-function hash32(field: string, hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw invalid('SDK_LOCAL_NOT_HASH32', `${field} must be canonical lowercase 64-hex Hash32`);
-  }
-  return fromHex(hex);
 }
 
 function invalid(code: string, message: string): TrueOpenError {

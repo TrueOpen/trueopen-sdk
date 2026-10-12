@@ -1,5 +1,5 @@
 import { sha256 } from './hash';
-import { toHex } from '../util/bytes';
+import { hash32Text } from './hash32';
 
 const enc = new TextEncoder();
 
@@ -101,8 +101,9 @@ export function enumBE(value: number): Uint8Array {
   return uint32BE(value);
 }
 
+/** domainHash as Hash32 text, `0x` + 64 lowercase hex. */
 export function domainHashHex(domain: string, ...fields: string[]): string {
-  return toHex(domainHash(domain, ...fields));
+  return hash32Text(domainHash(domain, ...fields));
 }
 
 const FRAME_V1_TAG = enc.encode('TRUEOPEN_FRAME_V1');

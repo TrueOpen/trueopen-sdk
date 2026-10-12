@@ -38,7 +38,7 @@ import type { ByteRange } from './transport/task-data-signbytes';
 import { classifyNexusError } from './errors/classify';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { randomBytes } from '@noble/hashes/utils';
-import { toHex, fromHex } from './util/bytes';
+import { hash32Text, isHash32Text, strictHash32 } from './codec/hash32';
 import { bytesEqual } from './util/bytes';
 
 export interface TrueOpenClientConfig {
@@ -135,7 +135,7 @@ export interface TrueOpenClientConfig {
   readonly fetchDescriptor?: DescriptorDocFetch;
   /**
    * Builds a nexus transport for a given serviceEndpoint (runtime-specific, injected by the caller).
-   * tlsPubkeyHash is the sha256 (hex) of the certificate public key registered in the on-chain
+   * tlsPubkeyHash is the sha256 (Hash32 text, `0x` + 64 lowercase hex) of the certificate public key registered in the on-chain
    * descriptor; https endpoints should verify the server certificate against it. Under Node, you
    * can use nexusIngressTransport directly (transport/nexus-tls).
    */
@@ -172,7 +172,7 @@ export interface OutputTaskReader {
  */
 export interface OutputTrustAnchors {
   readonly taskId: string;
-  /** Canonical lowercase 64-hex, the on-chain accepted task_hash. */
+  /** Hash32 text (`0x` + 64 lowercase hex), the on-chain accepted task_hash. */
   readonly taskHash: string;
   /** Operator address of the winner Worker. */
   readonly winnerWorker: string;
@@ -180,7 +180,7 @@ export interface OutputTrustAnchors {
   readonly workerServicePubKey: Uint8Array;
   /** The accepted InferReceipt; undefined when it was not asked for or is not on chain yet. */
   readonly receipt?: InferReceiptView;
-  /** receipt.outputHash, canonical lowercase 64-hex. */
+  /** receipt.outputHash, Hash32 text (`0x` + 64 lowercase hex). */
   readonly outputHash?: string;
 }
 
@@ -260,7 +260,7 @@ export interface StreamOutputParams {
   readonly sessionId: string;
   readonly taskId: string;
   /**
-   * Canonical lowercase 64-hex, the on-chain accepted_task_hash. Defaults to the value from
+   * Hash32 text (`0x` + 64 lowercase hex), the on-chain accepted_task_hash. Defaults to the value from
    * resolveOutputTrustAnchors (needs config.taskReader and config.hub).
    */
   readonly taskHash?: string;
@@ -680,8 +680,8 @@ export class TrueOpenClient {
       }
       throw e;
     }
-    const taskHash = task.acceptedTaskHash.toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(taskHash)) throw pending('no accepted task_hash on chain yet');
+    const taskHash = task.acceptedTaskHash;
+    if (!isHash32Text(taskHash)) throw pending('no accepted task_hash on chain yet');
     if (task.winnerWorker === '') throw pending('no winner Worker on chain yet');
 
     const key = await hub.getCurrentServiceKey.call(hub, PARTICIPANT_TYPE.CORTEX, task.winnerWorker);
@@ -704,7 +704,7 @@ export class TrueOpenClient {
         `InferReceipt winner ${receipt.winnerWorker} != task winner ${task.winnerWorker}`,
       );
     }
-    return { ...base, receipt, outputHash: receipt.outputHash.toLowerCase() };
+    return { ...base, receipt, outputHash: receipt.outputHash };
   }
 
   /**
@@ -736,9 +736,9 @@ export class TrueOpenClient {
   async fetchTaskOutput(p: {
     sessionId: string;
     taskId: string;
-    /** Canonical lowercase 64-hex, the on-chain accepted_task_hash. Defaults to the chain value. */
+    /** Hash32 text (`0x` + 64 lowercase hex), the on-chain accepted_task_hash. Defaults to the chain value. */
     taskHash?: string;
-    /** Canonical lowercase 64-hex, the on-chain InferReceipt.output_hash (= MMR root). Defaults to the chain value. */
+    /** Hash32 text (`0x` + 64 lowercase hex), the on-chain InferReceipt.output_hash (= MMR root). Defaults to the chain value. */
     outputHash?: string;
     /** Anchors already resolved by the caller; saves the chain reads. */
     anchors?: OutputTrustAnchors;
@@ -767,13 +767,15 @@ export class TrueOpenClient {
     if (anchors === undefined && (p.taskHash === undefined || p.outputHash === undefined)) {
       anchors = await this.resolveOutputTrustAnchors(p.taskId);
     }
-    const taskHash = (p.taskHash ?? anchors?.taskHash)?.toLowerCase();
-    const outputHash = (p.outputHash ?? anchors?.outputHash)?.toLowerCase();
+    const taskHash = p.taskHash ?? anchors?.taskHash;
+    const outputHash = p.outputHash ?? anchors?.outputHash;
     if (taskHash === undefined || outputHash === undefined) {
       throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TRUST_ANCHORS_MISSING', 'taskHash and outputHash are both required');
     }
+    strictHash32('task_hash', taskHash);
+    strictHash32('output_hash', outputHash);
     // The receipt only binds the size when it is the receipt for this output hash.
-    const receipt = anchors?.receipt !== undefined && anchors.receipt.outputHash.toLowerCase() === outputHash ? anchors.receipt : undefined;
+    const receipt = anchors?.receipt !== undefined && anchors.receipt.outputHash === outputHash ? anchors.receipt : undefined;
 
     const expiry = async (): Promise<bigint> => p.expiresAtHeight ?? (await this.defaultTaskDataExpiry());
     const objectRef = {
@@ -831,7 +833,7 @@ export class TrueOpenClient {
       offset += range.length;
     }
 
-    const got = toHex(outputMmrRoot(chunks));
+    const got = hash32Text(outputMmrRoot(chunks));
     if (got !== outputHash) {
       throw dataError(
         'DATA_OUTPUT_HASH_MISMATCH',
@@ -899,7 +901,7 @@ export class TrueOpenClient {
       taskHashHex ??= anchors.taskHash;
       workerServicePubKey ??= anchors.workerServicePubKey;
     }
-    const taskHash = fromHex(taskHashHex);
+    const taskHash = strictHash32('task_hash', taskHashHex);
     const verifier = new OutputStreamVerifier({
       chainId: this.cfg.chainId,
       taskHash,

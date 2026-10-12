@@ -103,8 +103,8 @@ describe('ManifestSource: fetch order and verification', () => {
     // Only possible if the chain committed to non-canonical bytes: the hash matches, the canonical check fails.
     const pretty = new TextEncoder().encode(JSON.stringify(JSON.parse(new TextDecoder().decode(GOLDEN_MANIFEST_BYTES)), null, 2));
     const { modelManifestHash } = await import('../../src/manifest/model-manifest');
-    const { toHex } = await import('../../src/util/bytes');
-    const state = goldenState({ manifestHash: toHex(modelManifestHash(pretty)), manifestUri: '' });
+    const { hash32Text } = await import('../../src/codec/hash32');
+    const state = goldenState({ manifestHash: hash32Text(modelManifestHash(pretty)), manifestUri: '' });
     const mirrorUrl = MIRROR.replace('{manifest_hash}', state.manifestHash);
     const trusted = stubFetcher({ [mirrorUrl]: pretty });
     await expect(new ManifestSource({ reader: readerOf(state), trustedFetcher: trusted, mirrors: [MIRROR] }).fetchForState(state)).rejects.toMatchObject({
@@ -128,6 +128,10 @@ describe('ManifestSource: fetch order and verification', () => {
   it('rejects a profile without a canonical manifest_hash', async () => {
     const src = new ManifestSource({ reader: readerOf(goldenState()), fetcher: stubFetcher({}) });
     await expect(src.fetchForState(goldenState({ manifestHash: '' }))).rejects.toMatchObject({ code: 'MANIFEST_NOT_REGISTERED' });
+    // The retired bare spelling is not a canonical manifest_hash either.
+    await expect(src.fetchForState(goldenState({ manifestHash: GOLDEN_MANIFEST_HASH.slice(2) }))).rejects.toMatchObject({
+      code: 'MANIFEST_NOT_REGISTERED',
+    });
   });
 
   it('a manifest_uri failing syntax is never fetched', async () => {

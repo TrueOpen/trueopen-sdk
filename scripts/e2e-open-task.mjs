@@ -39,8 +39,10 @@
  *   --rest <url>          REST endpoint (default http://<rest-host>:1317)
  *   --rpc <url>           RPC endpoint (default http://<rpc-host>:26657)
  *   --chain-id <id>       chain id (default: read automatically from node_info)
- *   --model-id <id>       target model (default: the first ACTIVE model on chain)
- *   --session <id>        reuse an existing session (skip on-chain creation)
+ *   --model-id <id>       target model, 0x + 64 lowercase hex (default: the first ACTIVE
+ *                         model on chain)
+ *   --session <id>        reuse an existing session, 0x + 64 lowercase hex (skip on-chain
+ *                         creation)
  *   --seq <n>             order_sequence (default: read from on-chain StreamState;
  *                         pass this explicitly only to rebroadcast via RBF)
  *   --idempotency-key <k> idempotency key (default: <session>:<seq>)
@@ -75,7 +77,7 @@
  *   --nexus-url <url>         bypass the on-chain descriptor and point at a nexus
  *                         endpoint manually (default: discover the route on chain)
  *   --nexus-tls-pubkey-hash <hex>  pin the certificate fingerprint for the https
- *                         endpoint given via --nexus-url (64 hex chars; required for
+ *                         endpoint given via --nexus-url (0x + 64 hex chars; required for
  *                         https endpoints since the certificate is self-signed and CA
  *                         chain validation will always fail)
  *   --no-fetch-output     after the on-chain receipt appears, don't fetch the plaintext
@@ -338,7 +340,8 @@ if (MESSAGES_JSON !== undefined) {
 } else {
   payload = new TextEncoder().encode(PROMPT);
 }
-const payloadHash = hex(sha256(payload));
+// Hash32 text, 0x + 64 lowercase hex, as the SDK and node spell it (ADR-0034).
+const payloadHash = `0x${hex(sha256(payload))}`;
 
 // ---- 3) on-chain context (anchor / builder set / bucket version, all signed) ----
 const ctx = await resolveTaskOrderContext(hub, CHAIN_ID);

@@ -18,6 +18,8 @@ import { bech32 } from '@scure/base';
  * published wire vectors; this value only guards against accidental changes.
  */
 const GOLDEN = 'a3eba489b6de7e92cdc00a445c1bcc5744ed76ee358fd885300ae285168441b7';
+/** The same digest in the SDK's Hash32 text form (ADR-0034). */
+const GOLDEN_TEXT = `0x${GOLDEN}`;
 
 const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fill(byte);
 const amount = (atomicUnits: string): AmountV1 => ({ atomicUnits });
@@ -79,7 +81,7 @@ function fixture(): TaskOrderV3 {
 
 describe('taskOrderHash (regression value + content identity)', () => {
   it('matches the regression value', () => {
-    expect(taskOrderHashHex(fixture())).toBe(GOLDEN);
+    expect(taskOrderHashHex(fixture())).toBe(GOLDEN_TEXT);
     expect(toHex(taskOrderHash(fixture()))).toBe(GOLDEN);
   });
 
@@ -136,13 +138,13 @@ describe('taskOrderHash (regression value + content identity)', () => {
   ];
 
   it.each(mutations)('task_hash must change after modifying %s', (_name, mutate) => {
-    expect(taskOrderHashHex(mutate(fixture()))).not.toBe(GOLDEN);
+    expect(taskOrderHashHex(mutate(fixture()))).not.toBe(GOLDEN_TEXT);
   });
 
   it('swapping two Amounts changes the digest (the order of the 4 Amounts cannot be swapped)', () => {
     const o = fixture();
     const swapped: TaskOrderV3 = { ...o, priceBid: o.maxFee, maxFee: o.priceBid };
-    expect(taskOrderHashHex(swapped)).not.toBe(GOLDEN);
+    expect(taskOrderHashHex(swapped)).not.toBe(GOLDEN_TEXT);
   });
 });
 

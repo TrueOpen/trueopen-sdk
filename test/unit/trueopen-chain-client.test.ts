@@ -33,6 +33,8 @@ function okJson(body: unknown): FetchResponse {
   return { ok: true, status: 200, json: async () => body };
 }
 
+const SID = `0x${'a1'.repeat(32)}`;
+
 describe('createTrueOpenChainClient (combined read + write, no real node)', () => {
   it('read goes through REST fetch', async () => {
     let calledUrl = '';
@@ -40,7 +42,7 @@ describe('createTrueOpenChainClient (combined read + write, no real node)', () =
       calledUrl = url;
       return okJson({
         session: {
-          session_id: 'sess-1', owner_user_address: 'trueopen1me', next_expected_sequence: '2',
+          session_id: SID, owner_user_address: 'trueopen1me', next_expected_sequence: '2',
           last_active_height: '10', open_pending_count: '0', status: 'ACTIVE',
         },
       });
@@ -50,8 +52,8 @@ describe('createTrueOpenChainClient (combined read + write, no real node)', () =
       broadcaster: new FakeBroadcaster(deliverTx(TYPE_URL.createSession, new Uint8Array())),
       fetch,
     });
-    const s = await client.querySession('sess-1');
-    expect(calledUrl).toBe('http://rest/TrueOpen/task/v1/session/sess-1');
+    const s = await client.querySession(SID);
+    expect(calledUrl).toBe(`http://rest/TrueOpen/task/v1/session/${SID}`);
     expect(s.owner).toBe('trueopen1me');
     expect(s.nextExpectedSequence).toBe(2n);
   });
@@ -68,7 +70,7 @@ describe('createTrueOpenChainClient (combined read + write, no real node)', () =
       fetch: async () => okJson({}),
     });
     const created = await client.createSession();
-    expect(created.sessionId).toBe(sessionHex);
+    expect(created.sessionId).toBe(`0x${sessionHex}`);
     expect(bc.last?.[0]?.typeUrl).toBe(TYPE_URL.createSession);
   });
 });

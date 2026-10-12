@@ -1,5 +1,6 @@
 import { sha256 } from '../codec/hash';
-import { fromHex, toHex } from '../util/bytes';
+import { toHex } from '../util/bytes';
+import { strictHash32 } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 import { validateModelId } from './model-id';
 import {
@@ -31,10 +32,10 @@ import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricin
 export interface TaskOrderChainContext {
   readonly chainId: string;
   readonly sessionAnchorHeight: bigint;
-  /** Canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly sessionAnchorBlockHash: string;
   readonly builderSetId: string;
-  /** Canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly builderSetHash: string;
   readonly timeoutBucketVersion: bigint;
   /**
@@ -82,10 +83,10 @@ export type TaskOrderIntent = Omit<TaskOrderRequest, 'userAddress' | 'sessionId'
 /** The user-intent portion (excludes on-chain context and any Keeper-derived values). */
 export interface TaskOrderRequest {
   readonly userAddress: string;
-  /** Canonical lowercase 64-hex (the SDK's internal uniform representation). */
+  /** Hash32 text, `0x` + 64 lowercase hex (the SDK's uniform representation). */
   readonly sessionId: string;
   readonly orderSequence: bigint;
-  /** Canonical lowercase 64-hex Hash32 model ID. */
+  /** Hash32 model ID, `0x` + 64 lowercase hex. */
   readonly modelId: string;
   readonly profileVersion: number;
   /** shared.v1.TaskType numeric value (see TASK_TYPE). */
@@ -300,9 +301,9 @@ export function buildTaskOrder(
     schemaVersion: TASK_ORDER_SCHEMA_VERSION_V3,
     chainId: ctx.chainId,
     userAddress: req.userAddress,
-    sessionId: hash32('session_id', req.sessionId),
+    sessionId: strictHash32('session_id', req.sessionId),
     orderSequence: req.orderSequence,
-    modelId: fromHex(req.modelId),
+    modelId: strictHash32('model_id', req.modelId),
     profileVersion: req.profileVersion,
     taskType: req.taskType,
     inputHash: sha256(req.payload),
@@ -319,9 +320,9 @@ export function buildTaskOrder(
     deadlinePolicy: { latencyClass: req.latencyClass },
     timeoutBucketVersion: ctx.timeoutBucketVersion,
     sessionAnchorHeight: ctx.sessionAnchorHeight,
-    sessionAnchorBlockHash: hash32('session_anchor_block_hash', ctx.sessionAnchorBlockHash),
+    sessionAnchorBlockHash: strictHash32('session_anchor_block_hash', ctx.sessionAnchorBlockHash),
     builderSetId: ctx.builderSetId,
-    builderSetHash: hash32('builder_set_hash', ctx.builderSetHash),
+    builderSetHash: strictHash32('builder_set_hash', ctx.builderSetHash),
     // Plaintext Phase 0: the reserved encryption fields are fixed.
     payloadMode: PAYLOAD_MODE.PLAINTEXT,
     inputKeyCommitment: new Uint8Array(32),
@@ -399,13 +400,6 @@ function minPriceBidFor(targetOrderValue: bigint, maxOutputTokens: bigint, verif
 /** Content-addressed reference for a payload (matches nexus payloadstore.RefFor). */
 export function payloadRefFor(payload: Uint8Array): string {
   return `nexus://sha256/${toHex(sha256(payload))}`;
-}
-
-function hash32(field: string, hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    throw invalid('SDK_LOCAL_NOT_HASH32', `${field} must be canonical lowercase 64-hex Hash32, got ${JSON.stringify(hex)}`);
-  }
-  return fromHex(hex);
 }
 
 function invalid(code: string, message: string): TrueOpenError {

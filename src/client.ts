@@ -450,6 +450,46 @@ export interface ToolCallParams {
   readonly reasoningRegistry?: ReasoningRegistry;
 }
 
+/** The parsers a task's profile pins on chain (ProfileState.tool_call_parser / reasoning_parser). */
+export interface ProfileParsers {
+  /** Zero value when the profile offers no tool calling. */
+  readonly toolCallParser: ParserRef;
+  /** Zero value when the profile pins no reasoning parser. */
+  readonly reasoningParser: ParserRef;
+}
+
+/**
+ * Parameters of TrueOpenClient.assistantTurn: the stream's, with the trust anchors always from
+ * chain, plus the parser options (the profile's on-chain parsers when not given) and the wait for
+ * the receipt.
+ */
+export interface AssistantTurnParams extends Omit<StreamOutputParams, 'taskHash' | 'workerServicePubKey'> {
+  /** Defaults to the task profile's on-chain parser (profileParsers). */
+  readonly toolCallParser?: ParserRef;
+  /** Defaults to the task profile's on-chain reasoning parser. Ignored when toolCallParser is given without it. */
+  readonly reasoningParser?: ParserRef;
+  readonly registry?: ToolCallRegistry;
+  readonly reasoningRegistry?: ReasoningRegistry;
+  /** Whether unverified parsers may be used (both built-in parsers are unverified until their vectors exist). */
+  readonly allowUnverified?: boolean;
+  readonly trailingEosMarkers?: readonly string[];
+  /** How long to wait for the accepted InferReceipt after the stream ends; default 120 s. */
+  readonly receiptTimeoutMs?: number;
+  /** Interval between receipt reads; default 1000 ms. */
+  readonly receiptPollIntervalMs?: number;
+  /** Aborts the wait for the receipt. */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * What assistantTurn yields: reasoning and content as frames verify (provisional, for display),
+ * then the confirmed message once the receipt matched. Tool calls appear only in `confirmed`.
+ */
+export type AssistantTurnEvent =
+  | { readonly kind: 'reasoning'; readonly text: string }
+  | { readonly kind: 'content'; readonly text: string }
+  | { readonly kind: 'confirmed'; readonly message: ConfirmedAssistantMessage };
+
 /**
  * The tool parser used when the profile has none, or this build cannot vouch for it: the output
  * is content, with no calls (design S6). Running it through the same pipeline keeps reasoning
@@ -1331,6 +1371,101 @@ export class TrueOpenClient {
       ...resolveParsers(p),
       ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
     });
+  }
+
+  /**
+   * The parsers the task's profile pins on chain: the task's model and profile version from the
+   * task, then that profile's tool_call_parser / reasoning_parser (ADR-0028 projects both on
+   * chain). Needs config.taskReader and config.hub with getProfile.
+   */
+  async profileParsers(taskId: string): Promise<ProfileParsers> {
+    const reader = this.cfg.taskReader;
+    const getProfile = this.cfg.hub?.getProfile?.bind(this.cfg.hub);
+    if (reader === undefined || getProfile === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_PROFILE_UNREADABLE', 'resolving the profile parsers needs config.taskReader and config.hub with getProfile');
+    }
+    const task = await reader.queryTask(taskId);
+    const profile = await getProfile(task.modelId, task.profileVersion);
+    const none = { name: '', version: 0 };
+    return { toolCallParser: profile.toolCallParser ?? none, reasoningParser: profile.reasoningParser ?? none };
+  }
+
+  /**
+   * One assistant turn, streamed and then confirmed (sdk_详细设计 §5.2, §5.5).
+   *
+   * Yields reasoning and content as frames verify -- provisional, for display -- and never a tool
+   * call from unconfirmed frames. When the stream has ended, it waits for the accepted
+   * InferReceipt and yields `confirmed` with the ConfirmedAssistantMessage: the calls an agent may
+   * execute, and the protocol finishReason from the Worker-signed Fin. The stream checkpoint is
+   * kept internally (and still handed to `onCheckpoint`).
+   *
+   * Parsers default to the ones the task's profile pins on chain. Both built-in parsers are
+   * unverified until wire publishes their vectors, so they take effect only with
+   * `allowUnverified`; otherwise the output is content with no calls. Needs config.taskReader and
+   * config.hub.
+   */
+  async *assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent> {
+    const reader = this.cfg.taskReader;
+    if (reader === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TASK_READER_REQUIRED', 'assistantTurn waits for the receipt and needs config.taskReader');
+    }
+    const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
+    const refs = p.toolCallParser !== undefined
+      ? { toolCallParser: p.toolCallParser, ...(p.reasoningParser !== undefined ? { reasoningParser: p.reasoningParser } : {}) }
+      : await this.profileParsers(p.taskId);
+    const opts = {
+      ...resolveParsers({
+        ...refs,
+        ...(p.registry !== undefined ? { registry: p.registry } : {}),
+        ...(p.reasoningRegistry !== undefined ? { reasoningRegistry: p.reasoningRegistry } : {}),
+        ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+      }),
+      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+    };
+
+    let checkpoint: OutputStreamVerifierCheckpoint | undefined;
+    const source = this.streamOutput({
+      ...p,
+      taskHash: anchors.taskHash,
+      workerServicePubKey: anchors.workerServicePubKey,
+      onCheckpoint: async (c) => {
+        checkpoint = c;
+        await p.onCheckpoint?.(c);
+      },
+    });
+    for await (const e of deriveAssistantStream(source, opts)) {
+      // A provisional call is not executable and is not handed out; the confirmed list follows.
+      if (e.kind === 'reasoning' || e.kind === 'content') yield e;
+    }
+    if (checkpoint === undefined) throw dataError('DATA_OUTPUT_STREAM_EMPTY', `output stream for task ${p.taskId} verified no frame`);
+
+    const receipt = await this.waitForReceipt(reader, p);
+    yield {
+      kind: 'confirmed',
+      message: confirmAssistantMessageWithReceipt(
+        { chainId: this.cfg.chainId, taskId: p.taskId, taskHash: anchors.taskHash, checkpoint, receipt },
+        opts,
+      ),
+    };
+  }
+
+  /** Polls for the accepted InferReceipt until it appears, the timeout passes, or the signal aborts. */
+  private async waitForReceipt(reader: OutputTaskReader, p: AssistantTurnParams): Promise<InferReceiptView> {
+    const timeoutMs = p.receiptTimeoutMs ?? 120_000;
+    const intervalMs = p.receiptPollIntervalMs ?? 1_000;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (p.signal?.aborted === true) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ABORTED', 'assistantTurn aborted while waiting for the receipt');
+      const receipt = await reader.queryInferReceipt(p.taskId);
+      if (receipt !== undefined) return receipt;
+      if (Date.now() + intervalMs > deadline) {
+        throw new TrueOpenError('DATA', 'OUTPUT_RECEIPT_TIMEOUT', `no accepted InferReceipt for task ${p.taskId} within ${timeoutMs}ms`, { retriable: true });
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, intervalMs);
+        p.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    }
   }
 
   /**

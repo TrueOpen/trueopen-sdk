@@ -570,3 +570,79 @@ describe('fetchAssistantMessage confirmation and Builder choice (sdk_详细设�
       .rejects.toMatchObject({ code: 'SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED' });
   });
 });
+
+describe('assistantTurn (sdk_详细设计 §5.2, §5.5)', () => {
+  const OUT = ['<think>\nneed the weather\n</think>\n\n<tool', '_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'];
+  const CH = OUT.map((t) => enc.encode(t));
+  const OUT_ROOT = toHex(outputMmrRoot(CH));
+  const OUT_SIZE = BigInt(CH.reduce((n, c) => n + c.length, 0));
+
+  function streamTransport(finishReason = 1) {
+    const frames = CH.map((text, i) => {
+      const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CH, i + 1);
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), seq: BigInt(i), mmrRoot });
+      return { seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(), attachment: new Uint8Array(), attachmentSignature: new Uint8Array() };
+    });
+    const last = frames[frames.length - 1]!;
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason });
+    return createRouterTransport(({ service }) => {
+      service(IngressAPI, {
+        async *subscribeOutput() {
+          for (const f of frames) yield { frame: { case: 'chunk' as const, value: f } };
+          yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() } } };
+        },
+        ackOutput() { return { acked: true, alreadyAcked: false, ackedAt: 1n }; },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+  }
+
+  /** A task reader whose receipt appears only after `pendingReads` reads. */
+  function readerWithReceipt(pendingReads: number) {
+    const base = taskReader({ receipt: receiptFor(OUT_ROOT, OUT_SIZE, BigInt(CH.length)) });
+    let reads = 0;
+    return { ...base, queryInferReceipt: async (id: string) => (reads++ < pendingReads ? undefined : base.queryInferReceipt(id)) };
+  }
+
+  /** A hub whose profile pins hermes@1 and qwen3@1, as the devnet profile does. */
+  const profileHub = () => ({
+    ...hub(),
+    getProfile: async () => ({ toolCallParser: { name: 'hermes', version: 1 }, reasoningParser: { name: 'qwen3', version: 1 } }),
+  });
+
+  async function run(client: TrueOpenClient, extra: Record<string, unknown> = {}) {
+    const events: Array<{ kind: string; text?: string; message?: { toolCalls: unknown[]; finishReason?: number; reasoningContent?: string; content: string } }> = [];
+    for await (const e of client.assistantTurn({ sessionId: SESSION, taskId: TASK, receiptPollIntervalMs: 1, ...extra })) events.push(e as never);
+    return events;
+  }
+
+  it('streams reasoning and content, then yields the confirmed calls and finish reason', async () => {
+    const events = await run(makeClient(streamTransport(1), readerWithReceipt(2), profileHub()), { allowUnverified: true });
+    expect(events.filter((e) => e.kind === 'reasoning').map((e) => e.text).join('')).toBe('need the weather');
+    expect(events.some((e) => e.kind === 'content' && e.text!.includes('tool_call'))).toBe(false);
+    // No call from unconfirmed frames is handed out: only reasoning, content, then confirmed.
+    expect(events.every((e) => ['reasoning', 'content', 'confirmed'].includes(e.kind))).toBe(true);
+    const confirmed = events.at(-1)!;
+    expect(confirmed.kind).toBe('confirmed');
+    expect(confirmed.message).toMatchObject({
+      reasoningContent: 'need the weather', content: '', finishReason: 1,
+      toolCalls: [{ name: 'get_weather', arguments: '{"city": "Paris"}' }],
+    });
+  });
+
+  it('keeps the closed calls of a truncated turn; the finish reason says it was cut off', async () => {
+    const events = await run(makeClient(streamTransport(3), readerWithReceipt(0), profileHub()), { allowUnverified: true });
+    expect(events.at(-1)!.message).toMatchObject({ finishReason: 3, toolCalls: [{ name: 'get_weather' }] });
+  });
+
+  it('uses no unverified parser unless allowed: the output is content with no calls', async () => {
+    const events = await run(makeClient(streamTransport(1), readerWithReceipt(0), profileHub()));
+    expect(events.at(-1)!.message).toMatchObject({ toolCalls: [] });
+    expect(events.at(-1)!.message!.content).toContain('<tool_call>');
+  });
+
+  it('times out waiting for the receipt with a retriable error', async () => {
+    await expect(run(makeClient(streamTransport(1), readerWithReceipt(1_000_000), profileHub()), { allowUnverified: true, receiptTimeoutMs: 20 }))
+      .rejects.toMatchObject({ code: 'OUTPUT_RECEIPT_TIMEOUT', retriable: true });
+  });
+});

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added: assistantTurn and profileParsers
+
+- **Added:** `client.assistantTurn(params)`: one assistant turn, streamed then confirmed. It yields
+  `reasoning` / `content` events as frames verify (never a call from unconfirmed frames), waits for
+  the accepted InferReceipt (`receiptTimeoutMs`, `receiptPollIntervalMs`, `signal`), and yields
+  `{ kind: 'confirmed', message }` with the executable calls and `finishReason`. The checkpoint is
+  kept internally. Parsers default to the task profile's on-chain parsers; unverified ones need
+  `allowUnverified`. A receipt that does not arrive in time is `OUTPUT_RECEIPT_TIMEOUT` (retriable).
+- **Added:** `client.profileParsers(taskId)`: the `tool_call_parser` / `reasoning_parser` the task's
+  profile pins on chain.
+
 ### Changed: hermes@1 ships in the built-in registry
 
 - **Changed:** `BUILTIN_TOOL_CALL_PARSERS` registers `hermes@1` as `unverified`, as

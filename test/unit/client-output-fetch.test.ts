@@ -415,11 +415,10 @@ describe('fetchAssistantMessage', () => {
   const TEXT = '<tc>get_weather|{"city":"London"}</tc> done';
   const fetch = (toolCallParser: { name: string; version: number }) => {
     const bytes = enc.encode(TEXT);
-    return makeClient(dataTransport(bytes, [bytes.length], newLog()), null).fetchAssistantMessage({
+    const receipt = receiptFor(toHex(outputMmrRoot([bytes])), BigInt(bytes.length), 1n);
+    return makeClient(dataTransport(bytes, [bytes.length], newLog()), taskReader({ receipt })).fetchAssistantMessage({
       sessionId: SESSION,
       taskId: TASK,
-      taskHash: TASK_HASH,
-      outputHash: toHex(outputMmrRoot([bytes])),
       builderAddress: BUILDER,
       expiresAtHeight: 510n,
       toolCallParser,
@@ -428,11 +427,11 @@ describe('fetchAssistantMessage', () => {
   };
 
   it('returns the fetched text with no tool calls when the profile pins no parser', async () => {
-    expect(await fetch({ name: '', version: 0 })).toEqual({ role: 'assistant', content: TEXT, toolCalls: [] });
+    expect(await fetch({ name: '', version: 0 })).toMatchObject({ role: 'assistant', content: TEXT, toolCalls: [] });
   });
 
   it('parses the fetched text when the profile pins a vector-verified parser', async () => {
-    expect(await fetch({ name: 'hermes', version: 1 })).toEqual({
+    expect(await fetch({ name: 'hermes', version: 1 })).toMatchObject({
       role: 'assistant',
       content: ' done',
       toolCalls: [{ name: 'get_weather', arguments: '{"city":"London"}' }],
@@ -446,11 +445,10 @@ describe('fetchAssistantMessage with a reasoning parser (Manifest S7.3 rule 9)',
   const OUTPUT = `<think>\nI could run ${DRAFT} but no.\n</think>\n\n${CALL}`;
   const fetch = (toolCallParser: { name: string; version: number }, reasoningParser: { name: string; version: number }) => {
     const bytes = enc.encode(OUTPUT);
-    return makeClient(dataTransport(bytes, [bytes.length], newLog()), null).fetchAssistantMessage({
+    const receipt = receiptFor(toHex(outputMmrRoot([bytes])), BigInt(bytes.length), 1n);
+    return makeClient(dataTransport(bytes, [bytes.length], newLog()), taskReader({ receipt })).fetchAssistantMessage({
       sessionId: SESSION,
       taskId: TASK,
-      taskHash: TASK_HASH,
-      outputHash: toHex(outputMmrRoot([bytes])),
       builderAddress: BUILDER,
       expiresAtHeight: 510n,
       toolCallParser,
@@ -484,6 +482,91 @@ describe('fetchAssistantMessage with a reasoning parser (Manifest S7.3 rule 9)',
   });
 
   it('neither: the whole output is content', async () => {
-    expect(await fetch(NONE, NONE)).toEqual({ role: 'assistant', content: OUTPUT, toolCalls: [] });
+    const m = await fetch(NONE, NONE);
+    expect(m).toMatchObject({ role: 'assistant', content: OUTPUT, toolCalls: [] });
+    expect(m.reasoningContent).toBeUndefined();
+  });
+});
+
+describe('fetchAssistantMessage confirmation and Builder choice (sdk_详细设计 §5.3, §5.5)', () => {
+  const NO_PARSER = { toolCallParser: { name: '', version: 0 } };
+  /** A Fin over BYTES (chunks 6/6/6) as the Worker signs it. */
+  function storedFin(finishReason: number) {
+    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason };
+    return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason, workerSignature: secp256k1.sign(outputFinSigningDigest(fields), WORKER_PRIV).toCompactRawBytes() };
+  }
+  const B1 = 'trueopen1builder0000000000000000000000000001';
+  const B2 = 'trueopen1builder0000000000000000000000000002';
+
+  /** A client whose task reader names two Builders, each served by its own transport. */
+  function routedClient(transports: Record<string, Transport>, reader = taskReader()) {
+    const asked: string[] = [];
+    const h = {
+      ...hub(),
+      getServiceDescriptor: async (address: string) => ({
+        endpoints: [{ endpointKind: 'SERVICE_ENDPOINT_KIND_NEXUS_GRPC', uri: `https://${address}`, tlsPubkeyHash: '' }],
+      }),
+    };
+    const client = new TrueOpenClient({
+      chainId: CHAIN_ID, userAddress: ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen'),
+      wallet: privateKeyTypedDataSigner(PRIV), chain: fakeChain, ingressTransport: dataTransport(BYTES, [6, 6, 6], newLog()),
+      signatureChainId: 424242n, nonce: () => new Uint8Array(32).fill(7),
+      taskReader: { ...reader, queryTaskBuilders: async () => [B1, B2] },
+      hub: h as never,
+      ingressTransportFactory: (uri: string) => { const a = uri.slice('https://'.length); asked.push(a); return transports[a]!; },
+    });
+    return { client, asked };
+  }
+
+  it('confirms against the receipt and carries the stored Fin\'s finish reason', async () => {
+    const m = await makeClient(dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(3) })).fetchAssistantMessage({
+      sessionId: SESSION, taskId: TASK, builderAddress: BUILDER, ...NO_PARSER,
+    });
+    expect(m.finishReason).toBe(3);
+    expect(m.confirmation).toMatchObject({
+      type: 'confirmed', taskId: TASK, taskHash: TASK_HASH, winnerWorker: WINNER, outputHash: ROOT,
+      outputLeafCount: 3n, outputSizeBytes: 18n, finishReason: 3,
+    });
+  });
+
+  it('refuses to confirm without the accepted receipt', async () => {
+    const anchors = await makeClient(dataTransport(BYTES, [6, 6, 6], newLog())).resolveOutputTrustAnchors(TASK, { withReceipt: false });
+    await expect(makeClient(dataTransport(BYTES, [6, 6, 6], newLog())).fetchAssistantMessage({
+      sessionId: SESSION, taskId: TASK, builderAddress: BUILDER, anchors, ...NO_PARSER,
+    })).rejects.toMatchObject({ code: 'SDK_LOCAL_RECEIPT_REQUIRED' });
+  });
+
+  it('chooses the Builder: skips one without the signed Fin for one that stored it', async () => {
+    const { client, asked } = routedClient({
+      [B1]: dataTransport(BYTES, [6, 6, 6], newLog()),
+      [B2]: dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(1) }),
+    });
+    const m = await client.fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER });
+    expect(asked).toEqual([B1, B2]);
+    expect(m.finishReason).toBe(1);
+  });
+
+  it('returns the output with the reason unavailable when no Builder stored the Fin', async () => {
+    const { client } = routedClient({
+      [B1]: dataTransport(BYTES, [6, 6, 6], newLog()),
+      [B2]: dataTransport(BYTES, [6, 6, 6], newLog()),
+    });
+    const m = await client.fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER });
+    expect(m.content).toBe('hello final output');
+    expect(m.finishReason).toBeUndefined();
+  });
+
+  it('moves past a failing Builder, and reports every failure when all fail', async () => {
+    const broken = dataTransport(BYTES, [6, 6, 6], newLog(), { lieServed: true });
+    const ok = routedClient({ [B1]: broken, [B2]: dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(1) }) });
+    expect((await ok.client.fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER })).finishReason).toBe(1);
+    const none = routedClient({ [B1]: broken, [B2]: broken });
+    await expect(none.client.fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER }))
+      .rejects.toMatchObject({ code: 'DATA_OUTPUT_ALL_BUILDERS_FAILED', retriable: true });
+  });
+
+  it('says what it needs when it cannot choose the Builder', async () => {
+    await expect(makeClient(dataTransport(BYTES, [6, 6, 6], newLog())).fetchAssistantMessage({ sessionId: SESSION, taskId: TASK, ...NO_PARSER }))
+      .rejects.toMatchObject({ code: 'SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED' });
   });
 });

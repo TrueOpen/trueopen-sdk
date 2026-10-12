@@ -323,6 +323,8 @@ export type {
   TrueOpenClientConfig,
   FacadeHubReader,
   OutputTaskReader,
+  FetchTaskOutputParams,
+  FetchAssistantMessageParams,
   OutputTrustAnchors,
   OpenTaskBuilderResult,
   OpenTaskParams,

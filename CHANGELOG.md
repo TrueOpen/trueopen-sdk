@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Breaking: fetchAssistantMessage returns the confirmed message and can choose the Builder
+
+- **Breaking:** `fetchAssistantMessage` returns a `ConfirmedAssistantMessage` (with `confirmation`
+  and the stored Fin's `finishReason`), the same type the streaming path confirms to. It confirms
+  against the accepted InferReceipt, so the anchors must carry it (resolved from chain when not
+  passed; otherwise `SDK_LOCAL_RECEIPT_REQUIRED`). It no longer takes `taskHash` / `outputHash` /
+  `workerServicePubKey`: they always come from the anchors.
+- **Added:** `builderAddress` is optional. Without it the SDK asks the task's frozen Task Builders
+  (`RestChainReader.queryTaskBuilders`, task.v1 `TaskBuilders`) in rank order and prefers one that
+  stored the signed Fin; with none, the output is returned with `finishReason` undefined. Every
+  Builder failing is `DATA_OUTPUT_ALL_BUILDERS_FAILED` (retriable). Needs `taskReader` with
+  `queryTaskBuilders`, `hub` and `ingressTransportFactory` (`SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED`).
+- **Added:** `OutputTaskReader.queryTaskBuilders` (optional), and the `FetchTaskOutputParams` /
+  `FetchAssistantMessageParams` types.
+
 ### Added: finish reason on the confirmed stream (sdk_详细设计 §5.5)
 
 - **Added:** the stream keeps the Worker-signed Fin it verified: `OutputStreamVerifierCheckpoint` is

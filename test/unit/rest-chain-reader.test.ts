@@ -343,3 +343,25 @@ describe('RestChainReader', () => {
     await expect(r.querySession('s')).rejects.toThrowError(TrueOpenError);
   });
 });
+
+describe('RestChainReader.queryTaskBuilders', () => {
+  const TASK = 'd'.repeat(64);
+  it('reads the frozen Task Builder selection in rank order', async () => {
+    const s = stubFetch(okJson({
+      selection: {
+        task_id: TASK, builder_set_id: 'genesis-1',
+        selected_task_builders: ['trueopen1b1', 'trueopen1b2', 'trueopen1b3'], selected_task_builder_count: 3,
+      },
+    }));
+    const reader = new RestChainReader({ baseUrl: 'http://rest.example:1317', fetch: s.fetch });
+    await expect(reader.queryTaskBuilders(TASK)).resolves.toEqual(['trueopen1b1', 'trueopen1b2', 'trueopen1b3']);
+    expect(s.lastUrl()).toBe(`http://rest.example:1317/TrueOpen/task/v1/task/${TASK}/builders`);
+  });
+
+  it('reads a pruned selection as empty, and refuses a malformed list', async () => {
+    const pruned = new RestChainReader({ baseUrl: 'http://r', fetch: stubFetch(okJson({ selection: { task_id: TASK } })).fetch });
+    await expect(pruned.queryTaskBuilders(TASK)).resolves.toEqual([]);
+    const bad = new RestChainReader({ baseUrl: 'http://r', fetch: stubFetch(okJson({ selection: { selected_task_builders: [1] } })).fetch });
+    await expect(bad.queryTaskBuilders(TASK)).rejects.toBeInstanceOf(TrueOpenError);
+  });
+});

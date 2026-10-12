@@ -175,9 +175,47 @@ export type FacadeHubReader = TaskBuilderReader &
   };
 
 /** On-chain task reads needed to derive the output trust anchors (RestChainReader satisfies it). */
+/**
+ * Parameters of TrueOpenClient.fetchAssistantMessage: those of fetchTaskOutput, with the hashes
+ * and key always taken from the chain anchors (so the result can be confirmed against the
+ * receipt), and the Builder optional.
+ */
+export type FetchAssistantMessageParams = Omit<FetchTaskOutputParams, 'builderAddress' | 'taskHash' | 'outputHash' | 'workerServicePubKey'> & {
+  /** Fetch from this Builder only. Omitted: the SDK asks the task's frozen Task Builders. */
+  builderAddress?: string;
+};
+
+/** Parameters of TrueOpenClient.fetchTaskOutput. */
+export type FetchTaskOutputParams = {
+  sessionId: string;
+  taskId: string;
+  /** Canonical lowercase 64-hex, the on-chain accepted_task_hash. Defaults to the chain value. */
+  taskHash?: string;
+  /** Canonical lowercase 64-hex, the on-chain InferReceipt.output_hash (= MMR root). Defaults to the chain value. */
+  outputHash?: string;
+  /** Anchors already resolved by the caller; saves the chain reads. */
+  anchors?: OutputTrustAnchors;
+  builderAddress: string;
+  expiresAtHeight?: bigint;
+  /** Largest range per FetchTaskData call; defaults to 8 MiB (nexus's default max range). */
+  maxRangeBytes?: number;
+  /** Attempts per range for transport failures; default 3. */
+  rangeAttempts?: number;
+  /**
+   * The winner Worker's service key, for verifying the stored Fin. Defaults to the anchors'
+   * key, and is resolved from chain when the metadata carries a signed Fin and neither is given.
+   */
+  workerServicePubKey?: Uint8Array;
+};
+
 export interface OutputTaskReader {
   queryTask(taskId: string): Promise<ChainTaskSnapshot>;
   queryInferReceipt(taskId: string): Promise<InferReceiptView | undefined>;
+  /**
+   * The task's frozen Task Builder addresses, in rank order (RestChainReader provides it). Needed
+   * only to let fetchAssistantMessage choose the Builder itself.
+   */
+  queryTaskBuilders?(taskId: string): Promise<readonly string[]>;
 }
 
 /**
@@ -821,27 +859,29 @@ export class TrueOpenClient {
    * block height and defaults to latest height + taskDataExpiryBlocks (10), which must fit the
    * Builders' max_service_material_expiry_blocks.
    */
-  async fetchTaskOutput(p: {
-    sessionId: string;
-    taskId: string;
-    /** Canonical lowercase 64-hex, the on-chain accepted_task_hash. Defaults to the chain value. */
-    taskHash?: string;
-    /** Canonical lowercase 64-hex, the on-chain InferReceipt.output_hash (= MMR root). Defaults to the chain value. */
-    outputHash?: string;
-    /** Anchors already resolved by the caller; saves the chain reads. */
-    anchors?: OutputTrustAnchors;
-    builderAddress: string;
-    expiresAtHeight?: bigint;
-    /** Largest range per FetchTaskData call; defaults to 8 MiB (nexus's default max range). */
-    maxRangeBytes?: number;
-    /** Attempts per range for transport failures; default 3. */
-    rangeAttempts?: number;
+  async fetchTaskOutput(p: FetchTaskOutputParams): Promise<{
+    bytes: Uint8Array;
+    text: string;
+    outputHash: string;
+    taskHash: string;
+    chunks: Uint8Array[];
+    sizeBytes: bigint;
+    mediaType: string;
+    /** The accepted InferReceipt the output was checked against, when it was read. */
+    receipt?: InferReceiptView;
     /**
-     * The winner Worker's service key, for verifying the stored Fin. Defaults to the anchors'
-     * key, and is resolved from chain when the metadata carries a signed Fin and neither is given.
+     * The termination reason from the Worker-signed Fin the Builder stored with the object
+     * (TaskDataObjectMetadataV1.fin, ADR-0027), verified against the Worker's service key, the
+     * leaf count and the output root. Undefined when the metadata carries no Fin or an unsigned
+     * one: the reason is then unavailable, never inferred from the text or its length.
      */
-    workerServicePubKey?: Uint8Array;
-  }): Promise<{
+    finishReason?: FinishReasonV1;
+  }> {
+    return this.fetchTaskOutputVia(this.ingress, p);
+  }
+
+  /** fetchTaskOutput against a given Builder's ingress (fetchAssistantMessage picks the Builder itself). */
+  private async fetchTaskOutputVia(ingress: IngressClient, p: FetchTaskOutputParams): Promise<{
     bytes: Uint8Array;
     text: string;
     outputHash: string;
@@ -884,7 +924,7 @@ export class TrueOpenClient {
       contentHash: outputHash,
     };
 
-    const meta = await this.ingress.getTaskDataMetadata({ objectRef, builderAddress: p.builderAddress, expiresAtHeight: await expiry() });
+    const meta = await ingress.getTaskDataMetadata({ objectRef, builderAddress: p.builderAddress, expiresAtHeight: await expiry() });
     if (!meta) {
       throw dataError('DATA_OUTPUT_NOT_FOUND', `no OUTPUT object for task ${p.taskId}`);
     }
@@ -913,7 +953,7 @@ export class TrueOpenClient {
     for (let offset = 0n; offset < meta.sizeBytes; ) {
       const range: ByteRange = { offset, length: minBig(maxRange, meta.sizeBytes - offset) };
       const got = await retryTransient(attempts, async () =>
-        this.ingress.fetchTaskDataRange({
+        ingress.fetchTaskDataRange({
           objectRef,
           builderAddress: p.builderAddress,
           expiresAtHeight: await expiry(),
@@ -1286,32 +1326,112 @@ export class TrueOpenClient {
   }
 
   /**
-   * The derived-view counterpart of `fetchTaskOutput` (design S4.4).
+   * The confirmed assistant message of a finished task, retrieved without streaming
+   * (sdk_详细设计 §5.3, §5.5).
    *
-   * No provisional stage: `fetchTaskOutput` re-derives the MMR root locally and reconciles it
-   * against `p.outputHash`. But `p.outputHash` is a plain string the caller supplies -- nothing
-   * here reads it from the chain. So the guarantee is conditional on the caller, exactly as
-   * `deriveAssistantMessage`'s docstring spells out: the bytes are reconciled against the
-   * on-chain `InferReceipt.output_hash` if and only if the caller sourced `p.outputHash` from
-   * that on-chain receipt. Pass anything else and this reconciles the bytes against that instead.
+   * Confirmed means reconciled with the chain: the output is fetched against the accepted
+   * InferReceipt's output_hash, so the anchors must carry that receipt (resolved from chain when
+   * not given). The result carries the same `confirmation` as the streaming path, and the protocol
+   * `finishReason` from the Worker-signed Fin the Builder stored (ADR-0027).
    *
-   * Like `streamAssistantMessage`, it accepts either an already-resolved `parser` (phase-1) or a
-   * `toolCallParser`. When the profile does not support tool calling, the result carries the
-   * text as `content` with an empty `toolCalls` list rather than throwing.
+   * Without `builderAddress` the SDK chooses: it asks the task's frozen Task Builders in rank
+   * order and prefers one that stored the signed Fin, since a Builder without it cannot say how
+   * the output ended. When none has it, the output is still returned, with `finishReason`
+   * undefined (unavailable) -- a Provider maps that to its own error, never to a guess.
+   *
+   * Parsers: an already-resolved `parser`, or the profile's `toolCallParser` / `reasoningParser`
+   * refs resolved through the registries. When the profile pins no tool parser, the text is
+   * `content` with no calls.
    */
   async fetchAssistantMessage(
-    p: Parameters<TrueOpenClient['fetchTaskOutput']>[0] & (DerivedViewOptions | ToolCallParams),
-  ): Promise<DerivedAssistantMessage> {
-    if ('parser' in p) {
-      const got = await this.fetchTaskOutput(p);
-      return deriveAssistantMessage(got.text, p);
+    p: FetchAssistantMessageParams & (DerivedViewOptions | ToolCallParams),
+  ): Promise<ConfirmedAssistantMessage> {
+    const anchors = p.anchors ?? (await this.resolveOutputTrustAnchors(p.taskId));
+    const receipt = anchors.receipt;
+    if (receipt === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_RECEIPT_REQUIRED',
+        'fetchAssistantMessage confirms against the accepted InferReceipt; pass anchors that carry it',
+      );
     }
-    const parsers = resolveParsers(p);
-    const got = await this.fetchTaskOutput(p);
-    return deriveAssistantMessage(got.text, {
-      ...parsers,
+    const base = {
+      sessionId: p.sessionId,
+      taskId: p.taskId,
+      anchors,
+      workerServicePubKey: anchors.workerServicePubKey,
+      ...(p.expiresAtHeight !== undefined ? { expiresAtHeight: p.expiresAtHeight } : {}),
+      ...(p.maxRangeBytes !== undefined ? { maxRangeBytes: p.maxRangeBytes } : {}),
+      ...(p.rangeAttempts !== undefined ? { rangeAttempts: p.rangeAttempts } : {}),
+    };
+    const got = p.builderAddress !== undefined
+      ? await this.fetchTaskOutputVia(this.ingress, { ...base, builderAddress: p.builderAddress })
+      : await this.fetchFromSelectedBuilders(p.taskId, base);
+
+    const message = deriveAssistantMessage(got.text, 'parser' in p ? p : {
+      ...resolveParsers(p),
       ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
     });
+    // fetchTaskOutput already held root, size and leaf count to this receipt.
+    const confirmation: ConfirmedOutputEvent = {
+      type: 'confirmed',
+      taskId: p.taskId,
+      taskHash: got.taskHash,
+      winnerWorker: receipt.winnerWorker,
+      inferReceiptHash: receipt.inferReceiptHash,
+      outputHash: got.outputHash,
+      outputMmrRoot: fromHex(got.outputHash),
+      outputLeafCount: BigInt(got.chunks.length),
+      outputSizeBytes: got.sizeBytes,
+      ...(got.finishReason !== undefined ? { finishReason: got.finishReason } : {}),
+    };
+    return {
+      ...message,
+      confirmation,
+      ...(got.finishReason !== undefined ? { finishReason: got.finishReason } : {}),
+    };
+  }
+
+  /**
+   * Fetches from the task's frozen Task Builders in rank order, preferring one that stored the
+   * signed Fin (sdk_详细设计 §5.3: a Builder without it leaves the reason unavailable, so ask the
+   * next). Falls back to the first output that verified without one.
+   */
+  private async fetchFromSelectedBuilders(
+    taskId: string,
+    base: Omit<FetchTaskOutputParams, 'builderAddress'>,
+  ): Promise<Awaited<ReturnType<TrueOpenClient['fetchTaskOutput']>>> {
+    const { taskReader, hub, ingressTransportFactory } = this.cfg;
+    if (taskReader?.queryTaskBuilders === undefined || hub === undefined || ingressTransportFactory === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED',
+        'choosing the Builder needs config.taskReader with queryTaskBuilders, config.hub and config.ingressTransportFactory; or pass builderAddress',
+      );
+    }
+    const addresses = await taskReader.queryTaskBuilders(taskId);
+    if (addresses.length === 0) throw dataError('DATA_OUTPUT_NO_BUILDERS', `task ${taskId} has no Task Builder selection on chain`);
+    const failures: string[] = [];
+    let withoutFin: Awaited<ReturnType<TrueOpenClient['fetchTaskOutput']>> | undefined;
+    for (const address of addresses) {
+      try {
+        const endpoint = nexusGrpcEndpoint(await hub.getServiceDescriptor(address));
+        if (endpoint === undefined || endpoint.uri === '') throw new Error('descriptor has no NEXUS_GRPC endpoint');
+        const ingress = new IngressClient(ingressTransportFactory(endpoint.uri, endpoint.tlsPubkeyHash ?? ''), this.ingressAuth());
+        const got = await this.fetchTaskOutputVia(ingress, { ...base, builderAddress: address });
+        if (got.finishReason !== undefined) return got;
+        withoutFin ??= got;
+      } catch (e) {
+        failures.push(`${address}: ${(e as { message?: string }).message ?? String(e)}`);
+      }
+    }
+    if (withoutFin !== undefined) return withoutFin;
+    throw new TrueOpenError(
+      'DATA',
+      'DATA_OUTPUT_ALL_BUILDERS_FAILED',
+      `no Task Builder returned a verified output for task ${taskId}:\n  ${failures.join('\n  ')}`,
+      { retriable: true },
+    );
   }
 
   /** Prepare challenge materials (does not submit a verdict). */

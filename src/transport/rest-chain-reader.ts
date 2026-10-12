@@ -207,6 +207,18 @@ export class RestChainReader implements ChainReader {
     };
   }
 
+  /**
+   * The task's frozen Task Builder selection (task.v1 TaskBuilders), in rank order. These are the
+   * Builders that hold the task's data, so output retrieval asks them and no others. Empty once
+   * the selection body is pruned.
+   */
+  async queryTaskBuilders(taskId: string): Promise<string[]> {
+    const body = await this.getJson(`/TrueOpen/task/v1/task/${encodeURIComponent(taskId)}/builders`);
+    const list = raw(obj(body, 'selection'), 'selected_task_builders') ?? [];
+    if (!Array.isArray(list) || list.some((a) => typeof a !== 'string')) throw malformed('field selected_task_builders');
+    return list as string[];
+  }
+
   private async getJson(path: string): Promise<Record<string, unknown>> {
     return withQueryRetry(this.retry, () => this.getJsonOnce(path));
   }

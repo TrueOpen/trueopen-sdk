@@ -191,7 +191,10 @@ const jsonSafe = (v) => {
   return v;
 };
 const log = (...a) => { if (!JSON_ONLY) console.error(...a); };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A hoisted declaration: restGet retries with it while MODEL_ID is resolved above.
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 /**
  * A REST read that keeps "the chain answered: absent" apart from "the chain did not

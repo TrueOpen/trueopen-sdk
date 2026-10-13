@@ -29,7 +29,7 @@ export interface ChainTaskSnapshot {
   /** TaskPhase without its prefix, for the terminal arm only (for example "SETTLED"). */
   readonly terminalPhase?: string;
   readonly taskId: string;
-  /** Canonical lowercase 64-hex; should match the SDK's locally computed task_hash byte for byte. */
+  /** Hash32 text (`0x` + 64 lowercase hex); should match the SDK's locally computed task_hash byte for byte. */
   readonly acceptedTaskHash: string;
   /** Active arm only. */
   readonly acceptedInputHash?: string;
@@ -42,7 +42,7 @@ export interface ChainTaskSnapshot {
   readonly receiptStatus?: string;
   /** Active arm only. */
   readonly assignmentStatus?: string;
-  /** Canonical lowercase 64-hex Hash32, decoded the same way hub.v1's reader decodes it. */
+  /** Hash32 text (`0x` + 64 lowercase hex), decoded the same way hub.v1's reader decodes it. */
   readonly modelId: string;
   readonly profileVersion: bigint;
   readonly orderSequence: bigint;
@@ -58,7 +58,7 @@ export interface InferReceiptView {
   readonly taskId: string;
   readonly winnerWorker: string;
   readonly inferReceiptHash: string;
-  /** Canonical lowercase 64-hex, the root of TRUEOPEN_OUTPUT_MMR_V1. */
+  /** Hash32 text (`0x` + 64 lowercase hex), the root of TRUEOPEN_OUTPUT_MMR_V1. */
   readonly outputHash: string;
   readonly outputSizeBytes: bigint;
   /** Number of chunks (>= 1). An empty output is a single zero-length leaf, not an empty tree. */

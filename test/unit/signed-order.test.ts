@@ -156,7 +156,7 @@ describe('SignedOrderV2 encoding', () => {
 
   it('task_hash is unchanged after a proto round trip (a drift gate between the hand-written view and the generated type)', () => {
     const bytes = encodeSignedOrder(fixture(), ORDER_EIP712, rep(0xaa, 64));
-    expect(taskOrderHashHex(viewFromProto(bytes))).toBe(GOLDEN);
+    expect(taskOrderHashHex(viewFromProto(bytes))).toBe(`0x${GOLDEN}`);
   });
 
   it("round-tripped bytes are byte-for-byte identical -- no unknown fields (matches nexus's DiscardUnknown + proto.Equal check)", () => {

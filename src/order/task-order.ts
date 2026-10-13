@@ -8,7 +8,7 @@ import {
   enumBE,
 } from '../codec/domain-hash';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { toHex } from '../util/bytes';
+import { hash32Text } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 
 const enc = new TextEncoder();
@@ -165,9 +165,9 @@ export function taskOrderHash(order: TaskOrderV3): Uint8Array {
   return canonicalHashBytes(enc.encode(DOMAIN_TASK_ORDER_V3), ...canonicalTaskOrderFields(order));
 }
 
-/** The canonical lowercase 64-hex form of taskOrderHash. */
+/** taskOrderHash in its Hash32 text form, `0x` + 64 lowercase hex. */
 export function taskOrderHashHex(order: TaskOrderV3): string {
-  return toHex(taskOrderHash(order));
+  return hash32Text(taskOrderHash(order));
 }
 
 /** Flatten TaskOrderV3 in ascending order of proto field numbers 1..28 (the same order as the registry's fields array). */

@@ -44,8 +44,8 @@ import * as w from './world';
 const TLS_DIR = new URL('../../helpers/tls/', import.meta.url);
 export const TLS_CERT = readFileSync(new URL('cert.pem', TLS_DIR));
 export const TLS_KEY = readFileSync(new URL('key.pem', TLS_DIR));
-/** sha256(SPKI) of the test certificate: what the fake chain registers as tls_pubkey_hash. */
-export const TLS_PUBKEY_HASH = readFileSync(new URL('pubkey_sha256.txt', TLS_DIR), 'utf8').trim();
+/** sha256(SPKI) of the test certificate, what the fake chain registers as tls_pubkey_hash, as Hash32 text (the file holds the bare hex). */
+export const TLS_PUBKEY_HASH = `0x${readFileSync(new URL('pubkey_sha256.txt', TLS_DIR), 'utf8').trim()}`;
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 const unhex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, 'hex'));
@@ -60,7 +60,12 @@ export const MAX_SERVICE_MATERIAL_EXPIRY_BLOCKS = 100n;
 /** max_session_grant_blocks: off-chain Builder configuration, the same on every Builder. */
 export const MAX_SESSION_GRANT_BLOCKS = 400n;
 
-/** One task's OUTPUT as a Worker produced it (see fixtures/output-stream.json). */
+/**
+ * One task's OUTPUT as a Worker produced it (see fixtures/output-stream.json). The fixture files
+ * hold bare hex; loadStream turns the four Hash32 ids (session_id, task_id, task_hash,
+ * output_hash) into their wire text form, 0x + 64 lowercase hex. Frame roots, signatures and
+ * the Worker key stay bare hex: they are decoded to bytes, never sent as Hash32 text.
+ */
 export interface OutputStreamFixture {
   readonly chain_id: string;
   readonly session_id: string;
@@ -77,7 +82,15 @@ export interface OutputStreamFixture {
 }
 
 export function loadStream(file: string): OutputStreamFixture {
-  return JSON.parse(readFileSync(new URL(`../fixtures/${file}`, import.meta.url), 'utf8')) as OutputStreamFixture;
+  const raw = JSON.parse(readFileSync(new URL(`../fixtures/${file}`, import.meta.url), 'utf8')) as OutputStreamFixture;
+  const text = (h: string): string => w.hash32(unhex(h));
+  return {
+    ...raw,
+    session_id: text(raw.session_id),
+    task_id: text(raw.task_id),
+    task_hash: text(raw.task_hash),
+    output_hash: text(raw.output_hash),
+  };
 }
 
 export type StreamBehaviour =
@@ -236,12 +249,13 @@ export class FakeNexus {
     const order = signed.order;
     if (order === undefined) return this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: order envelope has no order');
     // The order and the header must describe the same task.
-    if (order.chainId !== w.CHAIN_ID || order.userAddress !== h.userAddress || hex(order.sessionId) !== h.sessionId ||
-      order.orderSequence !== h.orderSequence || hex(order.inputHash) !== h.inputHash || order.inputSizeBytes !== h.inputSizeBytes) {
+    if (order.chainId !== w.CHAIN_ID || order.userAddress !== h.userAddress || w.hash32(order.sessionId) !== h.sessionId ||
+      order.orderSequence !== h.orderSequence || w.hash32(order.inputHash) !== h.inputHash || order.inputSizeBytes !== h.inputSizeBytes) {
       this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: order envelope disagrees with the header');
     }
-    // payload_ref is not signed, but it must be derived from the signed input_hash.
-    if (h.payloadRef !== `nexus://sha256/${h.inputHash}`) this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask payload_ref');
+    // payload_ref is not signed, but it must be derived from the signed input_hash; it keeps the
+    // bare lowercase hex while input_hash travels as 0x + 64 lowercase hex.
+    if (h.payloadRef !== `nexus://sha256/${h.inputHash.replace(/^0x/, '')}`) this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask payload_ref');
     // task_hash is recomputed from the order, never taken from the caller.
     const taskHash = this.check(M, () => v.taskOrderHash(order));
     const env = h.requestEnvelope;
@@ -255,20 +269,20 @@ export class FakeNexus {
     // The order's anchor must be real, and this Builder must be one the order selects.
     const anchor = order.sessionAnchorHeight;
     const set = this.node.builderSetAt(anchor);
-    if (hex(order.sessionAnchorBlockHash) !== w.beaconBlockHash(anchor) || set === undefined ||
-      hex(order.builderSetHash) !== set.hash || order.builderSetId !== set.id) {
+    if (w.hash32(order.sessionAnchorBlockHash) !== w.beaconBlockHash(anchor) || set === undefined ||
+      w.hash32(order.builderSetHash) !== set.hash || order.builderSetId !== set.id) {
       this.fail(M, Code.FailedPrecondition, 'NEXUS_INGRESS_STAGE1_MISMATCH: order anchor or builder set is not the one in effect at its anchor height');
     }
-    if (!selectedBuilders(w.CHAIN_ID, taskId, set!, hex(order.sessionAnchorBlockHash)).includes(this.builder.address)) {
+    if (!selectedBuilders(w.CHAIN_ID, taskId, set!, w.hash32(order.sessionAnchorBlockHash)).includes(this.builder.address)) {
       this.fail(M, Code.NotFound, 'NEXUS_INGRESS_NOT_SELECTED_BUILDER: this Builder is not selected for the task');
     }
 
     const payload = Buffer.concat(chunks);
-    if (BigInt(payload.length) !== h.inputSizeBytes || hex(sha256(payload)) !== h.inputHash) {
+    if (BigInt(payload.length) !== h.inputSizeBytes || w.hash32(sha256(payload)) !== h.inputHash) {
       this.fail(M, Code.DataLoss, 'NEXUS_DATA_HASH_MISMATCH: OpenTask input does not match its commitment');
     }
     this.accepted(M, env?.sessionGrant);
-    this.taskHashes.push(hex(taskHash));
+    this.taskHashes.push(w.hash32(taskHash));
     this.opened.push({ taskId, requester, idempotencyKey: h.idempotencyKey, chunkCount: chunks.length, payload: Uint8Array.from(payload) });
     return {
       sessionId: h.sessionId,
@@ -418,7 +432,7 @@ export class FakeNexus {
  * seed, address bytes); lowest three ranks win, ties broken by address bytes.
  */
 export function selectedBuilders(chainId: string, taskId: string, set: w.BuilderSetFact, anchorBlockHash: string, perTask = 3): string[] {
-  const seed = v.hFields('TRUEOPEN_TASK_BUILDERS_V1', new TextEncoder().encode(chainId), unhex(taskId), unhex(set.hash), unhex(anchorBlockHash));
+  const seed = v.hFields('TRUEOPEN_TASK_BUILDERS_V1', new TextEncoder().encode(chainId), w.unhash32(taskId), w.unhash32(set.hash), w.unhash32(anchorBlockHash));
   const ranked = set.members.map((address) => {
     const bytes = Uint8Array.from(bech32.fromWords(bech32.decode(address as `${string}1${string}`).words));
     return { address, bytes, rank: hex(v.hFields('TRUEOPEN_TASK_BUILDER_RANK_V1', seed, bytes)) };

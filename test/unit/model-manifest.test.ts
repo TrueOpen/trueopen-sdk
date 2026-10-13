@@ -13,6 +13,7 @@ import type { ProfileManifestState } from '../../src/manifest/model-manifest';
 import { canonicalJsonBytes } from '../../src/codec/canonical-json';
 import { framedV1Preimage } from '../../src/codec/domain-hash';
 import { toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 import { goldenState } from '../helpers/manifest-fixture';
 
 /**
@@ -26,12 +27,14 @@ const VECTOR = MANIFEST.vectors[0];
 const enc = new TextEncoder();
 const BYTES = enc.encode(VECTOR.payload_utf8 as string);
 const HASH = VECTOR.digest_hex as string;
+/** The same manifest_hash as Hash32 text, `0x` + 64 lowercase hex. */
+const HASH_TEXT = `0x${HASH}`;
 
 describe('manifest_hash (H_V1 TRUEOPEN_MODEL_MANIFEST_V4)', () => {
   it('reproduces the published preimage and digest', () => {
     expect(BYTES.length).toBe(MANIFEST.canonical_manifest_bytes);
     expect(toHex(framedV1Preimage(VECTOR.domain, BYTES))).toBe(VECTOR.preimage_hex);
-    expect(toHex(modelManifestHash(BYTES))).toBe(HASH);
+    expect(hash32Text(modelManifestHash(BYTES))).toBe(HASH_TEXT);
   });
 
   it('the fixture manifest object re-encodes to exactly the payload bytes', () => {
@@ -46,7 +49,7 @@ describe('projection rebuilt from the manifest (model_profile_canonical_v3.json)
   const want = PROJECTION.canonical_projection;
   const projection = projectionFromManifest(manifest, {
     // The projection vector takes manifest_hash as an opaque input.
-    manifestHash: (want.manifest_hash as string).slice(2),
+    manifestHash: want.manifest_hash as string,
     manifestUri: want.manifest_uri,
     registrationFee: { amount: BigInt(want.registration_fee.amount), denom: want.registration_fee.denom },
   });
@@ -65,7 +68,7 @@ describe('projection rebuilt from the manifest (model_profile_canonical_v3.json)
     const digest = registrationDigest({
       chainId: PROJECTION.chain_id,
       chainProjectionHash: chainProjectionHash(projection),
-      manifestHash: (want.manifest_hash as string).slice(2),
+      manifestHash: want.manifest_hash as string,
       profileVersion: 1n,
       proposerAddress: PROJECTION.proposer_address,
     });
@@ -91,7 +94,7 @@ describe('verifyManifestBytes: processing order', () => {
   it('rejects a body that hashes correctly but is not canonical JSON', () => {
     // Pretty-printed: parses fine, re-encodes differently.
     const pretty = enc.encode(JSON.stringify(JSON.parse(VECTOR.payload_utf8), null, 1));
-    const state = goldenState({ manifestHash: toHex(modelManifestHash(pretty)) });
+    const state = goldenState({ manifestHash: hash32Text(modelManifestHash(pretty)) });
     expect(() => verifyManifestBytes(pretty, state)).toThrow(expect.objectContaining({ code: 'MANIFEST_NOT_CANONICAL' }));
   });
 
@@ -99,7 +102,7 @@ describe('verifyManifestBytes: processing order', () => {
     const doc = JSON.parse(VECTOR.payload_utf8);
     doc.manifest_version = 3;
     const bytes = canonicalJsonBytes(doc);
-    const state = goldenState({ manifestHash: toHex(modelManifestHash(bytes)) });
+    const state = goldenState({ manifestHash: hash32Text(modelManifestHash(bytes)) });
     expect(() => verifyManifestBytes(bytes, state)).toThrow(expect.objectContaining({ code: 'MANIFEST_SCHEMA_INVALID' }));
   });
 
@@ -114,15 +117,15 @@ describe('verifyManifestBytes: processing order', () => {
 
   it('rejects duplicate keys and floats even when the hash would match', () => {
     const dup = enc.encode(VECTOR.payload_utf8.replace('{"artifacts"', '{"manifest_version":4,"artifacts"'));
-    expect(() => verifyManifestBytes(dup, goldenState({ manifestHash: toHex(modelManifestHash(dup)) }))).toThrow(/duplicate key/);
+    expect(() => verifyManifestBytes(dup, goldenState({ manifestHash: hash32Text(modelManifestHash(dup)) }))).toThrow(/duplicate key/);
     const flt = enc.encode(VECTOR.payload_utf8.replace('"manifest_version":4', '"manifest_version":4.0'));
-    expect(() => verifyManifestBytes(flt, goldenState({ manifestHash: toHex(modelManifestHash(flt)) }))).toThrow(/only integers/);
+    expect(() => verifyManifestBytes(flt, goldenState({ manifestHash: hash32Text(modelManifestHash(flt)) }))).toThrow(/only integers/);
   });
 
   it.each([
-    ['model_id', { modelId: '11'.repeat(32) }],
+    ['model_id', { modelId: `0x${'11'.repeat(32)}` }],
     ['profile_version', { profileVersion: 2n }],
-    ['tokenizer_hash', { tokenizerHash: '45'.repeat(32) }],
+    ['tokenizer_hash', { tokenizerHash: `0x${'45'.repeat(32)}` }],
     ['runtime_class', { runtimeClass: 'OTHER' }],
     ['task_types\\[0\\]', { taskTypes: ['CHAT', 'TEXT_GENERATION'] }],
     ['min_stake', { minStake: 1n }],
@@ -158,12 +161,12 @@ describe('verifyManifestBytes: processing order', () => {
     const manifest = parseModelManifestV4(BYTES);
     const fee = { amount: 1_000_000n, denom: 'uusdc' };
     const state0 = goldenState();
-    const projection = projectionFromManifest(manifest, { manifestHash: HASH, manifestUri: state0.manifestUri, registrationFee: fee });
-    const digest = toHex(
+    const projection = projectionFromManifest(manifest, { manifestHash: HASH_TEXT, manifestUri: state0.manifestUri, registrationFee: fee });
+    const digest = hash32Text(
       registrationDigest({
         chainId: 'trueopen-golden-1',
         chainProjectionHash: chainProjectionHash(projection),
-        manifestHash: HASH,
+        manifestHash: HASH_TEXT,
         profileVersion: 1n,
         proposerAddress: state0.proposerAddress,
       }),

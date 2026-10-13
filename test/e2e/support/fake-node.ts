@@ -3,8 +3,8 @@
  * methods CosmJS uses to sign and broadcast (status, abci_query for the account, broadcast_tx_sync,
  * tx_search).
  *
- * REST bodies follow the node gateway's rendering: snake_case, keys sorted, Hash32 as lowercase
- * hex, other bytes as base64, 64-bit integers as strings, 32-bit integers as numbers, enums by
+ * REST bodies follow the node gateway's rendering: snake_case, keys sorted, Hash32 as 0x + 64
+ * lowercase hex (ADR-0034), other bytes as base64, 64-bit integers as strings, 32-bit integers as numbers, enums by
  * full name, every field emitted. The larger bodies (params, task, profile) start from the wire
  * shape fixture so their key sets match it exactly.
  *
@@ -36,7 +36,7 @@ export function shapeBody(name: string): Record<string, unknown> {
 
 type Json = Record<string, unknown>;
 const b64 = (b: Uint8Array): string => Buffer.from(b).toString('base64');
-const ZERO32 = '0'.repeat(64);
+const ZERO32 = `0x${'0'.repeat(64)}`;
 
 /** Keys sorted recursively, as the node gateway's re-encoding produces them. */
 function sortKeys(v: unknown): unknown {
@@ -229,7 +229,7 @@ export class FakeNode {
             version: w.TIMEOUT_BUCKET_VERSION.toString(),
             schema_version: 1,
             effective_height: '500',
-            bucket_hash: w.label32('e2e-timeout-bucket'),
+            bucket_hash: w.labelHash32('e2e-timeout-bucket'),
             timeout_entries: { entries: [] },
             entry_count: 0,
             encoded_size_bytes: 0,
@@ -254,7 +254,7 @@ export class FakeNode {
               // Optional Hash32: omitted when unset.
               ...(d.tlsPubkeyHash !== '' ? { tls_pubkey_hash: d.tlsPubkeyHash } : {}),
             }],
-            descriptor_hash: w.label32(`e2e-descriptor-${p[5]}`),
+            descriptor_hash: w.labelHash32(`e2e-descriptor-${p[5]}`),
             updated_height: '100',
           },
         });
@@ -326,16 +326,16 @@ export class FakeNode {
           receipt: {
             task_id: p[4],
             winner_worker: r.winnerWorker,
-            infer_receipt_hash: w.label32(`e2e-receipt-${p[4]}`),
-            generation_params_digest: w.label32('e2e-generation-params'),
+            infer_receipt_hash: w.labelHash32(`e2e-receipt-${p[4]}`),
+            generation_params_digest: w.labelHash32('e2e-generation-params'),
             output_hash: r.outputHash,
             output_size_bytes: r.outputSizeBytes.toString(),
             generated_token_count: '9',
-            evidence_commitments_hash: w.label32('e2e-evidence'),
+            evidence_commitments_hash: w.labelHash32('e2e-evidence'),
             required_evidence_commitments: [],
             evidence_commitment_count: 0,
-            infer_receipt_signing_digest: w.label32('e2e-receipt-digest'),
-            signature_digest: w.label32('e2e-receipt-signature'),
+            infer_receipt_signing_digest: w.labelHash32('e2e-receipt-digest'),
+            signature_digest: w.labelHash32('e2e-receipt-signature'),
             expiry_height: (this.height + 100n).toString(),
             receipt_height: this.height.toString(),
             output_leaf_count: r.outputLeafCount.toString(),
@@ -369,7 +369,7 @@ export class FakeNode {
       order_sequence: t.orderSequence.toString(),
       accepted_task_hash: t.taskHash,
       accepted_input_hash: t.inputHash,
-      accepted_order_opening_hash: w.label32(`e2e-opening-${t.taskId}`),
+      accepted_order_opening_hash: w.labelHash32(`e2e-opening-${t.taskId}`),
       accepted_payload_mode: 'PAYLOAD_MODE_V1_PLAINTEXT',
       model_id: w.MODEL_ID,
       profile_version: w.PROFILE_VERSION,
@@ -391,7 +391,7 @@ export class FakeNode {
         winner_worker: t.winner,
         winner_confirm_height: this.height.toString(),
         infer_deadline_height: (this.height + 50n).toString(),
-        winner_draw_digest: w.label32(`e2e-draw-${t.taskId}`),
+        winner_draw_digest: w.labelHash32(`e2e-draw-${t.taskId}`),
       });
       // Verifier rounds have not started.
       active['round1_verifier_assignment'] = null;
@@ -547,7 +547,7 @@ export class FakeNode {
         // MsgCreateSessionResponse { bytes session_id = 1; uint64 session_nonce = 2; MutationStatusV1 status = 3; }
         msgResponses.push({
           typeUrl: '/task.v1.MsgCreateSessionResponse',
-          value: Uint8Array.from([0x0a, 32, ...Buffer.from(sessionId, 'hex'), 0x10, ...varint(Number(nonce)), 0x18, 1]),
+          value: Uint8Array.from([0x0a, 32, ...w.unhash32(sessionId), 0x10, ...varint(Number(nonce)), 0x18, 1]),
         });
       }
     }

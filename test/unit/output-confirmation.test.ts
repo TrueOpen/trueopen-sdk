@@ -9,13 +9,14 @@ import {
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { privKeySecp256k1DigestSigner, secp256k1PublicKey } from '../../src/signer/secp256k1';
 import type { InferReceiptView } from '../../src/types/node';
-import { fromHex, toHex } from '../../src/util/bytes';
+import { fromHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 import { TrueOpenError } from '../../src/errors/errors';
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 const CHAIN_ID = 'trueopen-localnet-1';
-const TASK_ID = 'aa'.repeat(32);
-const TASK_HASH = 'bb'.repeat(32);
+const TASK_ID = `0x${'aa'.repeat(32)}`;
+const TASK_HASH = `0x${'bb'.repeat(32)}`;
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(PRIV);
 const CHUNKS = [utf8('hello '), utf8('Zürich'), utf8('!')];
@@ -24,7 +25,7 @@ async function checkpoint() {
   const sign = privKeySecp256k1DigestSigner(PRIV);
   const verifier = new OutputStreamVerifier({
     chainId: CHAIN_ID,
-    taskHash: fromHex(TASK_HASH),
+    taskHash: fromHex(TASK_HASH.slice(2)),
     workerServicePubKey: WORKER_PUB,
   });
   for (let i = 0; i < CHUNKS.length; i += 1) {
@@ -36,7 +37,7 @@ async function checkpoint() {
       mmrRoot,
       signature: await sign(outputChunkSigningDigest({
         chainId: CHAIN_ID,
-        taskHash: fromHex(TASK_HASH),
+        taskHash: fromHex(TASK_HASH.slice(2)),
         seq,
         mmrRoot,
       })),
@@ -49,8 +50,8 @@ function receipt(overrides: Partial<InferReceiptView> = {}): InferReceiptView {
   return {
     taskId: TASK_ID,
     winnerWorker: 'trueopen1worker',
-    inferReceiptHash: 'cc'.repeat(32),
-    outputHash: toHex(outputHash(CHUNKS)),
+    inferReceiptHash: `0x${'cc'.repeat(32)}`,
+    outputHash: hash32Text(outputHash(CHUNKS)),
     outputSizeBytes: CHUNKS.reduce((total, chunk) => total + BigInt(chunk.length), 0n),
     outputLeafCount: BigInt(CHUNKS.length),
     ...overrides,
@@ -85,8 +86,8 @@ describe('confirmOutputWithReceipt', () => {
       taskId: TASK_ID,
       taskHash: TASK_HASH,
       winnerWorker: 'trueopen1worker',
-      inferReceiptHash: 'cc'.repeat(32),
-      outputHash: toHex(outputHash(CHUNKS)),
+      inferReceiptHash: `0x${'cc'.repeat(32)}`,
+      outputHash: hash32Text(outputHash(CHUNKS)),
       outputMmrRoot: outputHash(CHUNKS),
       outputLeafCount: 3n,
       outputSizeBytes: BigInt(CHUNKS.reduce((total, chunk) => total + chunk.length, 0)),
@@ -99,15 +100,15 @@ describe('confirmOutputWithReceipt', () => {
       chainId: 'other', taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: cp, receipt: receipt(),
     }), 'DATA_OUTPUT_CONFIRMATION_CHAIN_MISMATCH');
     expectCode(() => confirmOutputWithReceipt({
-      chainId: CHAIN_ID, taskId: TASK_ID, taskHash: 'dd'.repeat(32), checkpoint: cp, receipt: receipt(),
+      chainId: CHAIN_ID, taskId: TASK_ID, taskHash: `0x${'dd'.repeat(32)}`, checkpoint: cp, receipt: receipt(),
     }), 'DATA_OUTPUT_CONFIRMATION_TASK_HASH_MISMATCH');
-    expectCode(() => confirm(cp, receipt({ taskId: 'ee'.repeat(32) })), 'DATA_OUTPUT_CONFIRMATION_TASK_ID_MISMATCH');
+    expectCode(() => confirm(cp, receipt({ taskId: `0x${'ee'.repeat(32)}` })), 'DATA_OUTPUT_CONFIRMATION_TASK_ID_MISMATCH');
   });
 
   it('an empty checkpoint is not the same as empty output: cannot be confirmed with no verified chunks', async () => {
     const empty = new OutputStreamVerifier({
       chainId: CHAIN_ID,
-      taskHash: fromHex(TASK_HASH),
+      taskHash: fromHex(TASK_HASH.slice(2)),
       workerServicePubKey: WORKER_PUB,
     }).checkpoint();
     expectCode(() => confirm(empty), 'DATA_OUTPUT_CONFIRMATION_EMPTY_CHECKPOINT');
@@ -147,18 +148,17 @@ describe('confirmOutputWithReceipt', () => {
     );
   });
 
-  it('rejects if Receipt output_hash is not canonical 64-hex', async () => {
+  it('rejects if Receipt output_hash is not 0x + 64 lowercase hex', async () => {
     const cp = await checkpoint();
-    expectCode(
-      () => confirm(cp, receipt({ outputHash: 'AA'.repeat(32) })),
-      'DATA_OUTPUT_CONFIRMATION_RECEIPT_HASH_MALFORMED',
-    );
+    for (const bad of [`0x${'AA'.repeat(32)}`, hash32Text(outputHash(CHUNKS)).slice(2), `0X${'aa'.repeat(32)}`]) {
+      expectCode(() => confirm(cp, receipt({ outputHash: bad })), 'DATA_OUTPUT_CONFIRMATION_RECEIPT_HASH_MALFORMED');
+    }
   });
 
   it('rejects if Receipt root does not match', async () => {
     const cp = await checkpoint();
     expectCode(
-      () => confirm(cp, receipt({ outputHash: 'dd'.repeat(32) })),
+      () => confirm(cp, receipt({ outputHash: `0x${'dd'.repeat(32)}` })),
       'DATA_OUTPUT_CONFIRMATION_ROOT_MISMATCH',
     );
   });

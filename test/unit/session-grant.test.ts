@@ -46,8 +46,8 @@ const fixtureSession: ActiveSession = {
 const reqFields: SdkRequestFields = {
   chainId: R.message.chainId!,
   method: R.message.method!,
-  sessionId: R.message.sessionId!,
-  taskId: R.message.taskId!,
+  sessionId: `0x${R.message.sessionId!}`,
+  taskId: `0x${R.message.taskId!}`,
   requestNonce: fromHex(R.message.requestNonce!),
   expiryHeightOrTime: BigInt(R.message.expiryHeightOrTime!),
   bodyDigest: fromHex(R.message.bodyDigest!),
@@ -229,8 +229,8 @@ describe('SessionKeyManager', () => {
 });
 
 describe('IngressClient with a session', () => {
-  const S = R.message.sessionId!;
-  const TASK = R.message.taskId!;
+  const S = `0x${R.message.sessionId!}`;
+  const TASK = `0x${R.message.taskId!}`;
 
   function setup(failures: { ack: number; subscribe: number }) {
     const acks: AckOutputRequest[] = [];
@@ -308,8 +308,8 @@ describe('session-signed OpenTask (account_signing_v1.json sdk_request_open_task
   const fields: SdkRequestFields = {
     chainId: O.message.chainId!,
     method: O.message.method!,
-    sessionId: O.message.sessionId!,
-    taskId: O.message.taskId!,
+    sessionId: `0x${O.message.sessionId!}`,
+    taskId: `0x${O.message.taskId!}`,
     requestNonce: fromHex(O.message.requestNonce!),
     expiryHeightOrTime: BigInt(O.message.expiryHeightOrTime!),
     bodyDigest: fromHex(O.message.bodyDigest!),

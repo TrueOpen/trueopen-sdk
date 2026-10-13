@@ -1,5 +1,5 @@
 import { sha256 } from '../codec/hash';
-import { toHex } from '../util/bytes';
+import { hash32Text } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 import { BUILDER_DESCRIPTOR_SCHEMA_V1, nexusGrpcEndpoint } from '../types/hub';
 import type { BuilderDescriptorDoc, BuilderEndpoint } from '../types/hub';
@@ -16,8 +16,8 @@ const dec = new TextDecoder();
  * also throws.
  */
 export function verifyAndParseBuilderDescriptor(bytes: Uint8Array, descriptorHashHex: string): BuilderDescriptorDoc {
-  const got = toHex(sha256(bytes));
-  const want = descriptorHashHex.toLowerCase();
+  const got = hash32Text(sha256(bytes));
+  const want = descriptorHashHex;
   if (got !== want) {
     throw new TrueOpenError('CHAIN_REJECT', 'DESCRIPTOR_HASH_MISMATCH', `builder descriptor hash mismatch: got ${got}, want ${want}`);
   }

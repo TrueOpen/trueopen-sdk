@@ -65,9 +65,11 @@ export function hFields(domain: string, ...fields: Uint8Array[]): Uint8Array {
 function optional(value: Uint8Array | undefined): Uint8Array {
   return value === undefined ? new Uint8Array([0]) : concat([new Uint8Array([1]), frame8(value)]);
 }
+/** Hash32 text on the transport (ADR-0034): only 0x followed by 64 lowercase hex characters. */
+const hash32Text = (b: Uint8Array): string => `0x${hex(b)}`;
 function raw32(field: string, value: string, code = 'NEXUS_INGRESS_MALFORMED'): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(value)) throw new VerifyError(code, `${field} is not 64-character lowercase hex`);
-  return unhex(value);
+  if (!/^0x[0-9a-f]{64}$/.test(value)) throw new VerifyError(code, `${field} is not 0x followed by 64 lowercase hex characters`);
+  return unhex(value.slice(2));
 }
 /** The chain's account prefix: every account address the contract signs uses it. */
 export const ACCOUNT_PREFIX = 'trueopen';
@@ -272,9 +274,9 @@ export function prepareChallengeBody(sessionId: string, taskId: string, kind: st
   return hFields(BODY.PrepareChallenge, raw32('session_id', sessionId), raw32('task_id', taskId), utf8(kind), optional(localEvidence.length === 0 ? undefined : localEvidence));
 }
 
-/** TRUEOPEN_TASK_ID_V1(raw32(session_id), u64be(order_sequence)). */
+/** TRUEOPEN_TASK_ID_V1(raw32(session_id), u64be(order_sequence)), as Hash32 text. */
 export function deriveTaskId(sessionId: string, seq: bigint): string {
-  return hex(hFields('TRUEOPEN_TASK_ID_V1', raw32('session_id', sessionId), u64be(seq)));
+  return hash32Text(hFields('TRUEOPEN_TASK_ID_V1', raw32('session_id', sessionId), u64be(seq)));
 }
 
 /** task.v1.TaskOrderV3 as decoded from the SignedOrderV2 protobuf. */
@@ -614,7 +616,7 @@ export function verifyUserTaskDataAuth(
   if (a.signatureChainId < 1n || a.signatureChainId > SIGNATURE_CHAIN_ID_MAX) malformed('signature_chain_id must be in 1..MaxInt64');
   if (a.sessionGrant !== undefined && (a.sessionGrant.signatureChainId < 1n || a.sessionGrant.signatureChainId > SIGNATURE_CHAIN_ID_MAX)) malformed('session grant signature_chain_id must be in 1..MaxInt64');
   if (a.requestNonce.length !== 32) malformed('request_nonce must be 32 bytes');
-  if (a.bodyDigest !== hex(want.body)) malformed('body_digest mismatch');
+  if (a.bodyDigest !== hash32Text(want.body)) malformed('body_digest mismatch');
   addressBytes('requester_address', a.requesterAddress);
   if (a.builderOperatorAddress !== want.builder) throw new VerifyError('DATA_ACCESS_DENIED', 'builder address is not this Builder');
   const g = a.sessionGrant;

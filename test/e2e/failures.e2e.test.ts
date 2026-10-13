@@ -73,7 +73,7 @@ describe('e2e failures: Builders', () => {
   });
 
   it('a Builder whose certificate does not match the chain pin is refused before any request byte', async () => {
-    world.node.descriptors.set(w.BUILDERS[1]!.address, { uri: world.nexus[1]!.url, tlsPubkeyHash: 'ab'.repeat(32) });
+    world.node.descriptors.set(w.BUILDERS[1]!.address, { uri: world.nexus[1]!.url, tlsPubkeyHash: `0x${'ab'.repeat(32)}` });
     const res = await open();
     expect(res.accepted).toBe(true);
     const pinned = res.builders.find((b) => b.address === w.BUILDERS[1]!.address)!;

@@ -23,8 +23,10 @@ const wallet = privateKeyTypedDataSigner(fixtureKey('account'));
 const fields: SdkRequestFields = {
   chainId: V.message.chainId!,
   method: V.message.method!,
-  sessionId: V.message.sessionId!,
-  taskId: V.message.taskId!,
+  // The typed message carries bytes32 (bare hex is the fixture's file encoding); the SDK takes
+  // the transport spelling, 0x + 64 lowercase hex (ADR-0034).
+  sessionId: `0x${V.message.sessionId!}`,
+  taskId: `0x${V.message.taskId!}`,
   requestNonce: fromHex(V.message.requestNonce!),
   expiryHeightOrTime: BigInt(V.message.expiryHeightOrTime!),
   bodyDigest: fromHex(V.message.bodyDigest!),
@@ -126,8 +128,16 @@ describe('request_auth_negative_cases on sdk_request', () => {
   });
 
   it('the transport rows of sdk_request_session: the SDK refuses to build them', () => {
-    refuse({ sessionId: V.message.sessionId!.toUpperCase() });
-    refuse({ taskId: `0x${V.message.taskId}` });
+    const transport = (name: string): Record<string, string> => {
+      const row = (ACCOUNT_SIGNING.request_auth_negative_cases as Row[]).find((x) => x.name === name);
+      expect(row?.error).toBe('NEXUS_INGRESS_MALFORMED');
+      return row!.transport!;
+    };
+    // 0x followed by uppercase hex, and a bare 64-hex task_id without the 0x prefix.
+    refuse({ sessionId: transport('session_id_uppercase_hex')['session_id']! });
+    refuse({ taskId: transport('task_id_bare_hex')['task_id']! });
+    refuse({ sessionId: V.message.sessionId! });
+    refuse({ taskId: `0X${V.message.taskId!}` });
     refuse({ requestNonce: fromHex('202122232425262728292a2b2c2d2e2f') });
   });
 

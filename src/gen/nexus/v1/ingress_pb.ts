@@ -596,7 +596,7 @@ export const SessionGrantV1Schema: GenMessage<SessionGrantV1> = /*@__PURE__*/
  * user equals the SignedOrder user (see SessionGrantV1).
  *
  * The verifier runs five steps in order and stops at the first failure:
- *   1. Format: session_id and task_id in 64-character lowercase hex, a 32-byte
+ *   1. Format: session_id and task_id as 0x followed by 64 lowercase hex characters, a 32-byte
  *      request_nonce, expiry_height_or_time above zero, endpoint matching
  *      method, for OpenTask a chain-height expiry (below 10^12; a Unix
  *      millisecond value is rejected here) and the derived task_id and
@@ -675,8 +675,9 @@ export type SDKRequestEnvelopeV2 = Message<"nexus.v1.SDKRequestEnvelopeV2"> & {
   endpoint: string;
 
   /**
-   * 64-character lowercase hex of the Hash32, without 0x. Any other spelling is
-   * rejected before projection.
+   * The Hash32 as 0x followed by 64 lowercase hex characters (66 in all). Any
+   * other spelling, including a bare 64-character hex string, is rejected before
+   * projection.
    *
    * @generated from field: string session_id = 5;
    */

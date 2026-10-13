@@ -24,8 +24,8 @@ import { recoverEip712Address } from '../../src/signer/eth-secp256k1';
 
 // Base vectors of wire testdata/v1/task/sdk_request_body_v1.json and its replay rows
 // (sdk-request-body.test.ts reproduces the whole file; these pin what the client sends).
-const S = '77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
-const T = 'bce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
+const S = '0x77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
+const T = '0xbce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
 const EVIDENCE = fromHex('77'.repeat(32));
 const G = {
   events: '2fd7bcf6e3f290484b0dc8b81c8d0614f6d5c63d67af639fd9b7c394e29c0bc1',

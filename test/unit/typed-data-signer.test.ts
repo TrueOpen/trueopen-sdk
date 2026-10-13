@@ -23,8 +23,8 @@ const sdkRequest = sdkRequestTypedData(
   {
     chainId: SDK.message.chainId!,
     method: SDK.message.method!,
-    sessionId: SDK.message.sessionId!,
-    taskId: SDK.message.taskId!,
+    sessionId: `0x${SDK.message.sessionId!}`,
+    taskId: `0x${SDK.message.taskId!}`,
     requestNonce: fromHex(SDK.message.requestNonce!),
     expiryHeightOrTime: BigInt(SDK.message.expiryHeightOrTime!),
     bodyDigest: fromHex(SDK.message.bodyDigest!),

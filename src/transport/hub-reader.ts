@@ -1,4 +1,4 @@
-import { stringToU64, base64ToBytes, hash32ToHex } from '../codec/wire';
+import { stringToU64, base64ToBytes, restHash32 } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { FetchLike, FetchResponse, QueryRetryPolicy } from './rest-chain-reader';
 import { DEFAULT_QUERY_RETRY, withQueryRetry } from './rest-chain-reader';
@@ -20,13 +20,13 @@ import { BUCKET_KIND, DEFAULT_PARAMETER_BUCKET_KEY } from '../types/hub';
 import type { ProfileManifestState } from '../manifest/model-manifest';
 
 /**
- * Hash32 field -> canonical lowercase hex (model_id / builder_set_hash / descriptor_hash
+ * Hash32 field -> canonical `0x` + 64 lowercase hex (model_id / builder_set_hash / descriptor_hash
  * / etc). The decoding itself lives in codec/wire so task.v1's reader uses the same one.
  */
 function hash32Hex(o: Record<string, unknown>, snakeKey: string): string {
   const v = o[snakeKey] ?? o[camelKey(snakeKey)];
   if (typeof v !== 'string') throw malformed(`field ${snakeKey}`);
-  return hash32ToHex(v);
+  return restHash32(v);
 }
 
 /** Optional 32-byte hash field: returns an empty string when absent or when the bytes are empty. */
@@ -322,8 +322,8 @@ function toBuilderSet(o: Record<string, unknown>): BuilderSetSnapshot {
     builderSetVersion: u64opt(o, 'builder_set_version'),
     effectiveHeight: u64opt(o, 'effective_height'),
     builders,
-    // builder_set_hash -> lowercase hex (nexus's selection algorithm uses hex strings;
-    // both hex and base64 are accepted).
+    // builder_set_hash -> `0x` + 64 lowercase hex (nexus's selection algorithm uses hex strings;
+    // both the 0x form and base64 are accepted).
     setHash: hash32Hex(o, 'builder_set_hash'),
   };
 }

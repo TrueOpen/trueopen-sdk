@@ -11,6 +11,7 @@ import {
 } from '../../src/hub/builder-selection';
 import type { BuilderSetMember } from '../../src/hub/builder-selection';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 import { canonicalFrameBytes } from '../../src/codec/domain-hash';
 
 /**
@@ -38,7 +39,7 @@ const RANK_VECTORS = RANK.vectors.map((v) => ({
 }));
 
 const addrOf = (codecHex: string): string => bech32.encode('trueopen', bech32.toWords(fromHex(codecHex)));
-const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
+const hexOf = (b: number): string => hash32Text(new Uint8Array(32).fill(b));
 
 describe('taskBuilderRank (cross-language fixture gate)', () => {
   it('covers all four published vectors', () => {
@@ -82,8 +83,10 @@ describe('taskBuilderSeed', () => {
     expect(toHex(taskBuilderSeed(args[0], args[1], args[2], hexOf(0x99)))).not.toBe(base);
   });
 
-  it('rejects an input that is not 64 hex characters', () => {
-    expect(() => taskBuilderSeed(args[0], 'task-1', args[2], args[3])).toThrowError(/Hash32/);
+  it('rejects an input that is not 0x + 64 lowercase hex', () => {
+    expect(() => taskBuilderSeed(args[0], 'task-1', args[2], args[3])).toThrowError(/0x followed by 64 lowercase hex/);
+    expect(() => taskBuilderSeed(args[0], args[1].slice(2), args[2], args[3])).toThrowError(/0x followed by 64 lowercase hex/);
+    expect(() => taskBuilderSeed(args[0], args[1], `0x${'AB'.repeat(32)}`, args[3])).toThrowError(/0x followed by 64 lowercase hex/);
   });
 });
 

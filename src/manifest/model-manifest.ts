@@ -1,7 +1,8 @@
 import { framedHashV1 } from '../codec/domain-hash';
 import { canonicalJsonBytes, parseStrictJson } from '../codec/canonical-json';
 import type { CanonicalJsonValue } from '../codec/canonical-json';
-import { bytesEqual, toHex } from '../util/bytes';
+import { bytesEqual } from '../util/bytes';
+import { hash32Text, isHash32Text } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 
 /** H_V1 domain of manifest_hash. */
@@ -38,12 +39,10 @@ const MANIFEST_V4_SECTIONS = [
   'verification_thresholds',
 ] as const;
 
-const HASH32_0X = /^0x[0-9a-f]{64}$/;
-
 /** A strictly parsed V4 manifest. `raw` is the full parsed document. */
 export interface ModelManifestV4 {
   readonly raw: JsonObject;
-  /** Canonical lowercase 64-hex, without the 0x prefix. */
+  /** Hash32 text, `0x` + 64 lowercase hex, as the manifest spells it. */
   readonly modelId: string;
   readonly profileVersion: bigint;
   readonly previousProfileVersion: bigint;
@@ -80,7 +79,7 @@ function uint(obj: JsonObject, path: string, key: string): bigint {
 
 function hash32(obj: JsonObject, path: string, key: string): string {
   const v = obj[key];
-  if (typeof v !== 'string' || !HASH32_0X.test(v)) throw schemaError(`${path}.${key} must be 0x-prefixed lowercase 64-hex`);
+  if (!isHash32Text(v)) throw schemaError(`${path}.${key} must be 0x followed by 64 lowercase hex characters`);
   return v;
 }
 
@@ -157,12 +156,12 @@ export function parseModelManifestV4(bytes: Uint8Array): ModelManifestV4 {
 
   hash32(section(doc, 'verification_profile'), 'verification_profile', 'evidence_schema_hash');
 
-  return { raw: doc, modelId: modelId.slice(2), profileVersion, previousProfileVersion };
+  return { raw: doc, modelId, profileVersion, previousProfileVersion };
 }
 
 /** Chain-side inputs of the projection that are not inside the manifest. */
 export interface ProjectionChainInputs {
-  /** Canonical lowercase 64-hex manifest_hash. */
+  /** manifest_hash as Hash32 text, `0x` + 64 lowercase hex. */
   readonly manifestHash: string;
   /** ProfileState.manifest_uri, byte for byte. Never taken from the manifest. */
   readonly manifestUri: string;
@@ -182,7 +181,7 @@ export function projectionFromManifest(m: ModelManifestV4, chain: ProjectionChai
     batch_verification: section(d, 'batch_verification'),
     challenge_open_window_blocks: spec['challenge_open_window_blocks']!,
     generation_type: spec['generation_type']!,
-    manifest_hash: `0x${chain.manifestHash}`,
+    manifest_hash: chain.manifestHash,
     manifest_uri: chain.manifestUri,
     min_stake: spec['min_stake']!,
     model_id: identity['model_id']!,
@@ -214,7 +213,7 @@ export interface RegistrationDigestInput {
   readonly chainId: string;
   /** Raw 32 bytes. */
   readonly chainProjectionHash: Uint8Array;
-  /** Canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly manifestHash: string;
   readonly profileVersion: bigint;
   readonly proposerAddress: string;
@@ -226,8 +225,8 @@ export function registrationDigest(r: RegistrationDigestInput): Uint8Array {
     DOMAIN_MODEL_REGISTRATION_DIGEST_V3,
     canonicalJsonBytes({
       chain_id: r.chainId,
-      chain_projection_hash: `0x${toHex(r.chainProjectionHash)}`,
-      manifest_hash: `0x${r.manifestHash}`,
+      chain_projection_hash: hash32Text(r.chainProjectionHash),
+      manifest_hash: r.manifestHash,
       profile_version: r.profileVersion,
       proposer_address: r.proposerAddress,
     }),
@@ -236,7 +235,7 @@ export function registrationDigest(r: RegistrationDigestInput): Uint8Array {
 
 /**
  * The on-chain ProfileState fields a fetched manifest is compared against. Hash32
- * values are canonical lowercase 64-hex; enum names are given without their type
+ * values are `0x` + 64 lowercase hex, the spelling the manifest also uses; enum names are given without their type
  * prefix (for example "SAMPLED", "TEXT_GENERATION").
  */
 export interface ProfileManifestState {
@@ -255,7 +254,7 @@ export interface ProfileManifestState {
   readonly minStake: bigint;
   readonly challengeOpenWindowBlocks: bigint;
   readonly pricing: { readonly initialOutputPrice: bigint; readonly minOrderValue: bigint; readonly verifyRatioBps: bigint };
-  /** Canonical lowercase 64-hex; empty when the node did not return it. */
+  /** Hash32 text, `0x` + 64 lowercase hex; empty when the node did not return it. */
   readonly registrationDigest: string;
   readonly proposerAddress: string;
 }
@@ -305,7 +304,7 @@ export function verifyManifestBytes(
   if (bytes.length > MAX_MANIFEST_BYTES) {
     throw invalid('MANIFEST_TOO_LARGE', `${bytes.length} bytes exceeds ${MAX_MANIFEST_BYTES}`);
   }
-  const got = toHex(modelManifestHash(bytes));
+  const got = hash32Text(modelManifestHash(bytes));
   if (got !== state.manifestHash) {
     throw invalid('MANIFEST_HASH_MISMATCH', `hash ${got} does not match on-chain manifest_hash ${state.manifestHash}`);
   }
@@ -324,7 +323,7 @@ export function verifyManifestBytes(
       manifestUri: state.manifestUri,
       registrationFee: registration.registrationFee,
     });
-    const digest = toHex(
+    const digest = hash32Text(
       registrationDigest({
         chainId: registration.chainId,
         chainProjectionHash: chainProjectionHash(projection),
@@ -349,7 +348,6 @@ function compareProjection(m: ModelManifestV4, s: ProfileManifestState): void {
   const runtime = section(d, 'runtime_requirements');
   const pricing = section(d, 'pricing_profile');
   const stake = spec['min_stake'] as JsonObject;
-  const strip0x = (v: CanonicalJsonValue | undefined): string => String(v).slice(2);
 
   // Element by element, not a joined string: joining on "," makes ["A,B"] and ["A","B"]
   // compare equal, and hides a length or order difference.
@@ -366,8 +364,8 @@ function compareProjection(m: ModelManifestV4, s: ProfileManifestState): void {
     ['model_id', m.modelId, s.modelId],
     ['profile_version', m.profileVersion, s.profileVersion],
     ['previous_profile_version', m.previousProfileVersion, s.previousProfileVersion],
-    ['tokenizer_hash', strip0x(section(d, 'artifacts')['tokenizer_hash']), s.tokenizerHash],
-    ['schema_hash', strip0x(spec['schema_hash']), s.schemaHash],
+    ['tokenizer_hash', section(d, 'artifacts')['tokenizer_hash'], s.tokenizerHash],
+    ['schema_hash', spec['schema_hash'], s.schemaHash],
     ['runtime_class', runtime['runtime_class'], s.runtimeClass],
     ['required_top_k', runtime['required_top_k'], s.requiredTopK],
     ['generation_type', spec['generation_type'], s.generationType],

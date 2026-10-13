@@ -13,7 +13,7 @@ import { TrueOpenError } from '../errors/errors';
  * The digest is the bytes32 bodyDigest of the EIP-712 SDKRequest, so the body is bound to one
  * chain by that signature, not by a field here.
  *
- * Field encodings: a Hash32 is its raw 32 bytes (the transport lowercase hex decoded first), a
+ * Field encodings: a Hash32 is its raw 32 bytes (the transport `0x` + lowercase hex decoded first), a
  * uint64 is 8-byte big-endian, a string is UTF-8, an address is the 20 bytes decoded from its
  * canonical Bech32 text, and an optional field is OPTIONAL_V1: 0x00 when absent,
  * 0x01 || FRAME_V1(value) when present.
@@ -54,7 +54,7 @@ export interface OpenTaskBody {
   /** Canonical Bech32 account address; framed as its 20 address bytes. */
   readonly userAddress: string;
   readonly inputSizeBytes: bigint;
-  /** Lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly inputHash: string;
   readonly inputMediaType: string;
   readonly idempotencyKey: string;

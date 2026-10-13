@@ -64,7 +64,7 @@ describe.skipIf(!enabled)('e2e: examples/*.mjs against the simulated network', (
   it('create-session.mjs (signs and broadcasts MsgCreateSession to the fake RPC)', async () => {
     const r = await runExample('create-session.mjs', baseEnv);
     expect(r.code, r.stderr).toBe(0);
-    sessionId = /TRUEOPEN_SESSION_ID=([0-9a-f]{64})/.exec(r.stdout)?.[1] ?? '';
+    sessionId = /TRUEOPEN_SESSION_ID=(0x[0-9a-f]{64})/.exec(r.stdout)?.[1] ?? '';
     expect(sessionId).toBe(w.sessionIdFor(address, 0n));
     expect(world.node.txs.at(-1)).toMatchObject({ code: 0 });
   });
@@ -73,13 +73,13 @@ describe.skipIf(!enabled)('e2e: examples/*.mjs against the simulated network', (
     const r = await runExample('open-task.mjs', { ...baseEnv, TRUEOPEN_SESSION_ID: sessionId });
     expect(r.code, `${r.stdout}\n${r.stderr}`).toBe(0);
     expect(r.stdout).toContain('"accepted": true');
-    taskId = /TRUEOPEN_TASK_ID=([0-9a-f]{64})/.exec(r.stdout)?.[1] ?? '';
-    const taskHash = /"taskHash": "([0-9a-f]{64})"/.exec(r.stdout)?.[1] ?? '';
-    expect(taskId).toMatch(/^[0-9a-f]{64}$/);
+    taskId = /TRUEOPEN_TASK_ID=(0x[0-9a-f]{64})/.exec(r.stdout)?.[1] ?? '';
+    const taskHash = /"taskHash": "(0x[0-9a-f]{64})"/.exec(r.stdout)?.[1] ?? '';
+    expect(taskId).toMatch(/^0x[0-9a-f]{64}$/);
     for (const n of world.nexus.slice(0, 3)) expect(n.opened.map((o) => o.taskId)).toContain(taskId);
 
     // The chain accepts it, a winner runs it and its receipt lands; the Builders hold the output.
-    world.node.tasks.set(taskId, { taskId, sessionId, orderSequence: 0n, taskHash, inputHash: w.label32('example-input'), winner: w.WORKER_OPERATOR });
+    world.node.tasks.set(taskId, { taskId, sessionId, orderSequence: 0n, taskHash, inputHash: w.labelHash32('example-input'), winner: w.WORKER_OPERATOR });
     world.node.receipts.set(taskId, {
       outputHash: STREAM.output_hash, outputSizeBytes: BigInt(STREAM.output_size_bytes),
       outputLeafCount: BigInt(STREAM.output_leaf_count), winnerWorker: w.WORKER_OPERATOR,

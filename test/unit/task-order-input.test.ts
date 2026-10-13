@@ -12,9 +12,10 @@ import { HubReader } from '../../src/transport/hub-reader';
 import type { FetchLike, FetchResponse } from '../../src/transport/rest-chain-reader';
 import { sha256 } from '../../src/codec/hash';
 import { toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 const rep = (byte: number, size: number): Uint8Array => new Uint8Array(size).fill(byte);
-const hexOf = (byte: number): string => toHex(rep(byte, 32));
+const hexOf = (byte: number): string => hash32Text(rep(byte, 32));
 const amount = (atomicUnits: string) => ({ atomicUnits });
 const USER = bech32.encode('trueopen', bech32.toWords(rep(0x11, 20)));
 const SESSION = hexOf(0x12);
@@ -39,7 +40,7 @@ const req: TaskOrderRequest = {
   userAddress: USER,
   sessionId: SESSION,
   orderSequence: 1n,
-  modelId: 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: '0xad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: PAYLOAD,
@@ -62,16 +63,16 @@ describe('buildTaskOrder', () => {
     const order = buildTaskOrder(ctx, req);
     expect(order.schemaVersion).toBe(3);
     expect(order.sessionId.length).toBe(32);
-    expect(toHex(order.sessionId)).toBe(SESSION);
+    expect(hash32Text(order.sessionId)).toBe(SESSION);
     // input_hash / input_size_bytes are derived from the payload, not supplied by the caller.
     expect(toHex(order.inputHash)).toBe(toHex(sha256(PAYLOAD)));
     expect(order.inputSizeBytes).toBe(BigInt(PAYLOAD.length));
     // The on-chain context is signed in as-is.
     expect(order.builderSetId).toBe('genesis-1');
-    expect(toHex(order.sessionAnchorBlockHash)).toBe(hexOf(0x14));
+    expect(hash32Text(order.sessionAnchorBlockHash)).toBe(hexOf(0x14));
     expect(order.timeoutBucketVersion).toBe(1n);
     // Being able to compute the digest means the scalar scope is fully satisfied.
-    expect(taskOrderHashHex(order)).toMatch(/^[0-9a-f]{64}$/);
+    expect(taskOrderHashHex(order)).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
   it('payload change → input_hash and task_hash both change', () => {
@@ -101,7 +102,9 @@ describe('buildTaskOrder', () => {
     ['output_budget_bucket is 0', { outputBudgetBucket: 0 }, 'SDK_LOCAL_OUTPUT_BUCKET_INVALID'],
     ['latency_class is unspecified', { latencyClass: DEADLINE_LATENCY_CLASS.UNSPECIFIED }, 'SDK_LOCAL_LATENCY_CLASS_INVALID'],
     ['earliest >= expire', { earliestSubmitHeight: 50_100n }, 'SDK_LOCAL_ORDER_WINDOW_INVALID'],
-    ['session_id is not 64-hex', { sessionId: 'sess-1' }, 'SDK_LOCAL_NOT_HASH32'],
+    ['session_id is not a Hash32', { sessionId: 'sess-1' }, 'SDK_LOCAL_NOT_HASH32'],
+    ['session_id is bare 64-hex without 0x', { sessionId: '12'.repeat(32) }, 'SDK_LOCAL_NOT_HASH32'],
+    ['session_id is 0x + uppercase hex', { sessionId: `0x${'AB'.repeat(32)}` }, 'SDK_LOCAL_NOT_HASH32'],
   ])('%s → fails fast locally', (_name, patch, code) => {
     expect(codeOf(patch as Partial<TaskOrderRequest>)).toBe(code);
   });
@@ -157,7 +160,7 @@ describe('resolveTaskOrderContext', () => {
   it('anchor uses latest-lag, gets block_hash from beacon and the current effective version from bucket', async () => {
     const hub = readerFor(1000, {
       'builder_set/by_height/998': SET_BODY,
-      'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14), randomness_hex: hexOf(0x01), source_tag: 'proposer_vrf_v1', verified: true } },
+      'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14), randomness_hex: toHex(rep(0x01, 32)), source_tag: 'proposer_vrf_v1', verified: true } },
       'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
     });
     const c = await resolveTaskOrderContext(hub, 'trueopen-localnet-1');

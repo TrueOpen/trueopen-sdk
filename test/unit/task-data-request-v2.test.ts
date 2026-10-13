@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { strictHash32 } from '../../src/codec/hash32';
 import { createRouterTransport, ConnectError, Code } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type { GetTaskDataMetadataRequest, FetchTaskDataRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
@@ -97,10 +98,10 @@ describe('TaskDataRequest version 2 (USER path)', () => {
 });
 
 describe('IngressClient Task data requests with a session', () => {
-  const S = '77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
-  const T = 'bce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
+  const S = '0x77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
+  const T = '0xbce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
   const BUILDER = 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man';
-  const ref = (objectKind: number) => ({ taskHash: '58'.repeat(32), sessionId: S, taskId: T, objectKind, contentHash: '22'.repeat(32) });
+  const ref = (objectKind: number) => ({ taskHash: `0x${'58'.repeat(32)}`, sessionId: S, taskId: T, objectKind, contentHash: `0x${'22'.repeat(32)}` });
 
   function setup(expiredOnce = false) {
     const meta: GetTaskDataMetadataRequest[] = [];
@@ -137,7 +138,8 @@ describe('IngressClient Task data requests with a session', () => {
   const recoversTo = (a: NonNullable<GetTaskDataMetadataRequest['requestAuth']>, grant?: ActiveSession['grant']): string => {
     const f: TaskDataRequestAuthFields = {
       schemaVersion: a.schemaVersion, chainId: a.chainId, builderOperatorAddress: a.builderOperatorAddress, rpcMethod: a.rpcMethod,
-      bodyDigest: fromHex(a.bodyDigest), requesterKind: a.requesterKind, requesterAddress: a.requesterAddress,
+      // body_digest travels as Hash32 text, 0x + 64 lowercase hex.
+      bodyDigest: strictHash32('body_digest', a.bodyDigest), requesterKind: a.requesterKind, requesterAddress: a.requesterAddress,
       serviceAuthorizationNonce: a.serviceAuthorizationNonce, requestNonce: a.requestNonce, expiryHeight: a.expiryHeight,
     };
     const digest = taskDataRequestEip712Digest(f, EVM, grant !== undefined ? sessionGrantHash(grant) : undefined);

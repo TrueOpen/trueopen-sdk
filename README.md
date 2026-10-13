@@ -140,7 +140,7 @@ const res = await client.openTask({
   orderSequence,
   idempotencyKey: `${sessionId}:${orderSequence}`, // keep it across retries
   order: {
-    modelId: '<64hex>', // raw Hash32 model ID, lowercase hex
+    modelId: '0x<64hex>', // Hash32 model ID: 0x + 64 lowercase hex
     profileVersion: 1,
     taskType: TASK_TYPE.TEXT_GENERATION,
     payload: new TextEncoder().encode('hello'), // input_hash / size are derived from this
@@ -228,6 +228,16 @@ Without the order result at hand, `resolveBuilderEndpoints(hub)` lists every act
 endpoint to try instead (that is what `examples/fetch-output.mjs` does).
 
 `TrueOpenClient` methods (see `src/client.ts` for the authoritative signatures):
+
+**Hash32 text form (ADR-0034).** Every 32-byte digest or ID the SDK takes or returns as a string
+-- `sessionId`, `taskId`, `taskHash`, `modelId`, `inputHash`, `outputHash`, `manifestHash`,
+`builderSetHash`, the session anchor block hash, `tlsPubkeyHash`, `rankHash`, and the rest -- is
+`0x` followed by exactly 64 lowercase hex characters (66 in all). Input accepts only that form:
+a bare 64-hex string, uppercase hex, `0X` or any other length is refused (`SDK_LOCAL_NOT_HASH32`
+and friends). The SDK sends these strings to the Nexus ingress and node REST paths as is, and
+decodes them to raw 32 bytes only for protobuf bytes fields, EIP-712 `bytes32` values and hash
+preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32Text`,
+`isHash32Text` and `strictHash32` are exported for callers that convert themselves.
 
 | Method | Description |
 |---|---|
@@ -348,8 +358,9 @@ const json = serializeOutputStreamCheckpoint(checkpoint);
 const restored = deserializeOutputStreamCheckpoint(json);
 ```
 
-JSON V1 encodes bytes as lowercase hex / canonical padded base64, and u64 as canonical decimal
-text; decoding rejects unknown fields, non-canonical encodings, malformed peak shapes, and any
+JSON V1 encodes Hash32 values (`task_hash`, MMR peak hashes) as `0x` + 64 lowercase hex, the
+33-byte Worker key as bare lowercase hex, chunks as canonical padded base64, and u64 as canonical
+decimal text; decoding rejects unknown fields, non-canonical encodings, malformed peak shapes, and any
 mismatch between the peaks and the chunks' root.
 
 **Receipt confirmation**: chunks received over the stream are only provisional once the Worker
@@ -670,8 +681,8 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to the `feat/signature-chain-id` branch
-(`8a4d726`, pre-v0.5.0), carrying the signer-chosen `signature_chain_id`. **This repo no longer keeps
+pinned as a submodule at `third_party/wire` to `main` (`41af15b`, pre-v0.5.0), carrying the
+signer-chosen `signature_chain_id` and the `0x`-prefixed Hash32 text form (wire #44). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -685,8 +696,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (`feat/signature-chain-id` @ `8a4d726`) |
-| `task.v1` / `shared.v1` | `third_party/wire` (`feat/signature-chain-id` @ `8a4d726`) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (`main` @ `41af15b`) |
+| `task.v1` / `shared.v1` | `third_party/wire` (`main` @ `41af15b`) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK
@@ -736,7 +747,7 @@ from `--payload-file` and the on-chain height.
 
 ```json
 {
-  "modelId": "<64hex>",
+  "modelId": "0x<64hex>",
   "profileVersion": 1,
   "taskType": "TEXT_GENERATION",
   "inputBucket": 1,

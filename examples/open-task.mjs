@@ -8,7 +8,7 @@
 //
 // Run:
 //   TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..." \
-//   TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_MODEL_ID=<64-hex model id> \
+//   TRUEOPEN_SESSION_ID=<session id> TRUEOPEN_MODEL_ID=<0x + 64-hex model id> \
 //   TRUEOPEN_ALLOW_INSECURE_HTTP=1 \      # localnet only: its nexus endpoints are plain http
 //   node examples/open-task.mjs
 //
@@ -43,7 +43,7 @@ try {
     // Must stay the same when retrying this order.
     idempotencyKey: `${sessionId}:${orderSequence}`,
     order: {
-      modelId: env('TRUEOPEN_MODEL_ID'), // raw Hash32, lowercase 64-hex
+      modelId: env('TRUEOPEN_MODEL_ID'), // Hash32, 0x + 64 lowercase hex
       profileVersion: Number(env('TRUEOPEN_PROFILE_VERSION', '1')),
       taskType: TASK_TYPE.TEXT_GENERATION,
       payload,

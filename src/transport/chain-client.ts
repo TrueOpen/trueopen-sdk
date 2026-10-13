@@ -19,7 +19,7 @@ export interface ChainClient extends ChainReader {
 }
 
 export interface CreateSessionResult {
-  /** Canonical lowercase 64-hex (32-byte bytes field in the node proto); can be sent to nexus as-is. */
+  /** Hash32 text, `0x` + 64 lowercase hex (32-byte bytes field in the node proto); can be sent to nexus as-is. */
   readonly sessionId: string;
   /** Session owner; not present on the node response, filled in by the write side from the tx signer. */
   readonly owner: string;
@@ -30,7 +30,7 @@ export interface CreateSessionResult {
 }
 
 export interface CancelOrderInput {
-  /** Canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly sessionId: string;
   readonly orderSequence: bigint;
   /**
@@ -41,7 +41,7 @@ export interface CancelOrderInput {
   readonly ownerSignature?: string;
 }
 export interface CancelOrderResult {
-  /** Canonical lowercase 64-hex; the node returns task_id here, not session_id. */
+  /** Hash32 text, `0x` + 64 lowercase hex; the node returns task_id here, not session_id. */
   readonly taskId: string;
   readonly cancelledSequence: bigint;
   readonly nextExpectedSequence: bigint;

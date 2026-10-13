@@ -43,7 +43,7 @@ function fakeClock(): { policy: Partial<QueryRetryPolicy>; delays: number[] } {
 
 const SESSION = {
   session: {
-    session_id: 'aa'.repeat(32), owner_user_address: 'trueopen1u', next_expected_sequence: '0',
+    session_id: `0x${'aa'.repeat(32)}`, owner_user_address: 'trueopen1u', next_expected_sequence: '0',
     last_active_height: '10', open_pending_count: 0, status: 'SESSION_STATUS_IDLE',
   },
 };
@@ -110,7 +110,7 @@ describe('RestChainReader retries reads', () => {
     const clock = fakeClock();
     const { fetch, calls } = scriptedFetch([() => { throw socketClosed(); }, okJson(SESSION)]);
     const r = new RestChainReader({ baseUrl: 'http://n:1317', fetch, retry: clock.policy });
-    const s = await r.querySession('aa'.repeat(32));
+    const s = await r.querySession(`0x${'aa'.repeat(32)}`);
     expect(s.status).toBe('IDLE');
     expect(calls()).toBe(2);
   });
@@ -119,12 +119,12 @@ describe('RestChainReader retries reads', () => {
     const clock = fakeClock();
     const a = scriptedFetch([httpErr(503), okJson(SESSION)]);
     await expect(new RestChainReader({ baseUrl: 'http://n:1317', fetch: a.fetch, retry: clock.policy })
-      .querySession('aa'.repeat(32))).resolves.toBeDefined();
+      .querySession(`0x${'aa'.repeat(32)}`)).resolves.toBeDefined();
     expect(a.calls()).toBe(2);
 
     const b = scriptedFetch([httpErr(404)]);
     await expect(new RestChainReader({ baseUrl: 'http://n:1317', fetch: b.fetch, retry: clock.policy })
-      .querySession('aa'.repeat(32))).rejects.toMatchObject({ code: 'CHAIN_QUERY_NOT_FOUND' });
+      .querySession(`0x${'aa'.repeat(32)}`)).rejects.toMatchObject({ code: 'CHAIN_QUERY_NOT_FOUND' });
     expect(b.calls()).toBe(1);
   });
 
@@ -133,13 +133,13 @@ describe('RestChainReader retries reads', () => {
     const truncated: FetchResponse = { ok: true, status: 200, json: async () => { throw socketClosed(); } };
     const a = scriptedFetch([truncated, okJson(SESSION)]);
     await expect(new RestChainReader({ baseUrl: 'http://n:1317', fetch: a.fetch, retry: clock.policy })
-      .querySession('aa'.repeat(32))).resolves.toBeDefined();
+      .querySession(`0x${'aa'.repeat(32)}`)).resolves.toBeDefined();
     expect(a.calls()).toBe(2);
 
     // A body that parses but is not an object is the server's answer, not a blip.
     const b = scriptedFetch([okJson('a string')]);
     await expect(new RestChainReader({ baseUrl: 'http://n:1317', fetch: b.fetch, retry: clock.policy })
-      .querySession('aa'.repeat(32))).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+      .querySession(`0x${'aa'.repeat(32)}`)).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
     expect(b.calls()).toBe(1);
   });
 });

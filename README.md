@@ -204,7 +204,7 @@ let text = '';
     // try the next Builder
   }
 }
-console.log(text);                            // the presented view (chat-template EOS marker stripped)
+console.log(text);                            // the committed text (Cortex strips the trailing EOS)
 ```
 
 To resume after a disconnect, persist the checkpoint and pass it back (same per-Builder

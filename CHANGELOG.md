@@ -39,6 +39,18 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   their spelling. No digest changes.
 - Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); re-pin to the v0.5.0 tag once it ships.
 
+### Breaking: the SDK no longer strips a trailing EOS
+
+Cortex strips the trailing EOS before committing (ADR-0022 `output_decoding.strip_trailing_eos`),
+so the SDK's temporary tolerance is gone and the committed text is taken as is.
+
+- **Breaking:** `fetchTaskOutput().text` and `streamOutput` chunk `text` are the committed bytes
+  decoded, with no `<|im_end|>` stripped; `stripChatTemplateEos` is removed.
+- **Breaking:** the `trailingEosMarkers` option is removed from `DerivedViewOptions` and the tool
+  call / assistant-turn params, along with `stripTrailingEos`, `TrailingEosStripper`,
+  `assertNoEndMarkerCollision` and `ToolCallParser.endMarkers`, which existed only for that
+  stripping.
+
 ### Changed: a final call missing its closing marker is recovered after a natural stop
 
 - **Changed:** when the Worker-signed Fin says the model stopped by itself (`EOS_TOKEN` /

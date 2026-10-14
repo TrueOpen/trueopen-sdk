@@ -431,8 +431,8 @@ async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent>
 { kind: 'fin', attested: false, finishReason: undefined }   // only under 'accept-unsigned'
 ```
 
-- `text` is the **presented** view with the chat template's trailing EOS marker
-  (`<|im_end|>`) stripped; `mmrRoot` still covers the committed bytes.
+- `text` is the frame's committed bytes decoded; the SDK strips nothing (Cortex strips the
+  trailing EOS before committing). `mmrRoot` covers the committed bytes.
 - The stream completes only on a fin whose `final_seq` and `output_mmr_root` match the
   locally verified prefix **and** whose Worker signature verifies. An unsigned fin is a bad
   frame under the default policy; under the explicit opt-in it ends the stream as
@@ -450,7 +450,7 @@ expiresAtHeight?, maxRangeBytes?, rangeAttempts? }`. Fetches in ranges (≤
 retries a range that failed on transport (with backoff), checks the metadata against the
 accepted receipt, and computes the MMR root against `output_hash`. A size-0 object is
 returned verified as one zero-length leaf without a fetch. `bytes` is the committed object;
-`text` has the EOS marker stripped.
+`text` is its decoding, with nothing stripped.
 
 ### 8.5 Confirmation
 
@@ -920,7 +920,7 @@ for (const b of result.builders.filter((x) => x.ack?.accepted)) {
     // try the next Builder
   }
 }
-console.log(text);                            // presented view (chat-template EOS stripped)
+console.log(text);                            // the committed text
 ```
 
 To resume after a disconnect, persist `onCheckpoint` and pass it back on the next call:
@@ -958,7 +958,7 @@ for (const b of result.builders.filter((x) => x.ack?.accepted)) {
   }
 }
 if (!output) throw new Error('no accepted builder served the output');
-console.log(output.text);                     // presented text (EOS stripped)
+console.log(output.text);                     // the committed text, decoded
 // output.bytes is the committed object; output.outputHash is the MMR root the receipt commits to.
 
 // Optionally upgrade to "confirmed" using the on-chain receipt.

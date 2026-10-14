@@ -130,7 +130,6 @@ function extractRawArguments(inner: string): string | undefined {
 export const hermesParser: ToolCallParser = {
   name: 'hermes',
   version: 1,
-  endMarkers: [END_MARKER],
   parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage {
     // Reuse the streaming machine so the full-text and streaming paths cannot diverge: a chunk
     // boundary is the Worker's choice and must not change the parse (design S7 requirement 1).

@@ -438,8 +438,6 @@ export interface ToolCallParams {
   readonly registry?: ToolCallRegistry;
   /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
   readonly allowUnverified?: boolean;
-  /** Caller-supplied EOS tolerance (design S13.2), carried through to the derive layer. */
-  readonly trailingEosMarkers?: readonly string[];
   /**
    * The profile's on-chain reasoning parser (ProfileInfo.reasoningParser). When it resolves, the
    * leading reasoning span is split off first and tool calls are parsed from the remainder only
@@ -472,7 +470,6 @@ export interface AssistantTurnParams extends Omit<StreamOutputParams, 'taskHash'
   readonly reasoningRegistry?: ReasoningRegistry;
   /** Whether unverified parsers may be used (both built-in parsers are unverified until their vectors exist). */
   readonly allowUnverified?: boolean;
-  readonly trailingEosMarkers?: readonly string[];
   /** How long to wait for the accepted InferReceipt after the stream ends; default 120 s. */
   readonly receiptTimeoutMs?: number;
   /** Interval between receipt reads; default 1000 ms. */
@@ -1038,10 +1035,10 @@ export class TrueOpenClient {
     });
 
     return {
-      // bytes is the committed object verbatim; text is the presented view with the chat
-      // template's trailing EOS marker stripped. They differ only by that suffix.
+      // bytes is the committed object; text is its decoding. Cortex strips the trailing EOS
+      // before committing (output_decoding.strip_trailing_eos), so nothing is stripped here.
       bytes,
-      text: stripChatTemplateEos(new TextDecoder().decode(bytes)),
+      text: new TextDecoder().decode(bytes),
       outputHash: got,
       taskHash,
       chunks,
@@ -1218,9 +1215,8 @@ export class TrueOpenClient {
             yield {
               kind: 'chunk',
               seq: c.seq,
-              // text is the presented view (chat-template EOS stripped); mmrRoot still
-              // covers the committed bytes, so it is what verification ran against.
-              text: stripChatTemplateEos(new TextDecoder().decode(c.text)),
+              // mmrRoot covers the committed bytes, so it is what verification ran against.
+              text: new TextDecoder().decode(c.text),
               mmrRoot: Uint8Array.from(c.mmrRoot),
             };
             continue;
@@ -1345,10 +1341,7 @@ export class TrueOpenClient {
       yield* deriveAssistantStream(this.streamOutput(p), p);
       return;
     }
-    yield* deriveAssistantStream(this.streamOutput(p), {
-      ...resolveParsers(p),
-      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
-    });
+    yield* deriveAssistantStream(this.streamOutput(p), resolveParsers(p));
   }
 
   /**
@@ -1369,10 +1362,7 @@ export class TrueOpenClient {
   confirmAssistantMessage(p: ConfirmOutputParams & (DerivedViewOptions | ToolCallParams)): ConfirmedAssistantMessage {
     const receiptInput = { chainId: this.cfg.chainId, taskId: p.taskId, taskHash: p.taskHash, checkpoint: p.checkpoint, receipt: p.receipt };
     if ('parser' in p) return confirmAssistantMessageWithReceipt(receiptInput, p);
-    return confirmAssistantMessageWithReceipt(receiptInput, {
-      ...resolveParsers(p),
-      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
-    });
+    return confirmAssistantMessageWithReceipt(receiptInput, resolveParsers(p));
   }
 
   /**
@@ -1422,7 +1412,6 @@ export class TrueOpenClient {
         ...(p.reasoningRegistry !== undefined ? { reasoningRegistry: p.reasoningRegistry } : {}),
         ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
       }),
-      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
     };
 
     let checkpoint: OutputStreamVerifierCheckpoint | undefined;
@@ -1517,7 +1506,6 @@ export class TrueOpenClient {
     const finish = got.finishReason !== undefined ? { finishReason: got.finishReason } : {};
     const message = deriveAssistantMessage(got.text, 'parser' in p ? { ...p, ...finish } : {
       ...resolveParsers(p),
-      ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
       ...finish,
     });
     // fetchTaskOutput already held root, size and leaf count to this receipt.
@@ -1708,25 +1696,6 @@ export const DEFAULT_TASK_DATA_EXPIRY_BLOCKS = 10;
 
 /** nexus's default max range (task_data.max_range_bytes); a larger single read is refused. */
 export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;
-
-/**
- * Qwen3's chat template ends every assistant turn with the literal `<|im_end|>` marker (its
- * end-of-turn / EOS token). The serving layer applies the template but does not yet strip
- * that trailing marker, so it is committed on chain as part of the output bytes. It is not
- * model content, so the SDK strips it from the *presented* text while the committed bytes
- * stay untouched -- verification still runs over the bytes that hash to the on-chain
- * receipt. Trailing whitespace left behind by the template is dropped with it.
- *
- * Temporary: once cortex strips the marker server side this becomes a no-op.
- */
-const CHAT_TEMPLATE_EOS = '<|im_end|>';
-
-export function stripChatTemplateEos(text: string): string {
-  if (text.endsWith(CHAT_TEMPLATE_EOS)) {
-    return text.slice(0, -CHAT_TEMPLATE_EOS.length).trimEnd();
-  }
-  return text;
-}
 
 function minBig(a: bigint, b: bigint): bigint {
   return a < b ? a : b;

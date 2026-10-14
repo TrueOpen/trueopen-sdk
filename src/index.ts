@@ -320,7 +320,7 @@ export type {
   VerifiedOutputFin,
 } from './output/output-commitment';
 
-export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS, stripChatTemplateEos } from './client';
+export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,
@@ -351,7 +351,6 @@ export {
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
 export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
-export { assertNoEndMarkerCollision, TrailingEosStripper, stripTrailingEos } from './toolcall/committed-text';
 export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan';
 export {
   BUILTIN_TOOL_CALL_PARSERS,

@@ -3,7 +3,6 @@ import {
   type ConfirmOutputWithReceiptInput,
 } from '../output/output-confirmation';
 import { concatBytes } from '../util/bytes';
-import { assertNoEndMarkerCollision, TrailingEosStripper, stripTrailingEos } from './committed-text';
 import { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
 import type {
   AssistantStreamEvent,
@@ -20,18 +19,6 @@ export interface DerivedViewOptions {
    * resolves it from the profile manifest's `tool_calling.parser {name, version}`.
    */
   readonly parser: ToolCallParser;
-  /**
-   * Decoded end-of-sequence markers to strip if present (design S13.2).
-   *
-   * Caller-supplied, permanently. Manifest S7.1 says the SDK is not EOS-aware and needs no
-   * tokenizer, and the manifest's own `eos_token_ids` are `[]u32` token ids that nothing
-   * here could turn into strings. So this is a tolerance for a producer that has not caught
-   * up, not a placeholder for a later manifest lookup.
-   *
-   * Empty means strip nothing, which is the correct setting once Cortex strips the EOS
-   * itself -- at which point this option should be deleted rather than defaulted.
-   */
-  readonly trailingEosMarkers?: readonly string[];
   /**
    * Splits the leading reasoning span off before tool-call parsing (Manifest S7.3 rule 5), so a
    * tool-call marker written while reasoning is never a call (rule 7). Omit it when the profile
@@ -96,8 +83,6 @@ export async function* deriveAssistantStream(
   source: AsyncIterable<OutputEventLike>,
   opts: DerivedViewOptions,
 ): AsyncIterable<AssistantStreamEvent> {
-  assertNoEndMarkerCollision(opts.parser.endMarkers ?? [], opts.trailingEosMarkers ?? []);
-  const stripper = new TrailingEosStripper(opts.trailingEosMarkers ?? []);
   const state = opts.parser.createStreamState();
   // Chained, not parallel (S7.3 rule 10): reasoning first, the tool parser sees only the remainder.
   const reasoning = opts.reasoning?.createStreamState();
@@ -115,11 +100,8 @@ export async function* deriveAssistantStream(
   for await (const event of source) {
     if (event.kind === 'fin') finishReason = event.finishReason;
     if (event.kind !== 'chunk') continue;
-    const safe = stripper.push(event.text);
-    if (safe !== '') yield* feed(safe);
+    yield* feed(event.text);
   }
-  const tail = stripper.finish();
-  if (tail !== '') yield* feed(tail);
   if (reasoning !== undefined) {
     for (const e of reasoning.finish()) {
       if (e.kind === 'reasoning') yield e;
@@ -155,12 +137,7 @@ export function confirmAssistantMessageWithReceipt(
   const text = new TextDecoder().decode(
     concatBytes(...input.checkpoint.chunks.map((chunk) => Uint8Array.from(chunk))),
   );
-  // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
-  const message = parseWithReasoning(
-    stripTrailingEos(text, opts.trailingEosMarkers ?? []),
-    opts,
-    confirmation.finishReason,
-  );
+  const message = parseWithReasoning(text, opts, confirmation.finishReason);
   return {
     ...message,
     confirmation,
@@ -184,6 +161,5 @@ export function deriveAssistantMessage(
   text: string,
   opts: DerivedViewOptions,
 ): DerivedAssistantMessage {
-  // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
-  return parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts, opts.finishReason);
+  return parseWithReasoning(text, opts, opts.finishReason);
 }

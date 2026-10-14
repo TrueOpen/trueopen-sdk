@@ -124,18 +124,9 @@ describe('deriveAssistantStream', () => {
     ]);
   });
 
-  it('strips a trailing EOS that arrives as its own frame', async () => {
-    const events = await collect(
-      deriveAssistantStream(frames('sunny', '<|im_end|>'), { parser, trailingEosMarkers: ['<|im_end|>'] }),
-    );
-    expect(events).toEqual([{ kind: 'content', text: 'sunny' }]);
-  });
-
-  it('keeps an EOS that is not trailing', async () => {
-    const events = await collect(
-      deriveAssistantStream(frames('a<|im_end|>b'), { parser, trailingEosMarkers: ['<|im_end|>'] }),
-    );
-    expect(events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join('')).toBe('a<|im_end|>b');
+  it('takes the committed text as is: Cortex strips the EOS, the SDK strips nothing', async () => {
+    const events = await collect(deriveAssistantStream(frames('sunny', '<|im_end|>'), { parser }));
+    expect(events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join('')).toBe('sunny<|im_end|>');
   });
 
   it('flushes an unclosed segment at fin rather than dropping it', async () => {
@@ -280,9 +271,7 @@ describe('deriveAssistantMessage', () => {
     });
   });
 
-  it('strips a trailing EOS first', () => {
-    expect(
-      deriveAssistantMessage('sunny<|im_end|>', { parser, trailingEosMarkers: ['<|im_end|>'] }).content,
-    ).toBe('sunny');
+  it('takes the committed text as is, with nothing stripped', () => {
+    expect(deriveAssistantMessage('sunny<|im_end|>', { parser }).content).toBe('sunny<|im_end|>');
   });
 });

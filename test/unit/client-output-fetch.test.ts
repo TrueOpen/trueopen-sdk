@@ -8,7 +8,7 @@ import type {
   GetTaskDataMetadataRequest,
   SubscribeOutputRequest,
 } from '../../src/gen/nexus/v1/ingress_pb.js';
-import { TrueOpenClient, stripChatTemplateEos } from '../../src/client';
+import { TrueOpenClient } from '../../src/client';
 import { TrueOpenError } from '../../src/errors/errors';
 import type { OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
@@ -235,6 +235,16 @@ describe('fetchTaskOutput', () => {
     expect(new Set(log.expiries)).toEqual(new Set([510n]));
   });
 
+  it('returns the committed text as is: the SDK strips no EOS marker', async () => {
+    const bytes = new TextEncoder().encode('9<|im_end|>');
+    const root = hash32Text(outputMmrRoot([bytes]));
+    const reader = taskReader({ receipt: receiptFor(root, BigInt(bytes.length), 1n) });
+    const got = await makeClient(dataTransport(bytes, [bytes.length], newLog()), reader).fetchTaskOutput({
+      sessionId: SESSION, taskId: TASK, builderAddress: BUILDER,
+    });
+    expect(got.text).toBe('9<|im_end|>');
+  });
+
   it('defaults to nexus max range (8 MiB), so a small object is one range', async () => {
     const log = newLog();
     await makeClient(dataTransport(BYTES, [6, 6, 6], log)).fetchTaskOutput({ sessionId: SESSION, taskId: TASK, builderAddress: BUILDER });
@@ -376,18 +386,6 @@ describe('streamOutput trust anchors', () => {
     expect(attested).toBe(true);
     // The receipt is not needed for streaming.
     expect(reader.receiptReads).toBe(0);
-  });
-});
-
-describe('stripChatTemplateEos', () => {
-  it('strips a trailing <|im_end|> and the template whitespace left before it', () => {
-    expect(stripChatTemplateEos('9<|im_end|>')).toBe('9');
-    expect(stripChatTemplateEos('答案是 9\n<|im_end|>')).toBe('答案是 9');
-  });
-
-  it('leaves text without the marker untouched, including an embedded marker', () => {
-    expect(stripChatTemplateEos('答案是 9')).toBe('答案是 9');
-    expect(stripChatTemplateEos('a<|im_end|>b')).toBe('a<|im_end|>b'); // not trailing
   });
 });
 

@@ -138,10 +138,6 @@ export interface ToolCallParser {
   // parser (S6: no path guesses a format). Manifest S7.2.
   readonly name: string;
   readonly version: number;   // version of the canonical parser spec, >= 1
-  /** The marker(s) that terminate a tool call (e.g. `</tool_call>`), exposed so the
-   *  EOS/end-marker collision guard (S10.3) can reject a parser whose end marker overlaps a
-   *  configured EOS marker. Omitted by parsers with no explicit end marker. */
-  readonly endMarkers?: readonly string[];
   parseComplete(text: string): DerivedAssistantMessage;
   createStreamState(): ToolCallStreamState;
 }
@@ -526,13 +522,11 @@ with a drift guard (`test/unit/wire-vector-provenance.test.ts`), and P2 was buil
 `src/manifest/` recomputes `manifest_hash` and reproduces the published `digest_hex` byte for byte.
 
 One row that used to be in this table has been removed rather than updated:
-`trailingEosMarkers` was listed as caller-supplied in phase 1 and manifest-supplied in
-phase 3. **That was wrong in both directions.** Manifest S7.1's consumer note says the SDK
-is not EOS-aware and needs no tokenizer, and the manifest's `eos_token_ids` are `[]u32`
-token ids that this SDK could not turn into strings if it wanted to. The option is a
-tolerance for a producer that has not caught up (S13.2), it stays caller-supplied, and the
-correct end state is deleting it once Cortex strips the EOS itself -- not sourcing it from
-anywhere.
+`trailingEosMarkers`, a caller-supplied tolerance for committed text that still carried the
+trailing EOS (S13.2). Manifest S7.1's consumer note says the SDK is not EOS-aware and needs
+no tokenizer, so its end state was always deletion once Cortex strips the EOS itself. Cortex
+now does, and the option is gone (2026-10-14), together with the hard-coded `<|im_end|>`
+stripping of the presented text and the EOS/end-marker collision guard below.
 
 ### 10.2 `reasoning_parsing`
 
@@ -576,21 +570,10 @@ vectors when they ship.
 
 Two items, recorded here because nothing else in this document would carry them:
 
-- **The EOS/end-marker collision guard is missing.** `deriveAssistantStream` runs the EOS
-  stripper before the marker state machine. If a configured EOS marker overlaps the parser's
-  end marker at the seam, the stripper withholds the characters that would have completed
-  the end marker and the tool call is silently lost as plain text. In P1 both values are
-  caller-supplied, so this is only reachable by deliberate misconfiguration. **In P3 only the
-  parser -- and with it the end marker -- is manifest-selected (`tool_calling.parser {name,
-  version}`); the EOS markers stay caller-supplied (S10.1).** So the end marker is no longer
-  visible at the call site, and a profile whose selected parser's end marker overlaps the
-  caller's EOS markers would collide with nothing objecting.
-  The guard must be symmetric -- reject when `endMarker.endsWith(m) || m.endsWith(endMarker)`
-  for any EOS marker `m`. A one-sided check (only "EOS is a suffix of the end marker") misses
-  the mirror case: with end `</tc>` and EOS `}</tc>`, the call is lost and a `}` eaten as
-  well, yet `'</tc>'.endsWith('}</tc>')` is false. Do not reorder the two layers instead:
-  running the parser first would feed it the trailing EOS, and S13.2 exists precisely so that
-  no parser tolerates one.
+- ~~**The EOS/end-marker collision guard is missing.**~~ Moot: the guard was built, and then
+  removed with the EOS stripper it protected (S10.1). With no stripper in front of the marker
+  state machine there is nothing to collide with, and `ToolCallParser.endMarkers`, which
+  existed only for the guard, is gone too.
 - **S5.1's degradation path does not exist.** The design has `streamAssistantMessage` call
   `resolveToolCalling` internally and degrade to emitting `content` only when unsupported.
   P1 takes a non-optional `parser` instead, which is safer here -- the method is unreachable
@@ -734,26 +717,19 @@ So a frame carries exactly what the model wrote:
 
 This is the premise the whole design rests on, and it holds.
 
-### 13.2 The committed text still carries a trailing EOS
+### 13.2 The trailing EOS (resolved)
 
-cortex concatenates every token's bytes "**including the trailing EOS special token,
-which the engine drops from message.content**".
+When this was written, cortex concatenated every token's bytes "**including the trailing
+EOS special token, which the engine drops from message.content**", while ADR-0022 v1.4 fixes
+`output_decoding.strip_trailing_eos` to `true`: committed output is `decode(T)` with the
+trailing `eos_token_ids` removed. Cortex confirmed it would strip it (2026-09-23), and the SDK
+carried a temporary strip-if-present in the layer that assembles committed text, never in
+the parsers.
 
-ADR-0022 v1.4 says the opposite: `output_decoding.strip_trailing_eos` is fixed `true`, and
-committed output is `decode(T)` with the trailing `eos_token_ids` removed.
-
-**cortex will strip it; that change has simply not landed yet** (confirmed with the cortex
-side, 2026-09-23). So this is not an open disagreement to be resolved -- the spec is
-settled and the producer is behind it.
-
-That makes the tolerance definitively temporary, which decides where it goes:
-
-> **Handle the trailing EOS in exactly one place, outside the parsers.** A parser that
-> tolerates a trailing marker is a parser written against a behaviour that is scheduled to
-> disappear, and it will then disagree with the cross-language vectors, which are authored
-> against the spec rather than against today's producer. Strip-if-present belongs in the
-> layer that assembles committed text from frames, so that deleting it later is a one-line
-> change and the parsers never encoded the divergence.
+Cortex now strips it: devnet and testnet outputs that ended by EOS commit no `<|im_end|>`
+(checked 2026-10-14). The SDK's tolerance -- `trailingEosMarkers` and the `<|im_end|>`
+stripping of `fetchTaskOutput` / `streamOutput` text -- has been deleted. The SDK takes the
+committed text as is.
 
 ### 13.3 The chat path has no stop conditions
 

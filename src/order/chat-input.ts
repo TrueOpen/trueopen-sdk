@@ -11,9 +11,11 @@ import { TrueOpenError } from '../errors/errors';
  * they receive and never re-encode them, so the SDK's only obligation is to produce one byte
  * sequence per request and reuse it on every retry (monorepo#30, sdk_详细设计 §2.4 step 0).
  *
- * **Not yet cross-checked.** The rule is canonical_json_v1 with snake_case keys; wire has not
- * published `chat_infer_input_canonical_v1`, so these bytes are self-consistent but have not
- * been compared against another implementation. Revisit when the vectors ship.
+ * **This encoder is the rule.** canonical_json_v1 with snake_case keys, as implemented here. No
+ * other component re-encodes the payload -- Builders, Cortex and Verifiers only hash the bytes
+ * they receive -- so the only requirement is that the SDK emits the same bytes for the same
+ * request every time; there is no external vector to wait for. Changing the rule changes every
+ * `input_hash` (and so the idempotency check across SDK versions), so treat it as frozen.
  *
  * The shape is the OpenAI Chat Completions request body, as Cortex forwards it to vLLM:
  * `tools[].function.parameters` is a JSON Schema object, not the JSON string the proto

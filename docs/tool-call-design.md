@@ -516,9 +516,9 @@ This posture is already what the code does; it costs nothing to hold.
 
 | Blocker | What the SDK does meanwhile | What changes when it lands |
 |---|---|---|
-| **payload canonical encoding** (`monorepo#30`) | `task-order-input.ts` computes `inputHash: sha256(req.payload)` over a caller-supplied `Uint8Array`. The payload is opaque: never parsed, never re-serialized. | Add a canonical encoder for `ChatInferInput`, modelled on the existing `canonicalOrderEnvelopeJson`. `inputHash` then hashes the canonicalized bytes rather than whatever the caller passed, and the SDK gains a documented rule about which of the several legal serializations it emits. |
+| **payload canonical encoding** (`monorepo#30`) | **Cleared (2026-10-14): the SDK's encoder is the rule.** `chatInferInputBytes` encodes `ChatInferInput` once with canonical_json_v1 (snake_case keys) and the bytes are reused on every retry. No other component re-encodes the payload, so no `chat_infer_input_canonical_v1` vector is awaited. | -- |
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
-| **parser vectors** (`monorepo#11`) | No concrete parser ships. The registry can hold one as `'unverified'`, which is the honest state, but nothing is registered. | Write the parsers, run them against the published vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
+| **parser vectors** (`monorepo#11`, `monorepo#61`) | `hermes@1` and `qwen3@1` ship in the built-in registries as `'unverified'`, so callers pass `allowUnverified`. wire has no parser vectors (main `41af15b`); a 121-case corpus from vLLM and Dynamo tests (`test/fixtures/reference/`) pins today's behaviour as a reference, not an authority. | Run the parsers against the vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
 
 The **V4 manifest vectors** row has cleared rather than been updated: wire shipped the V4
 manifest vector in v0.3.0-rc.1, the SDK vendored it as `test/fixtures/wire/model_manifest_v4.json`
@@ -684,11 +684,11 @@ a serialization concern, not a parsing one.
 Two consequences for S10:
 
 - The phases stay as written. Nothing in P1-P4 depends on the input side.
-- But a **complete** tool call round trip needs the SDK to emit `ChatInferInput` with
-  `tools[]` and `task_type = TASK_TYPE_CHAT`, which it does not today: `TASK_TYPE` has a
-  `CHAT` constant, the live profile declares `TASK_TYPE_CHAT` among its `task_types`, and
-  the SDK still sends `TASK_TYPE_TEXT_GENERATION` with an opaque byte payload. Until that
-  lands, P1-P4 only cover the case where a model volunteers tool-call markers unprompted.
+- A **complete** tool call round trip needs the SDK to emit `ChatInferInput` with `tools[]`
+  and `task_type = TASK_TYPE_CHAT`. It does: `chatInferInputBytes` builds the payload
+  (messages, tools, tool_choice, a `tool` turn's `tool_call_id`), and trueopen-proxy and the
+  e2e script order with `TASK_TYPE_CHAT`. Multi-round tool calls have run end to end on the
+  devnet this way.
 
 ### 12.4 Open
 
@@ -697,16 +697,11 @@ that the input side was undefined -- has since largely lapsed: `ChatInferInput` 
 now lives in wire (S12.1), and it rejects the sampling parameters that `#8` warned would
 otherwise give generation params two sources of truth.
 
-- **Canonical encoding of the payload** (`monorepo#30`). `input_hash = sha256(payload)`
-  commits *bytes*, so key order, whitespace, number formatting and string escaping all
-  change the hash, and `chat_input.proto` notes that protojson also accepts OpenAI's
-  snake_case keys -- one meaning, several byte sequences. `input_hash` is therefore
-  currently a function of how a request was serialized rather than of the request. That
-  breaks three things: the Verifier cannot establish it is checking the same task, the
-  idempotency rule (same key + same `input_hash` returns the same result, same key +
-  different `input_hash` is rejected) misfires on a retry that re-serializes, and a
-  TypeScript SDK and a Go Cortex serializing "the same" object diverge. Compare
-  `canonical_order_envelope_json`, which already solves this shape for the order envelope.
+- ~~**Canonical encoding of the payload** (`monorepo#30`).~~ Settled. `input_hash` commits
+  bytes, and nothing downstream re-serializes them: Builders, Cortex and Verifiers hash the
+  bytes they receive. So the only requirement is one byte sequence per request from the
+  SDK, reused on every retry, and the SDK's `chatInferInputBytes` (canonical_json_v1,
+  snake_case keys) is the rule (2026-10-14). No cross-language vector is awaited.
 - **How the Verifier reproduces the prompt** (`monorepo#8`). Prefill verification needs the
   same prompt tokens, and the template is applied inside vLLM. Downstream of the item
   above: even with the bytes pinned, what the Verifier compares against is still unsettled.

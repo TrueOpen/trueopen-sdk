@@ -1,4 +1,5 @@
 import { toHex } from '../util/bytes';
+import { hash32Text } from '../codec/hash32';
 import { sha256 } from '../codec/hash';
 import { TrueOpenError } from '../errors/errors';
 import { signAndEncodeOrder } from './signed-order';
@@ -28,7 +29,7 @@ export interface BuildOpenTaskInput {
   readonly orderEip712: OrderEip712Context;
   /** The plaintext input payload itself; must match order.inputHash / inputSizeBytes. */
   readonly payload: Uint8Array;
-  /** The session the order belongs to, canonical lowercase 64-hex; must be the order's. */
+  /** The session the order belongs to, `0x` + 64 lowercase hex; must be the order's. */
   readonly sessionId: string;
   /** Must be TRUEOPEN_TASK_ID_V1(session_id, order_sequence) (deriveTaskId). */
   readonly taskId: string;
@@ -62,7 +63,7 @@ export interface BuildOpenTaskInput {
 
 export interface BuildOpenTaskResult {
   readonly input: OpenTaskInput;
-  /** canonical task_hash (lowercase 64-hex), covered as a bytes32 field by the inner EIP-712 signature. */
+  /** canonical task_hash (`0x` + 64 lowercase hex), covered as a bytes32 field by the inner EIP-712 signature. */
   readonly taskHash: string;
   /** Hex of the SignedOrderV2 bytes sent as order_envelope. */
   readonly orderEnvelopeHex: string;
@@ -93,8 +94,8 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
   // The order already signs input_hash / input_size_bytes into task_hash; this checks that
   // the payload matches: a mismatch would be rejected by nexus in validateOpenTaskHeader
   // (OpenTask input hash / commitment), so failing locally first is easier to diagnose.
-  const payloadHashHex = toHex(sha256(input.payload));
-  const committedHashHex = toHex(input.order.inputHash);
+  const payloadHashHex = hash32Text(sha256(input.payload));
+  const committedHashHex = hash32Text(input.order.inputHash);
   if (committedHashHex !== payloadHashHex) {
     throw local(
       'SDK_LOCAL_PAYLOAD_HASH_MISMATCH',
@@ -123,8 +124,9 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
   }
   // The Builder rejects an OpenTask whose task_id is not derived from the order's own session
   // and sequence; so does the SDK, before anything is signed.
-  if (toHex(input.order.sessionId) !== input.sessionId) {
-    throw local('SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH', `session_id ${input.sessionId} is not the order's ${toHex(input.order.sessionId)}`);
+  const orderSessionId = hash32Text(input.order.sessionId);
+  if (orderSessionId !== input.sessionId) {
+    throw local('SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH', `session_id ${input.sessionId} is not the order's ${orderSessionId}`);
   }
   const derived = deriveTaskId(input.sessionId, input.order.orderSequence);
   if (input.taskId !== derived) {
@@ -184,7 +186,7 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       payload: input.payload,
       ...(input.chunkSizeBytes !== undefined ? { chunkSizeBytes: input.chunkSizeBytes } : {}),
     },
-    taskHash: toHex(signed.taskHash),
+    taskHash: hash32Text(signed.taskHash),
     orderEnvelopeHex,
   };
 }

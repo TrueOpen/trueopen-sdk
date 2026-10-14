@@ -28,7 +28,7 @@ export interface ServiceEndpointV1 {
   readonly uri: string;
   readonly protocolVersion: string;
   /**
-   * sha256 of the certificate public key (SubjectPublicKeyInfo DER), lowercase hex;
+   * sha256 of the certificate public key (SubjectPublicKeyInfo DER), Hash32 text (`0x` + 64 lowercase hex);
    * an empty string if not set on-chain. When non-empty, the client trusts only this
    * public key (see transport/nexus-tls).
    */
@@ -51,7 +51,7 @@ export interface ServiceDescriptorRef {
   readonly participantId: string; // operator_address
   readonly descriptorVersion: bigint;
   readonly endpoints: readonly ServiceEndpointV1[];
-  /** descriptor_hash (base64->hex), the on-chain commitment. */
+  /** descriptor_hash as Hash32 text (`0x` + 64 lowercase hex), the on-chain commitment. */
   readonly descriptorHash: string;
   readonly updatedHeight: bigint;
 }
@@ -142,7 +142,7 @@ export interface ProfilePricing {
 export interface BuilderEndpoint {
   readonly builderAddress: string;
   readonly serviceEndpoint: string;
-  /** On-chain tls_pubkey_hash (hex); an empty string means it isn't registered. */
+  /** On-chain tls_pubkey_hash (`0x` + 64 lowercase hex); an empty string means it isn't registered. */
   readonly tlsPubkeyHash?: string;
   readonly descriptorHash: string;
   readonly descriptorVersion: bigint;
@@ -157,7 +157,7 @@ export interface BuilderEndpoint {
  */
 export interface BeaconView {
   readonly height: bigint;
-  /** canonical lowercase 64-hex. */
+  /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly blockHash: string;
   readonly randomnessHex: string;
   readonly sourceTag: string;
@@ -205,7 +205,7 @@ export interface BuilderSetSnapshot {
   readonly effectiveHeight: bigint;
   /** Comma-joined list of canonical bech32 builder addresses. */
   readonly builders: string;
-  /** The snapshot's set_hash (hex), used as part of the Stage-1 selection seed. */
+  /** The snapshot's set_hash (`0x` + 64 lowercase hex), used as part of the Stage-1 selection seed. */
   readonly setHash: string;
 }
 

@@ -24,12 +24,12 @@ import { createConnectTransport } from '@connectrpc/connect-node';
 import type { Transport } from '@connectrpc/connect';
 import { nexusHttpBaseUri } from '../types/hub';
 import { TrueOpenError } from '../errors/errors';
-
-const HEX64 = /^[0-9a-f]{64}$/;
+import { isHash32Text } from '../codec/hash32';
 
 /**
- * Certificate public key hash: sha256(SubjectPublicKeyInfo DER), lowercase hex,
- * matching the algorithm used on the nexus side.
+ * Certificate public key hash: sha256(SubjectPublicKeyInfo DER) as a Hash32 in its text
+ * form (`0x` + 64 lowercase hex, the spelling the REST tls_pubkey_hash carries), matching
+ * the algorithm used on the nexus side.
  *
  * The argument is a tls.PeerCertificate-like object; we take its `raw` (the
  * whole certificate DER), re-parse it, and export the SPKI. We don't use the
@@ -41,15 +41,18 @@ export function tlsPubkeyHashOfCertificate(cert: { readonly raw?: Buffer | Uint8
     throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_TLS_NO_CERTIFICATE', 'nexus TLS peer presented no certificate');
   }
   const spki = new X509Certificate(Buffer.from(cert.raw)).publicKey.export({ type: 'spki', format: 'der' });
-  return createHash('sha256').update(spki).digest('hex');
+  return `0x${createHash('sha256').update(spki).digest('hex')}`;
 }
 
 function requireHash(hash: string): string {
-  const trimmed = hash.trim().toLowerCase();
-  if (!HEX64.test(trimmed)) {
-    throw new TrueOpenError('SDK_LOCAL', 'NEXUS_TLS_PUBKEY_HASH_MALFORMED', `tls_pubkey_hash must be 64 lowercase hex, got ${JSON.stringify(hash)}`);
+  if (!isHash32Text(hash)) {
+    throw new TrueOpenError(
+      'SDK_LOCAL',
+      'NEXUS_TLS_PUBKEY_HASH_MALFORMED',
+      `tls_pubkey_hash must be 0x followed by 64 lowercase hex characters, got ${JSON.stringify(hash)}`,
+    );
   }
-  return trimmed;
+  return hash;
 }
 
 type CreateConnectionCallback = (err: Error | null, stream: Duplex) => void;

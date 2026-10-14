@@ -1,3 +1,4 @@
+import { hash32Text, isHash32Text } from './hash32';
 import { TrueOpenError } from '../errors/errors';
 
 const U64_MAX = (1n << 64n) - 1n;
@@ -66,26 +67,31 @@ export function base64ToBytes(s: string): Uint8Array {
 }
 
 /**
- * A REST-encoded Hash32 (`bytes` in the proto) as canonical lowercase 64-hex.
+ * A REST-encoded Hash32 (`bytes` in the proto) as its canonical text form, `0x` + 64 lowercase hex.
  *
- * node's gRPC gateway emits lowercase hex for these (REST_BYTES_ENCODING_HASH32_LOWER_HEX,
- * matching nexus's `nodecontract.Hash32Bytes`), but protojson's default for `bytes` is
- * base64, so both forms are accepted: already-hex is returned as is, anything else is
- * base64-decoded. Base64-decoding a hex string would silently produce garbage, so the
- * order matters.
+ * node's gRPC gateway emits `0x` + 64 lowercase hex for these (REST_BYTES_ENCODING_HASH32_LOWER_HEX,
+ * ADR-0034), but protojson's default for `bytes` is base64, so both forms are accepted: the `0x`
+ * form is returned as is, anything else is base64-decoded and must be exactly 32 bytes. A bare
+ * 64-hex string is the retired spelling and is rejected outright rather than base64-decoded into
+ * garbage, so the order of the checks matters.
  *
  * Every reader must decode Hash32 fields through this one function. `model_id` became a
  * Hash32 in TaskOrderV3, and it is read from both hub.v1 and task.v1; two readers with two
  * conventions would make `ProfileInfo.modelId` and `ChainTaskSnapshot.modelId` silently
  * incomparable.
  */
-export function hash32ToHex(value: string): string {
-  if (/^[0-9a-f]{64}$/.test(value)) return value;
+export function restHash32(value: string): string {
+  if (isHash32Text(value)) return value;
+  if (/^[0-9a-fA-F]{64}$/.test(value)) {
+    throw new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_HASH32_INVALID',
+      `Hash32 must be 0x followed by 64 lowercase hex characters, got the bare hex ${JSON.stringify(value)}`,
+    );
+  }
   const bytes = base64ToBytes(value);
   if (bytes.length !== 32) {
     throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_HASH32_INVALID', `Hash32 must be 32 bytes, got ${bytes.length}`);
   }
-  let hex = '';
-  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
-  return hex;
+  return hash32Text(bytes);
 }

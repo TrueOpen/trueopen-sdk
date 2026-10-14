@@ -7,9 +7,11 @@ import { fanOutToEndpoints } from '../../src/transport/fan-out-submit';
 import { nexusGrpcEndpoint } from '../../src/types/hub';
 import type { ServiceDescriptorRef } from '../../src/types/hub';
 
-// On-chain tls_pubkey_hash is 32 raw bytes; REST returns it as base64; the SDK normalizes it to lowercase hex.
-const HASH_HEX = '4b739f53e8a5a7c2ffd023301add8c2fa7b3d6070f16477979705ac193790900';
-const HASH_B64 = Buffer.from(HASH_HEX, 'hex').toString('base64');
+// On-chain tls_pubkey_hash is 32 raw bytes; REST returns it as 0x + 64 lowercase hex (or base64 from an
+// older gateway); the SDK normalizes it to the 0x form.
+const RAW_HEX = '4b739f53e8a5a7c2ffd023301add8c2fa7b3d6070f16477979705ac193790900';
+const HASH_HEX = `0x${RAW_HEX}`;
+const HASH_B64 = Buffer.from(RAW_HEX, 'hex').toString('base64');
 const ADDR = 'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg';
 
 function readerFor(routes: Record<string, unknown>): HubReader {
@@ -37,7 +39,7 @@ const descriptorBody = (tlsPubkeyHash?: string) => ({
 });
 
 describe('tls_pubkey_hash from the descriptor is plumbed all the way to the connection point', () => {
-  it('HubReader decodes base64 tls_pubkey_hash into lowercase hex; defaults to an empty string', async () => {
+  it('HubReader decodes base64 tls_pubkey_hash into 0x + 64 lowercase hex; defaults to an empty string', async () => {
     const ref = await readerFor({ '/TrueOpen/hub/v1/service_descriptor/': descriptorBody(HASH_B64) }).getServiceDescriptor(ADDR);
     expect(nexusGrpcEndpoint(ref)?.tlsPubkeyHash).toBe(HASH_HEX);
     expect(ref.endpoints[1]?.tlsPubkeyHash).toBe('');
@@ -66,17 +68,17 @@ describe('tls_pubkey_hash from the descriptor is plumbed all the way to the conn
       participantId: ADDR,
       descriptorVersion: 1n,
       endpoints: [{ endpointKind: 'SERVICE_ENDPOINT_KIND_NEXUS_GRPC', uri: 'https://b.example:8443', protocolVersion: 'v1', tlsPubkeyHash: HASH_HEX }],
-      descriptorHash: '00'.repeat(32),
+      descriptorHash: `0x${'00'.repeat(32)}`,
       updatedHeight: 1n,
     };
     const { endpoints } = await resolveTaskBuilderEndpoints(
       {
         getBuilderSetAtHeight: async () => ({
-          builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDR, setHash: '11'.repeat(32),
+          builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDR, setHash: `0x${'11'.repeat(32)}`,
         }),
         getServiceDescriptor: async () => descRef,
       },
-      { chainId: 'trueopen', taskId: 'ab'.repeat(32), builderSetHash: '11'.repeat(32), sessionAnchorBlockHash: '22'.repeat(32), sessionAnchorHeight: 10n, buildersPerTask: 1 },
+      { chainId: 'trueopen', taskId: `0x${'ab'.repeat(32)}`, builderSetHash: `0x${'11'.repeat(32)}`, sessionAnchorBlockHash: `0x${'22'.repeat(32)}`, sessionAnchorHeight: 10n, buildersPerTask: 1 },
     );
     expect(endpoints).toHaveLength(1);
     expect(endpoints[0]?.tlsPubkeyHash).toBe(HASH_HEX);

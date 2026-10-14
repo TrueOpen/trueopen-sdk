@@ -9,9 +9,11 @@ import {
 } from '../../src/transport/task-msgs';
 import { toHex, fromHex } from '../../src/util/bytes';
 
-// Canonical lowercase 64-hex for a 32-byte Hash32 (the same bytes as node bytes <-> nexus 64-hex).
+// Raw hex of two 32-byte Hash32 values, and their SDK text form: 0x + 64 lowercase hex (ADR-0034).
 const SESSION_HEX = '33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a';
 const TASK_HEX = '0c57743effab15ce41ad3f75e0b190774e544c2ce20f1dd701298f89cfc83e35';
+const SESSION_ID = `0x${SESSION_HEX}`;
+const TASK_ID = `0x${TASK_HEX}`;
 
 describe('typeUrls', () => {
   it('matches the proto package names', () => {
@@ -32,7 +34,7 @@ describe('encode Msg (verify field layout using the reader)', () => {
   // node msg_session.proto: bytes session_id=1, uint64 order_sequence=2, string signer_address=3
   // (no owner_signature -- authorization is handled by the Cosmos account signature).
   it('MsgCancelOrder: session_id is written as 32-byte bytes in field 1, signer is in field 3', () => {
-    const bytes = encodeMsgCancelOrder({ signer: 'trueopen1s', sessionId: SESSION_HEX, orderSequence: 9n });
+    const bytes = encodeMsgCancelOrder({ signer: 'trueopen1s', sessionId: SESSION_ID, orderSequence: 9n });
     const r = new ProtoReader(bytes);
     expect(r.tag()).toEqual({ field: 1, wire: 2 });
     const raw = r.bytes();
@@ -43,24 +45,31 @@ describe('encode Msg (verify field layout using the reader)', () => {
     expect(r.eof).toBe(true);
   });
 
+  it('MsgCancelOrder: a session_id that is not 0x + 64 lowercase hex is refused, not encoded', () => {
+    for (const bad of [SESSION_HEX, `0x${SESSION_HEX.toUpperCase()}`, `0X${SESSION_HEX}`]) {
+      expect(() => encodeMsgCancelOrder({ signer: 'trueopen1s', sessionId: bad, orderSequence: 9n })).toThrowError(
+        /0x followed by 64 lowercase hex/,
+      );
+    }
+  });
 });
 
 describe('decode responses (build response bytes with the writer, then decode)', () => {
   // node: bytes session_id=1, uint64 session_nonce=2, MutationStatusV1 status=3 (enum -> varint).
-  it('MsgCreateSessionResponse: session_id bytes -> lowercase 64-hex', () => {
+  it('MsgCreateSessionResponse: session_id bytes -> 0x + 64 lowercase hex', () => {
     const bytes = new ProtoWriter()
       .bytes(1, fromHex(SESSION_HEX)).uint64(2, 7n).uint64(3, 1n)
       .finish();
     expect(decodeMsgCreateSessionResponse(bytes)).toEqual({
-      sessionId: SESSION_HEX, sessionNonce: 7n, status: 'MUTATION_STATUS_V1_APPLIED',
+      sessionId: SESSION_ID, sessionNonce: 7n, status: 'MUTATION_STATUS_V1_APPLIED',
     });
   });
 
   it('MsgCreateSessionResponse: raw 32 bytes must never be decoded as UTF-8 (regression: previously decoded into garbled text and rejected by nexus)', () => {
     const bytes = new ProtoWriter().bytes(1, fromHex(SESSION_HEX)).finish();
     const { sessionId } = decodeMsgCreateSessionResponse(bytes);
-    expect(sessionId).toMatch(/^[0-9a-f]{64}$/);
-    expect(sessionId).toBe(SESSION_HEX);
+    expect(sessionId).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(sessionId).toBe(SESSION_ID);
   });
 
   // node: bytes task_id=1, uint64 cancelled_sequence=2, uint64 next_expected_sequence=3, status=4.
@@ -69,7 +78,7 @@ describe('decode responses (build response bytes with the writer, then decode)',
       .bytes(1, fromHex(TASK_HEX)).uint64(2, 3n).uint64(3, 4n).uint64(4, 2n)
       .finish();
     expect(decodeMsgCancelOrderResponse(bytes)).toEqual({
-      taskId: TASK_HEX, cancelledSequence: 3n, nextExpectedSequence: 4n,
+      taskId: TASK_ID, cancelledSequence: 3n, nextExpectedSequence: 4n,
       status: 'MUTATION_STATUS_V1_NOOP',
     });
   });

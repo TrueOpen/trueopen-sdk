@@ -24,16 +24,17 @@ import {
   outputChunkSigningDigest,
   outputFinSigningDigest,
 } from '../../src/output/output-commitment';
-import { fromHex, toHex } from '../../src/util/bytes';
+import { fromHex } from '../../src/util/bytes';
 import { createMarkerStreamState } from '../../src/toolcall/stream-state';
 import { createToolCallRegistry } from '../../src/toolcall/registry';
 import type { ToolCallParser } from '../../src/toolcall/types';
 import { hermesParser } from '../../src/toolcall/parsers/hermes';
+import { hash32Text } from '../../src/codec/hash32';
 
 const CHAIN_ID = 'trueopen-localnet-1';
-const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
-const TASK = 'd'.repeat(64);
-const TASK_HASH = 'c'.repeat(64);
+const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+const TASK = `0x${'d'.repeat(64)}`;
+const TASK_HASH = `0x${'c'.repeat(64)}`;
 const WINNER = 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man';
 const BUILDER = 'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg';
 
@@ -44,10 +45,10 @@ const WORKER_PUB = secp256k1PublicKey(WORKER_PRIV);
 const enc = new TextEncoder();
 const CHUNKS = ['hello ', 'final ', 'output'].map((t) => enc.encode(t));
 const BYTES = enc.encode('hello final output');
-const ROOT = toHex(outputMmrRoot(CHUNKS));
+const ROOT = hash32Text(outputMmrRoot(CHUNKS));
 
 function receiptFor(root: string, size: bigint, leaves: bigint): InferReceiptView {
-  return { taskId: TASK, winnerWorker: WINNER, inferReceiptHash: 'e'.repeat(64), outputHash: root, outputSizeBytes: size, outputLeafCount: leaves };
+  return { taskId: TASK, winnerWorker: WINNER, inferReceiptHash: `0x${'e'.repeat(64)}`, outputHash: root, outputSizeBytes: size, outputLeafCount: leaves };
 }
 
 function taskReader(over: { task?: Partial<ChainTaskSnapshot>; receipt?: InferReceiptView | null } = {}): OutputTaskReader & { receiptReads: number } {
@@ -55,8 +56,8 @@ function taskReader(over: { task?: Partial<ChainTaskSnapshot>; receipt?: InferRe
     receiptReads: 0,
     async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
       return {
-        view: 'active', taskId, acceptedTaskHash: TASK_HASH, acceptedInputHash: 'a'.repeat(64), winnerWorker: WINNER,
-        receiptStatus: 'RECEIPT_ACCEPTED', assignmentStatus: 'ASSIGNED', modelId: 'b'.repeat(64), profileVersion: 1n, orderSequence: 0n,
+        view: 'active', taskId, acceptedTaskHash: TASK_HASH, acceptedInputHash: `0x${'a'.repeat(64)}`, winnerWorker: WINNER,
+        receiptStatus: 'RECEIPT_ACCEPTED', assignmentStatus: 'ASSIGNED', modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
         ...over.task,
       };
     },
@@ -241,7 +242,7 @@ describe('fetchTaskOutput', () => {
   });
 
   it('does not fetch a size-0 object and returns it verified as one zero-length leaf', async () => {
-    const emptyRoot = toHex(outputMmrRoot([new Uint8Array(0)]));
+    const emptyRoot = hash32Text(outputMmrRoot([new Uint8Array(0)]));
     const log = newLog();
     const got = await makeClient(
       dataTransport(new Uint8Array(0), [0], log),
@@ -293,9 +294,9 @@ describe('fetchTaskOutput', () => {
   describe('stored Fin (ADR-0027)', () => {
     /** A Fin for BYTES as the Worker signs it; `over` tampers with what is served after signing. */
     function storedFin(finishReason = 3, over: Record<string, unknown> = {}, signer = WORKER_PRIV) {
-      const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason };
+      const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason };
       const workerSignature = secp256k1.sign(outputFinSigningDigest(fields), signer).toCompactRawBytes();
-      return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason, workerSignature, ...over };
+      return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason, workerSignature, ...over };
     }
     const fetchWith = (fin: Record<string, unknown> | undefined) =>
       makeClient(dataTransport(BYTES, [6, 6, 6], newLog(), fin !== undefined ? { fin } : {}))
@@ -341,14 +342,14 @@ describe('streamOutput trust anchors', () => {
   it('verifies frames against the chain-derived task_hash and winner key when none are passed', async () => {
     const frames = CHUNKS.map((text, i) => {
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
-      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), seq: BigInt(i), mmrRoot });
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
       return {
         seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(),
         attachment: new Uint8Array(), attachmentSignature: new Uint8Array(),
       };
     });
     const last = frames[frames.length - 1]!;
-    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
     const transport = createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async *subscribeOutput(_req: SubscribeOutputRequest) {
@@ -415,7 +416,7 @@ describe('fetchAssistantMessage', () => {
   const TEXT = '<tc>get_weather|{"city":"London"}</tc> done';
   const fetch = (toolCallParser: { name: string; version: number }) => {
     const bytes = enc.encode(TEXT);
-    const receipt = receiptFor(toHex(outputMmrRoot([bytes])), BigInt(bytes.length), 1n);
+    const receipt = receiptFor(hash32Text(outputMmrRoot([bytes])), BigInt(bytes.length), 1n);
     return makeClient(dataTransport(bytes, [bytes.length], newLog()), taskReader({ receipt })).fetchAssistantMessage({
       sessionId: SESSION,
       taskId: TASK,
@@ -445,7 +446,7 @@ describe('fetchAssistantMessage with a reasoning parser (Manifest S7.3 rule 9)',
   const OUTPUT = `<think>\nI could run ${DRAFT} but no.\n</think>\n\n${CALL}`;
   const fetch = (toolCallParser: { name: string; version: number }, reasoningParser: { name: string; version: number }) => {
     const bytes = enc.encode(OUTPUT);
-    const receipt = receiptFor(toHex(outputMmrRoot([bytes])), BigInt(bytes.length), 1n);
+    const receipt = receiptFor(hash32Text(outputMmrRoot([bytes])), BigInt(bytes.length), 1n);
     return makeClient(dataTransport(bytes, [bytes.length], newLog()), taskReader({ receipt })).fetchAssistantMessage({
       sessionId: SESSION,
       taskId: TASK,
@@ -492,8 +493,8 @@ describe('fetchAssistantMessage confirmation and Builder choice (sdk_详细设�
   const NO_PARSER = { toolCallParser: { name: '', version: 0 } };
   /** A Fin over BYTES (chunks 6/6/6) as the Worker signs it. */
   function storedFin(finishReason: number) {
-    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason };
-    return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT), finishReason, workerSignature: secp256k1.sign(outputFinSigningDigest(fields), WORKER_PRIV).toCompactRawBytes() };
+    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason };
+    return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason, workerSignature: secp256k1.sign(outputFinSigningDigest(fields), WORKER_PRIV).toCompactRawBytes() };
   }
   const B1 = 'trueopen1builder0000000000000000000000000001';
   const B2 = 'trueopen1builder0000000000000000000000000002';
@@ -601,17 +602,17 @@ describe('fetchAssistantMessage confirmation and Builder choice (sdk_详细设�
 describe('assistantTurn (sdk_详细设计 §5.2, §5.5)', () => {
   const OUT = ['<think>\nneed the weather\n</think>\n\n<tool', '_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'];
   const CH = OUT.map((t) => enc.encode(t));
-  const OUT_ROOT = toHex(outputMmrRoot(CH));
+  const OUT_ROOT = hash32Text(outputMmrRoot(CH));
   const OUT_SIZE = BigInt(CH.reduce((n, c) => n + c.length, 0));
 
   function streamTransport(finishReason = 1) {
     const frames = CH.map((text, i) => {
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CH, i + 1);
-      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), seq: BigInt(i), mmrRoot });
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
       return { seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(), attachment: new Uint8Array(), attachmentSignature: new Uint8Array() };
     });
     const last = frames[frames.length - 1]!;
-    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason });
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason });
     return createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async *subscribeOutput() {

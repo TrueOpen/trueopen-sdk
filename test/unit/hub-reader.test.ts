@@ -43,8 +43,8 @@ const SET = {
     active_builder_count: 2,
   },
 };
-// Lowercase hex after decoding the base64 builder_set_hash (nexus's selection algorithm uses the hex string).
-const SET_HASH_HEX = '33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a';
+// The base64 builder_set_hash decoded to its Hash32 text form, 0x + 64 lowercase hex (ADR-0034).
+const SET_HASH_HEX = '0x33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a';
 
 function readerFor(routes: Record<string, unknown>): HubReader {
   const fetch: FetchLike = async (url): Promise<FetchResponse> => {
@@ -75,7 +75,7 @@ describe('HubReader (REST field mapping)', () => {
     expect(ref.descriptorVersion).toBe(2n);
     expect(ref.endpoints).toHaveLength(3);
     expect(nexusGrpcUri(ref)).toBe('https://builder.example:8080');
-    expect(ref.descriptorHash).toBe('ffb68b8fa6d03ab6223fbe7fda8af999e735d87a92871b6861b1d92df38c03da');
+    expect(ref.descriptorHash).toBe('0xffb68b8fa6d03ab6223fbe7fda8af999e735d87a92871b6861b1d92df38c03da');
   });
 
   it('a 404 throws CHAIN_QUERY_NOT_FOUND', async () => {
@@ -98,17 +98,24 @@ describe('HubReader (REST field mapping)', () => {
     expect(snap.setHash).toBe(SET_HASH_HEX);
   });
 
-  // node has changed REST proto bytes from base64 to canonical lowercase 64-hex (verified against a live chain).
+  // node writes REST Hash32 bytes as 0x + 64 lowercase hex (HASH32_LOWER_HEX, ADR-0034).
   // Base64-decoding a hex string again would produce a garbage setHash and outright break Stage-1
   // selection, so it must be passed through as-is.
-  it('passes builder_set_hash through unchanged when it is already 64-hex (no longer base64-decoded)', async () => {
+  it('passes builder_set_hash through unchanged when it is already 0x + 64 lowercase hex (no longer base64-decoded)', async () => {
     const hexSet = { set: { ...SET.set, builder_set_hash: SET_HASH_HEX } };
     const snap = await readerFor({ '/hub/v1/builder_set/by_height/1': hexSet }).getBuilderSetAtHeight(1n);
     expect(snap.setHash).toBe(SET_HASH_HEX);
   });
 
-  it('passes descriptor_hash through unchanged when it is already 64-hex (live-chain shape: grpc:// endpoint)', async () => {
-    const liveHash = 'ea6e7c83f2506a8ca8db7d359cbeb0fcb2b96d0c6a630af8872281ded4c953d0';
+  it('refuses the retired bare 64-hex builder_set_hash', async () => {
+    const bareSet = { set: { ...SET.set, builder_set_hash: SET_HASH_HEX.slice(2) } };
+    await expect(readerFor({ '/hub/v1/builder_set/by_height/1': bareSet }).getBuilderSetAtHeight(1n)).rejects.toThrow(
+      /0x followed by 64 lowercase hex/,
+    );
+  });
+
+  it('passes descriptor_hash through unchanged when it is already 0x + 64 lowercase hex (live-chain shape: grpc:// endpoint)', async () => {
+    const liveHash = '0xea6e7c83f2506a8ca8db7d359cbeb0fcb2b96d0c6a630af8872281ded4c953d0';
     const live = {
       descriptor: {
         participant_type: 'PARTICIPANT_TYPE_BUILDER', operator_address: ADDR,

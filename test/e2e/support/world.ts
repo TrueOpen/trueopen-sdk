@@ -18,8 +18,17 @@ const enc = new TextEncoder();
 
 export const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 export const unhex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, 'hex'));
-/** Deterministic 32-byte value from a label, as lowercase hex. */
+/** Deterministic 32-byte value from a label, as bare lowercase hex (keys, nonces, randomness). */
 export const label32 = (label: string): string => hex(sha256(enc.encode(label)));
+/** A Hash32 in its wire text form (ADR-0034): 0x followed by 64 lowercase hex characters. */
+export const hash32 = (b: Uint8Array): string => `0x${hex(b)}`;
+/** Decodes Hash32 text strictly: only 0x followed by 64 lowercase hex characters. */
+export const unhash32 = (h: string): Uint8Array => {
+  if (!/^0x[0-9a-f]{64}$/.test(h)) throw new Error(`not 0x + 64 lowercase hex: ${JSON.stringify(h)}`);
+  return unhex(h.slice(2));
+};
+/** Deterministic Hash32 from a label, in its wire text form. */
+export const labelHash32 = (label: string): string => hash32(sha256(enc.encode(label)));
 
 export const PREFIX = 'trueopen';
 export const CHAIN_ID = 'trueopen-interop-1';
@@ -65,7 +74,7 @@ export const SET_A: BuilderSetFact = {
   version: 1n,
   effectiveHeight: 900n,
   members: BUILDERS.slice(0, 3).map((b) => b.address),
-  hash: label32('e2e-builder-set-1'),
+  hash: labelHash32('e2e-builder-set-1'),
 };
 
 /** A later set that takes effect between the anchor and the latest block. */
@@ -74,19 +83,19 @@ export const SET_B: BuilderSetFact = {
   version: 2n,
   effectiveHeight: ANCHOR_HEIGHT + 1n,
   members: BUILDERS.slice(3, 6).map((b) => b.address),
-  hash: label32('e2e-builder-set-2'),
+  hash: labelHash32('e2e-builder-set-2'),
 };
 
 /** Beacon block hash for a height (what the session anchor signs). */
-export const beaconBlockHash = (height: bigint): string => label32(`e2e-block-${height}`);
+export const beaconBlockHash = (height: bigint): string => labelHash32(`e2e-block-${height}`);
 
-export const MODEL_ID = label32('e2e-model');
+export const MODEL_ID = labelHash32('e2e-model');
 export const PROFILE_VERSION = 1;
 export const TIMEOUT_BUCKET_VERSION = 3n;
 export const PRICING = { initialOutputPrice: 1n, minOrderValue: 10n, verifyRatioBps: 1000n };
 
 /** node derives a session id from its owner and nonce; the fake chain uses this stand-in. */
-export const sessionIdFor = (owner: string, nonce: bigint): string => label32(`e2e-session|${owner}|${nonce}`);
+export const sessionIdFor = (owner: string, nonce: bigint): string => labelHash32(`e2e-session|${owner}|${nonce}`);
 
 export const PAYLOAD = enc.encode('Say hello to the world, in a few languages.');
 

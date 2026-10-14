@@ -10,13 +10,14 @@ import {
 import type { ConfirmedOutputEvent } from '../../src/output/output-confirmation';
 import { TrueOpenError } from '../../src/errors/errors';
 import { toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const ROOT0 = new Uint8Array(32).fill(0x11);
 const ROOT1 = new Uint8Array(32).fill(0x22);
-const TASK_ID = 'aa'.repeat(32);
-const TASK_HASH = 'bb'.repeat(32);
+const TASK_ID = `0x${'aa'.repeat(32)}`;
+const TASK_HASH = `0x${'bb'.repeat(32)}`;
 const TEXTS = ['Hello, ', 'wörld'];
 
 const context: OpenAIChatSseContext = {
@@ -41,8 +42,8 @@ function confirmed(overrides: Partial<ConfirmedOutputEvent> = {}): ConfirmedOutp
     taskId: TASK_ID,
     taskHash: TASK_HASH,
     winnerWorker: 'trueopen1worker',
-    inferReceiptHash: 'cc'.repeat(32),
-    outputHash: toHex(ROOT1),
+    inferReceiptHash: `0x${'cc'.repeat(32)}`,
+    outputHash: hash32Text(ROOT1),
     outputMmrRoot: ROOT1,
     outputLeafCount: 2n,
     outputSizeBytes: BigInt(enc.encode(TEXTS.join('')).length),
@@ -147,7 +148,7 @@ describe('toOpenAIChatSSEIterable', () => {
 
   it('confirmed-only: zero content delivered if the confirmed root/count/size mismatches', async () => {
     const cases: [Partial<ConfirmedOutputEvent>, string][] = [
-      [{ outputMmrRoot: new Uint8Array(32).fill(0x33), outputHash: '33'.repeat(32) }, 'ROOT_MISMATCH'],
+      [{ outputMmrRoot: new Uint8Array(32).fill(0x33), outputHash: `0x${'33'.repeat(32)}` }, 'ROOT_MISMATCH'],
       [{ outputLeafCount: 3n }, 'LEAF_COUNT_MISMATCH'],
       [{ outputSizeBytes: 999n }, 'SIZE_MISMATCH'],
     ];
@@ -217,7 +218,11 @@ describe('toOpenAIChatSSEIterable', () => {
       'DATA_OPENAI_SSE_CONTEXT_INVALID',
     );
     await expectCode(
-      () => collect(toOpenAIChatSSEIterable(source(events()), { ...context, taskHash: 'BB'.repeat(32) })),
+      () => collect(toOpenAIChatSSEIterable(source(events()), { ...context, taskHash: `0x${'BB'.repeat(32)}` })),
+      'DATA_OPENAI_SSE_CONTEXT_INVALID',
+    );
+    await expectCode(
+      () => collect(toOpenAIChatSSEIterable(source(events()), { ...context, taskId: TASK_ID.slice(2) })),
       'DATA_OPENAI_SSE_CONTEXT_INVALID',
     );
     await expectCode(

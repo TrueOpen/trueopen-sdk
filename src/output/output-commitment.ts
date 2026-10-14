@@ -3,7 +3,8 @@ import type { MmrAccumulatorCheckpoint } from '../codec/mmr';
 import { canonicalHashBytes, uint32BE, uint64BE } from '../codec/domain-hash';
 import { verifySecp256k1Digest } from '../signer/secp256k1';
 import { TrueOpenError } from '../errors/errors';
-import { bytesEqual, concatBytes, toHex } from '../util/bytes';
+import { bytesEqual, concatBytes } from '../util/bytes';
+import { hash32Text } from '../codec/hash32';
 
 /**
  * Commitment and frame verification for streamed output.
@@ -353,7 +354,7 @@ export class OutputStreamVerifier {
     const candidate = this.acc.clone();
     const root = candidate.append(text);
     if (!bytesEqual(root, frame.mmrRoot)) {
-      throw frameFault(`frame ${frame.seq} mmr_root mismatch: computed ${toHex(root)}, frame carries ${toHex(frame.mmrRoot)}`);
+      throw frameFault(`frame ${frame.seq} mmr_root mismatch: computed ${hash32Text(root)}, frame carries ${frame.mmrRoot.length === 32 ? hash32Text(frame.mmrRoot) : `${frame.mmrRoot.length} bytes`}`);
     }
     const ok = verifyOutputChunkSignature(
       { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, seq: frame.seq, mmrRoot: frame.mmrRoot },

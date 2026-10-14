@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hash32Text } from '../../src/codec/hash32';
 import {
   OUTPUT_MMR_DOMAIN,
   OutputStreamVerifier,
@@ -15,12 +16,12 @@ import { hermesParser } from '../../src/toolcall/parsers/hermes';
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { privKeySecp256k1DigestSigner, secp256k1PublicKey } from '../../src/signer/secp256k1';
 import type { InferReceiptView } from '../../src/types/node';
-import { fromHex, toHex } from '../../src/util/bytes';
+import { fromHex } from '../../src/util/bytes';
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 const CHAIN_ID = 'trueopen-localnet-1';
-const TASK_ID = 'aa'.repeat(32);
-const TASK_HASH = 'bb'.repeat(32);
+const TASK_ID = `0x${'aa'.repeat(32)}`;
+const TASK_HASH = `0x${'bb'.repeat(32)}`;
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const OTHER = fromHex('0302030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(PRIV);
@@ -28,7 +29,7 @@ const CHUNKS = [utf8('<tool_call>\n{"name": "f", '), utf8('"arguments": {}}\n</t
 const ROOT = outputHash(CHUNKS);
 const MAX_OUTPUT_TOKENS = 3;
 
-const config = () => ({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), workerServicePubKey: WORKER_PUB });
+const config = () => ({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
 
 async function streamed(): Promise<OutputStreamVerifier> {
   const sign = privKeySecp256k1DigestSigner(PRIV);
@@ -38,7 +39,7 @@ async function streamed(): Promise<OutputStreamVerifier> {
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
     verifier.accept({
       seq, text: CHUNKS[i]!, mmrRoot,
-      signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), seq, mmrRoot })),
+      signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq, mmrRoot })),
     });
   }
   return verifier;
@@ -46,15 +47,15 @@ async function streamed(): Promise<OutputStreamVerifier> {
 
 /** A Fin as the Worker signs it; `over` tampers with what is presented after signing. */
 async function fin(finishReason = 1, over: Partial<VerifiedOutputFin> = {}, signer = PRIV): Promise<VerifiedOutputFin> {
-  const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), finalSeq: 1n, outputMmrRoot: ROOT, finishReason };
+  const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 1n, outputMmrRoot: ROOT, finishReason };
   const workerSignature = await privKeySecp256k1DigestSigner(signer)(outputFinSigningDigest(fields));
   return { finalSeq: 1n, outputMmrRoot: ROOT, finishReason, workerSignature, ...over };
 }
 
 function receipt(over: Partial<InferReceiptView> = {}): InferReceiptView {
   return {
-    taskId: TASK_ID, winnerWorker: 'trueopen1worker', inferReceiptHash: 'cc'.repeat(32),
-    outputHash: toHex(ROOT), outputLeafCount: 2n,
+    taskId: TASK_ID, winnerWorker: 'trueopen1worker', inferReceiptHash: `0x${'cc'.repeat(32)}`,
+    outputHash: hash32Text(ROOT), outputLeafCount: 2n,
     outputSizeBytes: CHUNKS.reduce((n, c) => n + BigInt(c.length), 0n),
     ...over,
   };

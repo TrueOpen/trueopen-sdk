@@ -26,11 +26,11 @@ const vector = (name: string): Record<string, unknown> =>
 
 /** The OUTPUT object in the vector: not evidence, so producer kind/round are zero and operator is omitted. */
 const REF: TaskDataObjectRef = {
-  taskHash: '2222222222222222222222222222222222222222222222222222222222222222',
-  sessionId: '3333333333333333333333333333333333333333333333333333333333333333',
-  taskId: '1111111111111111111111111111111111111111111111111111111111111111',
+  taskHash: '0x2222222222222222222222222222222222222222222222222222222222222222',
+  sessionId: '0x3333333333333333333333333333333333333333333333333333333333333333',
+  taskId: '0x1111111111111111111111111111111111111111111111111111111111111111',
   objectKind: TASK_DATA_OBJECT_KIND.OUTPUT,
-  contentHash: '4444444444444444444444444444444444444444444444444444444444444444',
+  contentHash: '0x4444444444444444444444444444444444444444444444444444444444444444',
 };
 
 const OPERATOR = 'trueopen1crqu9s7ychrv0jxfet9uenwwelgdr5knutsmxe';
@@ -155,11 +155,14 @@ describe('body digest (H_FIELDS_V1)', () => {
     );
   });
 
-  it('Hash32 must be canonical lowercase 64-hex', () => {
-    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: '22' })).toThrow(/64-hex/);
+  it('Hash32 must be 0x + 64 lowercase hex', () => {
+    const bad = /0x followed by 64 lowercase hex/;
+    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: '0x22' })).toThrow(bad);
     // Only a value containing letters can actually test case sensitivity (the hashes in the vector are all digits, so uppercasing them leaves the string unchanged).
-    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: 'a'.repeat(64) })).not.toThrow();
-    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: 'A'.repeat(64) })).toThrow(/64-hex/);
+    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: `0x${'a'.repeat(64)}` })).not.toThrow();
+    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: `0x${'A'.repeat(64)}` })).toThrow(bad);
+    expect(() => taskDataMetadataBodyDigest({ ...REF, taskHash: 'a'.repeat(64) })).toThrow(bad);
+    expect(() => taskDataMetadataBodyDigest({ ...REF, contentHash: `0X${'a'.repeat(64)}` })).toThrow(bad);
   });
 });
 

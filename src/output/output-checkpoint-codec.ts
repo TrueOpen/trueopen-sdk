@@ -1,6 +1,7 @@
 import { base64ToBytes, bytesToBase64, stringToU64, u64ToString } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import { bytesEqual, fromHex, toHex } from '../util/bytes';
+import { hash32Text, isHash32Text } from '../codec/hash32';
 import {
   OUTPUT_MMR_DOMAIN,
   outputHash,
@@ -44,7 +45,6 @@ export interface OutputStreamCheckpointJsonV1 {
   readonly fin?: CheckpointJsonFinV2;
 }
 
-const HASH32_HEX = /^[0-9a-f]{64}$/;
 const PUBKEY33_HEX = /^[0-9a-f]{66}$/;
 const SIG64_HEX = /^[0-9a-f]{128}$/;
 const CANONICAL_U64 = /^(0|[1-9][0-9]*)$/;
@@ -120,7 +120,10 @@ function validateCheckpoint(checkpoint: OutputStreamVerifierCheckpoint): void {
   }
 }
 
-/** Stable JSON: bytes use lowercase hex/base64, u64 uses canonical decimal text. */
+/**
+ * Stable JSON: Hash32 values (task_hash, MMR peak hashes) use `0x` + 64 lowercase hex, the
+ * 33-byte Worker key uses bare lowercase hex, chunks use base64, u64 uses canonical decimal text.
+ */
 export function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifierCheckpoint): string {
   validateCheckpoint(checkpoint);
   const fin = checkpoint.fin;
@@ -128,19 +131,19 @@ export function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifier
     format: OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,
     schema_version: 2,
     chain_id: checkpoint.chainId,
-    task_hash: toHex(checkpoint.taskHash),
+    task_hash: hash32Text(checkpoint.taskHash),
     worker_service_pubkey: toHex(checkpoint.workerServicePubKey),
     mmr: {
       schema_version: 1,
       domain: checkpoint.mmr.domain,
       leaf_count: u64ToString(checkpoint.mmr.leafCount),
-      peaks: checkpoint.mmr.peaks.map((peak) => ({ height: peak.height, hash: toHex(peak.hash) })),
+      peaks: checkpoint.mmr.peaks.map((peak) => ({ height: peak.height, hash: hash32Text(peak.hash) })),
     },
     chunks_base64: checkpoint.chunks.map(bytesToBase64),
     ...(fin !== undefined ? {
       fin: {
         final_seq: u64ToString(fin.finalSeq),
-        output_mmr_root: toHex(fin.outputMmrRoot),
+        output_mmr_root: hash32Text(fin.outputMmrRoot),
         finish_reason: fin.finishReason,
         worker_signature: toHex(fin.workerSignature),
       },
@@ -169,7 +172,7 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
   const chainId = stringField(top, 'chain_id', 'checkpoint');
   if (chainId === '') throw checkpointError('checkpoint.chain_id must not be empty');
   const taskHashHex = stringField(top, 'task_hash', 'checkpoint');
-  if (!HASH32_HEX.test(taskHashHex)) throw checkpointError('checkpoint.task_hash must be lowercase 64-hex');
+  if (!isHash32Text(taskHashHex)) throw checkpointError('checkpoint.task_hash must be 0x followed by 64 lowercase hex characters');
   const pubkeyHex = stringField(top, 'worker_service_pubkey', 'checkpoint');
   if (!PUBKEY33_HEX.test(pubkeyHex)) {
     throw checkpointError('checkpoint.worker_service_pubkey must be lowercase 66-hex');
@@ -197,8 +200,10 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
     const height = numberField(peak, 'height', `checkpoint.mmr.peaks[${i}]`);
     if (height < 0) throw checkpointError(`checkpoint.mmr.peaks[${i}].height must be non-negative`);
     const hash = stringField(peak, 'hash', `checkpoint.mmr.peaks[${i}]`);
-    if (!HASH32_HEX.test(hash)) throw checkpointError(`checkpoint.mmr.peaks[${i}].hash must be lowercase 64-hex`);
-    return { height, hash: fromHex(hash) };
+    if (!isHash32Text(hash)) {
+      throw checkpointError(`checkpoint.mmr.peaks[${i}].hash must be 0x followed by 64 lowercase hex characters`);
+    }
+    return { height, hash: fromHex(hash.slice(2)) };
   });
 
   if (!Array.isArray(top['chunks_base64'])) throw checkpointError('checkpoint.chunks_base64 must be an array');
@@ -214,12 +219,12 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
     const finalSeqText = stringField(f, 'final_seq', 'checkpoint.fin');
     if (!CANONICAL_U64.test(finalSeqText)) throw checkpointError('checkpoint.fin.final_seq must be canonical u64 text');
     const root = stringField(f, 'output_mmr_root', 'checkpoint.fin');
-    if (!HASH32_HEX.test(root)) throw checkpointError('checkpoint.fin.output_mmr_root must be lowercase 64-hex');
+    if (!isHash32Text(root)) throw checkpointError('checkpoint.fin.output_mmr_root must be 0x followed by 64 lowercase hex characters');
     const signature = stringField(f, 'worker_signature', 'checkpoint.fin');
     if (!SIG64_HEX.test(signature)) throw checkpointError('checkpoint.fin.worker_signature must be lowercase 128-hex');
     fin = {
       finalSeq: stringToU64(finalSeqText),
-      outputMmrRoot: fromHex(root),
+      outputMmrRoot: fromHex(root.slice(2)),
       finishReason: numberField(f, 'finish_reason', 'checkpoint.fin'),
       workerSignature: fromHex(signature),
     };
@@ -229,7 +234,7 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
   const checkpoint: OutputStreamVerifierCheckpoint = {
     schemaVersion: schemaVersion as 1 | 2,
     chainId,
-    taskHash: fromHex(taskHashHex),
+    taskHash: fromHex(taskHashHex.slice(2)),
     workerServicePubKey: fromHex(pubkeyHex),
     mmr: { schemaVersion: 1, domain, leafCount, peaks },
     chunks,

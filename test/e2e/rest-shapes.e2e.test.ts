@@ -53,7 +53,7 @@ function expectSameShape(served: Json, fixture: Json, allowedExtra: readonly str
   for (const [path, type] of s) {
     if (f.has(path) || [...f.keys()].some((k) => path.startsWith(`${k}.`) || path.startsWith(`${k}[]`))) continue;
     if (type === 'null' && [...f.keys()].some((k) => k.startsWith(`${path}.`))) continue;
-    const hash32 = type === 'string' && /^[0-9a-f]{64}$/.test(String(path.split('.').reduce<unknown>((o, k) => (o as Json)?.[k.replace('[]', '')], served)));
+    const hash32 = type === 'string' && /^0x[0-9a-f]{64}$/.test(String(path.split('.').reduce<unknown>((o, k) => (o as Json)?.[k.replace('[]', '')], served)));
     expect(hash32 || allowedExtra.some((a) => path === a || path.startsWith(`${a}.`)), `unexpected ${path}`).toBe(true);
   }
 }
@@ -88,7 +88,7 @@ describe('e2e: SDK readers accept the wire REST shape bodies verbatim', () => {
   it('HubReader: params, generation limits, profile pricing', async () => {
     world.node.verbatim.set('/TrueOpen/hub/v1/params', shapeBody('hub_v1_queryhubparamsresponse_default'));
     world.node.verbatim.set('/TrueOpen/task/v1/params', shapeBody('task_v1_querytaskparamsresponse_default'));
-    const model = 'ab'.repeat(32);
+    const model = `0x${'ab'.repeat(32)}`;
     world.node.verbatim.set(`/TrueOpen/hub/v1/profile/${model}/1`, shapeBody('hub_v1_queryprofileresponse'));
     try {
       expect(await world.hub.getBusinessDenom()).toBe('uusdc');
@@ -100,7 +100,7 @@ describe('e2e: SDK readers accept the wire REST shape bodies verbatim', () => {
   });
 
   it('RestChainReader: task in its active (pending and populated) and terminal forms', async () => {
-    const id = 'cd'.repeat(32);
+    const id = `0x${'cd'.repeat(32)}`;
     const path = `/TrueOpen/task/v1/task/${id}`;
     try {
       world.node.verbatim.set(path, shapeBody('task_v1_querytaskresponse_active_zero'));
@@ -108,7 +108,7 @@ describe('e2e: SDK readers accept the wire REST shape bodies verbatim', () => {
       await expect(world.taskReader.queryTask(id)).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
 
       world.node.verbatim.set(path, shapeBody('task_v1_querytaskresponse_active'));
-      expect(await world.taskReader.queryTask(id)).toMatchObject({ view: 'active', acceptedTaskHash: 'ab'.repeat(32), winnerWorker: '' });
+      expect(await world.taskReader.queryTask(id)).toMatchObject({ view: 'active', acceptedTaskHash: `0x${'ab'.repeat(32)}`, winnerWorker: '' });
 
       world.node.verbatim.set(path, shapeBody('task_v1_querytaskresponse_terminal'));
       expect(await world.taskReader.queryTask(id)).toMatchObject({ view: 'terminal', terminalPhase: 'WORKER_ASSIGNMENT_PENDING', winnerWorker: '' });

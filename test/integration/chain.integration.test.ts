@@ -50,8 +50,8 @@ const writeEnabled = Boolean(RPC && REST && MNEMONIC && ALLOW_BROADCAST);
 // nexus IngressAPI (Connect over http; see TRUEOPEN_NEXUS_URL, for example http://host:8080)
 const NEXUS = process.env['TRUEOPEN_NEXUS_URL'];
 const NEXUS_CHAIN_ID = process.env['TRUEOPEN_CHAIN_ID'] ?? 'trueopen-localnet-1';
-// Hash32 ids: a request body decodes them strictly as 64-character lowercase hex.
-const NEXUS_SESSION = process.env['TRUEOPEN_NEXUS_SESSION_ID'] ?? '00'.repeat(32);
+// Hash32 ids: a request body decodes them strictly as 0x + 64 lowercase hex.
+const NEXUS_SESSION = process.env['TRUEOPEN_NEXUS_SESSION_ID'] ?? `0x${'00'.repeat(32)}`;
 // The EIP-712 domain chainId; read from REST when not given.
 const EVM_CHAIN_ID = process.env['TRUEOPEN_EVM_CHAIN_ID'];
 const nexusEnabled = Boolean(NEXUS);
@@ -99,14 +99,14 @@ describe.skipIf(!readEnabled || !restFetch)('node integration: Hub read-only (Bu
     }
   });
 
-  it('getServiceDescriptor returns inline endpoints and a base64-to-hex hash, when a Builder exists', async () => {
+  it('getServiceDescriptor returns inline endpoints and a 0x Hash32 descriptor hash, when a Builder exists', async () => {
     const hub = makeHub();
     const set = await hub.getActiveBuilderSet();
     const addr = set.builders.split(',').map((a) => a.trim()).filter((a) => a !== '')[0];
     if (!addr) return;
     const ref = await hub.getServiceDescriptor(addr);
     expect(ref.endpoints.length).toBeGreaterThan(0);
-    expect(ref.descriptorHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(ref.descriptorHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 });
 
@@ -176,7 +176,7 @@ describe.skipIf(!nexusEnabled)('nexus integration (Connect over http)', () => {
     const client = new IngressClient(makeTransport(), auth);
     let caught: unknown;
     try {
-      for await (const _ev of client.getTaskEvents({ sessionId: NEXUS_SESSION, taskId: 'ff'.repeat(32) })) break;
+      for await (const _ev of client.getTaskEvents({ sessionId: NEXUS_SESSION, taskId: `0x${'ff'.repeat(32)}` })) break;
     } catch (e) {
       caught = e;
     }

@@ -1,27 +1,26 @@
 import { TrueOpenError } from '../errors/errors';
 import { canonicalHashBytes } from '../codec/domain-hash';
 import { canonicalOperatorAddressBytes } from '../codec/address';
-import { toHex } from '../util/bytes';
+import { HASH32_TEXT_RE, hash32Text } from '../codec/hash32';
 
 const enc = new TextEncoder();
 
 /**
- * A model ID is a raw 32-byte Hash32. The SDK's text form is canonical lowercase 64-hex,
- * which is also how chain REST encodes it (REST_BYTES_ENCODING_HASH32_LOWER_HEX).
+ * A model ID is a raw 32-byte Hash32. The SDK's text form is `0x` + 64 lowercase hex,
+ * which is also how chain REST encodes it (REST_BYTES_ENCODING_HASH32_LOWER_HEX, ADR-0034).
  */
-export const MODEL_ID_GRAMMAR = '^[0-9a-f]{64}$';
+export const MODEL_ID_GRAMMAR = '^0x[0-9a-f]{64}$';
 
-const MODEL_ID_RE = /^[0-9a-f]{64}$/;
-const ZERO_MODEL_ID = '0'.repeat(64);
+const ZERO_MODEL_ID = `0x${'0'.repeat(64)}`;
 
-/** Whether this is a canonical model ID: lowercase 64-hex and not all zero. */
+/** Whether this is a canonical model ID: `0x` + 64 lowercase hex and not all zero. */
 export function isValidModelId(modelId: string): boolean {
-  return MODEL_ID_RE.test(modelId) && modelId !== ZERO_MODEL_ID;
+  return HASH32_TEXT_RE.test(modelId) && modelId !== ZERO_MODEL_ID;
 }
 
 /**
  * Validates a model ID; throws `SDK_LOCAL_MODEL_ID_INVALID` if invalid.
- * Uppercase hex, a 0x prefix, a legacy text slug or the zero hash never name a
+ * Uppercase hex, bare hex without 0x, a legacy text slug or the zero hash never name a
  * registered model, so the SDK fails before producing an order the chain would reject.
  */
 export function validateModelId(modelId: string): void {
@@ -29,7 +28,7 @@ export function validateModelId(modelId: string): void {
     throw new TrueOpenError(
       'SDK_LOCAL',
       'SDK_LOCAL_MODEL_ID_INVALID',
-      `model_id must be a non-zero canonical lowercase 64-hex Hash32: ${JSON.stringify(modelId)}`,
+      `model_id must be a non-zero Hash32, 0x followed by 64 lowercase hex characters: ${JSON.stringify(modelId)}`,
     );
   }
 }
@@ -84,7 +83,7 @@ export interface ModelIdInput {
 
 /**
  * model_id = H_FIELDS_V1("TRUEOPEN_MODEL_ID_V1", chain_id, provider, repo_id,
- * proposer_address codec bytes). Returns the canonical lowercase 64-hex text form.
+ * proposer_address codec bytes). Returns the Hash32 text form, `0x` + 64 lowercase hex.
  *
  * The identity is owner-bound and chain-bound: the same repository registered by a
  * different proposer, or on a different chain, is a different model. Nothing here is
@@ -106,7 +105,7 @@ export function deriveModelId(input: ModelIdInput): string {
     );
   }
   validateRepoId(input.repoId);
-  return toHex(
+  return hash32Text(
     canonicalHashBytes(
       enc.encode(DOMAIN_MODEL_ID_V1),
       enc.encode(input.chainId),

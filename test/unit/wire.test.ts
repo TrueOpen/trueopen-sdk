@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from '../../src/codec/wire';
+import { u64ToString, stringToU64, bytesToBase64, base64ToBytes, restHash32 } from '../../src/codec/wire';
 import { fromHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 
@@ -55,32 +55,40 @@ describe('base64 <-> bytes', () => {
  * readers decode it through this one function, so ProfileInfo.modelId and
  * ChainTaskSnapshot.modelId cannot end up in different encodings.
  */
-describe('hash32ToHex', () => {
+describe('restHash32', () => {
   const hex = 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b';
+  const text = `0x${hex}`;
   const b64 = bytesToBase64(fromHex(hex));
 
-  it('passes canonical lowercase 64-hex through untouched', () => {
-    expect(hash32ToHex(hex)).toBe(hex);
+  it('passes the canonical 0x + 64 lowercase hex form through untouched', () => {
+    expect(restHash32(text)).toBe(text);
   });
 
-  it('decodes the protojson base64 form to the same hex', () => {
-    expect(b64).not.toBe(hex);
-    expect(hash32ToHex(b64)).toBe(hex);
+  it('decodes the protojson base64 form to the 0x form', () => {
+    expect(restHash32(b64)).toBe(text);
   });
 
-  it('never base64-decodes something that is already hex', () => {
-    // '01'.repeat(32) is valid base64 text as well as valid hex; hex must win, otherwise
-    // the decode silently produces a different 32 bytes.
+  it('rejects a bare 64-hex string instead of base64-decoding it', () => {
+    // '01'.repeat(32) is valid base64 text as well as valid hex; it is the retired bare
+    // spelling and must be refused, never decoded into a different 32 bytes.
     const ambiguous = '01'.repeat(32);
-    expect(hash32ToHex(ambiguous)).toBe(ambiguous);
+    expect(() => restHash32(ambiguous)).toThrowError(/0x followed by 64 lowercase hex/);
+    expect(() => restHash32(hex)).toThrowError(TrueOpenError);
   });
 
   it('rejects a base64 value that is not 32 bytes', () => {
-    expect(() => hash32ToHex(bytesToBase64(new Uint8Array(31)))).toThrowError(TrueOpenError);
-    expect(() => hash32ToHex(bytesToBase64(new Uint8Array(33)))).toThrowError(TrueOpenError);
+    expect(() => restHash32(bytesToBase64(new Uint8Array(31)))).toThrowError(TrueOpenError);
+    expect(() => restHash32(bytesToBase64(new Uint8Array(33)))).toThrowError(TrueOpenError);
   });
 
-  it('rejects uppercase hex rather than folding it', () => {
-    expect(() => hash32ToHex(hex.toUpperCase())).toThrowError(TrueOpenError);
+  it('rejects uppercase hex and 0X rather than folding them', () => {
+    expect(() => restHash32(`0x${hex.toUpperCase()}`)).toThrowError(TrueOpenError);
+    expect(() => restHash32(`0X${hex}`)).toThrowError(TrueOpenError);
+    expect(() => restHash32(hex.toUpperCase())).toThrowError(TrueOpenError);
+  });
+
+  it('rejects the 0x form at any other length', () => {
+    expect(() => restHash32(`0x${hex}00`)).toThrowError(TrueOpenError);
+    expect(() => restHash32(text.slice(0, -2))).toThrowError(TrueOpenError);
   });
 });

@@ -78,7 +78,8 @@ function genericDigest(domain: string, fields: readonly Uint8Array[]): string {
   return toHex(canonicalHashBytes(enc.encode(domain), ...fields));
 }
 
-const hexOf = (f: TypedField): string => f.hex!;
+/** A typed bytes32 field in its transport spelling: 0x + 64 lowercase hex (ADR-0034). */
+const hexOf = (f: TypedField): string => `0x${f.hex!}`;
 const bigOf = (f: TypedField): bigint => BigInt(f.value!);
 const optBig = (f: TypedField): bigint | undefined => (f.present === true ? BigInt(f.fields![0]!.value!) : undefined);
 
@@ -86,7 +87,7 @@ const optBig = (f: TypedField): bigint | undefined => (f.present === true ? BigI
 const SDK_CALL: Readonly<Record<string, (f: readonly TypedField[]) => Uint8Array>> = {
   [SDK_BODY_DOMAIN.OpenTask]: (f) =>
     openTaskBodyDigest({
-      taskHash: fromHex(hexOf(f[0]!)),
+      taskHash: fromHex(f[0]!.hex!),
       sessionId: hexOf(f[1]!),
       orderSequence: bigOf(f[2]!),
       userAddress: f[3]!.bech32!,
@@ -158,22 +159,26 @@ describe('SDK request body digests (wire sdk_request_body_v1.json)', () => {
 
   it('OpenTask payload_ref is derived from input_hash and matches the transport column', () => {
     const v = VECTORS.find((x) => x.domain === SDK_BODY_DOMAIN.OpenTask)!;
-    expect(openTaskPayloadRef(v.fields[5]!.hex!)).toBe(v.transport!.payload_ref);
+    // payload_ref keeps the bare lowercase hex of input_hash; only the Hash32 text input is 0x-prefixed.
+    expect(openTaskPayloadRef(hexOf(v.fields[5]!))).toBe(v.transport!.payload_ref);
+    expect(v.transport!.payload_ref).toBe(`nexus://sha256/${v.fields[5]!.hex!}`);
   });
 });
 
 describe('SDK request body projection refuses what cannot be projected', () => {
-  const S = '77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
-  const T = 'bce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
+  const S = '0x77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
+  const T = '0xbce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
   const refused = (fn: () => unknown): void => {
     expect(fn).toThrow(TrueOpenError);
-    expect(fn).toThrow(/request body|64-character lowercase hex/);
+    expect(fn).toThrow(/request body|0x followed by 64 lowercase hex/);
   };
 
-  it('Hash32 ids: uppercase and 0x-prefixed spellings', () => {
-    refused(() => ackOutputBodyDigest(S.toUpperCase(), T, 1n));
-    refused(() => ackOutputBodyDigest(S, `0x${T}`, 1n));
-    refused(() => subscribeOutputBodyDigest(S.slice(2), T));
+  it('Hash32 ids: bare, uppercase, 0X and wrong-length spellings', () => {
+    refused(() => ackOutputBodyDigest(`0x${S.slice(2).toUpperCase()}`, T, 1n));
+    refused(() => ackOutputBodyDigest(S, T.slice(2), 1n));
+    refused(() => ackOutputBodyDigest(`0X${S.slice(2)}`, T, 1n));
+    refused(() => subscribeOutputBodyDigest(S.slice(0, -2), T));
+    refused(() => openTaskPayloadRef('22'.repeat(32)));
   });
 
   it('from_cursor: empty is absent, "0" is present, anything else non-canonical is refused', () => {
@@ -195,7 +200,7 @@ describe('SDK request body projection refuses what cannot be projected', () => {
   it('OpenTask: a user_address that is not canonical Bech32 is refused', () => {
     const base = {
       taskHash: new Uint8Array(32), sessionId: S, orderSequence: 7n, inputSizeBytes: 1n,
-      inputHash: '22'.repeat(32), inputMediaType: 'application/json', idempotencyKey: 'k',
+      inputHash: `0x${'22'.repeat(32)}`, inputMediaType: 'application/json', idempotencyKey: 'k',
     };
     expect(() => openTaskBodyDigest({ ...base, userAddress: 'TRUEOPEN1RFJZ7R3U8T65TEAVH5UTQUJ3KWVSJ983P3JCLZ' })).toThrow(TrueOpenError);
     expect(() => openTaskBodyDigest({ ...base, userAddress: 'trueopen1rfjz7r3u8t65teavh5utquj3kwvsj983p3jclz' })).not.toThrow();

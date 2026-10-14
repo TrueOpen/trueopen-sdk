@@ -10,6 +10,8 @@ import * as v from './support/independent';
 
 const F = JSON.parse(readFileSync('third_party/wire/testdata/v1/shared/account_signing_v1.json', 'utf8'));
 const unhex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, 'hex'));
+/** The typed messages carry bytes32 as bare hex (the fixture's file encoding); the transport spells it 0x + 64 lowercase hex. */
+const text32 = (h: string): string => `0x${h}`;
 
 const ACCOUNT = F.account.account_bech32 as string;
 const ACCOUNT_PUB = unhex(F.account.pub_compressed);
@@ -40,7 +42,7 @@ function envelope(name: 'sdk_request' | 'sdk_request_session' | 'sdk_request_ope
   const m = s.message;
   return {
     requestDomain: s.envelope.request_domain, chainId: m.chainId, method: m.method, endpoint: m.endpoint,
-    sessionId: m.sessionId, taskId: m.taskId, requestNonce: unhex(m.requestNonce), expiryHeightOrTime: BigInt(m.expiryHeightOrTime),
+    sessionId: text32(m.sessionId), taskId: text32(m.taskId), requestNonce: unhex(m.requestNonce), expiryHeightOrTime: BigInt(m.expiryHeightOrTime),
     bodyDigest: unhex(m.bodyDigest), signerAddress: s.envelope.signer_address, signature: unhex(s.signature_65), signatureChainId: BigInt(s.signature_chain_id),
     ...(name !== 'sdk_request' ? { sessionGrant: grant() } : {}),
     ...over,
@@ -117,7 +119,7 @@ function decide(r: Row): string {
         ...(vm['chainId'] !== undefined ? { chainId: vm['chainId'] } : {}),
       });
       const over: { -readonly [K in keyof v.EnvelopeLike]?: v.EnvelopeLike[K] } = { ...sig };
-      if (sm['taskId'] !== undefined) over.taskId = sm['taskId'];
+      if (sm['taskId'] !== undefined) over.taskId = text32(sm['taskId']);
       if (sm['expiryHeightOrTime'] !== undefined) over.expiryHeightOrTime = BigInt(sm['expiryHeightOrTime']);
       if (r.transport?.['expiry_height_or_time'] !== undefined) over.expiryHeightOrTime = BigInt(r.transport['expiry_height_or_time']);
       if (r.verified?.domain?.chain_id !== undefined) over.signatureChainId = BigInt(r.verified.domain.chain_id);
@@ -158,7 +160,7 @@ function taskAuth(name: 'task_data_request' | 'task_data_request_session', over:
   const m = s.message;
   return {
     schemaVersion: Number(m.schemaVersion), chainId: m.chainId, builderOperatorAddress: m.builderOperatorAddress, rpcMethod: m.rpcMethod,
-    bodyDigest: m.bodyDigest, requesterKind: Number(m.requesterKind), requesterAddress: m.requesterAddress,
+    bodyDigest: text32(m.bodyDigest), requesterKind: Number(m.requesterKind), requesterAddress: m.requesterAddress,
     serviceAuthorizationNonce: BigInt(m.serviceAuthorizationNonce), requestNonce: unhex(m.requestNonce), expiryHeight: BigInt(m.expiryHeight),
     signature: unhex(s.signature_65), signatureChainId: BigInt(s.signature_chain_id), ...(name === 'task_data_request_session' ? { sessionGrant: grant() } : {}), ...over,
   };
@@ -166,7 +168,7 @@ function taskAuth(name: 'task_data_request' | 'task_data_request_session', over:
 
 function verifyTaskData(a: v.RequestAuthLike, c: v.AuthContext, objectKind = 2): string {
   return v.verifyUserTaskDataAuth(a, {
-    builder: a.builderOperatorAddress, rpcMethod: a.rpcMethod, body: unhex(a.bodyDigest), objectKind, maxServiceMaterialExpiryBlocks: 1000n,
+    builder: a.builderOperatorAddress, rpcMethod: a.rpcMethod, body: unhex(a.bodyDigest.slice(2)), objectKind, maxServiceMaterialExpiryBlocks: 1000n,
   }, c);
 }
 
@@ -184,7 +186,7 @@ function decideTaskData(r: Row): string {
     case 'cortex_service_signature_chain_id_nonzero':
       return code(() => verifyTaskData(taskAuth('task_data_request', { requesterKind: 2, signatureChainId: 1n }), ctx()));
     case 'task_data_upload_with_session_grant':
-      return code(() => verifyTaskData(taskAuth('task_data_request_session', { ...sig, rpcMethod: sm['rpcMethod']!, bodyDigest: sm['bodyDigest']! }), ctx()));
+      return code(() => verifyTaskData(taskAuth('task_data_request_session', { ...sig, rpcMethod: sm['rpcMethod']!, bodyDigest: text32(sm['bodyDigest']!) }), ctx()));
     case 'task_data_input_object_with_session_grant':
       return code(() => verifyTaskData(taskAuth('task_data_request_session'), ctx(), 1));
     default:

@@ -37,10 +37,13 @@ const LIVE_SESSION = {
     next_expected_sequence: '0',
     open_pending_count: 0,
     owner_user_address: 'trueopen1qp5c4zkm4q4efuqrwjaww8n5yvrht7fdvnp2mq',
-    session_id: '845ae6e61c1219d496343a0cdaabab50c4ac2919343fc578d306462dc72bbf8a',
+    session_id: '0x845ae6e61c1219d496343a0cdaabab50c4ac2919343fc578d306462dc72bbf8a',
     status: 'SESSION_STATUS_IDLE',
   },
 };
+
+const SID1 = `0x${'a1'.repeat(32)}`;
+const SID2 = `0x${'b2'.repeat(32)}`;
 
 describe('RestChainReader', () => {
   it('querySession parses a real response body from a live chain', async () => {
@@ -62,7 +65,7 @@ describe('RestChainReader', () => {
     const { fetch, lastUrl } = stubFetch(
       okJson({
         session: {
-          session_id: 'sess-1',
+          session_id: SID1,
           owner_user_address: 'trueopen1owner',
           next_expected_sequence: '7',
           last_active_height: '1234',
@@ -72,8 +75,10 @@ describe('RestChainReader', () => {
       }),
     );
     const r = new RestChainReader({ baseUrl: 'http://localhost:1317/', fetch });
-    const s = await r.querySession('sess-1');
-    expect(lastUrl()).toBe('http://localhost:1317/TrueOpen/task/v1/session/sess-1');
+    const s = await r.querySession(SID1);
+    // The path segment is the 0x Hash32 text as is.
+    expect(lastUrl()).toBe(`http://localhost:1317/TrueOpen/task/v1/session/${SID1}`);
+    expect(s.sessionId).toBe(SID1);
     expect(s.owner).toBe('trueopen1owner');
     expect(s.nextExpectedSequence).toBe(7n);
     expect(s.openPendingCount).toBe(2n);
@@ -84,7 +89,7 @@ describe('RestChainReader', () => {
     const { fetch } = stubFetch(
       okJson({
         session: {
-          session_id: 's', owner_user_address: 'o',
+          session_id: SID1, owner_user_address: 'o',
           next_expected_sequence: 3, last_active_height: '9', open_pending_count: '1',
           status: 'IDLE',
         },
@@ -101,7 +106,7 @@ describe('RestChainReader', () => {
       const { fetch } = stubFetch(
         okJson({
           session: {
-            session_id: 's', owner_user_address: 'o',
+            session_id: SID1, owner_user_address: 'o',
             next_expected_sequence: bad, last_active_height: '0', open_pending_count: 0,
             status: 'IDLE',
           },
@@ -116,7 +121,7 @@ describe('RestChainReader', () => {
     const { fetch } = stubFetch(
       okJson({
         session: {
-          sessionId: 'sess-2',
+          sessionId: SID2,
           ownerUserAddress: 'trueopen1o',
           nextExpectedSequence: '0',
           lastActiveHeight: '0',
@@ -126,9 +131,23 @@ describe('RestChainReader', () => {
       }),
     );
     const r = new RestChainReader({ baseUrl: 'http://n', fetch });
-    const s = await r.querySession('sess-2');
-    expect(s.sessionId).toBe('sess-2');
+    const s = await r.querySession(SID2);
+    expect(s.sessionId).toBe(SID2);
     expect(s.status).toBe('IDLE');
+  });
+
+  it('querySession refuses a session_id in the retired bare 64-hex spelling', async () => {
+    const { fetch } = stubFetch(
+      okJson({
+        session: {
+          session_id: SID1.slice(2), owner_user_address: 'o', next_expected_sequence: '0',
+          last_active_height: '0', open_pending_count: 0, status: 'IDLE',
+        },
+      }),
+    );
+    await expect(new RestChainReader({ baseUrl: 'http://n', fetch }).querySession(SID1)).rejects.toMatchObject({
+      code: 'CHAIN_QUERY_MALFORMED',
+    });
   });
 
   /**
@@ -141,16 +160,16 @@ describe('RestChainReader', () => {
    * the REST gateway runs with EmitDefaults, so those are sent, and a fixture
    * that omitted them would be testing a response the chain never produces.
    */
-  const TASK_ID = '11'.repeat(32);
+  const TASK_ID = `0x${'11'.repeat(32)}`;
   // model_id is `bytes` with REST_BYTES_ENCODING_HASH32_LOWER_HEX as of TaskOrderV3
-  // (wire proto/task/v1/assignment.proto), so the gateway sends 64-hex, not a text slug.
-  const MODEL_ID = '33'.repeat(32);
+  // (wire proto/task/v1/assignment.proto), so the gateway sends 0x + 64 lowercase hex, not a text slug.
+  const MODEL_ID = `0x${'33'.repeat(32)}`;
   const pendingTask = (assignment: unknown) => ({
     task: {
       active: {
         core: {
-          accepted_task_hash: '22'.repeat(32),
-          accepted_input_hash: '44'.repeat(32),
+          accepted_task_hash: `0x${'22'.repeat(32)}`,
+          accepted_input_hash: `0x${'44'.repeat(32)}`,
           receipt_status: 'RECEIPT_STATUS_NONE',
           assignment_status: 'ASSIGNMENT_STATUS_PENDING',
           model_id: MODEL_ID,
@@ -179,8 +198,8 @@ describe('RestChainReader', () => {
     expect(snap.modelId).toBe(MODEL_ID);
   });
 
-  it('queryTask accepts the base64 form of model_id and normalizes it to hex', async () => {
-    const b64 = bytesToBase64(fromHex(MODEL_ID));
+  it('queryTask accepts the base64 form of model_id and normalizes it to 0x + 64 lowercase hex', async () => {
+    const b64 = bytesToBase64(fromHex(MODEL_ID.slice(2)));
     const body = pendingTask(null);
     (body.task.active.core as { model_id: string }).model_id = b64;
     expect((await readTask(body)).modelId).toBe(MODEL_ID);
@@ -209,11 +228,11 @@ describe('RestChainReader', () => {
       task: {
         terminal: {
           task_id: TASK_ID,
-          session_id: '33'.repeat(32),
+          session_id: `0x${'33'.repeat(32)}`,
           order_sequence: '4',
-          task_hash: '22'.repeat(32),
+          task_hash: `0x${'22'.repeat(32)}`,
           terminal_phase: 'TASK_PHASE_SETTLED',
-          model_id: '55'.repeat(32),
+          model_id: `0x${'55'.repeat(32)}`,
           profile_version: 2,
           winner_worker: 'trueopen1worker',
         },
@@ -223,9 +242,9 @@ describe('RestChainReader', () => {
       view: 'terminal',
       terminalPhase: 'SETTLED',
       taskId: TASK_ID,
-      acceptedTaskHash: '22'.repeat(32),
+      acceptedTaskHash: `0x${'22'.repeat(32)}`,
       winnerWorker: 'trueopen1worker',
-      modelId: '55'.repeat(32),
+      modelId: `0x${'55'.repeat(32)}`,
       profileVersion: 2n,
       orderSequence: 4n,
     });
@@ -240,8 +259,8 @@ describe('RestChainReader', () => {
     const snap = await readTask({
       task: {
         terminal: {
-          task_id: TASK_ID, order_sequence: '0', task_hash: '22'.repeat(32),
-          terminal_phase: 'TASK_PHASE_FAILED', model_id: '55'.repeat(32), profile_version: 1,
+          task_id: TASK_ID, order_sequence: '0', task_hash: `0x${'22'.repeat(32)}`,
+          terminal_phase: 'TASK_PHASE_FAILED', model_id: `0x${'55'.repeat(32)}`, profile_version: 1,
         },
       },
     });
@@ -251,15 +270,15 @@ describe('RestChainReader', () => {
   it('queryTask reports the active arm with all three fields present', async () => {
     const snap = await readTask(pendingTask(null));
     expect(snap.view).toBe('active');
-    expect(snap.acceptedInputHash).toBe('44'.repeat(32));
+    expect(snap.acceptedInputHash).toBe(`0x${'44'.repeat(32)}`);
     expect(snap.receiptStatus).toBe('NONE');
     expect(snap.assignmentStatus).toBe('PENDING');
   });
 
   it('queryTask decodes the terminal arm model_id as a Hash32 too', async () => {
     const terminal = {
-      task_id: TASK_ID, order_sequence: '0', task_hash: '22'.repeat(32),
-      terminal_phase: 'TASK_PHASE_SETTLED', model_id: bytesToBase64(fromHex(MODEL_ID)), profile_version: 1,
+      task_id: TASK_ID, order_sequence: '0', task_hash: `0x${'22'.repeat(32)}`,
+      terminal_phase: 'TASK_PHASE_SETTLED', model_id: bytesToBase64(fromHex(MODEL_ID.slice(2))), profile_version: 1,
     };
     expect((await readTask({ task: { terminal } })).modelId).toBe(MODEL_ID);
   });
@@ -334,7 +353,7 @@ describe('RestChainReader', () => {
     const { fetch } = stubFetch(
       okJson({
         session: {
-          session_id: 's', owner_user_address: 'o', next_expected_sequence: '0',
+          session_id: SID1, owner_user_address: 'o', next_expected_sequence: '0',
           last_active_height: '0', open_pending_count: 0, status: 'SESSION_STATUS_BOGUS',
         },
       }),

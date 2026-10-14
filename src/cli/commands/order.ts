@@ -105,7 +105,7 @@ export function parseOrderFile(path: string, payload: Uint8Array): TaskOrderInte
   }
 
   const modelId = o['modelId'];
-  if (typeof modelId !== 'string') throw orderFileError('field modelId must be a 64-hex string');
+  if (typeof modelId !== 'string') throw orderFileError('field modelId must be a Hash32 string, 0x followed by 64 lowercase hex characters');
   const amountOf = (k: (typeof AMOUNT_FIELDS)[number]): { atomicUnits: string } => ({ atomicUnits: uint(k, o[k]).toString() });
 
   return {

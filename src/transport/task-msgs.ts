@@ -1,5 +1,5 @@
 import { ProtoWriter, ProtoReader } from '../codec/protobuf';
-import { toHex, fromHex } from '../util/bytes';
+import { hash32Text, strictHash32 } from '../codec/hash32';
 
 /**
  * Hand-written proto encoding + response decoding for the task.v1 user Msgs (no codegen
@@ -10,11 +10,11 @@ import { toHex, fromHex } from '../util/bytes';
  * The challenge Msg in wire is MsgOpenChallengeRound, which the SDK does not support yet.
  *
  * Hash32 representation convention: on the node side, session_id / task_id are `bytes`
- * in the proto (raw 32 bytes), while nexus's IngressAPI requires canonical lowercase
- * 64-hex (`nodecontract.Hash32Bytes`). The SDK uses **lowercase 64-hex** as its single
- * internal representation, converting hex <-> bytes only at the node proto boundary:
- * bytes -> hex on decode, hex -> bytes on encode. That way the same string can be sent
- * to nexus as-is, with no re-encoding.
+ * in the proto (raw 32 bytes), while nexus's IngressAPI requires the Hash32 text form,
+ * `0x` + 64 lowercase hex (ADR-0034). The SDK uses that text form as its single
+ * representation, converting text <-> bytes only at the node proto boundary:
+ * bytes -> text on decode, text -> bytes (strictly) on encode. That way the same string can
+ * be sent to nexus as-is, with no re-encoding.
  */
 
 /** hub.v1.MutationStatusV1 (enum, wire=varint). */
@@ -47,7 +47,7 @@ export function encodeMsgCreateSession(m: MsgCreateSession): Uint8Array {
  * tx signer (signer_address is the session owner); this layer never fabricates it.
  */
 export interface MsgCreateSessionResponse {
-  /** Canonical lowercase 64-hex (32-byte bytes field on the node side). */
+  /** Hash32 text, `0x` + 64 lowercase hex (32-byte bytes field on the node side). */
   readonly sessionId: string;
   readonly sessionNonce: bigint;
   readonly status: string;
@@ -60,7 +60,7 @@ export function decodeMsgCreateSessionResponse(bytes: Uint8Array): MsgCreateSess
   while (!r.eof) {
     const { field, wire } = r.tag();
     switch (field) {
-      case 1: sessionId = toHex(r.bytes()); break;
+      case 1: sessionId = hash32Text(r.bytes()); break;
       case 2: sessionNonce = r.uint64(); break;
       case 3: status = mutationStatus(r.uint64()); break;
       default: r.skip(wire);
@@ -79,13 +79,13 @@ export function decodeMsgCreateSessionResponse(bytes: Uint8Array): MsgCreateSess
  */
 export interface MsgCancelOrder {
   readonly signer: string;
-  /** Canonical lowercase 64-hex; decoded to 32 bytes before writing to the wire. */
+  /** Hash32 text, `0x` + 64 lowercase hex; decoded to 32 bytes before writing to the wire. */
   readonly sessionId: string;
   readonly orderSequence: bigint;
 }
 export function encodeMsgCancelOrder(m: MsgCancelOrder): Uint8Array {
   return new ProtoWriter()
-    .bytes(1, fromHex(m.sessionId))
+    .bytes(1, strictHash32('session_id', m.sessionId))
     .uint64(2, m.orderSequence)
     .string(3, m.signer)
     .finish();
@@ -98,7 +98,7 @@ export function encodeMsgCancelOrder(m: MsgCancelOrder): Uint8Array {
  * Note that field 1 is task_id (not session_id).
  */
 export interface MsgCancelOrderResponse {
-  /** Canonical lowercase 64-hex (32-byte bytes field on the node side). */
+  /** Hash32 text, `0x` + 64 lowercase hex (32-byte bytes field on the node side). */
   readonly taskId: string;
   readonly cancelledSequence: bigint;
   readonly nextExpectedSequence: bigint;
@@ -113,7 +113,7 @@ export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderR
   while (!r.eof) {
     const { field, wire } = r.tag();
     switch (field) {
-      case 1: taskId = toHex(r.bytes()); break;
+      case 1: taskId = hash32Text(r.bytes()); break;
       case 2: cancelledSequence = r.uint64(); break;
       case 3: nextExpectedSequence = r.uint64(); break;
       case 4: status = mutationStatus(r.uint64()); break;

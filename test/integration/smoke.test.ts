@@ -25,8 +25,8 @@ import { ethSecp256k1Address, recoverEip712Address } from '../../src/signer/eth-
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex } from '../../src/util/bytes';
 
-// deriveTaskId requires canonical 64-hex; the raw Hash32 enters the preimage.
-const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+// deriveTaskId requires Hash32 text, 0x + 64 lowercase hex; the raw Hash32 enters the preimage.
+const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
 
 /**
  * End-to-end smoke test (local, no real backend): a fake ChainClient plus a router Transport
@@ -40,12 +40,13 @@ const pub = secp256k1PublicKey(PRIV);
 
 // task_hash signs the address codec bytes into the preimage, so this must be a real decodable bech32 address.
 const USER = ethSecp256k1Address(pub, 'trueopen');
-const hexOf = (b: number): string => new Uint8Array(32).fill(b).reduce((a, x) => a + x.toString(16).padStart(2, '0'), '');
+const bareHexOf = (b: number): string => new Uint8Array(32).fill(b).reduce((a, x) => a + x.toString(16).padStart(2, '0'), '');
+const hexOf = (b: number): string => `0x${bareHexOf(b)}`;
 const amount = (atomicUnits: string) => ({ atomicUnits });
 const ANCHOR = hexOf(0x14);
 
 const order: TaskOrderIntent = {
-  modelId: '5555555555555555555555555555555555555555555555555555555555555555', profileVersion: 1, taskType: TASK_TYPE.TEXT_GENERATION,
+  modelId: '0x5555555555555555555555555555555555555555555555555555555555555555', profileVersion: 1, taskType: TASK_TYPE.TEXT_GENERATION,
   payload: new TextEncoder().encode('trueopen-input'),
   inputBucket: 1, outputBudgetBucket: 1,
   generationParams: defaultGenerationParams(128n, 2_000n),
@@ -68,7 +69,7 @@ const hub = {
     ].join(','),
     setHash: hexOf(0x15), }),
   getBeacon: async (height: bigint): Promise<BeaconView> => ({
-    height, blockHash: ANCHOR, randomnessHex: hexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
+    height, blockHash: ANCHOR, randomnessHex: bareHexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
   }),
   getTaskGenerationLimits: async () => ({
     maxOutputTokens: 131_072n, topKMax: 1000n, stopSequenceMaxItems: 16n,
@@ -170,7 +171,7 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     expect(submit.accepted).toBe(true);
     const taskId = deriveTaskId(SESSION, 3n);
     expect(submit.taskId).toBe(taskId);
-    expect(submit.taskHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(submit.taskHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(submit.context.sessionAnchorBlockHash).toBe(ANCHOR);
 
     // 2b) the request envelope signature the facade produces verifies

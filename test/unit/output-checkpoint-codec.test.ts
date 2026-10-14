@@ -67,7 +67,7 @@ describe('output checkpoint JSON codec', () => {
       format: OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,
       schema_version: 2,
       chain_id: CHAIN_ID,
-      task_hash: TASK_HASH,
+      task_hash: `0x${TASK_HASH}`,
     });
     expect((parsed['mmr'] as Record<string, unknown>)['leaf_count']).toBe('3');
 
@@ -100,8 +100,23 @@ describe('output checkpoint JSON codec', () => {
     expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({ ...value, schema_version: 3 })));
   });
 
+  it('writes Hash32 values as 0x + 64 lowercase hex and the 33-byte Worker key as bare hex', async () => {
+    const value = JSON.parse(serializeOutputStreamCheckpoint(await checkpoint())) as Record<string, unknown>;
+    expect(value['task_hash']).toBe(`0x${TASK_HASH}`);
+    expect(value['worker_service_pubkey']).toMatch(/^[0-9a-f]{66}$/);
+    const peaks = (value['mmr'] as { peaks: { hash: string }[] }).peaks;
+    expect(peaks.length).toBeGreaterThan(0);
+    for (const p of peaks) expect(p.hash).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
   it('hash/pubkey must be canonical lowercase fixed-length hex', async () => {
     const value = JSON.parse(serializeOutputStreamCheckpoint(await checkpoint())) as Record<string, unknown>;
+    // Hash32 values only in the 0x form: the bare spelling is refused.
+    expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({ ...value, task_hash: TASK_HASH })));
+    const mmr = value['mmr'] as { peaks: { height: number; hash: string }[] };
+    expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({
+      ...value, mmr: { ...mmr, peaks: mmr.peaks.map((p) => ({ ...p, hash: p.hash.slice(2) })) },
+    })));
     expectInvalid(() => deserializeOutputStreamCheckpoint(JSON.stringify({
       ...value, task_hash: String(value['task_hash']).toUpperCase(),
     })));

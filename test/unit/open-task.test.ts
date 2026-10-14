@@ -24,6 +24,7 @@ import {
 import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import { sha256 } from '../../src/codec/hash';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { hash32Text, strictHash32 } from '../../src/codec/hash32';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const wallet = privateKeyTypedDataSigner(PRIV);
@@ -31,7 +32,7 @@ const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
 
 const rep = (b: number, n: number): Uint8Array => new Uint8Array(n).fill(b);
-const hexOf = (b: number): string => toHex(rep(b, 32));
+const hexOf = (b: number): string => hash32Text(rep(b, 32));
 const amount = (atomicUnits: string) => ({ atomicUnits });
 const SESSION = hexOf(0x12);
 const PAYLOAD = new TextEncoder().encode('trueopen-input-payload');
@@ -55,7 +56,7 @@ const req: TaskOrderRequest = {
   userAddress: USER,
   sessionId: SESSION,
   orderSequence: 1n,
-  modelId: 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: '0xad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: PAYLOAD,
@@ -131,7 +132,7 @@ describe('buildOpenTaskRequest', () => {
   });
 
   it('refuses a task_id not derived from the order, and a session other than the order\'s', async () => {
-    await expect(buildOpenTaskRequest({ ...base, taskId: '11'.repeat(32) })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_ID_NOT_DERIVED' });
+    await expect(buildOpenTaskRequest({ ...base, taskId: `0x${'11'.repeat(32)}` })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_ID_NOT_DERIVED' });
     await expect(buildOpenTaskRequest({ ...base, sessionId: hexOf(0x13) })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH' });
   });
 
@@ -143,12 +144,12 @@ describe('buildOpenTaskRequest', () => {
     expect(env.expiryHeightOrTime).toBe(1_000n);
 
     const expected = openTaskBodyDigest({
-      taskHash: fromHex(r.taskHash),
+      taskHash: strictHash32('task_hash', r.taskHash),
       sessionId: SESSION,
       orderSequence: order.orderSequence,
       userAddress: USER,
       inputSizeBytes: BigInt(PAYLOAD.length),
-      inputHash: toHex(sha256(PAYLOAD)),
+      inputHash: hash32Text(sha256(PAYLOAD)),
       inputMediaType: 'application/octet-stream',
       idempotencyKey: 'idem-1',
     });
@@ -161,8 +162,10 @@ describe('buildOpenTaskRequest', () => {
   it('payload_ref / input_hash match the payload', async () => {
     const r = await buildOpenTaskRequest(base);
     const hex = toHex(sha256(PAYLOAD));
-    expect(r.input.inputHash).toBe(hex);
+    // input_hash is Hash32 text (0x + 64 lowercase hex); payload_ref keeps the bare hex.
+    expect(r.input.inputHash).toBe(`0x${hex}`);
     expect(r.input.payloadRef).toBe(`nexus://sha256/${hex}`);
+    expect(r.taskHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
   // This is the easiest pitfall with OpenTask compared to SubmitOrder: nexus only accepts a block height.
@@ -195,6 +198,25 @@ describe('IngressClient.openTask (streaming frame splitting)', () => {
       } as any);
     });
   }
+
+  it('refuses an ack whose task_id or session_id is not 0x + 64 lowercase hex', async () => {
+    const r = await buildOpenTaskRequest(base);
+    for (const ack of [
+      { taskId: TASK_ID.slice(2), accepted: true, reason: '', sessionId: SESSION },
+      { taskId: TASK_ID, accepted: true, reason: '', sessionId: `0x${'AB'.repeat(32)}` },
+    ]) {
+      const transport = createRouterTransport(({ service }) => {
+        service(IngressAPI, {
+          async openTask(reqs: AsyncIterable<OpenTaskRequest>) {
+            for await (const _ of reqs) void _;
+            return ack;
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+      });
+      await expect(new IngressClient(transport).openTask(r.input)).rejects.toMatchObject({ code: 'NEXUS_RESPONSE_MALFORMED' });
+    }
+  });
 
   it('sends the header frame first, then chunk frames, and the chunks reassemble into the original payload', async () => {
     const seen = { frames: [] as OpenTaskRequest[] };

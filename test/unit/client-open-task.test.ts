@@ -16,15 +16,16 @@ import {
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const wallet = privateKeyTypedDataSigner(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
 
-const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
+const hexOf = (b: number): string => hash32Text(new Uint8Array(32).fill(b));
 const amount = (atomicUnits: string) => ({ atomicUnits });
-const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
 const SET_HASH = hexOf(0x15);
 const ANCHOR = hexOf(0x14);
 const PAYLOAD = new TextEncoder().encode('trueopen-input');
@@ -45,7 +46,7 @@ const hub = {
   getLatestHeight: async (): Promise<bigint> => 1_000n,
   getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
   getBeacon: async (height: bigint): Promise<BeaconView> => ({
-    height, blockHash: ANCHOR, randomnessHex: hexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
+    height, blockHash: ANCHOR, randomnessHex: toHex(new Uint8Array(32).fill(0x01)), sourceTag: 'proposer_vrf_v1', verified: true,
   }),
   getTaskGenerationLimits: async () => ({
     maxOutputTokens: 131_072n, topKMax: 1000n, stopSequenceMaxItems: 16n,
@@ -64,7 +65,7 @@ const hub = {
 } as never;
 
 const order: TaskOrderIntent = {
-  modelId: 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: '0xad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
   profileVersion: 1,
   taskType: TASK_TYPE.TEXT_GENERATION,
   payload: PAYLOAD,
@@ -126,7 +127,7 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.endpointsTried).toBe(3);
     expect(seen.calls).toBe(3); // each of the 3 endpoints receives one call
     expect(res.taskId).toBe(deriveTaskId(SESSION, 3n));
-    expect(res.taskHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.taskHash).toMatch(/^0x[0-9a-f]{64}$/);
 
     // Context is fetched from the chain and returned, for reuse/debugging.
     expect(res.context.sessionAnchorBlockHash).toBe(ANCHOR);

@@ -9,7 +9,8 @@ export { TaskPhase, AssignmentStatus, ReceiptStatus, VerificationStatus, Settlem
 export { TaskVerdict, TaskFailureClass } from './gen/task/v1/settlement_pb.js';
 export { TaskFinalityStatusV1 } from './gen/shared/v1/common_pb.js';
 
-export { u64ToString, stringToU64, bytesToBase64, base64ToBytes, hash32ToHex } from './codec/wire';
+export { u64ToString, stringToU64, bytesToBase64, base64ToBytes, restHash32 } from './codec/wire';
+export { HASH32_TEXT_RE, isHash32Text, hash32Text } from './codec/hash32';
 
 export type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 

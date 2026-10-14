@@ -2,16 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { resolveTaskBuilderEndpoints } from '../../src/hub/stage1-routing';
 import { selectTaskBuilders } from '../../src/hub/builder-selection';
 import type { BuilderSetSnapshot, ServiceDescriptorRef } from '../../src/types/hub';
-import { toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 const A = 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl';
 const B = 'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg';
 const C = 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man';
-const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
+const hexOf = (b: number): string => hash32Text(new Uint8Array(32).fill(b));
 
-const SET_HASH = '33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a';
+const SET_HASH = '0x33530796a5c450a2c5264ec40d1eeabf0e581d3f84dc09b45c35ac8259f4706a';
 const ANCHOR = hexOf(0x14);
-const TASK = '4f5fc5f611e7fe40cecd95c945bdb8a3383ddbd7d55545758ae8c860546ce193';
+const TASK = '0x4f5fc5f611e7fe40cecd95c945bdb8a3383ddbd7d55545758ae8c860546ce193';
 
 const SNAP: BuilderSetSnapshot = {
   builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n,
@@ -103,6 +103,15 @@ describe('resolveTaskBuilderEndpoints', () => {
     await expect(resolveTaskBuilderEndpoints(reader, { ...input, builderSetHash: hexOf(0x99) })).rejects.toMatchObject({
       code: 'SDK_LOCAL_BUILDER_SET_MISMATCH',
     });
+  });
+
+  it('refuses a set hash that is not 0x + 64 lowercase hex on either side instead of folding it', async () => {
+    const upper = `0x${SET_HASH.slice(2).toUpperCase()}`;
+    await expect(resolveTaskBuilderEndpoints(reader, { ...input, builderSetHash: upper })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_NOT_HASH32',
+    });
+    const bareReader = { ...reader, getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => ({ ...SNAP, setHash: SET_HASH.slice(2) }) };
+    await expect(resolveTaskBuilderEndpoints(bareReader, input)).rejects.toMatchObject({ code: 'SDK_LOCAL_NOT_HASH32' });
   });
 
   it('does not depend on the snapshot\'s member list when members is passed explicitly', async () => {

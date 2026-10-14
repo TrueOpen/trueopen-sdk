@@ -59,7 +59,7 @@ describe('e2e: full flow through the SDK facade', () => {
       expect(b.error).toBeUndefined();
       expect(b.ack?.accepted).toBe(true);
       expect(b.ack?.taskId).toBe(STREAM.task_id);
-      expect(b.tlsPubkeyHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(b.tlsPubkeyHash).toMatch(/^0x[0-9a-f]{64}$/);
     }
     for (const n of world.nexus.slice(0, 3)) {
       expect(n.verifications.filter((x) => x.method === 'OpenTask')).toEqual([{ method: 'OpenTask', outcome: 'ok' }]);
@@ -107,7 +107,7 @@ describe('e2e: full flow through the SDK facade', () => {
     for (const n of world.nexus) expect(n.verifications.filter((x) => x.outcome !== 'ok')).toEqual([]);
     // The routes the SDK used, for the record (and so an unexpected one shows up in a diff).
     const routes = [...new Set(world.node.requests.map((r) => r
-      .replace(/[0-9a-f]{64}/g, '{hash}')
+      .replace(/0x[0-9a-f]{64}/g, '{hash}')
       .replace(/trueopen1[0-9a-z]{38}/g, '{address}')
       .replace(/\/\d+(?=\/|$)/g, '/{n}')))].sort();
     expect(routes).toEqual([

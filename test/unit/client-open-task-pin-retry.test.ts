@@ -14,6 +14,7 @@ import { privKeySecp256k1DigestSigner, secp256k1PublicKey } from '../../src/sign
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex, toHex } from '../../src/util/bytes';
+import { hash32Text } from '../../src/codec/hash32';
 
 // After a Builder rotates its certificate, the new fingerprint goes on-chain, but the
 // descriptor the client is holding may still be the old fingerprint. If the handshake check
@@ -24,22 +25,22 @@ const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d
 const wallet = privateKeyTypedDataSigner(PRIV);
 const pub = secp256k1PublicKey(PRIV);
 const USER = ethSecp256k1Address(pub, 'trueopen');
-const hexOf = (b: number): string => toHex(new Uint8Array(32).fill(b));
+const hexOf = (b: number): string => hash32Text(new Uint8Array(32).fill(b));
 const amount = (atomicUnits: string) => ({ atomicUnits });
-const SESSION = 'b793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
+const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
 const ADDRS = [
   'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl',
   'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg',
   'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man',
 ];
-const STALE = 'aa'.repeat(32);
-const FRESH = 'bb'.repeat(32);
+const STALE = `0x${'aa'.repeat(32)}`;
+const FRESH = `0x${'bb'.repeat(32)}`;
 
 const snapshot: BuilderSetSnapshot = {
   builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDRS.join(','), setHash: hexOf(0x15), };
 
 const order: TaskOrderIntent = {
-  modelId: 'ad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
+  modelId: '0xad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
   profileVersion: 1, taskType: TASK_TYPE.TEXT_GENERATION, payload: new TextEncoder().encode('trueopen-input'),
   inputBucket: 1, outputBudgetBucket: 1, generationParams: defaultGenerationParams(128n, 2_000n),
   amounts: {
@@ -67,7 +68,7 @@ function makeHub(afterReread: string) {
     getLatestHeight: async (): Promise<bigint> => 1_000n,
     getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
     getBeacon: async (height: bigint): Promise<BeaconView> => ({
-      height, blockHash: hexOf(0x14), randomnessHex: hexOf(0x01), sourceTag: 'proposer_vrf_v1', verified: true,
+      height, blockHash: hexOf(0x14), randomnessHex: toHex(new Uint8Array(32).fill(0x01)), sourceTag: 'proposer_vrf_v1', verified: true,
     }),
     getTaskGenerationLimits: async () => ({
       maxOutputTokens: 131_072n, topKMax: 1000n, stopSequenceMaxItems: 16n,

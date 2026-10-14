@@ -18,13 +18,15 @@ describe('signing bytes / task_id', () => {
       uint64BE(BigInt(v.order_sequence)),
     );
     expect(toHex(preimage)).toBe(v.preimage_hex);
-    expect(deriveTaskId(v.session_id_raw_hex, BigInt(v.order_sequence))).toBe(v.expected_hex);
+    expect(deriveTaskId(`0x${v.session_id_raw_hex}`, BigInt(v.order_sequence))).toBe(`0x${v.expected_hex}`);
   });
 
-  it('deriveTaskId tolerates leading/trailing whitespace but rejects a session_id that is not a Hash32', () => {
+  it('deriveTaskId takes and returns 0x + 64 lowercase hex, and rejects any other session_id spelling', () => {
     const hex = 'ab'.repeat(32);
-    expect(deriveTaskId(` ${hex} `, 42n)).toBe(deriveTaskId(hex, 42n));
-    expect(() => deriveTaskId('sess-1', 1n)).toThrowError(/Hash32|64-hex/);
+    expect(deriveTaskId(`0x${hex}`, 42n)).toMatch(/^0x[0-9a-f]{64}$/);
+    for (const bad of ['sess-1', hex, `0x${hex.toUpperCase()}`, `0X${hex}`, ` 0x${hex} `, `0x${hex}00`]) {
+      expect(() => deriveTaskId(bad, 1n)).toThrowError(/0x followed by 64 lowercase hex/);
+    }
   });
 
   it('domainHash: 32 bytes, domain separation, boundaries cannot be confused', () => {

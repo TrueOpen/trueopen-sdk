@@ -1,4 +1,5 @@
 import { TrueOpenError } from '../errors/errors';
+import { isHash32Text } from '../codec/hash32';
 import { parseManifestUri, DEFAULT_MAX_MANIFEST_URI_BYTES } from './manifest-uri';
 import { MAX_MANIFEST_BYTES, verifyManifestBytes } from './model-manifest';
 import type { ProfileManifestState, RegistrationCheck, VerifiedManifest } from './model-manifest';
@@ -18,7 +19,7 @@ export interface ManifestFetchLimits {
  */
 export type ManifestFetcher = (url: string, limits: ManifestFetchLimits) => Promise<Uint8Array>;
 
-/** A cache of verified manifest bodies keyed by manifest_hash (lowercase 64-hex). */
+/** A cache of verified manifest bodies keyed by manifest_hash (`0x` + 64 lowercase hex). */
 export interface ManifestCache {
   get(manifestHash: string): Uint8Array | undefined | Promise<Uint8Array | undefined>;
   set(manifestHash: string, bytes: Uint8Array): void | Promise<void>;
@@ -75,7 +76,7 @@ export interface ManifestSourceOptions {
   readonly fetcher?: ManifestFetcher;
   /**
    * Operator-configured mirrors that serve the same bytes by manifest_hash, as URL
-   * templates containing "{manifest_hash}" (lowercase 64-hex), for example
+   * templates containing "{manifest_hash}" (the Hash32 text, `0x` + 64 lowercase hex), for example
    * "https://mirror.example/manifests/{manifest_hash}.json". Tried in order after
    * manifest_uri. Every body is verified the same way, so a mirror is trusted for
    * availability only.
@@ -135,7 +136,7 @@ function httpBaseUrl(what: string, value: string): URL {
   let url: URL;
   try {
     // Substitute a well-formed hash so validation sees the shape the fetch will use.
-    url = new URL(fillHash(value, '0'.repeat(64)));
+    url = new URL(fillHash(value, `0x${'0'.repeat(64)}`));
   } catch {
     throw configError(`${what} ${JSON.stringify(value)} is not a URL`);
   }
@@ -183,7 +184,7 @@ export class ManifestSource {
 
   /** Same as fetchManifest, for a ProfileState the caller already holds. */
   async fetchForState(state: ProfileManifestState): Promise<ManifestFetchResult> {
-    if (!/^[0-9a-f]{64}$/.test(state.manifestHash)) {
+    if (!isHash32Text(state.manifestHash)) {
       throw new TrueOpenError('DATA', 'MANIFEST_NOT_REGISTERED', 'profile has no canonical manifest_hash');
     }
     const attempts: ManifestAttempt[] = [];

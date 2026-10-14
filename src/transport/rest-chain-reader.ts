@@ -1,4 +1,4 @@
-import { stringToU64, hash32ToHex } from '../codec/wire';
+import { stringToU64, restHash32 } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { ChainReader } from './chain-client';
 import type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from '../types/node';
@@ -144,8 +144,8 @@ export class RestChainReader implements ChainReader {
       return {
         view: 'terminal',
         terminalPhase: enumField(terminal, 'terminal_phase', 'TASK_PHASE_'),
-        taskId: field(terminal, 'task_id'),
-        acceptedTaskHash: field(terminal, 'task_hash'),
+        taskId: hash32Field(terminal, 'task_id'),
+        acceptedTaskHash: hash32Field(terminal, 'task_hash'),
         winnerWorker: pendingField(terminal, 'winner_worker'),
         modelId: hash32Field(terminal, 'model_id'),
         profileVersion: u64Field(terminal, 'profile_version'),
@@ -164,9 +164,9 @@ export class RestChainReader implements ChainReader {
       view: 'active',
       // task_id is carried by the assignment view, so it is unavailable until
       // assignment exists. The caller already knows which id it asked for.
-      taskId: assignment === undefined ? taskId : field(assignment, 'task_id'),
-      acceptedTaskHash: field(core, 'accepted_task_hash'),
-      acceptedInputHash: field(core, 'accepted_input_hash'),
+      taskId: assignment === undefined ? taskId : hash32Field(assignment, 'task_id'),
+      acceptedTaskHash: hash32Field(core, 'accepted_task_hash'),
+      acceptedInputHash: hash32Field(core, 'accepted_input_hash'),
       // winner_worker is declared `optional` (explicit presence) and the three
       // winner fields are present together or absent together, so a pending
       // assignment never reports a default winner.
@@ -174,8 +174,9 @@ export class RestChainReader implements ChainReader {
       receiptStatus: enumField(core, 'receipt_status', 'RECEIPT_STATUS_'),
       assignmentStatus: enumField(core, 'assignment_status', 'ASSIGNMENT_STATUS_'),
       // model_id is a Hash32 as of TaskOrderV3, so it goes through the same decoder
-      // hub.v1's reader uses -- otherwise ChainTaskSnapshot.modelId and
-      // ProfileInfo.modelId could disagree on hex vs base64 and never compare equal.
+      // hub.v1's reader uses (as does every other Hash32 here) -- otherwise
+      // ChainTaskSnapshot.modelId and ProfileInfo.modelId could disagree on hex vs base64
+      // and never compare equal.
       modelId: hash32Field(core, 'model_id'),
       profileVersion: u64Field(core, 'profile_version'),
       orderSequence: u64Field(core, 'order_sequence'),
@@ -198,10 +199,10 @@ export class RestChainReader implements ChainReader {
     }
     const r = obj(body, 'receipt');
     return {
-      taskId: field(r, 'task_id'),
+      taskId: hash32Field(r, 'task_id'),
       winnerWorker: field(r, 'winner_worker'),
-      inferReceiptHash: field(r, 'infer_receipt_hash'),
-      outputHash: field(r, 'output_hash'),
+      inferReceiptHash: hash32Field(r, 'infer_receipt_hash'),
+      outputHash: hash32Field(r, 'output_hash'),
       outputSizeBytes: u64Field(r, 'output_size_bytes'),
       outputLeafCount: u64Field(r, 'output_leaf_count'),
     };
@@ -266,7 +267,7 @@ function toStreamState(s: Record<string, unknown>): StreamStateView {
   const status = enumField(s, 'status', 'SESSION_STATUS_');
   if (!SESSION_STATUS.has(status)) throw malformed(`session status=${status}`);
   return {
-    sessionId: field(s, 'session_id'),
+    sessionId: hash32Field(s, 'session_id'),
     owner: field(s, 'owner_user_address'),
     nextExpectedSequence: u64Field(s, 'next_expected_sequence'),
     lastActiveHeight: u64Field(s, 'last_active_height'),
@@ -314,12 +315,12 @@ function field(o: Record<string, unknown>, snakeKey: string): string {
   return v;
 }
 
-/** Hash32 field -> canonical lowercase 64-hex, accepting the gateway's hex or base64. */
+/** Hash32 field -> canonical `0x` + 64 lowercase hex, accepting the gateway's 0x hex or base64. */
 function hash32Field(o: Record<string, unknown>, snakeKey: string): string {
   const v = field(o, snakeKey);
   if (v === '') return '';
   try {
-    return hash32ToHex(v);
+    return restHash32(v);
   } catch {
     throw malformed(`field ${snakeKey}`);
   }

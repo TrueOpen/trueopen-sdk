@@ -28,6 +28,7 @@ import type {
   AckOutputResponse,
 } from '../gen/nexus/v1/ingress_pb.js';
 import { TrueOpenError } from '../errors/errors';
+import { isHash32Text } from '../codec/hash32';
 import type { TypedDataSigner } from '../signer/typed-data-signer';
 import { signTypedDataAs } from '../signer/typed-data-signer';
 import { canonicalAccountAddressBytes } from '../codec/address';
@@ -71,7 +72,7 @@ export interface OpenTaskInput {
   readonly sessionId: string;
   readonly orderSequence: bigint;
   readonly userAddress: string;
-  /** Canonical lowercase 64-hex = hex(sha256(payload)). */
+  /** sha256(payload) as Hash32 text, `0x` + 64 lowercase hex. */
   readonly inputHash: string;
   readonly inputMediaType: string;
   /** Required: must stay the same across retries. */
@@ -218,10 +219,10 @@ export class IngressClient {
 
     const res = await this.client.openTask(frames());
     return {
-      taskId: res.taskId,
+      taskId: responseHash32('OpenTaskResponse.task_id', res.taskId),
       accepted: res.accepted,
       reason: res.reason,
-      sessionId: res.sessionId,
+      sessionId: responseHash32('OpenTaskResponse.session_id', res.sessionId),
       ...(res.inputMetadata !== undefined ? { inputMetadata: res.inputMetadata } : {}),
     };
   }
@@ -641,6 +642,21 @@ export class IngressClient {
   }
 }
 
+/**
+ * A Hash32 string read back from a nexus response: empty when the peer left it unset,
+ * otherwise it must be the same `0x` + 64 lowercase hex spelling the SDK sends.
+ */
+function responseHash32(field: string, value: string): string {
+  if (value !== '' && !isHash32Text(value)) {
+    throw new TrueOpenError(
+      'NEXUS_INGRESS',
+      'NEXUS_RESPONSE_MALFORMED',
+      `${field} must be 0x followed by 64 lowercase hex characters, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
 /** SDKRequestEnvelopeV2 on the wire. signer_pubkey (deprecated, ignored) is never sent. */
 export function envelopeMessage(e: SignedSdkRequestEnvelope) {
   return create(SDKRequestEnvelopeV2Schema, {
@@ -695,7 +711,7 @@ async function* retryExpiredGrantOnce<A extends { readonly grant?: SignedSession
 /** The only value currently accepted for TaskDataRequestAuthV1.schema_version. */
 const TASK_DATA_AUTH_SCHEMA_VERSION = 1;
 
-/** TaskDataObjectRefV1: the SDK view uses canonical lowercase hex, and the proto also uses string. */
+/** TaskDataObjectRefV1: the SDK view uses Hash32 text (`0x` + 64 lowercase hex), and the proto also uses string. */
 function toProtoObjectRef(ref: TaskDataObjectRef): ReturnType<typeof create<typeof TaskDataObjectRefV1Schema>> {
   return create(TaskDataObjectRefV1Schema, {
     taskHash: ref.taskHash,

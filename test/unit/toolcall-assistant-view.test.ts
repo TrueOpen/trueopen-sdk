@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hash32Text } from '../../src/codec/hash32';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import {
   confirmAssistantMessageWithReceipt,
@@ -16,12 +17,12 @@ import {
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import type { InferReceiptView } from '../../src/types/node';
-import { fromHex, toHex } from '../../src/util/bytes';
+import { fromHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 
 const CHAIN_ID = 'trueopen-localnet-1';
-const TASK_ID = 'aa'.repeat(32);
-const TASK_HASH = 'bb'.repeat(32);
+const TASK_ID = `0x${'aa'.repeat(32)}`;
+const TASK_HASH = `0x${'bb'.repeat(32)}`;
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(PRIV);
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -67,14 +68,14 @@ async function collect(source: AsyncIterable<AssistantStreamEvent>): Promise<Ass
 function checkpointOver(chunks: readonly Uint8Array[]) {
   const verifier = new OutputStreamVerifier({
     chainId: CHAIN_ID,
-    taskHash: fromHex(TASK_HASH),
+    taskHash: fromHex(TASK_HASH.slice(2)),
     workerServicePubKey: WORKER_PUB,
   });
   chunks.forEach((text, i) => {
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, chunks, i + 1);
     const digest = outputChunkSigningDigest({
       chainId: CHAIN_ID,
-      taskHash: fromHex(TASK_HASH),
+      taskHash: fromHex(TASK_HASH.slice(2)),
       seq: BigInt(i),
       mmrRoot,
     });
@@ -92,8 +93,8 @@ function receiptFor(chunks: readonly Uint8Array[]): InferReceiptView {
   return {
     taskId: TASK_ID,
     winnerWorker: 'trueopen1worker',
-    inferReceiptHash: 'cc'.repeat(32),
-    outputHash: toHex(outputHash(chunks)),
+    inferReceiptHash: `0x${'cc'.repeat(32)}`,
+    outputHash: hash32Text(outputHash(chunks)),
     outputLeafCount: BigInt(chunks.length),
     outputSizeBytes: chunks.reduce((n, c) => n + BigInt(c.length), 0n),
   } as InferReceiptView;
@@ -164,7 +165,7 @@ describe('confirmAssistantMessageWithReceipt', () => {
           taskId: TASK_ID,
           taskHash: TASK_HASH,
           checkpoint: checkpointOver(chunks),
-          receipt: { ...receiptFor(chunks), outputHash: 'dd'.repeat(32) },
+          receipt: { ...receiptFor(chunks), outputHash: `0x${'dd'.repeat(32)}` },
         },
         { parser },
       ),

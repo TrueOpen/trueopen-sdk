@@ -119,6 +119,48 @@ describe('checkpoint JSON with a Fin', () => {
   });
 });
 
+describe('confirmation recovers an unclosed final call by the signed Fin (design S7 requirement 6)', () => {
+  const UNCLOSED = [utf8('<tool_call>\n{"name": "f", '), utf8('"arguments": {"k": 1}}')];
+  const root = outputHash(UNCLOSED);
+
+  async function confirmedWith(finishReason: number) {
+    const sign = privKeySecp256k1DigestSigner(PRIV);
+    const verifier = new OutputStreamVerifier(config());
+    for (let i = 0; i < UNCLOSED.length; i++) {
+      const seq = BigInt(i);
+      const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, UNCLOSED, i + 1);
+      verifier.accept({
+        seq, text: UNCLOSED[i]!, mmrRoot,
+        signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq, mmrRoot })),
+      });
+    }
+    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 1n, outputMmrRoot: root, finishReason };
+    verifier.acceptFin({ finalSeq: 1n, outputMmrRoot: root, finishReason, workerSignature: await sign(outputFinSigningDigest(fields)) });
+    return confirmAssistantMessageWithReceipt(
+      {
+        chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: verifier.checkpoint(),
+        receipt: receipt({
+          outputHash: hash32Text(root), outputLeafCount: 2n,
+          outputSizeBytes: UNCLOSED.reduce((n, c) => n + BigInt(c.length), 0n),
+        }),
+      },
+      { parser: hermesParser },
+    );
+  }
+
+  it('a Fin of EOS_TOKEN makes it an executable call', async () => {
+    const m = await confirmedWith(1);
+    expect(m.toolCalls).toEqual([{ name: 'f', arguments: '{"k": 1}' }]);
+    expect(m.content).toBe('');
+  });
+
+  it('a Fin of MAX_OUTPUT_TOKENS keeps it as text', async () => {
+    const m = await confirmedWith(MAX_OUTPUT_TOKENS);
+    expect(m.toolCalls).toEqual([]);
+    expect(m.content).toBe('<tool_call>\n{"name": "f", "arguments": {"k": 1}}');
+  });
+});
+
 describe('confirmation carries the Fin\'s finish reason', () => {
   it('attaches the reason of a kept Fin that matches the receipt', async () => {
     const v = await streamed();

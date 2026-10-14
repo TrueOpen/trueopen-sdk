@@ -67,10 +67,24 @@ export type ToolCallStreamEvent =
 export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reasoning'; readonly text: string };
 
 /** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
+/**
+ * How the end of the output is to be read. Given only by a caller that knows the verified
+ * protocol finish reason (design S7 requirement 6).
+ */
+export interface ToolCallParseOptions {
+  /**
+   * The model stopped by itself (the signed Fin says EOS_TOKEN or STOP_SEQUENCE), so a final
+   * call whose closing marker never came is complete if its body parses: recover it as a call,
+   * as vLLM and Dynamo do. Without it -- truncated, stopped by the user, or the reason
+   * unavailable -- an unclosed segment flushes as plain text.
+   */
+  readonly recoverUnclosedAtEnd?: boolean;
+}
+
 export interface ToolCallStreamState {
   push(text: string): readonly ToolCallStreamEvent[];
-  /** End of stream. An unclosed segment flushes as plain text (design S7 requirement 2). */
-  finish(): readonly ToolCallStreamEvent[];
+  /** End of stream. An unclosed segment flushes as plain text unless recovered (design S7 requirement 6). */
+  finish(opts?: ToolCallParseOptions): readonly ToolCallStreamEvent[];
 }
 
 export interface ToolCallParser extends ParserRef {
@@ -80,7 +94,7 @@ export interface ToolCallParser extends ParserRef {
    * (design S10.3). Omitted only by parsers that have no explicit end marker.
    */
   readonly endMarkers?: readonly string[];
-  parseComplete(text: string): DerivedAssistantMessage;
+  parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage;
   createStreamState(): ToolCallStreamState;
 }
 

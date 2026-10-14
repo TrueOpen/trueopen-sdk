@@ -1513,9 +1513,12 @@ export class TrueOpenClient {
       ? await this.fetchTaskOutputVia(this.ingress, { ...base, builderAddress: p.builderAddress })
       : await this.fetchFromSelectedBuilders(p.taskId, base);
 
-    const message = deriveAssistantMessage(got.text, 'parser' in p ? p : {
+    // The stored Fin's reason decides whether an unclosed final call is recovered.
+    const finish = got.finishReason !== undefined ? { finishReason: got.finishReason } : {};
+    const message = deriveAssistantMessage(got.text, 'parser' in p ? { ...p, ...finish } : {
       ...resolveParsers(p),
       ...(p.trailingEosMarkers !== undefined ? { trailingEosMarkers: p.trailingEosMarkers } : {}),
+      ...finish,
     });
     // fetchTaskOutput already held root, size and leaf count to this receipt.
     const confirmation: ConfirmedOutputEvent = {

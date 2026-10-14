@@ -334,7 +334,7 @@ text. Enabling tool calling can never lose data.
    +--------+  start marker   +-----------+    | closing marker
    |  Text  |---------------->| Buffering |----+ -> emit one tool call
    +--------+                 +-----------+
-        | ordinary bytes            | Fin, still unclosed
+        | ordinary bytes            | Fin, still unclosed (recovered if the model stopped itself)
         v emit as content           v flush buffer as plain text
 ```
 
@@ -370,16 +370,26 @@ buffer for the next chunk.
    marker stays in `Text` and flows through as content -- a decided and covered case, not a
    by-product of the state machine.
 
-6. **Fin with an unclosed buffer flushes as plain text.** It is neither dropped nor an
-   error -- a truncated generation (hit `max_output_tokens`) produces exactly this, and it
-   is a normal outcome. This is a **deliberate divergence** from both references: vLLM's
-   `finish()` returns `Err("incomplete ... tool call")`, and Dynamo's "never-leak gate" drops
-   the markup (suppressing to empty when there is no prose). TrueOpen keeps the bytes because
-   they are the very bytes `output_hash` covers -- suppressing committed bytes would make what
-   the application sees diverge from what the chain committed, undetectably (S6). What a later
-   revision may still add is making the "ended unclosed" fact visible to the caller through the
-   S5 public API so a UI can choose to hide the trailing partial markup; the SDK itself never
-   decides.
+6. **Fin with an unclosed buffer: recover the call only if the model stopped by itself,
+   otherwise flush as plain text.** A model can end a turn after a complete call body without
+   writing the closing marker. When the Worker-signed Fin says the model stopped by itself
+   (`EOS_TOKEN` / `STOP_SEQUENCE`) and the body parses, the segment is that call: it is
+   recovered, and a closing marker the stop cut short (`</tool_`) is dropped with it. This is
+   what both references do for Hermes -- vLLM's `<tool_call>(.*)` regex alternative and
+   streaming "valid JSON without closing tag = complete body", Dynamo's `allow_eof_recovery`
+   (checked against vLLM 77154ca and dynamo-parsers 10.0.2, 2026-10-14; an earlier revision of
+   this item wrongly said vLLM returns an error).
+
+   Everything else flushes as plain text, start marker included, neither dropped nor an error:
+   a body that does not parse, and any output that was cut off or whose reason is unknown --
+   `MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION` (truncated), `USER_STOP` (interrupted), or no
+   signed Fin kept. A body that happens to parse at a cut is not evidence of the call the model
+   meant, and the reason is never guessed. Here TrueOpen diverges from Dynamo, whose
+   "never-leak gate" drops unparseable partial markup: the bytes are the very bytes
+   `output_hash` covers, and suppressing committed bytes would make what the application sees
+   diverge from what the chain committed, undetectably (S6). The parser takes the decision as
+   `ToolCallParseOptions.recoverUnclosedAtEnd`; the views set it from the verified finish
+   reason (`unclosedCallRecovery`).
 
 The return edge to `Text` is load-bearing: the chat path has no stop conditions (S13.3),
 so generation continues past a closing marker. Content can follow a completed tool call,

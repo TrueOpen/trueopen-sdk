@@ -347,6 +347,7 @@ export {
   confirmAssistantMessageWithReceipt,
   deriveAssistantMessage,
   deriveAssistantStream,
+  unclosedCallRecovery,
   type DerivedViewOptions,
 } from './toolcall/assistant-view';
 export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
@@ -381,6 +382,7 @@ export type {
   DerivedAssistantMessage,
   DerivedToolCall,
   ParserRef,
+  ToolCallParseOptions,
   ToolCallParser,
   ToolCallStreamEvent,
   ToolCallStreamState,

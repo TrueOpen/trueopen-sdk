@@ -39,6 +39,19 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   their spelling. No digest changes.
 - Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); re-pin to the v0.5.0 tag once it ships.
 
+### Changed: a final call missing its closing marker is recovered after a natural stop
+
+- **Changed:** when the Worker-signed Fin says the model stopped by itself (`EOS_TOKEN` /
+  `STOP_SEQUENCE`) and the output ends inside a tool call whose body parses, the call is
+  recovered instead of flushed as text, as vLLM and Dynamo do for Hermes (design S7 requirement
+  6). A truncated (`MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION`), user-stopped or
+  reason-unavailable output, or a body that does not parse, still flushes as plain text.
+  `confirmAssistantMessage`, `assistantTurn`, `fetchAssistantMessage` and the provisional
+  stream all follow the Fin.
+- **Added:** `ToolCallParseOptions` (`recoverUnclosedAtEnd`), taken by
+  `ToolCallParser.parseComplete(text, opts?)` and `ToolCallStreamState.finish(opts?)`;
+  `DerivedViewOptions.finishReason` for `deriveAssistantMessage`; `unclosedCallRecovery`.
+
 ### Added: assistantTurn and profileParsers
 
 - **Added:** `client.assistantTurn(params)`: one assistant turn, streamed then confirmed. It yields

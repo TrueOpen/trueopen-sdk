@@ -19,6 +19,8 @@ import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import type { InferReceiptView } from '../../src/types/node';
 import { fromHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
+import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
+import { qwen3ReasoningParser } from '../../src/toolcall/reasoning';
 
 const CHAIN_ID = 'trueopen-localnet-1';
 const TASK_ID = `0x${'aa'.repeat(32)}`;
@@ -40,9 +42,9 @@ const parser: ToolCallParser = {
   name: 'test-markers',
   version: 1,
   createStreamState: newState,
-  parseComplete(text) {
+  parseComplete(text, opts) {
     const state = newState();
-    const events = [...state.push(text), ...state.finish()];
+    const events = [...state.push(text), ...state.finish(opts)];
     return {
       role: 'assistant',
       content: events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join(''),
@@ -56,6 +58,15 @@ async function* frames(
 ): AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'fin' }> {
   for (const text of texts) yield { kind: 'chunk', text };
   yield { kind: 'fin' };
+}
+
+/** As `frames`, ending in a Fin that carries a verified finish reason. */
+async function* framesEndingWith(
+  finishReason: FinishReasonV1 | undefined,
+  ...texts: readonly string[]
+): AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'fin'; finishReason: FinishReasonV1 | undefined }> {
+  for (const text of texts) yield { kind: 'chunk', text };
+  yield { kind: 'fin', finishReason };
 }
 
 async function collect(source: AsyncIterable<AssistantStreamEvent>): Promise<AssistantStreamEvent[]> {
@@ -133,6 +144,47 @@ describe('deriveAssistantStream', () => {
       { kind: 'content', text: 'x ' },
       { kind: 'content', text: '<tc>trunc' },
     ]);
+  });
+});
+
+describe('an unclosed final call is recovered only when the model stopped by itself', () => {
+  const UNCLOSED = ['x <tc>get_', 'weather|{"c":1}'] as const;
+  const calls = (events: readonly AssistantStreamEvent[]) =>
+    events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call] : []));
+
+  it.each([
+    ['EOS_TOKEN', FinishReasonV1.EOS_TOKEN],
+    ['STOP_SEQUENCE', FinishReasonV1.STOP_SEQUENCE],
+  ])('stream: recovered after a Fin of %s', async (_label, reason) => {
+    const events = await collect(deriveAssistantStream(framesEndingWith(reason, ...UNCLOSED), { parser }));
+    expect(events).toEqual([
+      { kind: 'content', text: 'x ' },
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"c":1}' } },
+    ]);
+  });
+
+  it.each([
+    ['MAX_OUTPUT_TOKENS', FinishReasonV1.MAX_OUTPUT_TOKENS],
+    ['MAX_OUTPUT_DURATION', FinishReasonV1.MAX_OUTPUT_DURATION],
+    ['USER_STOP', FinishReasonV1.USER_STOP],
+    ['an unavailable reason', undefined],
+  ])('stream: text after a Fin of %s', async (_label, reason) => {
+    const events = await collect(deriveAssistantStream(framesEndingWith(reason, ...UNCLOSED), { parser }));
+    expect(calls(events)).toEqual([]);
+    expect(events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join('')).toBe(UNCLOSED.join(''));
+  });
+
+  it('non-streaming: follows the finish reason it is given', () => {
+    const text = UNCLOSED.join('');
+    expect(deriveAssistantMessage(text, { parser, finishReason: FinishReasonV1.EOS_TOKEN }).toolCalls).toHaveLength(1);
+    expect(deriveAssistantMessage(text, { parser, finishReason: FinishReasonV1.MAX_OUTPUT_TOKENS }).toolCalls).toEqual([]);
+    expect(deriveAssistantMessage(text, { parser }).toolCalls).toEqual([]);
+  });
+
+  it('an unclosed reasoning span still runs no tool parsing (S7.3 rule 8)', () => {
+    const text = '<think>\nmaybe <tc>rm|{}';
+    const m = deriveAssistantMessage(text, { parser, reasoning: qwen3ReasoningParser, finishReason: FinishReasonV1.EOS_TOKEN });
+    expect(m.toolCalls).toEqual([]);
   });
 });
 

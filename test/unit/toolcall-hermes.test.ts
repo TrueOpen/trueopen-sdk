@@ -170,6 +170,52 @@ describe('hermesParser.parseComplete', () => {
   });
 });
 
+describe('hermesParser: a final call missing its closing marker (design S7 requirement 6)', () => {
+  const RECOVER = { recoverUnclosedAtEnd: true } as const;
+  // vLLM tests/tool_parsers/test_hermes_tool_parser.py::test_hermes_parser_non_streaming_tool_call_until_eos
+  const UNTIL_EOS = '<tool_call>\n{"name": "final_answer", "arguments": {"trigger": true}}';
+
+  it('recovers a body that parses when the model stopped by itself', () => {
+    expect(hermesParser.parseComplete(`Checking. ${UNTIL_EOS}`, RECOVER)).toEqual({
+      role: 'assistant',
+      content: 'Checking. ',
+      toolCalls: [{ name: 'final_answer', arguments: '{"trigger": true}' }],
+    });
+  });
+
+  it('keeps it as text without the option: truncated, interrupted or the reason unavailable', () => {
+    expect(hermesParser.parseComplete(UNTIL_EOS)).toEqual({ role: 'assistant', content: UNTIL_EOS, toolCalls: [] });
+    expect(hermesParser.parseComplete(UNTIL_EOS, { recoverUnclosedAtEnd: false }).toolCalls).toEqual([]);
+  });
+
+  it('keeps a body that does not parse as text, marker included, even when recovering', () => {
+    // vLLM ..._tool_call_invalid_json: the closing brace is missing.
+    const text = '<tool_call>\n{"name": "final_answer", "arguments": {"trigger": true}';
+    expect(hermesParser.parseComplete(text, RECOVER)).toEqual({ role: 'assistant', content: text, toolCalls: [] });
+  });
+
+  it('drops a closing marker the stop cut short', () => {
+    expect(hermesParser.parseComplete(`${UNTIL_EOS}\n</tool_`, RECOVER).toolCalls).toEqual([
+      { name: 'final_answer', arguments: '{"trigger": true}' },
+    ]);
+  });
+
+  it('leaves the closed calls before it as they were', () => {
+    const m = hermesParser.parseComplete(`${call('a', '{"x":1}')} and ${UNTIL_EOS}`, RECOVER);
+    expect(m.content).toBe(' and ');
+    expect(m.toolCalls.map((c) => c.name)).toEqual(['a', 'final_answer']);
+  });
+
+  it('recovers at the end of a stream too, whatever the frame boundaries', () => {
+    const state = hermesParser.createStreamState();
+    const events = [...state.push('<tool_call>\n{"name": "final_'), ...state.push('answer", "arguments": {"trigger": true}}')];
+    expect(events).toEqual([]);
+    expect(state.finish(RECOVER)).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'final_answer', arguments: '{"trigger": true}' } },
+    ]);
+  });
+});
+
 describe('hermesParser.createStreamState', () => {
   it('matches a start marker split across frames', () => {
     expect(run(['weather is <tool_', 'call>{"name":"x","arguments":{}}</tool_call>'])).toEqual([

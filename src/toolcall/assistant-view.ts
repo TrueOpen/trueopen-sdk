@@ -4,10 +4,12 @@ import {
 } from '../output/output-confirmation';
 import { concatBytes } from '../util/bytes';
 import { assertNoEndMarkerCollision, TrailingEosStripper, stripTrailingEos } from './committed-text';
+import { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
 import type {
   AssistantStreamEvent,
   ConfirmedAssistantMessage,
   DerivedAssistantMessage,
+  ToolCallParseOptions,
   ToolCallParser,
 } from './types';
 import type { ReasoningParser } from './reasoning';
@@ -36,13 +38,38 @@ export interface DerivedViewOptions {
    * pins no reasoning parser.
    */
   readonly reasoning?: ReasoningParser;
+  /**
+   * The verified protocol finish reason of the output (the signed Fin), for the non-streaming
+   * path, which receives text only. It decides how an unclosed final call is read (see
+   * `unclosedCallRecovery`). The streaming and confirmation paths take it from the Fin itself.
+   */
+  readonly finishReason?: FinishReasonV1;
+}
+
+/**
+ * Whether a final call missing its closing marker is recovered (design S7 requirement 6): only
+ * when the signed Fin says the model stopped by itself. EOS_TOKEN and STOP_SEQUENCE end where the
+ * model chose to; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION cut it off and USER_STOP interrupts it,
+ * so a body that happens to parse there may not be the call the model meant. Unavailable means
+ * no recovery: the reason is never guessed.
+ */
+export function unclosedCallRecovery(finishReason: FinishReasonV1 | undefined): ToolCallParseOptions {
+  return {
+    recoverUnclosedAtEnd:
+      finishReason === FinishReasonV1.EOS_TOKEN || finishReason === FinishReasonV1.STOP_SEQUENCE,
+  };
 }
 
 /** Tool-call parsing over the remainder only, with the reasoning attached (S7.3 rules 5, 7, 8). */
-function parseWithReasoning(text: string, opts: DerivedViewOptions): DerivedAssistantMessage {
-  if (opts.reasoning === undefined) return opts.parser.parseComplete(text);
+function parseWithReasoning(
+  text: string,
+  opts: DerivedViewOptions,
+  finishReason: FinishReasonV1 | undefined,
+): DerivedAssistantMessage {
+  const parseOpts = unclosedCallRecovery(finishReason);
+  if (opts.reasoning === undefined) return opts.parser.parseComplete(text, parseOpts);
   const { reasoningContent, remainder } = opts.reasoning.split(text);
-  const message = opts.parser.parseComplete(remainder);
+  const message = opts.parser.parseComplete(remainder, parseOpts);
   return reasoningContent === '' ? message : { ...message, reasoningContent };
 }
 
@@ -50,7 +77,9 @@ function parseWithReasoning(text: string, opts: DerivedViewOptions): DerivedAssi
  * Structurally what `streamOutput` yields. Declared here rather than imported from `client.ts`
  * so the derived-view layer does not create an import cycle with the facade.
  */
-type OutputEventLike = { readonly kind: 'chunk'; readonly text: string } | { readonly kind: 'fin' };
+type OutputEventLike =
+  | { readonly kind: 'chunk'; readonly text: string }
+  | { readonly kind: 'fin'; readonly finishReason?: FinishReasonV1 | undefined };
 
 /**
  * Stage one of the execution gate: content and **provisional** calls from locally verified
@@ -82,7 +111,9 @@ export async function* deriveAssistantStream(
       else yield* state.push(e.text);
     }
   }
+  let finishReason: FinishReasonV1 | undefined;
   for await (const event of source) {
+    if (event.kind === 'fin') finishReason = event.finishReason;
     if (event.kind !== 'chunk') continue;
     const safe = stripper.push(event.text);
     if (safe !== '') yield* feed(safe);
@@ -95,7 +126,7 @@ export async function* deriveAssistantStream(
       else yield* state.push(e.text);
     }
   }
-  yield* state.finish();
+  yield* state.finish(unclosedCallRecovery(finishReason));
 }
 
 /**
@@ -125,7 +156,11 @@ export function confirmAssistantMessageWithReceipt(
     concatBytes(...input.checkpoint.chunks.map((chunk) => Uint8Array.from(chunk))),
   );
   // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
-  const message = parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts);
+  const message = parseWithReasoning(
+    stripTrailingEos(text, opts.trailingEosMarkers ?? []),
+    opts,
+    confirmation.finishReason,
+  );
   return {
     ...message,
     confirmation,
@@ -150,5 +185,5 @@ export function deriveAssistantMessage(
   opts: DerivedViewOptions,
 ): DerivedAssistantMessage {
   // Full-text path (no incremental seam), so the streaming EOS/end-marker collision guard is not needed here.
-  return parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts);
+  return parseWithReasoning(stripTrailingEos(text, opts.trailingEosMarkers ?? []), opts, opts.finishReason);
 }

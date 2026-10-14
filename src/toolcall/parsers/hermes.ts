@@ -1,6 +1,6 @@
 import { skipJsonString } from '../marker-scan';
 import { createMarkerStreamState } from '../stream-state';
-import type { DerivedAssistantMessage, DerivedToolCall, ToolCallParser } from '../types';
+import type { DerivedAssistantMessage, DerivedToolCall, ToolCallParseOptions, ToolCallParser } from '../types';
 
 const START_MARKER = '<tool_call>';
 const END_MARKER = '</tool_call>';
@@ -131,7 +131,7 @@ export const hermesParser: ToolCallParser = {
   name: 'hermes',
   version: 1,
   endMarkers: [END_MARKER],
-  parseComplete(text: string): DerivedAssistantMessage {
+  parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage {
     // Reuse the streaming machine so the full-text and streaming paths cannot diverge: a chunk
     // boundary is the Worker's choice and must not change the parse (design S7 requirement 1).
     const state = createMarkerStreamState({
@@ -139,7 +139,7 @@ export const hermesParser: ToolCallParser = {
       endMarker: END_MARKER,
       parseCall: parseHermesCall,
     });
-    const events = [...state.push(text), ...state.finish()];
+    const events = [...state.push(text), ...state.finish(opts)];
     let content = '';
     const toolCalls: DerivedToolCall[] = [];
     for (const event of events) {

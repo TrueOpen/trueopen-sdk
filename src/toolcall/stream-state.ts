@@ -1,6 +1,6 @@
 import { TrueOpenError } from '../errors/errors';
 import { indexOfOutsideQuotes, partialMarkerSuffix, unterminatedQuoteSuffix } from './marker-scan';
-import type { ToolCallStreamEvent, DerivedToolCall, ToolCallStreamState } from './types';
+import type { ToolCallStreamEvent, DerivedToolCall, ToolCallParseOptions, ToolCallStreamState } from './types';
 
 export interface MarkerStreamOptions {
   readonly startMarker: string;
@@ -24,7 +24,8 @@ export interface MarkerStreamOptions {
  *    |  Text  |---------------->| Buffering |----+ -> emit one tool call
  *    +--------+                 +-----------+
  *         | ordinary bytes            | end of stream, still unclosed
- *         v emit as content           v flush buffer as plain text
+ *         v emit as content           v flush buffer as plain text, or recover
+ *                                       the call when the model stopped by itself
  * ```
  *
  * The edge back to `Text` is load-bearing: the chat path has no stop conditions (design S13.3),
@@ -45,7 +46,7 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
   let buffering = false;
 
   /** Consumes as much of `buffer` as is unambiguous. `atEnd` releases every holdback. */
-  function drain(atEnd: boolean): ToolCallStreamEvent[] {
+  function drain(atEnd: boolean, recover = false): ToolCallStreamEvent[] {
     const events: ToolCallStreamEvent[] = [];
     for (;;) {
       if (!buffering) {
@@ -76,9 +77,21 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
         // early. No bound is imposed because capping overflow requires choosing what
         // happens on excess (drop output? error?), a policy decision design S7 leaves open.
         if (!atEnd) return events;
-        // Design S7 requirement 2: an unclosed segment at end of stream flushes as plain text,
-        // start marker included. A generation truncated by max_output_tokens produces exactly
-        // this; it is neither dropped nor an error.
+        // Design S7 requirement 6. When the model stopped by itself, a body that parses is a
+        // complete call whose closing marker was simply never written (an end marker cut short
+        // by the stop is dropped with it), as vLLM and Dynamo read it. Otherwise -- truncated,
+        // or a body that does not parse -- the unclosed segment flushes as plain text, start
+        // marker included: neither dropped nor an error.
+        if (recover) {
+          const inner = buffer.slice(0, buffer.length - partialMarkerSuffix(buffer, [endMarker]));
+          const call = parseCall(inner);
+          if (call !== undefined) {
+            events.push({ kind: 'tool-call-provisional', call });
+            buffer = '';
+            buffering = false;
+            return events;
+          }
+        }
         events.push({ kind: 'content', text: startMarker + buffer });
         buffer = '';
         buffering = false;
@@ -102,8 +115,8 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
       buffer += text;
       return drain(false);
     },
-    finish() {
-      return drain(true);
+    finish(finishOpts?: ToolCallParseOptions) {
+      return drain(true, finishOpts?.recoverUnclosedAtEnd === true);
     },
   };
 }

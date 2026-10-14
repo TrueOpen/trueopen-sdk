@@ -514,6 +514,10 @@ reasoningContent?, confirmation, finishReason? }`: only its calls may be execute
 built-in parsers (`hermes@1`, `qwen3@1`) are unverified until their vectors exist, so pass
 `allowUnverified: true` to use them.
 
+A final call whose closing marker never came is a call only if the Fin says the model stopped by
+itself (`EOS_TOKEN` / `STOP_SEQUENCE`) and its body parses; after a truncation, a user stop, or
+with no signed Fin, it stays in `content` as text.
+
 Division of work (sdk_详细设计 §5.5): the SDK supplies the finish_reason mapping and ids in the
 manifest's `call_id_format` (read with `toolCallIdFormat`; needs `config.manifestSource`); the
 Provider decides when to assign each id and builds `type`, `index` and the envelope. A turn cut

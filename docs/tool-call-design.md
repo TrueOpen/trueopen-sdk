@@ -90,6 +90,7 @@ src/toolcall/          (new)
   stream-state.ts      incremental state machine
   parsers/
     hermes.ts          <tool_call>...</tool_call>
+    qwen3-coder.ts     <tool_call><function=..><parameter=..> (spec: docs/qwen3-coder-parser-v1.md)
     mistral.ts         [TOOL_CALLS][...]
     llama3-json.ts
 
@@ -514,7 +515,7 @@ This posture is already what the code does; it costs nothing to hold.
 |---|---|---|
 | **payload canonical encoding** (`monorepo#30`) | **Cleared (2026-10-14): the SDK's encoder is the rule.** `chatInferInputBytes` encodes `ChatInferInput` once with canonical_json_v1 (snake_case keys) and the bytes are reused on every retry. No other component re-encodes the payload, so no `chat_infer_input_canonical_v1` vector is awaited. | -- |
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
-| **parser vectors** (`monorepo#11`, `monorepo#61`) | `hermes@1` and `qwen3@1` ship in the built-in registries as `'unverified'`, so callers pass `allowUnverified`. wire has no parser vectors (main `41af15b`); a 121-case corpus from vLLM and Dynamo tests (`test/fixtures/reference/`) pins today's behaviour as a reference, not an authority. | Run the parsers against the vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
+| **parser vectors** (`monorepo#11`, `monorepo#61`) | `hermes@1`, `qwen3_coder@1` and `qwen3@1` ship in the built-in registries as `'unverified'`, so callers pass `allowUnverified`. wire has no parser vectors (main `41af15b`); a 160-case corpus from vLLM and Dynamo tests, 39 of them for qwen3_coder (`test/fixtures/reference/`), pins today's behaviour as a reference, not an authority. `qwen3_coder@1` also depends on the request's `tools`, which are committed through `input_hash` (spec `docs/qwen3-coder-parser-v1.md` §2). | Run the parsers against the vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
 
 The **V4 manifest vectors** row has cleared rather than been updated: wire shipped the V4
 manifest vector in v0.3.0-rc.1, the SDK vendored it as `test/fixtures/wire/model_manifest_v4.json`

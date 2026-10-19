@@ -81,7 +81,7 @@ param     := "<parameter=" KEY ">" VALUE [ "</parameter>" ]
   hermes format.
 - A block with no function is not a call. A function with no parameters has arguments `{}`.
 - A value containing the literal `</parameter>`, `<parameter=`, `</function>`, `<function=` or
-  `</tool_call>` ends early at it. This cannot be escaped, which matches the engines.
+  `</tool_call>` ends early at it. This cannot be escaped. vLLM ends at the same markers; Dynamo differs when a closing tag is missing (see §8).
 
 ## 5. Values
 
@@ -199,6 +199,13 @@ languages, this spec picks one rule:
 | malformed call next to good ones in one block | bad one dropped | varies | whole block is content |
 | unclosed final block | recovered | recovered (`allow_eof_recovery`) | recovered only on `EOS_TOKEN` / `STOP_SEQUENCE` |
 | arguments spacing | `json.dumps` (`", "`, `": "`) | compact | compact |
+| text outside blocks (whitespace between blocks, prose after a call, whitespace-only output) | content `None` when there are only calls and whitespace | normal text is trimmed and text after the first call is dropped | kept verbatim (§3) |
+| a value missing its closing tag | ends at the next `<parameter=` | runs on past `<parameter=` and `</tool_call>` (SGLang-style) | ends at the next `<parameter=` or the end of the function (§4) |
+| a parameter whose schema type is unknown (e.g. `other_type`) | tries `json.loads` as a last step, else keeps the string; Python-literal syntax such as single quotes fails it | falls back to Python `literal_eval` | keeps the string (§5.3–5.4) |
+| a boolean value that is neither `true`/`1` nor `false`/`0` | falls through to the string | `false` | the raw string (§5.4) |
+
+The reference corpus (`test/fixtures/reference/`) holds 39 qwen3_coder cases: 28 agree and 11 diverge
+by spec, each citing a row above.
 
 Each choice favours a rule that is exact in every language and never invents a call from bytes
 the model did not finish.

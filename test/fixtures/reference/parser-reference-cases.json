@@ -6290,7 +6290,7 @@
       },
       "args_compare": "json",
       "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value. Reference None content normalised to \"\".",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "\n",
         "reasoning_content": "",
@@ -6305,7 +6305,7 @@
           }
         ]
       },
-      "reason": "Not covered by spec §8. The SDK keeps the \"\\n\" between the two blocks as content (spec §3: text outside blocks is content, concatenated in order); vLLM returns content None for output that holds only calls and the whitespace between them. Both calls agree (names and JSON-value arguments)."
+      "reason": "spec §8: text outside blocks. vLLM returns content None for output that holds only calls and the whitespace between them; the SDK keeps the \"\\n\" between the blocks as content."
     },
     {
       "id": "vllm-qwen3coder-complete-tool-with-typed-params",
@@ -7177,7 +7177,7 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Count, name and normal_text are asserted; arguments are not. Dynamo's qwen3_coder treats text after the first parsed call as non-content.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "I'll help you with that.  Let me check that for you.",
         "reasoning_content": "",
@@ -7188,7 +7188,7 @@
           }
         ]
       },
-      "reason": "Not covered by spec §8. The SDK keeps the prose after </tool_call> as content (spec §3), giving \"I'll help you with that.  Let me check that for you.\"; Dynamo's qwen3_coder drops all text after the first parsed call, giving \"I'll help you with that. \". The call agrees."
+      "reason": "spec §8: text outside blocks. Dynamo trims normal text and drops text after the first call; the SDK keeps the prose after </tool_call> as content."
     },
     {
       "id": "dynamo-qwen3coder-multiple-tool-calls",
@@ -7401,7 +7401,7 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"sql\"] only (\"matches the original SGLang python implementation\"); the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
@@ -7412,7 +7412,7 @@
           }
         ]
       },
-      "reason": "Not covered by spec §8. The SDK ends the block at </tool_call> (spec §3) and the value at the end of the function (spec §4), giving sql \"SELECT * FROM users\"; Dynamo, following SGLang, keeps \"\\n</tool_call>\" inside the value. The name agrees."
+      "reason": "spec §8: a value missing its closing tag. Dynamo (SGLang-style) runs the value on past </tool_call>; the SDK ends the value at the end of the function."
     },
     {
       "id": "dynamo-qwen3coder-multiple-parameters-missing-closing-tags",
@@ -7432,7 +7432,7 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"query\"] only (\"matches the original SGLang python implementation\"), in which the second parameter is swallowed, so Dynamo's arguments hold only that key; recorded as the whole arguments object and compared as JSON-value equality. Content not asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
@@ -7443,7 +7443,7 @@
           }
         ]
       },
-      "reason": "Not covered by spec §8. The SDK ends a value at the next <parameter= (spec §4), giving {\"query\":\"rust programming\",\"limit\":\"10\"}; Dynamo, following SGLang, runs the value on to </function>, so query swallows \"\\n<parameter=limit>\\n10\". vLLM's test_extract_tool_calls_missing_closing_parameter_tag expects the SDK's split. The name agrees."
+      "reason": "spec §8: a value missing its closing tag. Dynamo (SGLang-style) runs the value on past <parameter=, so query swallows the next parameter; vLLM and the SDK end it at the next <parameter=."
     },
     {
       "id": "dynamo-qwen3coder-no-outer-close-recovers",
@@ -7567,7 +7567,7 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), Some(&tools)). Tools: multi_param_func with types string / float / integer / boolean / object / array / null / other_type. Count, name and every args key are asserted, so this is compared as JSON-value equality. Content not asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
@@ -7578,7 +7578,7 @@
           }
         ]
       },
-      "reason": "Not covered by spec §8. param1..param7 agree; param8 has schema type \"other_type\", which spec §5.3 does not map to a known type, so no admitted type matches and the SDK emits the raw text as a JSON string \"{'arg1': 3, 'arg2': [1, 2]}\" (spec §5.4); Dynamo falls back to a Python literal_eval and returns the object {\"arg1\":3,\"arg2\":[1,2]}."
+      "reason": "spec §8: a parameter whose schema type is unknown. for type \"other_type\" Dynamo falls back to Python literal_eval and returns an object; the SDK keeps the string."
     },
     {
       "id": "dynamo-qwen3coder-schema-aware-type-conversion-fallback",
@@ -7619,7 +7619,7 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), Some(&tools)). Tools: test_func, int_param: integer, float_param: float, bool_param: boolean. Exactly one call and every args key are asserted, so this is compared as JSON-value equality. Name and content not asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
@@ -7630,7 +7630,7 @@
           }
         ]
       },
-      "reason": "Not covered by spec §8. int_param and float_param agree (unmatched values stay strings); for bool_param \"not_a_bool\" no admitted type matches, so the SDK emits the raw text as a JSON string (spec §5.4), while Dynamo coerces any boolean value other than true to false."
+      "reason": "spec §8: a boolean value that is neither true/1 nor false/0. Dynamo returns false; the SDK keeps the raw string."
     },
     {
       "id": "dynamo-qwen3coder-no-schema-fallback-behavior",
@@ -7729,13 +7729,13 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": " ",
         "reasoning_content": "",
         "tool_calls": []
       },
-      "reason": "Not covered by spec §8. The SDK keeps whitespace-only output verbatim as content (spec §3: text outside blocks is content), here \" \"; Dynamo's batch path trims normal_text to \"\"."
+      "reason": "spec §8: text outside blocks. Dynamo trims whitespace-only output to \"\"; the SDK keeps it verbatim as content."
     },
     {
       "id": "dynamo-qwen3coder-empty-and-whitespace-inputs-newline",
@@ -7751,13 +7751,13 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "\n",
         "reasoning_content": "",
         "tool_calls": []
       },
-      "reason": "Not covered by spec §8. The SDK keeps whitespace-only output verbatim as content (spec §3: text outside blocks is content), here \"\\n\"; Dynamo's batch path trims normal_text to \"\"."
+      "reason": "spec §8: text outside blocks. Dynamo trims whitespace-only output to \"\"; the SDK keeps it verbatim as content."
     },
     {
       "id": "dynamo-qwen3coder-empty-and-whitespace-inputs-tabs-and-spaces",
@@ -7773,13 +7773,13 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
-      "verdict": "divergent-unexplained",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "\t\n  \t",
         "reasoning_content": "",
         "tool_calls": []
       },
-      "reason": "Not covered by spec §8. The SDK keeps whitespace-only output verbatim as content (spec §3: text outside blocks is content), here \"\\t\\n  \\t\"; Dynamo's batch path trims normal_text to \"\"."
+      "reason": "spec §8: text outside blocks. Dynamo trims whitespace-only output to \"\"; the SDK keeps it verbatim as content."
     },
     {
       "id": "dynamo-qwen3coder-duplicate-calls-same-name",

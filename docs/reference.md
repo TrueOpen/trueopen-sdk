@@ -510,9 +510,15 @@ The SDK parses the committed output with the parsers the task's profile pins on 
 (`tool_call_parser`, `reasoning_parser`) and confirms it against the receipt. A
 `ConfirmedAssistantMessage` is `{ role, content, toolCalls: [{ name, arguments }],
 reasoningContent?, confirmation, finishReason? }`: only its calls may be executed, and
-`finishReason` is the protocol reason from the Worker-signed Fin (undefined when unavailable). Both
-built-in parsers (`hermes@1`, `qwen3@1`) are unverified until their vectors exist, so pass
+`finishReason` is the protocol reason from the Worker-signed Fin (undefined when unavailable). The
+built-in parsers (`hermes@1`, `qwen3_coder@1`, `qwen3@1`) are unverified until their vectors exist, so pass
 `allowUnverified: true` to use them.
+
+`streamAssistantMessage`, `confirmAssistantMessage`, `fetchAssistantMessage` and `assistantTurn`
+take an optional `tools` (the chat input's `tools` array). `qwen3_coder@1` types each argument
+value from the matching tool's JSON schema, so pass the same `tools` that were sent in the chat
+input. Without them every qwen3_coder value is a string. `hermes@1` ignores `tools`. The stream and
+the confirmation must be given the same `tools` (spec: `docs/qwen3-coder-parser-v1.md`).
 
 A final call whose closing marker never came is a call only if the Fin says the model stopped by
 itself (`EOS_TOKEN` / `STOP_SEQUENCE`) and its body parses; after a truncation, a user stop, or

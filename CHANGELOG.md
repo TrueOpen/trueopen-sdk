@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added: qwen3_coder@1 tool-call parser
+
+- `qwen3CoderParser` (`qwen3_coder@1`) parses Qwen3-Coder / Qwen3.5+ XML calls
+  (`<tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>`)
+  as specified in `docs/qwen3-coder-parser-v1.md`. It is built in, `unverified`
+  (pass `allowUnverified`), like `hermes@1`.
+- Argument values are typed by the request's tool schema: pass `tools` (the chat
+  input's `tools`) to `streamAssistantMessage`, `confirmAssistantMessage`,
+  `fetchAssistantMessage` or `assistantTurn`. Without it every value is a string.
+- `ToolCallParser.createStreamState` takes an optional `ToolCallContext`;
+  `MarkerStreamOptions` gains `quoteAware` and `parseCall` may return several calls.
+- The testnet profile pins `qwen3_xml@1`, which is not a canonical name; it
+  resolves to `parser-unknown` until re-registered as `qwen3_coder@1`.
+
 ### Breaking: Hash32 text is 0x-prefixed (ADR-0034, wire #44)
 
 Every client-facing string form of a Hash32 (a 32-byte digest or ID) is now `0x` followed by

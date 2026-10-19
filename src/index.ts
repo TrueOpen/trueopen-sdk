@@ -384,6 +384,7 @@ export type {
   ParserRef,
   ToolCallContext,
   ToolCallParseOptions,
+  ToolCallFinishOptions,
   ToolCallParser,
   ToolCallStreamEvent,
   ToolCallStreamState,

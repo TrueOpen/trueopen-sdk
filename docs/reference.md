@@ -518,7 +518,8 @@ built-in parsers (`hermes@1`, `qwen3_coder@1`, `qwen3@1`) are unverified until t
 take an optional `tools` (the chat input's `tools` array). `qwen3_coder@1` types each argument
 value from the matching tool's JSON schema, so pass the same `tools` that were sent in the chat
 input. Without them every qwen3_coder value is a string. `hermes@1` ignores `tools`. The stream and
-the confirmation must be given the same `tools` (spec: `docs/qwen3-coder-parser-v1.md`).
+the confirmation must be given the same `tools` (spec: `docs/qwen3-coder-parser-v1.md`). The SDK does
+not check `tools` against the committed input (`input_hash`), so pass exactly the list you sent.
 
 A final call whose closing marker never came is a call only if the Fin says the model stopped by
 itself (`EOS_TOKEN` / `STOP_SEQUENCE`) and its body parses; after a truncation, a user stop, or

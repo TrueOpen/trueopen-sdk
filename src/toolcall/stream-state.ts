@@ -1,13 +1,14 @@
 import { TrueOpenError } from '../errors/errors';
 import { indexOfOutsideQuotes, partialMarkerSuffix, unterminatedQuoteSuffix } from './marker-scan';
-import type { ToolCallStreamEvent, DerivedToolCall, ToolCallParseOptions, ToolCallStreamState } from './types';
+import type { ToolCallStreamEvent, DerivedToolCall, ToolCallFinishOptions, ToolCallStreamState } from './types';
 
 export interface MarkerStreamOptions {
   readonly startMarker: string;
   readonly endMarker: string;
   /**
-   * Turns the text between the markers into a call, or returns `undefined` when the segment is
-   * not a call after all -- invalid argument JSON, a name that is not there. Returning
+   * Turns the text between the markers into a call, or into several (an array, one per function in
+   * the block), or returns `undefined` -- or an empty array, which means the same -- when the
+   * segment is not a call after all: invalid argument JSON, a name that is not there. Returning
    * `undefined` is not an error path (design S6 row one): the raw segment flows on as content,
    * exactly as it would when calling an inference engine directly.
    */
@@ -28,7 +29,7 @@ export interface MarkerStreamOptions {
  *         +--------------------------------------+
  *         v                                      |
  *    +--------+  start marker   +-----------+    | closing marker
- *    |  Text  |---------------->| Buffering |----+ -> emit one tool call
+ *    |  Text  |---------------->| Buffering |----+ -> emit its tool call(s)
  *    +--------+                 +-----------+
  *         | ordinary bytes            | end of stream, still unclosed
  *         v emit as content           v flush buffer as plain text, or recover
@@ -132,7 +133,7 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
       buffer += text;
       return drain(false);
     },
-    finish(finishOpts?: ToolCallParseOptions) {
+    finish(finishOpts?: ToolCallFinishOptions) {
       return drain(true, finishOpts?.recoverUnclosedAtEnd === true);
     },
   };

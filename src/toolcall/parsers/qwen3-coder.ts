@@ -59,7 +59,7 @@ function trimWrappingNewlines(value: string): string {
   return out;
 }
 
-const TYPE_ALIASES: Readonly<Record<string, string>> = {
+const TYPE_ALIASES: ReadonlyMap<string, string> = new Map(Object.entries({
   str: 'string',
   text: 'string',
   varchar: 'string',
@@ -83,7 +83,7 @@ const TYPE_ALIASES: Readonly<Record<string, string>> = {
   arr: 'array',
   list: 'array',
   sequence: 'array',
-};
+}));
 
 function isJsonObject(v: unknown): v is Readonly<Record<string, ChatJsonValue>> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -113,7 +113,7 @@ function schemaTypes(schema: unknown): Set<string> {
     for (const t of typeof type === 'string' ? [type] : Array.isArray(type) ? type : []) {
       if (typeof t !== 'string') continue;
       const key = t.trim().toLowerCase();
-      types.add(TYPE_ALIASES[key] ?? key);
+      types.add(TYPE_ALIASES.get(key) ?? key);
     }
     const values = s['enum'];
     if (Array.isArray(values)) {
@@ -179,7 +179,7 @@ function valueJson(raw: string, schema: ChatJsonValue | undefined): string {
       case 'array':
         if (parsesAs(text, type)) return text;
         break;
-      default:
+      case 'string':
         return JSON.stringify(raw);
     }
   }

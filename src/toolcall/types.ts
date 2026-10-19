@@ -74,6 +74,9 @@ export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reaso
  * (`input_hash` covers it). A parser whose format writes argument values as plain text
  * (qwen3_coder@1) reads each parameter's JSON Schema type from it; a parser that receives JSON
  * arguments (hermes@1) ignores it. The stream and the confirmation must be given the same list.
+ *
+ * A stream state reads `tools` only when it is created (`createStreamState(ctx)`); passing it to
+ * `finish` has no effect, which is why `finish` takes `ToolCallFinishOptions`, not this.
  */
 export interface ToolCallContext {
   readonly tools?: readonly ChatTool[];
@@ -83,7 +86,7 @@ export interface ToolCallContext {
  * How the end of the output is to be read. Given only by a caller that knows the verified
  * protocol finish reason (design S7 requirement 6).
  */
-export interface ToolCallParseOptions extends ToolCallContext {
+export interface ToolCallFinishOptions {
   /**
    * The model stopped by itself (the signed Fin says EOS_TOKEN or STOP_SEQUENCE), so a final
    * call whose closing marker never came is complete if its body parses: recover it as a call,
@@ -93,11 +96,14 @@ export interface ToolCallParseOptions extends ToolCallContext {
   readonly recoverUnclosedAtEnd?: boolean;
 }
 
+/** Options of `parseComplete`: how the end is read, plus the context a stream state takes at creation. */
+export interface ToolCallParseOptions extends ToolCallFinishOptions, ToolCallContext {}
+
 /** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
 export interface ToolCallStreamState {
   push(text: string): readonly ToolCallStreamEvent[];
   /** End of stream. An unclosed segment flushes as plain text unless recovered (design S7 requirement 6). */
-  finish(opts?: ToolCallParseOptions): readonly ToolCallStreamEvent[];
+  finish(opts?: ToolCallFinishOptions): readonly ToolCallStreamEvent[];
 }
 
 export interface ToolCallParser extends ParserRef {

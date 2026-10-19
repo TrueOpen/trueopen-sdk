@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatTool } from '../../src/order/chat-input';
+import type { ChatJsonValue, ChatTool } from '../../src/order/chat-input';
 import { qwen3CoderParser } from '../../src/toolcall/parsers/qwen3-coder';
 import { BUILTIN_TOOL_CALL_PARSERS } from '../../src/toolcall/registry';
 import type { ToolCallParseOptions, ToolCallStreamEvent } from '../../src/toolcall/types';
@@ -265,6 +265,64 @@ describe('streaming', () => {
       content: '',
       toolCalls: [{ name: 'f', arguments: '{}' }],
     });
+  });
+});
+
+describe('review follow-ups', () => {
+  const wrap = (v: string) => `<tool_call><function=f><parameter=s>${v}</parameter></function></tool_call>`;
+  const toolsOf = (schema: ChatJsonValue): readonly ChatTool[] => [
+    { type: 'function', function: { name: 'f', parameters: { type: 'object', properties: { p: schema } } } },
+  ];
+  const argsOf = (schema: ChatJsonValue, value: string): string =>
+    parse(block('f', { p: value }), { tools: toolsOf(schema) }).toolCalls[0]!.arguments;
+
+  it('recurses through allOf', () => {
+    expect(argsOf({ allOf: [{ type: 'integer' }] }, '9')).toBe('{"p":9}');
+    expect(argsOf({ allOf: [{ anyOf: [{ type: 'boolean' }] }] }, 'true')).toBe('{"p":true}');
+  });
+
+  it('maps an `enum` type alias to string, so a numeral stays a string', () => {
+    expect(argsOf({ type: 'enum' }, '5')).toBe('{"p":"5"}');
+  });
+
+  it('keeps a type named after an Object.prototype member as an unknown type (string)', () => {
+    expect(argsOf({ type: 'constructor' }, '5')).toBe('{"p":"5"}');
+    expect(argsOf({ type: 'toString' }, 'true')).toBe('{"p":"true"}');
+  });
+
+  describe('§4 a value holding an end marker (spec §7 rows)', () => {
+    it('</function> or <function= makes the whole block content', () => {
+      for (const v of ['a</function>b', 'a<function=g>b']) {
+        const input = `<tool_call><function=f><parameter=s>${v}</parameter></function></tool_call>`;
+        expect(parse(input)).toEqual({ content: input, toolCalls: [] });
+      }
+    });
+
+    it('<parameter= yields an extra parameter', () => {
+      expect(parse(wrap('a<parameter=k>b'))).toEqual({ content: '', toolCalls: [{ name: 'f', arguments: '{"s":"a","k":"b"}' }] });
+    });
+
+    it('</tool_call> closes the block: a call plus trailing content', () => {
+      expect(parse(wrap('a</tool_call>b'))).toEqual({
+        content: 'b</parameter></function></tool_call>',
+        toolCalls: [{ name: 'f', arguments: '{"s":"a"}' }],
+      });
+    });
+  });
+
+  it('encodes a lone surrogate as lower-case \\udxxx', () => {
+    expect(parse(wrap('\ud83dx')).toolCalls[0]!.arguments).toBe('{"s":"\\ud83dx"}');
+    expect(parse(wrap('\uDE00')).toolCalls[0]!.arguments).toBe('{"s":"\\ude00"}');
+  });
+
+  it('finish() on a stream created with tools still types the values (tools is read at creation)', () => {
+    const state = qwen3CoderParser.createStreamState({ tools: specTools });
+    const events = [...state.push('<tool_call><function=f><parameter=n>5</parameter></function></tool_call'), ...state.finish({ recoverUnclosedAtEnd: true })];
+    expect(events.filter((e) => e.kind === 'tool-call-provisional')).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'f', arguments: '{"n":5}' } },
+    ]);
+    // @ts-expect-error finish takes ToolCallFinishOptions, which has no `tools`.
+    qwen3CoderParser.createStreamState().finish({ tools: specTools });
   });
 });
 

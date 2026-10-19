@@ -774,6 +774,29 @@ describe('TrueOpenClient tool-call views', () => {
     });
   });
 
+  it('streamAssistantMessage forwards tools to a schema-typed parser (qwen3_coder@1)', async () => {
+    const CODER = '<tool_call>\n<function=f>\n<parameter=n>\n5\n</parameter>\n</function>\n</tool_call>';
+    const chunks = [CODER.slice(0, 15), CODER.slice(15)].map((t) => new TextEncoder().encode(t));
+    const tools = [{ type: 'function' as const, function: { name: 'f', parameters: { type: 'object', properties: { n: { type: 'integer' } } } } }];
+    const calls = async (extra: Record<string, unknown>): Promise<string[]> => {
+      const transport = scriptedStreamTransport(async function* () {
+        const built = signedFrames('trueopen-devnet-1', chunks);
+        for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+        yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+      });
+      const out: string[] = [];
+      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+        sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+        toolCallParser: { name: 'qwen3_coder', version: 1 }, allowUnverified: true, ...extra,
+      } as never)) {
+        if (e.kind === 'tool-call-provisional') out.push(e.call.arguments);
+      }
+      return out;
+    };
+    expect(await calls({ tools })).toEqual(['{"n":5}']);
+    expect(await calls({})).toEqual(['{"n":"5"}']);
+  });
+
   it('degrades to content-only when the profile pins no parser, or one the registry lacks', async () => {
     for (const toolCallParser of [{ name: '', version: 0 }, { name: 'unknown-parser', version: 1 }]) {
       const events = await drain({ toolCallParser });

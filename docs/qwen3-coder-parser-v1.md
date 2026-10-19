@@ -80,8 +80,18 @@ param     := "<parameter=" KEY ">" VALUE [ "</parameter>" ]
   `<parameter=` means the block is not a call. This also covers a JSON body, which is the
   hermes format.
 - A block with no function is not a call. A function with no parameters has arguments `{}`.
-- A value containing the literal `</parameter>`, `<parameter=`, `</function>`, `<function=` or
-  `</tool_call>` ends early at it. This cannot be escaped. vLLM ends at the same markers; Dynamo differs when a closing tag is missing (see §8).
+- A value cannot hold a literal end marker; there is no escape. What a value that does hold one
+  becomes follows from the rules above:
+  - `</parameter>`: the value ends there, and the text after it is read as the rest of the block
+    (so it is stray text unless it is whitespace or a tag the grammar expects).
+  - `<parameter=`: the value ends there and a further parameter starts, so the call gains an
+    extra parameter.
+  - `</function>` or `<function=`: the function ends there, and the rest of the value is stray
+    text between or after tags, so **the whole block is content**, not an early-ended call.
+  - `</tool_call>`: the block closes there. The part before it is parsed as the body, and
+    everything after it is outside the block, so the result is a call plus trailing content.
+  - vLLM's value regex ends a value only at `</parameter>` or `<parameter=`; the function and
+    block bounds come from its outer parse. Dynamo differs when a closing tag is missing (§8).
 
 ## 5. Values
 
@@ -159,6 +169,10 @@ Without `tools`:
 | `<tool_call>\n{"name":"f","arguments":{}}\n</tool_call>` | the input, verbatim | none |
 | `<tool_call><function=f\n<parameter=a>1</parameter></function></tool_call>` | the input, verbatim | none |
 | `<function=f></function>` | the input, verbatim | none |
+| `<tool_call><function=f><parameter=s>a</function>b</parameter></function></tool_call>` | the input, verbatim | none |
+| `<tool_call><function=f><parameter=s>a<function=g>b</parameter></function></tool_call>` | the input, verbatim | none |
+| `<tool_call><function=f><parameter=s>a<parameter=k>b</parameter></function></tool_call>` | `""` | `f`, `{"s":"a","k":"b"}` |
+| `<tool_call><function=f><parameter=s>a</tool_call>b</parameter></function></tool_call>` | `b</parameter></function></tool_call>` | `f`, `{"s":"a"}` |
 
 The unclosed final block `ok<tool_call>\n<function=f>\n</function>\n` gives:
 - with `recover`: content `ok`, one call `f`, `{}`;
@@ -202,13 +216,13 @@ languages, this spec picks one rule:
 | text outside blocks (whitespace between blocks, prose after a call, whitespace-only output) | content `None` when there are only calls and whitespace | normal text is trimmed and text after the first call is dropped | kept verbatim (§3) |
 | a value missing its closing tag | ends at the next `<parameter=` | runs on past `<parameter=` and `</tool_call>` (SGLang-style) | ends at the next `<parameter=` or the end of the function (§4) |
 | a parameter whose schema type is unknown (e.g. `other_type`) | tries `json.loads` as a last step, else keeps the string; Python-literal syntax such as single quotes fails it | falls back to Python `literal_eval` | keeps the string (§5.3–5.4) |
-| a boolean value that is neither `true`/`1` nor `false`/`0` | falls through to the string | `false` | the raw string (§5.4) |
+| a boolean value that is neither `true`/`1` nor `false`/`0` | falls through to vLLM's final `json.loads` step, else the string | accepts only `true` / `false`, so anything else (`1` too) becomes `false` | the raw string (§5.4) |
 
 The reference corpus (`test/fixtures/reference/`) holds 39 qwen3_coder cases: 28 agree and 11 diverge
 by spec, each citing a row above.
 
-Each choice favours a rule that is exact in every language and never invents a call from bytes
-the model did not finish.
+Each choice favours a rule that is exact in every language. For the unclosed final block it never
+invents a call from bytes the model did not finish: without `recover` the block is content.
 
 ## 9. Open items
 

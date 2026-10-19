@@ -1,6 +1,7 @@
 import { TrueOpenError } from '../errors/errors';
 import type { ParserRef, ToolCallParser, ToolCallSupport } from './types';
 import { hermesParser } from './parsers/hermes';
+import { qwen3CoderParser } from './parsers/qwen3-coder';
 
 /**
  * Whether this implementation has passed the cross-language shared vectors for its
@@ -79,6 +80,7 @@ export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolC
  */
 export const BUILTIN_TOOL_CALL_PARSERS: ToolCallRegistry = createToolCallRegistry([
   { parser: hermesParser, conformance: 'unverified' },
+  { parser: qwen3CoderParser, conformance: 'unverified' },
 ]);
 
 /**

@@ -361,6 +361,7 @@ export {
   type ToolCallRegistry,
 } from './toolcall/registry';
 export { hermesParser } from './toolcall/parsers/hermes';
+export { qwen3CoderParser } from './toolcall/parsers/qwen3-coder';
 export {
   BUILTIN_REASONING_PARSERS,
   createMarkerReasoningParser,
@@ -381,6 +382,7 @@ export type {
   DerivedAssistantMessage,
   DerivedToolCall,
   ParserRef,
+  ToolCallContext,
   ToolCallParseOptions,
   ToolCallParser,
   ToolCallStreamEvent,

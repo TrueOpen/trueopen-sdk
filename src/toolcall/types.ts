@@ -1,4 +1,5 @@
 import type { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
+import type { ChatTool } from '../order/chat-input';
 import type { ConfirmedOutputEvent } from '../output/output-confirmation';
 
 /**
@@ -66,12 +67,23 @@ export type ToolCallStreamEvent =
  */
 export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reasoning'; readonly text: string };
 
-/** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
+/**
+ * What a parser may know besides the committed output.
+ *
+ * `tools` is the request's tool list, i.e. the `tools` of the committed chat input
+ * (`input_hash` covers it). A parser whose format writes argument values as plain text
+ * (qwen3_coder@1) reads each parameter's JSON Schema type from it; a parser that receives JSON
+ * arguments (hermes@1) ignores it. The stream and the confirmation must be given the same list.
+ */
+export interface ToolCallContext {
+  readonly tools?: readonly ChatTool[];
+}
+
 /**
  * How the end of the output is to be read. Given only by a caller that knows the verified
  * protocol finish reason (design S7 requirement 6).
  */
-export interface ToolCallParseOptions {
+export interface ToolCallParseOptions extends ToolCallContext {
   /**
    * The model stopped by itself (the signed Fin says EOS_TOKEN or STOP_SEQUENCE), so a final
    * call whose closing marker never came is complete if its body parses: recover it as a call,
@@ -81,6 +93,7 @@ export interface ToolCallParseOptions {
   readonly recoverUnclosedAtEnd?: boolean;
 }
 
+/** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
 export interface ToolCallStreamState {
   push(text: string): readonly ToolCallStreamEvent[];
   /** End of stream. An unclosed segment flushes as plain text unless recovered (design S7 requirement 6). */
@@ -89,7 +102,7 @@ export interface ToolCallStreamState {
 
 export interface ToolCallParser extends ParserRef {
   parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage;
-  createStreamState(): ToolCallStreamState;
+  createStreamState(ctx?: ToolCallContext): ToolCallStreamState;
 }
 
 /** Only reachable through `confirmAssistantMessageWithReceipt`, i.e. only after reconciliation. */

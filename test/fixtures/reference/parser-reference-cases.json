@@ -1,5 +1,5 @@
 {
-  "description": "Differential corpus: cases transcribed from vLLM and Dynamo parser tests, run through the SDK hermes@1 / qwen3@1 parsers. NOT an authority -- wire vectors are; registry conformance stays unverified. Verdicts pin current behaviour.",
+  "description": "Differential corpus: cases transcribed from vLLM and Dynamo parser tests, run through the SDK hermes@1 / qwen3@1 / qwen3_coder@1 parsers. NOT an authority -- wire vectors are; registry conformance stays unverified. Verdicts pin current behaviour.",
   "sources": {
     "vllm": "vllm-project/vllm @ 77154ca",
     "dynamo": "ai-dynamo/dynamo @ 3a4c497",
@@ -5878,6 +5878,1947 @@
         ]
       },
       "reason": "qwen3@1 (design §10.2) drops the template layout newlines: after <think>, before </think>, and at the head of the remainder. Both references keep them (Dynamo reasoning_content starts/ends with \"\\n\" and normal_content keeps \"\\n\\n\"; vLLM qwen3 sets strip_trailing_reasoning_whitespace=False). §10.2 itself names this as the most likely disagreement with the wire vectors. Tool call agrees (name + JSON-value arguments)."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-no-tools",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls_no_tools",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "This is a test response without any tool calls",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "content": "This is a test response without any tool calls",
+        "tool_calls": []
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request is None. tools_called == False, tool_calls == [] and content == model_output are asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "This is a test response without any tool calls",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-single-tool",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls[single_tool]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_current_weather>\n<parameter=city>\nDallas\n</parameter>\n<parameter=state>\nTX\n</parameter>\n<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\": \"Dallas\", \"state\": \"TX\", \"unit\": \"fahrenheit\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value. Reference None content normalised to \"\".",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-single-tool-with-content",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls[single_tool_with_content]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "Sure! Let me check the weather for you.<tool_call>\n<function=get_current_weather>\n<parameter=city>\nDallas\n</parameter>\n<parameter=state>\nTX\n</parameter>\n<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "content": "Sure! Let me check the weather for you.",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\": \"Dallas\", \"state\": \"TX\", \"unit\": \"fahrenheit\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "Sure! Let me check the weather for you.",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-single-tool-multiline-param",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls[single_tool_multiline_param]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=calculate_area>\n<parameter=shape>\nrectangle\n</parameter>\n<parameter=dimensions>\n{\"width\": 10, \n \"height\": 20}\n</parameter>\n<parameter=precision>\n2\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "calculate_area",
+            "arguments": "{\"shape\": \"rectangle\", \"dimensions\": {\"width\": 10, \"height\": 20}, \"precision\": 2}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value. The dimensions value spans two lines with a trailing space after the comma; transcribed exactly. Reference None content normalised to \"\".",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "calculate_area",
+            "arguments": "{\"shape\":\"rectangle\",\"dimensions\":{\"width\": 10, \n \"height\": 20},\"precision\":2}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-parallel-tools",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls[parallel_tools]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_current_weather>\n<parameter=city>\nDallas\n</parameter>\n<parameter=state>\nTX\n</parameter>\n<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=get_current_weather>\n<parameter=city>\nOrlando\n</parameter>\n<parameter=state>\nFL\n</parameter>\n<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\": \"Dallas\", \"state\": \"TX\", \"unit\": \"fahrenheit\"}"
+          },
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\": \"Orlando\", \"state\": \"FL\", \"unit\": \"fahrenheit\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value. Reference None content normalised to \"\".",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "\n",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+          },
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\":\"Orlando\",\"state\":\"FL\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "Not covered by spec §8. The SDK keeps the \"\\n\" between the two blocks as content (spec §3: text outside blocks is content, concatenated in order); vLLM returns content None for output that holds only calls and the whitespace between them. Both calls agree (names and JSON-value arguments)."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-tool-with-typed-params",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls[tool_with_typed_params]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "Let me calculate that area for you.<tool_call>\n<function=calculate_area>\n<parameter=shape>\ncircle\n</parameter>\n<parameter=dimensions>\n{\"radius\": 15.5}\n</parameter>\n<parameter=precision>\n3\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "content": "Let me calculate that area for you.",
+        "tool_calls": [
+          {
+            "name": "calculate_area",
+            "arguments": "{\"shape\": \"circle\", \"dimensions\": {\"radius\": 15.5}, \"precision\": 3}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "Let me calculate that area for you.",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "calculate_area",
+            "arguments": "{\"shape\":\"circle\",\"dimensions\":{\"radius\": 15.5},\"precision\":3}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-fallback-no-tags",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls_fallback_no_tags",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<function=get_current_weather>\n<parameter=city>\nDallas\n</parameter>\n<parameter=state>\nTX\n</parameter>\n</function>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_current_weather"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. tools_called, exactly one call and its name are asserted; arguments and content are not.",
+      "verdict": "divergent-by-spec",
+      "sdk_actual": {
+        "content": "<function=get_current_weather>\n<parameter=city>\nDallas\n</parameter>\n<parameter=state>\nTX\n</parameter>\n</function>",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "spec §8: `<function=` with no `<tool_call>` is content. The SDK returns the whole text as content and no call; vLLM parses it as a call."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-type-conversion",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls_type_conversion",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=test_types>\n<parameter=int_param>\n42\n</parameter>\n<parameter=float_param>\n3.14\n</parameter>\n<parameter=bool_param>\ntrue\n</parameter>\n<parameter=str_param>\nhello world\n</parameter>\n<parameter=obj_param>\n{\"key\": \"value\"}\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "test_types",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "int_param": {
+                  "type": "integer"
+                },
+                "float_param": {
+                  "type": "float"
+                },
+                "bool_param": {
+                  "type": "boolean"
+                },
+                "str_param": {
+                  "type": "string"
+                },
+                "obj_param": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"int_param\": 42, \"float_param\": 3.14, \"bool_param\": true, \"str_param\": \"hello world\", \"obj_param\": {\"key\": \"value\"}}"
+          }
+        ]
+      },
+      "tool_calls_match": "first",
+      "args_compare": "json",
+      "note": "Parser and request both carry the test's tools (test_types). Only tool_calls[0]'s arguments are asserted, key by key; the arguments hold exactly those keys, so this is compared as JSON-value equality. Count, name and content are not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "test_types",
+            "arguments": "{\"int_param\":42,\"float_param\":3.14,\"bool_param\":true,\"str_param\":\"hello world\",\"obj_param\":{\"key\": \"value\"}}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-anyof-type-conversion",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls_anyof_type_conversion",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=test_anyof>\n<parameter=anyof_int>\n5\n</parameter>\n<parameter=anyof_str>\nhello\n</parameter>\n<parameter=anyof_array>\n[\"a\", \"b\", \"c\"]\n</parameter>\n<parameter=anyof_obj>\n{\"key\": \"value\"}\n</parameter>\n<parameter=type_as_array>\n42\n</parameter>\n<parameter=multi_non_null>\nsome text\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "test_anyof",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "anyof_int": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": 5
+                },
+                "anyof_str": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "anyof_array": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "anyof_obj": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type_as_array": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "multi_non_null": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"anyof_int\": 5, \"anyof_str\": \"hello\", \"anyof_array\": [\"a\", \"b\", \"c\"], \"anyof_obj\": {\"key\": \"value\"}, \"type_as_array\": 42, \"multi_non_null\": \"some text\"}"
+          }
+        ]
+      },
+      "tool_calls_match": "first",
+      "args_compare": "json",
+      "note": "Parser and request both carry the test's tools (test_anyof). Only tool_calls[0]'s arguments are asserted, key by key with isinstance checks; the arguments hold exactly those keys, so this is compared as JSON-value equality (which distinguishes 5 from \"5\"). Count, name and content are not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "test_anyof",
+            "arguments": "{\"anyof_int\":5,\"anyof_str\":\"hello\",\"anyof_array\":[\"a\", \"b\", \"c\"],\"anyof_obj\":{\"key\": \"value\"},\"type_as_array\":42,\"multi_non_null\":\"some text\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-missing-closing-parameter-tag",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_extract_tool_calls_missing_closing_parameter_tag",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "Let me check the weather for you:\n<tool_call>\n<function=get_current_weather>\n<parameter=city>\nDallas\n<parameter=state>\nTX\n</parameter>\n<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\": \"Dallas\", \"state\": \"TX\", \"unit\": \"fahrenheit\"}"
+          }
+        ]
+      },
+      "content_assertions": [
+        {
+          "op": "contains",
+          "value": "Let me check the weather for you:"
+        }
+      ],
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, exactly one call, its name and args[\"city\"] / [\"state\"] / [\"unit\"] are asserted; the arguments hold exactly those keys, so this is compared as JSON-value equality. The reference asserts content contains the prose, recorded as a content_assertion.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "Let me check the weather for you:\n",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-malformed-xml-no-gt-delimiter",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_malformed_xml_no_gt_delimiter",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_current_weather\n<parameter=city>Dallas</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {},
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. Regression test (PR #36774): only that extraction does not crash and returns a list with no None entry is asserted; no content or call is asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "<tool_call>\n<function=get_current_weather\n<parameter=city>Dallas</parameter>\n</function>\n</tool_call>",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "The reference asserts only that extraction does not crash and returns a list with no None entry; the SDK never throws. (It returns no call: spec §4, a NAME containing \"\\n\" makes the block content.)"
+    },
+    {
+      "id": "vllm-qwen3coder-complete-none-tool-calls-filtered",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_none_tool_calls_filtered",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=bad_func_no_gt\n</function>\n</tool_call>\n<tool_call>\n<function=get_current_weather>\n<parameter=city>Dallas</parameter>\n<parameter=state>TX</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "The city name"
+                },
+                "state": {
+                  "type": "string",
+                  "description": "The state code"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "fahrenheit",
+                    "celsius"
+                  ]
+                }
+              },
+              "required": [
+                "city",
+                "state"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_area",
+            "description": "Calculate area of a shape",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "shape": {
+                  "type": "string"
+                },
+                "dimensions": {
+                  "type": "object"
+                },
+                "precision": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\": \"Dallas\", \"state\": \"TX\"}"
+          }
+        ]
+      },
+      "tool_calls_match": "first",
+      "args_compare": "json",
+      "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. Regression test (PR #36774): tools_called, exactly one call named get_current_weather among the calls, and its args[\"city\"] / [\"state\"] are asserted (the arguments hold exactly those keys). The reference filters calls by name; the SDK returns that call alone, so it is compared as the first call with its arguments. Content is not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "<tool_call>\n<function=bad_func_no_gt\n</function>\n</tool_call>\n",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_current_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts. (The first block, whose function tag has no '>', is content by spec §4; vLLM drops it, but content is not asserted.)"
+    },
+    {
+      "id": "vllm-qwen3coder-complete-anyof-parameter-not-double-encoded",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_anyof_parameter_not_double_encoded",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=update_record>\n<parameter=data>{\"key\": \"value\", \"count\": 42}</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "update_record",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "data": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"data\": {\"key\": \"value\", \"count\": 42}}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Regression test (PR #36032). Parser and request both carry the test's tools (update_record, data: anyOf[object, null]). tools_called, exactly one call and args[\"data\"] (a dict, by value) are asserted; the arguments hold exactly that key. Name and content are not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "update_record",
+            "arguments": "{\"data\":{\"key\": \"value\", \"count\": 42}}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-no-double-serialization-string-args",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "test_no_double_serialization_string_args",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=greet>\n<parameter=message>hello world</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "greet",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"message\": \"hello world\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "Regression test (PR #35615). The parser fixture is built with sample_tools; the request carries the test's tools (greet, message: string), which vLLM's engine parser types by, so the case carries those. tools_called, exactly one call and args[\"message\"] are asserted (the arguments hold exactly that key). The reference also asserts the raw arguments do not contain '\\\"hello world\\\"' (no double encoding); the runner has no assertion on raw arguments, and the SDK's arguments (sdk_actual) do not contain it.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "greet",
+            "arguments": "{\"message\":\"hello world\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "vllm-qwen3coder-complete-whitespace-preserved",
+      "source": "vllm",
+      "source_file": "tests/tool_parsers/test_qwen3coder_tool_parser.py",
+      "source_test": "TestParameterWhitespace.test_whitespace_preserved",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=write_file>\n<parameter=content>\n    def foo():\n        return 1\n\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "write_file",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "content": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"content\": \"    def foo():\\n        return 1\\n\"}"
+          }
+        ]
+      },
+      "tool_calls_match": "first",
+      "args_compare": "json",
+      "note": "Parser and request both carry WRITE_FILE_TOOLS (write_file, content: string). Only tool_calls[0]'s args[\"content\"] is asserted (the arguments hold exactly that key): one wrapping newline is stripped on each side, indentation and the inner blank line kept.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "write_file",
+            "arguments": "{\"content\":\"    def foo():\\n        return 1\\n\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-simple-tool-call",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_simple_tool_call",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=execute_bash>\n<parameter=command>\npwd && ls\n</parameter>\n</function>\n</tool_call>",
+      "reference_expected": {
+        "content": "",
+        "tool_calls": [
+          {
+            "name": "execute_bash",
+            "arguments": "{\"command\": \"pwd && ls\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). normal_text Some(\"\") -> \"\". The reference asserts args[\"command\"] only; the arguments hold exactly that key, so this is compared as JSON-value equality.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "execute_bash",
+            "arguments": "{\"command\":\"pwd && ls\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-multiple-parameters",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_multiple_parameters",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nSan Francisco\n</parameter>\n<parameter=state>\nCA\n</parameter>\n<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"San Francisco\", \"state\": \"CA\", \"unit\": \"fahrenheit\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"city\"] / [\"state\"] / [\"unit\"] individually; the arguments hold exactly those keys, so this is compared as JSON-value equality. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"San Francisco\",\"state\":\"CA\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-preserves-parameter-order",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_qwen3_coder_preserves_parameter_order",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call><function=get_weather><parameter=city>Dallas</parameter><parameter=state>TX</parameter><parameter=unit>fahrenheit</parameter></function></tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "tool_calls_match": "first",
+      "args_compare": "bytes",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts calls[0].function.arguments as an exact string (key order and compact spacing), so bytes are compared and only the first call. Name, count and content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-duplicate-parameter-first-position-last-value",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_duplicate_parameter_keeps_first_position_and_last_value",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call><function=get_weather><parameter=city>Dallas</parameter><parameter=state>TX</parameter><parameter=unit>fahrenheit</parameter><parameter=state>CA</parameter></function></tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"CA\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "tool_calls_match": "first",
+      "args_compare": "bytes",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts calls[0].function.arguments as an exact string, so bytes are compared and only the first call. Name, count and content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Dallas\",\"state\":\"CA\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-with-normal-text",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_with_normal_text",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "I'll help you with that. <tool_call>\n<function=get_weather>\n<parameter=city>\nDallas\n</parameter>\n</function>\n</tool_call> Let me check that for you.",
+      "reference_expected": {
+        "content": "I'll help you with that. ",
+        "tool_calls": [
+          {
+            "name": "get_weather"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Count, name and normal_text are asserted; arguments are not. Dynamo's qwen3_coder treats text after the first parsed call as non-content.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "I'll help you with that.  Let me check that for you.",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Dallas\"}"
+          }
+        ]
+      },
+      "reason": "Not covered by spec §8. The SDK keeps the prose after </tool_call> as content (spec §3), giving \"I'll help you with that.  Let me check that for you.\"; Dynamo's qwen3_coder drops all text after the first parsed call, giving \"I'll help you with that. \". The call agrees."
+    },
+    {
+      "id": "dynamo-qwen3coder-multiple-tool-calls",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_multiple_tool_calls",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nDallas\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOrlando\n</parameter>\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"Dallas\"}"
+          },
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"Orlando\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"city\"] per call; the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "\n",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Dallas\"}"
+          },
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Orlando\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-json-parameter-value",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_json_parameter_value",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=process_data>\n<parameter=config>\n{\"setting\": \"value\", \"count\": 42}\n</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "process_data",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "config": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"config\": {\"setting\": \"value\", \"count\": 42}}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), Some(&tools)). Tools: process_data, config: object. Exactly one call; args[\"config\"] is an object whose \"setting\" / \"count\" are asserted (it holds exactly those keys, and the arguments exactly that key), compared as JSON-value equality. Name and content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "process_data",
+            "arguments": "{\"config\":{\"setting\": \"value\", \"count\": 42}}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-no-tool-calls",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_no_tool_calls",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "This is just normal text without any tool calls.",
+      "reference_expected": {
+        "content": "This is just normal text without any tool calls.",
+        "tool_calls": []
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). No calls and normal_text == input are asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "This is just normal text without any tool calls.",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-malformed-tool-call",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_malformed_tool_call",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=incomplete>\n<parameter=test>\nvalue\n</tool_call>",
+      "reference_expected": {},
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Only result.is_ok() is asserted (\"might parse or return empty\"); no content or call is asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "incomplete",
+            "arguments": "{\"test\":\"value\"}"
+          }
+        ]
+      },
+      "reason": "The reference asserts only result.is_ok(); the SDK never throws. (It returns the call incomplete {\"test\":\"value\"}: spec §4 tolerates the missing </parameter> and </function>.)"
+    },
+    {
+      "id": "dynamo-qwen3coder-missing-parameter-closing-tag",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_missing_parameter_closing_tag",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=execute_bash>\n<parameter=command>\nls -la\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "execute_bash",
+            "arguments": "{\"command\": \"ls -la\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"command\"] only; the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "execute_bash",
+            "arguments": "{\"command\":\"ls -la\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-missing-function-closing-tag",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_missing_function_closing_tag",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nBoston\n</parameter>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"Boston\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"city\"] only; the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Boston\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-missing-both-closing-tags",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_missing_both_closing_tags",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=run_query>\n<parameter=sql>\nSELECT * FROM users\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "run_query",
+            "arguments": "{\"sql\": \"SELECT * FROM users\\n</tool_call>\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"sql\"] only (\"matches the original SGLang python implementation\"); the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "run_query",
+            "arguments": "{\"sql\":\"SELECT * FROM users\"}"
+          }
+        ]
+      },
+      "reason": "Not covered by spec §8. The SDK ends the block at </tool_call> (spec §3) and the value at the end of the function (spec §4), giving sql \"SELECT * FROM users\"; Dynamo, following SGLang, keeps \"\\n</tool_call>\" inside the value. The name agrees."
+    },
+    {
+      "id": "dynamo-qwen3coder-multiple-parameters-missing-closing-tags",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_multiple_parameters_missing_closing_tags",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=search>\n<parameter=query>\nrust programming\n<parameter=limit>\n10\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "search",
+            "arguments": "{\"query\": \"rust programming\\n<parameter=limit>\\n10\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"query\"] only (\"matches the original SGLang python implementation\"), in which the second parameter is swallowed, so Dynamo's arguments hold only that key; recorded as the whole arguments object and compared as JSON-value equality. Content not asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "search",
+            "arguments": "{\"query\":\"rust programming\",\"limit\":\"10\"}"
+          }
+        ]
+      },
+      "reason": "Not covered by spec §8. The SDK ends a value at the next <parameter= (spec §4), giving {\"query\":\"rust programming\",\"limit\":\"10\"}; Dynamo, following SGLang, runs the value on to </function>, so query swallows \"\\n<parameter=limit>\\n10\". vLLM's test_extract_tool_calls_missing_closing_parameter_tag expects the SDK's split. The name agrees."
+    },
+    {
+      "id": "dynamo-qwen3coder-no-outer-close-recovers",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_no_outer_close_recovers",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nNYC\n</parameter>\n</function>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"NYC\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "XmlParserConfig { allow_eof_recovery: true, ..default } (the finalize path), tools None; the runner runs the SDK as after an EOS_TOKEN Fin. The reference asserts args[\"city\"] only; the arguments hold exactly that key. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-bare-function-complete-value-recovers",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_bare_function_complete_value_recovers",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<function=get_weather>\n<parameter=city>\nNY</parameter>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"NY\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "XmlParserConfig { backoff_when_no_wrapper: true, allow_eof_recovery: true, ..default }, tools None. No <tool_call> wrapper and no </function>. The reference asserts args[\"city\"] only; recorded as the whole arguments object. Content not asserted.",
+      "verdict": "divergent-by-spec",
+      "sdk_actual": {
+        "content": "<function=get_weather>\n<parameter=city>\nNY</parameter>",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "spec §8: `<function=` with no `<tool_call>` is content. The SDK returns the whole text as content and no call; Dynamo (backoff_when_no_wrapper with EOF recovery) parses it as a call."
+    },
+    {
+      "id": "dynamo-qwen3coder-schema-aware-type-conversion",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_schema_aware_type_conversion",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=multi_param_func>\n<parameter=param1>42</parameter>\n<parameter=param2>41.9</parameter>\n<parameter=param3>42</parameter>\n<parameter=param4>true</parameter>\n<parameter=param5>{\"key\": \"value\"}</parameter>\n<parameter=param6>[1, 2, 3]</parameter>\n<parameter=param7>null</parameter>\n<parameter=param8>{'arg1': 3, 'arg2': [1, 2]}</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "multi_param_func",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "param1": {
+                  "type": "string"
+                },
+                "param2": {
+                  "type": "float"
+                },
+                "param3": {
+                  "type": "integer"
+                },
+                "param4": {
+                  "type": "boolean"
+                },
+                "param5": {
+                  "type": "object"
+                },
+                "param6": {
+                  "type": "array"
+                },
+                "param7": {
+                  "type": "null"
+                },
+                "param8": {
+                  "type": "other_type"
+                }
+              },
+              "required": [
+                "param1",
+                "param2",
+                "param3",
+                "param4",
+                "param5",
+                "param6",
+                "param7",
+                "param8"
+              ]
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "multi_param_func",
+            "arguments": "{\"param1\": \"42\", \"param2\": 41.9, \"param3\": 42, \"param4\": true, \"param5\": {\"key\": \"value\"}, \"param6\": [1, 2, 3], \"param7\": null, \"param8\": {\"arg1\": 3, \"arg2\": [1, 2]}}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), Some(&tools)). Tools: multi_param_func with types string / float / integer / boolean / object / array / null / other_type. Count, name and every args key are asserted, so this is compared as JSON-value equality. Content not asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "multi_param_func",
+            "arguments": "{\"param1\":\"42\",\"param2\":41.9,\"param3\":42,\"param4\":true,\"param5\":{\"key\": \"value\"},\"param6\":[1, 2, 3],\"param7\":null,\"param8\":\"{'arg1': 3, 'arg2': [1, 2]}\"}"
+          }
+        ]
+      },
+      "reason": "Not covered by spec §8. param1..param7 agree; param8 has schema type \"other_type\", which spec §5.3 does not map to a known type, so no admitted type matches and the SDK emits the raw text as a JSON string \"{'arg1': 3, 'arg2': [1, 2]}\" (spec §5.4); Dynamo falls back to a Python literal_eval and returns the object {\"arg1\":3,\"arg2\":[1,2]}."
+    },
+    {
+      "id": "dynamo-qwen3coder-schema-aware-type-conversion-fallback",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_schema_aware_type_conversion_fallback",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=test_func>\n<parameter=int_param>not_an_int</parameter>\n<parameter=float_param>not_a_float</parameter>\n<parameter=bool_param>not_a_bool</parameter>\n</function>\n</tool_call>",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "test_func",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "int_param": {
+                  "type": "integer"
+                },
+                "float_param": {
+                  "type": "float"
+                },
+                "bool_param": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"int_param\": \"not_an_int\", \"float_param\": \"not_a_float\", \"bool_param\": false}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), Some(&tools)). Tools: test_func, int_param: integer, float_param: float, bool_param: boolean. Exactly one call and every args key are asserted, so this is compared as JSON-value equality. Name and content not asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "test_func",
+            "arguments": "{\"int_param\":\"not_an_int\",\"float_param\":\"not_a_float\",\"bool_param\":\"not_a_bool\"}"
+          }
+        ]
+      },
+      "reason": "Not covered by spec §8. int_param and float_param agree (unmatched values stay strings); for bool_param \"not_a_bool\" no admitted type matches, so the SDK emits the raw text as a JSON string (spec §5.4), while Dynamo coerces any boolean value other than true to false."
+    },
+    {
+      "id": "dynamo-qwen3coder-no-schema-fallback-behavior",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_no_schema_fallback_behavior",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=unknown_func>\n<parameter=param1>42</parameter>\n<parameter=param2>true</parameter>\n<parameter=param3>hello</parameter>\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "arguments": "{\"param1\": \"42\", \"param2\": \"true\", \"param3\": \"hello\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Exactly one call and every args key are asserted (all strings without a schema), so this is compared as JSON-value equality. Name and content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "unknown_func",
+            "arguments": "{\"param1\":\"42\",\"param2\":\"true\",\"param3\":\"hello\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-empty-args",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_empty_args",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=current_time>\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "current_time",
+            "arguments": "{}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Count, name and args == {} are asserted. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "current_time",
+            "arguments": "{}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-empty-and-whitespace-inputs-empty",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_empty_and_whitespace_inputs[\"\"]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "",
+      "reference_expected": {
+        "content": "",
+        "tool_calls": []
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "The SDK output matches every field the reference asserts."
+    },
+    {
+      "id": "dynamo-qwen3coder-empty-and-whitespace-inputs-space",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_empty_and_whitespace_inputs[\" \"]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": " ",
+      "reference_expected": {
+        "content": "",
+        "tool_calls": []
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": " ",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "Not covered by spec §8. The SDK keeps whitespace-only output verbatim as content (spec §3: text outside blocks is content), here \" \"; Dynamo's batch path trims normal_text to \"\"."
+    },
+    {
+      "id": "dynamo-qwen3coder-empty-and-whitespace-inputs-newline",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_empty_and_whitespace_inputs[\"\\n\"]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "\n",
+      "reference_expected": {
+        "content": "",
+        "tool_calls": []
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "\n",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "Not covered by spec §8. The SDK keeps whitespace-only output verbatim as content (spec §3: text outside blocks is content), here \"\\n\"; Dynamo's batch path trims normal_text to \"\"."
+    },
+    {
+      "id": "dynamo-qwen3coder-empty-and-whitespace-inputs-tabs-and-spaces",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_empty_and_whitespace_inputs[\"\\t\\n  \\t\"]",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "\t\n  \t",
+      "reference_expected": {
+        "content": "",
+        "tool_calls": []
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference loops over four inputs (\"\", \" \", \"\\n\", \"\\t\\n  \\t\"); one corpus entry per input. No calls and normal_text Some(\"\") are asserted.",
+      "verdict": "divergent-unexplained",
+      "sdk_actual": {
+        "content": "\t\n  \t",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "reason": "Not covered by spec §8. The SDK keeps whitespace-only output verbatim as content (spec §3: text outside blocks is content), here \"\\t\\n  \\t\"; Dynamo's batch path trims normal_text to \"\"."
+    },
+    {
+      "id": "dynamo-qwen3coder-duplicate-calls-same-name",
+      "source": "dynamo",
+      "source_file": "crates/dynamo-parsers-10.0.2/src/tool_calling/xml/parser.rs",
+      "source_test": "test_parse_qwen3_duplicate_calls_same_name",
+      "parser": "qwen3_coder@1",
+      "mode": "complete",
+      "input": "<tool_call>\n<function=get_weather>\n<parameter=city>\nNYC\n</parameter>\n</function>\n<function=get_weather>\n<parameter=city>\nLA\n</parameter>\n</function>\n</tool_call>",
+      "reference_expected": {
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"NYC\"}"
+          },
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\": \"LA\"}"
+          }
+        ]
+      },
+      "args_compare": "json",
+      "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Two functions in one <tool_call> block. Count, names and args[\"city\"] per call are asserted (the arguments hold exactly that key). The reference also asserts distinct call ids; ids are Provider-synthesised and out of the parser's scope, so that assertion is not recorded. Content not asserted.",
+      "verdict": "agree",
+      "sdk_actual": {
+        "content": "",
+        "reasoning_content": "",
+        "tool_calls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}"
+          },
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"LA\"}"
+          }
+        ]
+      },
+      "reason": "The SDK output matches every field the reference asserts."
     }
   ]
 }

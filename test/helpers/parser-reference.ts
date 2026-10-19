@@ -9,10 +9,12 @@
 import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 import { deriveAssistantMessage, deriveAssistantStream } from '../../src/toolcall/assistant-view';
 import { hermesParser } from '../../src/toolcall/parsers/hermes';
+import { qwen3CoderParser } from '../../src/toolcall/parsers/qwen3-coder';
 import { qwen3ReasoningParser, type ReasoningStreamEvent } from '../../src/toolcall/reasoning';
 import type { AssistantStreamEvent } from '../../src/toolcall/types';
+import type { ChatTool } from '../../src/order/chat-input';
 
-export type ReferenceParser = 'hermes@1' | 'qwen3@1' | 'qwen3+hermes';
+export type ReferenceParser = 'hermes@1' | 'qwen3@1' | 'qwen3+hermes' | 'qwen3_coder@1' | 'qwen3+qwen3_coder';
 export type Verdict = 'agree' | 'divergent-by-spec' | 'divergent-unexplained' | 'not-applicable';
 
 /** A call as the reference asserts it. An omitted field is not asserted by the reference. */
@@ -56,6 +58,8 @@ export interface ReferenceCase {
   readonly parser: ReferenceParser;
   readonly mode: 'complete' | 'stream';
   readonly input: string | readonly string[];
+  /** The request's tools, for a schema-typed parser (qwen3_coder@1). */
+  readonly tools?: readonly ChatTool[];
   /** Stream only: whether end-of-stream (`finish`) is signalled after the last push. Default true. */
   readonly finish?: boolean;
   /**
@@ -100,20 +104,24 @@ const inputFrames = (input: string | readonly string[]): readonly string[] =>
  */
 const ENDED_BY_MODEL = { recoverUnclosedAtEnd: true } as const;
 
-/** Full-text run of the SDK parser the case names. */
-export function runComplete(parser: ReferenceParser, text: string): SdkActual {
+/** Full-text run of the SDK parser the case names; `tools` reaches a schema-typed parser. */
+export function runComplete(parser: ReferenceParser, text: string, tools?: readonly ChatTool[]): SdkActual {
   if (parser === 'qwen3@1') {
     const { reasoningContent, remainder } = qwen3ReasoningParser.split(text);
     return { content: remainder, reasoning_content: reasoningContent, tool_calls: [] };
   }
+  const withTools = tools ? { tools } : {};
   const message =
     parser === 'hermes@1'
       ? hermesParser.parseComplete(text, ENDED_BY_MODEL)
-      : deriveAssistantMessage(text, {
-          parser: hermesParser,
-          reasoning: qwen3ReasoningParser,
-          finishReason: FinishReasonV1.EOS_TOKEN,
-        });
+      : parser === 'qwen3_coder@1'
+        ? qwen3CoderParser.parseComplete(text, { ...ENDED_BY_MODEL, ...withTools })
+        : deriveAssistantMessage(text, {
+            parser: parser === 'qwen3+qwen3_coder' ? qwen3CoderParser : hermesParser,
+            reasoning: qwen3ReasoningParser,
+            finishReason: FinishReasonV1.EOS_TOKEN,
+            ...withTools,
+          });
   return {
     content: message.content,
     reasoning_content: message.reasoningContent ?? '',
@@ -140,11 +148,12 @@ export async function runStream(
   parser: ReferenceParser,
   frames: readonly string[],
   finish: boolean,
+  tools?: readonly ChatTool[],
 ): Promise<SdkRun> {
   const total: Acc = { content: '', reasoning: '', calls: [] };
   const steps: StepOutput[] = [];
 
-  if (parser === 'qwen3+hermes') {
+  if (parser === 'qwen3+hermes' || parser === 'qwen3+qwen3_coder') {
     // The real composition (S7.3 rule 10): reasoning first, the tool parser sees the remainder.
     // `deriveAssistantStream` always ends the stream, so `finish: false` is not supported here.
     async function* source() {
@@ -152,8 +161,9 @@ export async function runStream(
       yield { kind: 'fin' as const, finishReason: FinishReasonV1.EOS_TOKEN };
     }
     for await (const e of deriveAssistantStream(source(), {
-      parser: hermesParser,
+      parser: parser === 'qwen3+qwen3_coder' ? qwen3CoderParser : hermesParser,
       reasoning: qwen3ReasoningParser,
+      ...(tools ? { tools } : {}),
     })) {
       absorb(total, [e]);
     }
@@ -173,7 +183,10 @@ export async function runStream(
     }
     if (finish) absorb(total, toEvents(state.finish()));
   } else {
-    const state = hermesParser.createStreamState();
+    const state =
+      parser === 'qwen3_coder@1'
+        ? qwen3CoderParser.createStreamState(tools ? { tools } : undefined)
+        : hermesParser.createStreamState();
     for (const frame of frames) {
       const step: Acc = { content: '', reasoning: '', calls: [] };
       absorb(step, state.push(frame));
@@ -190,8 +203,8 @@ export async function runStream(
 }
 
 export async function runCase(c: ReferenceCase): Promise<SdkRun> {
-  if (c.mode === 'complete') return { actual: runComplete(c.parser, inputText(c.input)) };
-  return runStream(c.parser, inputFrames(c.input), c.finish !== false);
+  if (c.mode === 'complete') return { actual: runComplete(c.parser, inputText(c.input), c.tools) };
+  return runStream(c.parser, inputFrames(c.input), c.finish !== false, c.tools);
 }
 
 /** Splits `text` into fixed-width frames (by UTF-16 code unit; the corpus inputs are BMP-only). */

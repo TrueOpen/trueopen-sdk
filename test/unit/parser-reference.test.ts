@@ -1,10 +1,10 @@
 /**
- * Differential corpus against vLLM's and Dynamo's own hermes / qwen3 parser tests.
+ * Differential corpus against vLLM's and Dynamo's own hermes / qwen3 / qwen3_coder parser tests.
  *
- * This is NOT conformance: wire's shared vectors are the authority, and hermes@1 / qwen3@1
- * stay `unverified`. Each case pins (a) what the SDK produces today and (b) the verdict of
- * comparing it with what the reference test asserts, so any behaviour change -- towards or
- * away from a reference -- fails here and has to be re-judged in the fixture.
+ * This is NOT conformance: wire's shared vectors are the authority, and hermes@1 / qwen3@1 /
+ * qwen3_coder@1 stay `unverified`. Each case pins (a) what the SDK produces today and (b) the
+ * verdict of comparing it with what the reference test asserts, so any behaviour change --
+ * towards or away from a reference -- fails here and has to be re-judged in the fixture.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,7 @@ describe('parser reference corpus (vLLM / Dynamo)', () => {
       expect(ids.has(c.id), `duplicate id ${c.id}`).toBe(false);
       ids.add(c.id);
       expect(['vllm', 'dynamo']).toContain(c.source);
-      expect(['hermes@1', 'qwen3@1', 'qwen3+hermes']).toContain(c.parser);
+      expect(['hermes@1', 'qwen3@1', 'qwen3+hermes', 'qwen3_coder@1', 'qwen3+qwen3_coder']).toContain(c.parser);
       expect(['agree', 'divergent-by-spec', 'divergent-unexplained', 'not-applicable']).toContain(c.verdict);
       expect(c.reason.length, `${c.id}: every verdict carries a reason`).toBeGreaterThan(0);
       if (c.mode === 'complete') expect(typeof c.input).toBe('string');
@@ -54,12 +54,12 @@ describe('parser reference corpus (vLLM / Dynamo)', () => {
         // the parse. Streaming with the reference's deltas must equal the full-text parse.
         it('streaming agrees with the full-text parse', async () => {
           const frames = c.input as readonly string[];
-          const full = runComplete(c.parser, frames.join(''));
-          expect((await runStream(c.parser, frames, true)).actual).toEqual(full);
+          const full = runComplete(c.parser, frames.join(''), c.tools);
+          expect((await runStream(c.parser, frames, true, c.tools)).actual).toEqual(full);
           if (c.substituted_deltas === true) {
             // The reference's tokenizer deltas are substituted, so every fixed width must agree.
             for (let w = 1; w <= 8; w += 1) {
-              expect((await runStream(c.parser, splitFixed(frames.join(''), w), true)).actual).toEqual(full);
+              expect((await runStream(c.parser, splitFixed(frames.join(''), w), true, c.tools)).actual).toEqual(full);
             }
           }
         });

@@ -165,4 +165,77 @@ describe('createMarkerStreamState', () => {
     expect(() => createMarkerStreamState({ startMarker: '', endMarker: '</tc>', parseCall })).toThrow(TrueOpenError);
     expect(() => createMarkerStreamState({ startMarker: '<tc>', endMarker: '', parseCall })).toThrow(TrueOpenError);
   });
+
+  describe('quoteAware: false (a plain-text payload)', () => {
+    const blind = () =>
+      createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, quoteAware: false });
+    const runBlind = (frames: readonly string[], recover = false): AssistantStreamEvent[] => {
+      const state = blind();
+      const events: AssistantStreamEvent[] = [];
+      for (const frame of frames) events.push(...state.push(frame));
+      events.push(...state.finish({ recoverUnclosedAtEnd: recover }));
+      return events;
+    };
+
+    it('lets a lone quote inside a segment not hide the end marker', () => {
+      expect(runBlind(['<tc>f|say "hi</tc> after'])).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: 'say "hi' } },
+        { kind: 'content', text: ' after' },
+      ]);
+    });
+
+    it('finds a start marker after an unbalanced quote in prose', () => {
+      expect(runBlind(['he said "x <tc>f|1</tc>'])).toEqual([
+        { kind: 'content', text: 'he said "x ' },
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: '1' } },
+      ]);
+    });
+
+    it('does not hold back a frame that ends inside a quote', () => {
+      const state = blind();
+      expect(state.push('a "b')).toEqual([{ kind: 'content', text: 'a "b' }]);
+    });
+
+    it('still holds back a partial start marker', () => {
+      const state = blind();
+      expect(state.push('a <t')).toEqual([{ kind: 'content', text: 'a ' }]);
+      expect(state.push('c>f|1</tc>')).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: '1' } },
+      ]);
+    });
+  });
+
+  describe('a segment that holds several calls', () => {
+    const many = (inner: string): DerivedToolCall[] | undefined => {
+      const calls = inner.split(';').filter((s) => s !== '').map(parseCall);
+      return calls.every((c) => c !== undefined) ? (calls as DerivedToolCall[]) : undefined;
+    };
+    const runMany = (frames: readonly string[], recover = false): AssistantStreamEvent[] => {
+      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall: many });
+      const events: AssistantStreamEvent[] = [];
+      for (const frame of frames) events.push(...state.push(frame));
+      events.push(...state.finish({ recoverUnclosedAtEnd: recover }));
+      return events;
+    };
+
+    it('emits each call in order', () => {
+      expect(runMany(['x<tc>a|1;b|2</tc>y'])).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+        { kind: 'content', text: 'y' },
+      ]);
+    });
+
+    it('treats an empty list as not a call', () => {
+      expect(runMany(['<tc></tc>'])).toEqual([{ kind: 'content', text: '<tc></tc>' }]);
+    });
+
+    it('recovers several calls from an unclosed final segment after a natural stop', () => {
+      expect(runMany(['<tc>a|1;b|2'], true)).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+      ]);
+    });
+  });
 });

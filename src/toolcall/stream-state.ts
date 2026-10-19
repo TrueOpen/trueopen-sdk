@@ -11,7 +11,14 @@ export interface MarkerStreamOptions {
    * `undefined` is not an error path (design S6 row one): the raw segment flows on as content,
    * exactly as it would when calling an inference engine directly.
    */
-  readonly parseCall: (inner: string) => DerivedToolCall | undefined;
+  readonly parseCall: (inner: string) => DerivedToolCall | readonly DerivedToolCall[] | undefined;
+  /**
+   * Whether a marker inside a double-quoted span is content (design S5.3); default true. Right
+   * for a format whose payload is JSON (hermes@1). A format whose payload is plain text
+   * (qwen3_coder@1, where a parameter value is free text and may hold one lone `"`) sets false:
+   * there a quote means nothing, and honouring it would let a stray quote hide the end marker.
+   */
+  readonly quoteAware?: boolean;
 }
 
 /**
@@ -42,6 +49,21 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
     );
   }
 
+  const quoteAware = opts.quoteAware !== false;
+  const find = (text: string, marker: string): number =>
+    quoteAware ? indexOfOutsideQuotes(text, marker) : text.indexOf(marker);
+  /** Pushes the call(s) of a segment, or returns false when it is not a call after all. */
+  function emitCalls(events: ToolCallStreamEvent[], inner: string): boolean {
+    const parsed = parseCall(inner);
+    const calls: readonly DerivedToolCall[] =
+      parsed === undefined ? [] : Array.isArray(parsed) ? parsed : [parsed as DerivedToolCall];
+    if (calls.length === 0) return false;
+    for (const call of calls) {
+      events.push({ kind: 'tool-call-provisional', call });
+    }
+    return true;
+  }
+
   let buffer = '';
   let buffering = false;
 
@@ -50,13 +72,13 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
     const events: ToolCallStreamEvent[] = [];
     for (;;) {
       if (!buffering) {
-        const at = indexOfOutsideQuotes(buffer, startMarker);
+        const at = find(buffer, startMarker);
         if (at < 0) {
           // Everything except a suffix that could still grow into the start marker, or that is
           // an as-yet-unclosed quote span (its closing quote may arrive next frame).
           const held = atEnd
             ? 0
-            : Math.max(partialMarkerSuffix(buffer, [startMarker]), unterminatedQuoteSuffix(buffer));
+            : Math.max(partialMarkerSuffix(buffer, [startMarker]), quoteAware ? unterminatedQuoteSuffix(buffer) : 0);
           const text = buffer.slice(0, buffer.length - held);
           buffer = held === 0 ? '' : buffer.slice(buffer.length - held);
           if (text !== '') events.push({ kind: 'content', text });
@@ -68,7 +90,7 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
         continue;
       }
 
-      const at = indexOfOutsideQuotes(buffer, endMarker);
+      const at = find(buffer, endMarker);
       if (at < 0) {
         // Unbounded buffering: while the segment remains open, the entire content is
         // retained — a start marker that never closes grows the buffer for the stream's
@@ -84,9 +106,7 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
         // marker included: neither dropped nor an error.
         if (recover) {
           const inner = buffer.slice(0, buffer.length - partialMarkerSuffix(buffer, [endMarker]));
-          const call = parseCall(inner);
-          if (call !== undefined) {
-            events.push({ kind: 'tool-call-provisional', call });
+          if (emitCalls(events, inner)) {
             buffer = '';
             buffering = false;
             return events;
@@ -101,11 +121,8 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
       const inner = buffer.slice(0, at);
       buffer = buffer.slice(at + endMarker.length);
       buffering = false;
-      const call = parseCall(inner);
-      if (call === undefined) {
+      if (!emitCalls(events, inner)) {
         events.push({ kind: 'content', text: startMarker + inner + endMarker });
-      } else {
-        events.push({ kind: 'tool-call-provisional', call });
       }
     }
   }

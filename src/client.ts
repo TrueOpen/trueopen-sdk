@@ -24,6 +24,7 @@ import { buildTaskOrder, resolveTaskOrderContext } from './order/task-order-inpu
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader } from './order/task-order-input';
 import { buildOpenTaskRequest } from './order/build-open-task';
 import { deriveTaskId } from './order/order-signing';
+import type { ChatTool } from './order/chat-input';
 import { TrueOpenError, dataError } from './errors/errors';
 import { sha256 } from './codec/hash';
 import { outputHash as outputMmrRoot, OutputStreamVerifier, verifyOutputFinSignature } from './output/output-commitment';
@@ -434,7 +435,7 @@ export interface ConfirmOutputParams {
 export interface ToolCallParams {
   /** The profile's on-chain tool-call parser (ProfileInfo.toolCallParser); zero value = "no tool calling". */
   readonly toolCallParser: ParserRef;
-  /** Defaults to the built-in registry (hermes@1, unverified); injectable for tests/custom parsers. */
+  /** Defaults to the built-in registry (hermes@1, qwen3_coder@1; unverified); injectable for tests/custom parsers. */
   readonly registry?: ToolCallRegistry;
   /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
   readonly allowUnverified?: boolean;
@@ -446,6 +447,11 @@ export interface ToolCallParams {
   readonly reasoningParser?: ParserRef;
   /** Defaults to the built-in reasoning registry (qwen3@1, unverified). */
   readonly reasoningRegistry?: ReasoningRegistry;
+  /**
+   * The request's tools (the chat input's `tools`). A parser that types argument values by
+   * their schema (qwen3_coder@1) needs them; without them every such value is a string.
+   */
+  readonly tools?: readonly ChatTool[];
 }
 
 /** The parsers a task's profile pins on chain (ProfileState.tool_call_parser / reasoning_parser). */
@@ -468,8 +474,10 @@ export interface AssistantTurnParams extends Omit<StreamOutputParams, 'taskHash'
   readonly reasoningParser?: ParserRef;
   readonly registry?: ToolCallRegistry;
   readonly reasoningRegistry?: ReasoningRegistry;
-  /** Whether unverified parsers may be used (both built-in parsers are unverified until their vectors exist). */
+  /** Whether unverified parsers may be used (the built-in parsers are unverified until their vectors exist). */
   readonly allowUnverified?: boolean;
+  /** The request's tools, for a parser that types argument values by their schema (qwen3_coder@1). */
+  readonly tools?: readonly ChatTool[];
   /** How long to wait for the accepted InferReceipt after the stream ends; default 120 s. */
   readonly receiptTimeoutMs?: number;
   /** Interval between receipt reads; default 1000 ms. */
@@ -507,7 +515,7 @@ const NO_TOOL_CALLS: ToolCallParser = {
  * to this build, or unverified without the caller's opt-in -- is simply not used (S7.3 rule 8,
  * design S6): the output still arrives, without that view.
  */
-function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser } {
+function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser; tools?: readonly ChatTool[] } {
   const allow = p.allowUnverified === true ? { allowUnverified: true } : undefined;
   const tool = resolveToolCalling({
     toolCallParser: p.toolCallParser,
@@ -518,6 +526,7 @@ function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?
   return {
     parser: tool.supported ? tool.parser : NO_TOOL_CALLS,
     ...(reasoning.supported ? { reasoning: reasoning.parser } : {}),
+    ...(p.tools !== undefined ? { tools: p.tools } : {}),
   };
 }
 
@@ -1411,6 +1420,7 @@ export class TrueOpenClient {
         ...(p.registry !== undefined ? { registry: p.registry } : {}),
         ...(p.reasoningRegistry !== undefined ? { reasoningRegistry: p.reasoningRegistry } : {}),
         ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+        ...(p.tools !== undefined ? { tools: p.tools } : {}),
       }),
     };
 

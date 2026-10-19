@@ -738,6 +738,40 @@ describe('TrueOpenClient tool-call views', () => {
       }
       expect(confirm(opts).toolCalls.map((c) => c.name)).toEqual(streamed);
     });
+
+    describe('the request tools reach a schema-typed parser (qwen3_coder@1)', () => {
+      const CODER = '<tool_call>\n<function=f>\n<parameter=n>\n5\n</parameter>\n</function>\n</tool_call>';
+      const coderChunks = [CODER.slice(0, 15), CODER.slice(15)].map((t) => new TextEncoder().encode(t));
+      const tools = [
+        { type: 'function' as const, function: { name: 'f', parameters: { type: 'object', properties: { n: { type: 'integer' } } } } },
+      ];
+      const confirmCoder = (extra: Record<string, unknown>) => {
+        const frames = signedFrames('trueopen-devnet-1', coderChunks);
+        const verifier = new OutputStreamVerifier({ chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
+        for (const f of frames) verifier.accept({ seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
+        return makeClient().confirmAssistantMessage({
+          taskId: TASK,
+          taskHash: TASK_HASH,
+          checkpoint: verifier.checkpoint(),
+          receipt: {
+            taskId: TASK, winnerWorker: 'trueopen1worker', inferReceiptHash: `0x${'d'.repeat(64)}`,
+            outputHash: hash32Text(frames[frames.length - 1]!.mmrRoot),
+            outputSizeBytes: BigInt(new TextEncoder().encode(CODER).length), outputLeafCount: BigInt(frames.length),
+          },
+          toolCallParser: { name: 'qwen3_coder', version: 1 },
+          allowUnverified: true,
+          ...extra,
+        } as never);
+      };
+
+      it('with tools, the argument is typed by its schema', () => {
+        expect(confirmCoder({ tools }).toolCalls).toEqual([{ name: 'f', arguments: '{"n":5}' }]);
+      });
+
+      it('without tools, the argument stays a string', () => {
+        expect(confirmCoder({}).toolCalls).toEqual([{ name: 'f', arguments: '{"n":"5"}' }]);
+      });
+    });
   });
 
   it('degrades to content-only when the profile pins no parser, or one the registry lacks', async () => {

@@ -12,6 +12,7 @@ import type {
   ToolCallParser,
 } from './types';
 import type { ReasoningParser } from './reasoning';
+import type { ChatTool } from '../order/chat-input';
 
 export interface DerivedViewOptions {
   /**
@@ -31,6 +32,11 @@ export interface DerivedViewOptions {
    * `unclosedCallRecovery`). The streaming and confirmation paths take it from the Fin itself.
    */
   readonly finishReason?: FinishReasonV1;
+  /**
+   * The request's tools (the committed chat input's `tools`), for a parser that types argument
+   * values by their schema (qwen3_coder@1). Give the stream and the confirmation the same list.
+   */
+  readonly tools?: readonly ChatTool[];
 }
 
 /**
@@ -53,7 +59,7 @@ function parseWithReasoning(
   opts: DerivedViewOptions,
   finishReason: FinishReasonV1 | undefined,
 ): DerivedAssistantMessage {
-  const parseOpts = unclosedCallRecovery(finishReason);
+  const parseOpts = { ...unclosedCallRecovery(finishReason), ...(opts.tools !== undefined ? { tools: opts.tools } : {}) };
   if (opts.reasoning === undefined) return opts.parser.parseComplete(text, parseOpts);
   const { reasoningContent, remainder } = opts.reasoning.split(text);
   const message = opts.parser.parseComplete(remainder, parseOpts);
@@ -83,7 +89,7 @@ export async function* deriveAssistantStream(
   source: AsyncIterable<OutputEventLike>,
   opts: DerivedViewOptions,
 ): AsyncIterable<AssistantStreamEvent> {
-  const state = opts.parser.createStreamState();
+  const state = opts.parser.createStreamState(opts.tools !== undefined ? { tools: opts.tools } : undefined);
   // Chained, not parallel (S7.3 rule 10): reasoning first, the tool parser sees only the remainder.
   const reasoning = opts.reasoning?.createStreamState();
   function* feed(text: string): Iterable<AssistantStreamEvent> {

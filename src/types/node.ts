@@ -28,6 +28,12 @@ export interface ChainTaskSnapshot {
   readonly view: 'active' | 'terminal';
   /** TaskPhase without its prefix, for the terminal arm only (for example "SETTLED"). */
   readonly terminalPhase?: string;
+  /**
+   * TaskPhase without its prefix (for example "WORKER_ASSIGNMENT_PENDING", "FAILED"). Active arm
+   * only; undefined when the node does not send it. A task that fails or settles keeps the
+   * active arm, with this phase, until cleanup compaction switches it to the terminal arm.
+   */
+  readonly taskPhase?: string;
   readonly taskId: string;
   /** Hash32 text (`0x` + 64 lowercase hex); should match the SDK's locally computed task_hash byte for byte. */
   readonly acceptedTaskHash: string;

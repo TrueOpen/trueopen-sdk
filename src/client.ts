@@ -184,6 +184,22 @@ export interface OutputTrustAnchors {
   readonly outputHash?: string;
 }
 
+/** Options for waitForOutputTrustAnchors. */
+export interface WaitForOutputTrustAnchorsOptions {
+  /**
+   * The task's session. When set, the client's own Builder event stream (watchTask) is
+   * watched, and its ASSIGNMENT_FINALIZED event triggers one immediate chain read instead of
+   * waiting for the next poll. Without it the wait only polls.
+   */
+  readonly sessionId?: string;
+  /** Milliseconds between chain reads; default DEFAULT_TRUST_ANCHOR_POLL_MS (about one block). */
+  readonly pollIntervalMs?: number;
+  /** Upper bound on the whole wait; default DEFAULT_TRUST_ANCHOR_WAIT_MS. */
+  readonly timeoutMs?: number;
+  /** Stops the wait (and the event stream) early. */
+  readonly signal?: AbortSignal;
+}
+
 /** One selected Task Builder's outcome for an openTask call. */
 export interface OpenTaskBuilderResult {
   /** Builder operator address; this is the builderAddress for task-data requests to it. */
@@ -623,10 +639,23 @@ export class TrueOpenClient {
     return this.ingress.getTaskStatus(sessionId, taskId);
   }
 
-  /** Subscribe to the task event stream (for UX feedback and reconnect recovery; feeding a state-machine reducer is left to the caller). */
-  watchTask(sessionId: string, taskId: string, fromCursor?: string): AsyncIterable<GetTaskEventsResponse> {
-    const p = fromCursor !== undefined ? { sessionId, taskId, fromCursor } : { sessionId, taskId };
-    return this.ingress.getTaskEvents(p);
+  /**
+   * Subscribe to the task event stream (for UX feedback and reconnect recovery; feeding a
+   * state-machine reducer is left to the caller). Abort `opts.signal` to close the request when
+   * giving up on it; it cancels only this stream, not the transport.
+   */
+  watchTask(
+    sessionId: string,
+    taskId: string,
+    fromCursor?: string,
+    opts?: { readonly signal?: AbortSignal },
+  ): AsyncIterable<GetTaskEventsResponse> {
+    return this.ingress.getTaskEvents({
+      sessionId,
+      taskId,
+      ...(fromCursor !== undefined ? { fromCursor } : {}),
+      ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+    });
   }
 
   /**
@@ -640,7 +669,9 @@ export class TrueOpenClient {
    * The receipt lands one generation after the winner, so streaming does not need it: pass
    * `withReceipt: false` to skip that read. A task not on chain yet (node answers 404), a missing
    * winner, or a missing receipt when one is asked for, is a retriable
-   * `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again.
+   * `OUTPUT_TRUST_ANCHOR_PENDING`: poll and call again (waitForOutputTrustAnchors does this). A
+   * task that settled or failed without a winner (task phase SETTLED / FAILED, or the terminal
+   * arm after compaction) never gets one, so that is a final `OUTPUT_TRUST_ANCHOR_NO_WINNER`.
    *
    * Needs config.taskReader (RestChainReader) and a hub reader with getCurrentServiceKey.
    *
@@ -680,6 +711,17 @@ export class TrueOpenClient {
       }
       throw e;
     }
+    // A task that settled or failed never gets a winner: on the active arm (before cleanup
+    // compaction) the phase says so, on the terminal arm the arm itself does.
+    const phase = task.view === 'terminal' ? task.terminalPhase : task.taskPhase;
+    const ended = task.view === 'terminal' || phase === 'SETTLED' || phase === 'FAILED';
+    if (ended && task.winnerWorker === '') {
+      throw new TrueOpenError(
+        'CHAIN_REJECT',
+        'OUTPUT_TRUST_ANCHOR_NO_WINNER',
+        `task ${taskId} ended (${phase || 'terminal'}) without a winner Worker`,
+      );
+    }
     const taskHash = task.acceptedTaskHash;
     if (!isHash32Text(taskHash)) throw pending('no accepted task_hash on chain yet');
     if (task.winnerWorker === '') throw pending('no winner Worker on chain yet');
@@ -705,6 +747,111 @@ export class TrueOpenClient {
       );
     }
     return { ...base, receipt, outputHash: receipt.outputHash };
+  }
+
+  /**
+   * Wait until the chain names the task's winner, then return the streaming anchors
+   * (resolveOutputTrustAnchors with `withReceipt: false`), ready to pass to streamOutput as
+   * taskHash / workerServicePubKey.
+   *
+   * The chain is read once straight away, then every `pollIntervalMs`. With `sessionId`, the
+   * client's Builder event stream is watched too: the first ASSIGNMENT_FINALIZED event triggers
+   * one immediate read (if a read is already in flight, one more read follows it). The event is
+   * only a hint, so a failed or silent event stream changes nothing and polling carries on. Reads
+   * stay serial (task, then the winner's key) and the event stream is closed when the wait ends.
+   * `timeoutMs` and `signal` take effect between reads; a single chain read is bounded only by
+   * the reader's own limits.
+   *
+   * Only `OUTPUT_TRUST_ANCHOR_PENDING` is waited out; any other error (an inactive Worker key, a
+   * task that ended without a winner, a failed read) is thrown at once. Running out of
+   * `timeoutMs` throws `OUTPUT_TRUST_ANCHOR_TIMEOUT`; aborting `signal` throws
+   * `OUTPUT_TRUST_ANCHOR_WAIT_ABORTED`.
+   */
+  async waitForOutputTrustAnchors(taskId: string, opts: WaitForOutputTrustAnchorsOptions = {}): Promise<OutputTrustAnchors> {
+    const pollMs = opts.pollIntervalMs ?? DEFAULT_TRUST_ANCHOR_POLL_MS;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TRUST_ANCHOR_WAIT_MS;
+    if (!Number.isFinite(pollMs) || pollMs <= 0) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_POLL_INTERVAL_INVALID', 'pollIntervalMs must be a positive finite number');
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TIMEOUT_INVALID', 'timeoutMs must be a positive finite number');
+    }
+    const aborted = (): TrueOpenError =>
+      new TrueOpenError('SDK_LOCAL', 'OUTPUT_TRUST_ANCHOR_WAIT_ABORTED', `waiting for task ${taskId} anchors was aborted`);
+    if (opts.signal?.aborted === true) throw aborted();
+
+    const deadline = Date.now() + timeoutMs;
+    // Ends this wait. Aborting cancels only this wait's own requests; the transport and its
+    // connection stay up.
+    const done = new AbortController();
+    const onAbort = (): void => done.abort();
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+    // At most one event-triggered read: `kicked` covers an event that lands mid-read, `wake`
+    // one that lands while sleeping.
+    let kicked = false;
+    let wake: (() => void) | undefined;
+    // The event stream has its own controller so it can close right after its one trigger.
+    const eventsDone = new AbortController();
+
+    try {
+      if (opts.sessionId !== undefined) {
+        const events = this.watchTask(opts.sessionId, taskId, undefined, { signal: eventsDone.signal });
+        void (async () => {
+          try {
+            for await (const ev of events) {
+              if (ev.eventCode === ASSIGNMENT_FINALIZED_EVENT) {
+                kicked = true;
+                wake?.();
+                eventsDone.abort();
+                return;
+              }
+            }
+          } catch {
+            // A hint only: polling does not depend on it.
+          }
+        })();
+      }
+
+      for (;;) {
+        let last: TrueOpenError;
+        try {
+          return await this.resolveOutputTrustAnchors(taskId, { withReceipt: false });
+        } catch (e) {
+          if (!(e instanceof TrueOpenError && e.code === 'OUTPUT_TRUST_ANCHOR_PENDING')) throw e;
+          last = e;
+        }
+        if (done.signal.aborted) throw aborted();
+        const left = deadline - Date.now();
+        if (left <= 0) {
+          throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_TRUST_ANCHOR_TIMEOUT', `task ${taskId}: no winner on chain within ${timeoutMs} ms`, {
+            cause: last,
+          });
+        }
+        if (kicked) {
+          // The event landed during that read: read again now.
+          kicked = false;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(finish, Math.min(pollMs, left));
+          function finish(): void {
+            clearTimeout(timer);
+            done.signal.removeEventListener('abort', finish);
+            wake = undefined;
+            resolve();
+          }
+          done.signal.addEventListener('abort', finish, { once: true });
+          wake = finish;
+        });
+        kicked = false;
+        if (done.signal.aborted) throw aborted();
+      }
+    } finally {
+      opts.signal?.removeEventListener('abort', onAbort);
+      eventsDone.abort();
+      done.abort();
+    }
   }
 
   /**
@@ -1159,6 +1306,15 @@ export const DEFAULT_TASK_DATA_EXPIRY_BLOCKS = 10;
 
 /** nexus's default max range (task_data.max_range_bytes); a larger single read is refused. */
 export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;
+
+/** waitForOutputTrustAnchors chain poll interval: about one block. */
+export const DEFAULT_TRUST_ANCHOR_POLL_MS = 1000;
+
+/** waitForOutputTrustAnchors upper bound on the whole wait. */
+export const DEFAULT_TRUST_ANCHOR_WAIT_MS = 60_000;
+
+/** The nexus task event that follows the chain finalizing the winner. */
+const ASSIGNMENT_FINALIZED_EVENT = 'ASSIGNMENT_FINALIZED';
 
 /**
  * Qwen3's chat template ends every assistant turn with the literal `<|im_end|>` marker (its

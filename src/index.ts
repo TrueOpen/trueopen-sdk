@@ -42,8 +42,8 @@ export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } fro
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
 export { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from './transport/fan-out-submit';
-export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, tlsPubkeyHashRequiredByEnv, insecureHttpAllowedByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
-export type { NexusTransportPolicy } from './transport/nexus-tls';
+export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, sharedPinnedHttpsAgent, prewarmNexusConnections, DEFAULT_PREWARM_CONNECTIONS, MAX_PREWARM_CONNECTIONS, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, tlsPubkeyHashRequiredByEnv, insecureHttpAllowedByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
+export type { NexusTransportPolicy, PrewarmNexusOptions } from './transport/nexus-tls';
 export type { NexusTransportOptions } from './transport/nexus-tls';
 export type { EndpointLike, AcceptedLike, FanOutResult, FanOutResultItem } from './transport/fan-out-submit';
 
@@ -124,10 +124,14 @@ export { DEFAULT_SIGNATURE_CHAIN_ID, signatureChainIdBigInt } from './signature-
 export {
   buildTaskOrder,
   resolveTaskOrderContext,
+  resolveTaskOrderContextWithBuilderSet,
   defaultGenerationParams,
   payloadRefFor,
 } from './order/task-order-input';
+export { TaskOrderContextCache, DEFAULT_ANCHOR_REUSE_FRACTION } from './order/task-order-context-cache';
+export type { TaskOrderContextCacheReader, TaskOrderContextCacheOptions } from './order/task-order-context-cache';
 export type {
+  ResolvedTaskOrderContext,
   TaskOrderChainContext,
   TaskOrderContextReader,
   TaskOrderRequest,
@@ -321,6 +325,8 @@ export {
   DEFAULT_TASK_DATA_EXPIRY_BLOCKS,
   DEFAULT_TRUST_ANCHOR_POLL_MS,
   DEFAULT_TRUST_ANCHOR_WAIT_MS,
+  DEFAULT_MAX_PENDING_FRAMES,
+  MAX_OVERFLOW_RESUBSCRIBES,
   stripChatTemplateEos,
 } from './client';
 export { resolveFeeDenom } from './order/fee-denom';

@@ -76,15 +76,29 @@ async openTask(params: OpenTaskParams): Promise<OpenTaskResult>
 | `order` | `TaskOrderIntent` (user intent including `payload`). `userAddress`/`sessionId`/`orderSequence` are filled in by the client. |
 | `idempotencyKey` | Required. Same key + same `input_hash` → same result; same key + different `input_hash` → rejected. |
 | `orderSequence?` | Defaults to `nextOrderSequence`. Pass explicitly only for RBF. |
-| `context?` | Defaults to `resolveTaskOrderContext(hub, chainId)`. Reuse to save a round-trip. |
+| `context?` | Defaults to a context from the client's `TaskOrderContextCache` (session anchor reused across orders, see §3.2; `config.orderContextReuse: false` resolves a fresh one each time). Passed contexts are used as is. |
 | `expiryHeight?` | Block height (default `latestHeight + requestTtlBlocks`). |
 | `inputMediaType?` / `chunkSizeBytes?` | OpenTask transport tuning. |
 | `pricing?` | Defaults to `hub.getProfile(...).pricing`; pass to skip the read. |
 
-`openTask` resolves the fee denom + pricing (fails closed with
-`SDK_LOCAL_PRICING_UNAVAILABLE` / `SDK_LOCAL_FEE_DENOM_MISMATCH` if unavailable), builds
-the frozen `TaskOrderV3`, derives `task_id`, signs the order, fans out to the selected
-builders, and returns the per-builder result.
+`openTask` resolves the fee denom, pricing, order sequence and context concurrently (fails
+closed with `SDK_LOCAL_PRICING_UNAVAILABLE` / `SDK_LOCAL_FEE_DENOM_MISMATCH` if unavailable),
+builds the frozen `TaskOrderV3`, derives `task_id`, then signs the order while it resolves the
+selected Builders' endpoints (selection depends only on `task_id` and the context) and prewarms
+connections to them through `config.ingressPrewarm`. It then fans out to the selected builders
+and returns the per-builder result.
+
+```ts
+async resolveTaskBuilders({ sessionId, orderSequence?, context? }): Promise<{ taskId, orderSequence, context, endpoints, unresolvedBuilders }>
+async prewarmTaskBuilders(endpoints): Promise<void>
+```
+
+`resolveTaskBuilders` gives the Builders an order will go to before anything is signed; pass the
+returned `context` to `openTask` so it signs against the same anchor and BuilderSet.
+`prewarmTaskBuilders` opens connections to them through `config.ingressPrewarm`, concurrently,
+and never rejects (no-op without `ingressPrewarm`). Under Node, set
+`ingressPrewarm: (uri, hash) => prewarmNexusConnections(uri, hash)` with
+`ingressTransportFactory: nexusIngressTransport` (see §10).
 
 `OpenTaskResult` (extends `OpenTaskAck`):
 
@@ -192,7 +206,27 @@ function payloadRefFor(payload: Uint8Array): string          // "nexus://sha256/
 `input_key_commitment = zero32`, empty `user_recipient_pubkey`.
 
 `resolveTaskOrderContext` reads the anchor beacon, the builder set **at the anchor
-height**, the timeout bucket, and the generation limits.
+height**, the timeout bucket, and the generation limits. `resolveTaskOrderContextWithBuilderSet`
+also returns the BuilderSet it read, so routing does not read it again.
+
+```ts
+class TaskOrderContextCache {
+  constructor(hub: TaskOrderContextCacheReader, chainId: string, opts?: { maxAnchorAgeFraction?, anchorLag? })
+  resolve(): Promise<ResolvedTaskOrderContext>   // { context, builderSet }
+  invalidate(): void
+}
+```
+
+Reuses the session anchor (height and beacon block hash) across orders, saving one sequential
+chain round trip per order. On reuse it still re-reads, in one concurrent round, the latest
+height, the BuilderSet at the anchor height (the chain needs it ACTIVE; a pruned body fails the
+read), the current timeout bucket version, the generation limits and task params
+`session.anchor_freshness_window_blocks` (`HubReader.getAnchorFreshnessWindowBlocks`). The anchor
+is reused only while `latest - anchor <= floor(window * maxAnchorAgeFraction)` (default 0.25);
+otherwise, or when any of those reads fails, a fresh anchor is resolved. Without
+`getAnchorFreshnessWindowBlocks` it never reuses. After a reuse it checks in the background
+whether the set at the latest height moved on, and if so the next order gets a fresh anchor.
+`TrueOpenClient` uses one per client unless `config.orderContextReuse` is `false`.
 
 `resolveFeeDenom(chainDenom, override)` picks the order's EIP-712 `feeDenom`: the chain
 `business_denom` is authoritative, an override that disagrees is refused
@@ -414,21 +448,21 @@ async waitForOutputTrustAnchors(taskId, opts?: WaitForOutputTrustAnchorsOptions)
 
 Waits until the chain names the winner, then returns the streaming anchors
 (`resolveOutputTrustAnchors(taskId, { withReceipt: false })`) to pass to `streamOutput` as
-`taskHash` / `workerServicePubKey`. Call it on the client that will stream, so the stream
-reuses its connection.
+`taskHash` / `workerServicePubKey`. `streamOutput({ waitForAnchors })` runs this wait itself,
+in parallel with an already open subscription (§8.3).
 
 | Option | Notes |
 |---|---|
-| `sessionId?` | Also watch this client's Builder event stream: the first `ASSIGNMENT_FINALIZED` triggers one immediate chain read (if a read is already in flight, one more follows it). The event is only a hint; without it, or if the event stream fails, the wait just polls. |
+| `sessionId?` | Also watch this client's Builder event stream: the first `ASSIGNMENT_FINALIZED` triggers one immediate chain read, started at once even if a read is already in flight (the first read to find the winner wins; an older read's "not yet" never overrides a newer read). The event is only a hint; without it, or if the event stream fails, the wait just polls. |
 | `pollIntervalMs?` | Chain read interval, default `DEFAULT_TRUST_ANCHOR_POLL_MS` (1000, about one block). |
 | `timeoutMs?` | Bound on the whole wait, default `DEFAULT_TRUST_ANCHOR_WAIT_MS` (60000); then `OUTPUT_TRUST_ANCHOR_TIMEOUT`. |
-| `signal?` | Abort the wait: `OUTPUT_TRUST_ANCHOR_WAIT_ABORTED`. |
+| `signal?` | Abort the wait at once: `OUTPUT_TRUST_ANCHOR_WAIT_ABORTED`. |
 
-Reads stay serial (the task, then the winner's key). Only `OUTPUT_TRUST_ANCHOR_PENDING` is
-waited out; any other error (for example `OUTPUT_TRUST_ANCHOR_WORKER_KEY_INACTIVE` or
-`OUTPUT_TRUST_ANCHOR_NO_WINNER`) is thrown at once. The event stream is closed when the wait
-ends. `timeoutMs` and `signal` take effect between reads; a single chain read is bounded only
-by the reader's own limits.
+Each read is the task, then the winner's key, in order. Only `OUTPUT_TRUST_ANCHOR_PENDING` is
+waited out; any other error from the newest read (for example
+`OUTPUT_TRUST_ANCHOR_WORKER_KEY_INACTIVE` or `OUTPUT_TRUST_ANCHOR_NO_WINNER`) is thrown at once.
+The event stream is closed when the wait ends. `timeoutMs` takes effect between reads; a single
+chain read is bounded only by the reader's own limits.
 
 ### 8.3 Streaming
 
@@ -447,7 +481,11 @@ async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent>
 | `ack?` | Report delivery progress after fin (default true). Only a Worker-signed fin is ever acked. |
 | `finSignaturePolicy?` | `'require'` (default) or `'accept-unsigned'`. |
 | `idleTimeoutMs?` | Idle cap for a single subscription. |
-| `sources?` / `maxAttempts?` | Builder failover pool and attempt budget. |
+| `sources?` / `maxAttempts?` | Builder failover pool and attempt budget. A ResourceExhausted end (nexus dropping a subscriber that fell 256 frames behind) after new verified frames resubscribes on the same source after the last verified frame without using an attempt (at most `MAX_OVERFLOW_RESUBSCRIBES`, 64, times; then each counts as a failed attempt). |
+| `waitForAnchors?` | Early subscribe: open the subscription at once and wait for the anchors in parallel (`true` = `waitForOutputTrustAnchors` with `{ sessionId }`; an options object is passed as is). The event hint is read from the first source when its ingress is an `IngressClient`, else from this client's ingress. Ignored when both `taskHash` and `workerServicePubKey` are given. |
+| `pendingAnchors?` | Early subscribe with a promise of `{ taskHash, workerServicePubKey }` the caller already has; takes precedence over `waitForAnchors`. |
+| `maxPendingFrames?` | Read-ahead bound before the anchors arrive (default `DEFAULT_MAX_PENDING_FRAMES`, 256). At the bound the SDK stops reading the subscription; nothing is dropped. |
+| `signal?` | Abort: closes the subscription and any anchor wait, throws `OUTPUT_STREAM_ABORTED`. |
 
 `OutputStreamEvent`:
 
@@ -463,6 +501,14 @@ async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent>
   locally verified prefix **and** whose Worker signature verifies. An unsigned fin is a bad
   frame under the default policy; under the explicit opt-in it ends the stream as
   `attested: false` and is never acked.
+- Early subscribe: frames (and a fin) that arrive before the anchors are held unverified and
+  never delivered, checkpointed or acked before they verify; once the anchors arrive they go
+  through the same checks, in arrival order. The checks are the same as without early
+  subscribe; the Worker's service key is read once, so a key rotated mid-stream is not covered
+  (as before). If the anchor wait fails (no winner, timeout, inactive key, failed read), the SDK
+  closes the subscription itself (nexus never ends it on a terminal task state) and throws that
+  error. A subscription error before the anchors is handled after them, as a normal failed
+  attempt. The idle timeout starts when the anchors are known.
 
 ### 8.4 Fetch (whole object)
 
@@ -578,6 +624,8 @@ type registry.
 ```ts
 nexusIngressTransport(uri, tlsPubkeyHash?, policy?): Transport
 nexusTransportOptions(uri, tlsPubkeyHash?, policy?): NexusTransportOptions
+prewarmNexusConnections(uri, tlsPubkeyHash?, opts?: PrewarmNexusOptions): Promise<number>
+sharedPinnedHttpsAgent(tlsPubkeyHash): PinnedHttpsAgent
 class PinnedHttpsAgent
 tlsPubkeyHashOfCertificate(cert): string   // sha256(SubjectPublicKeyInfo DER), 0x + 64 lowercase hex
 isTLSPubkeyMismatch(err): boolean
@@ -593,6 +641,16 @@ Rules:
   `allowInsecureHttp` / `TRUEOPEN_ALLOW_INSECURE_HTTP=1` (localnet only). The default
   console sink warns once per endpoint; an injected `warn` sink sees every occurrence.
 - https is **never** downgraded to http.
+- Transports for the same pinned key share one keep-alive `PinnedHttpsAgent`
+  (`sharedPinnedHttpsAgent`), so a connection left idle by OpenTask, a prewarm or an earlier
+  stream is reused instead of a new TCP + TLS handshake. Each connection carries one request at
+  a time (HTTP/1.1); aborting a stream closes only its own connection. `shareConnections: false`
+  restores a private agent per transport.
+- `prewarmNexusConnections` sends `connections` (default 2, at most 8) concurrent
+  `GET /healthz` through that same agent and leaves the keep-alive connections idle in its
+  pool, under the same TLS rules. Best effort: resolves with the number that completed, rejects
+  only when the endpoint is refused by policy. An unpinned endpoint uses Node's global agent,
+  which keeps connections alive only on Node 19+.
 
 `IngressClient` wraps the `IngressAPI` (openTask, task status/events, task-data
 metadata/fetch, output stream) and signs each request with the SDK request envelope.
@@ -788,7 +846,7 @@ import {
   TrueOpenClient, HubReader, RestChainReader, connectTrueOpenChainClient,
   resolveTaskOrderContext, defaultGenerationParams,
   privateKeyTypedDataSigner, EthSecp256k1DirectSigner,
-  TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport,
+  TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, prewarmNexusConnections, IngressClient,
 } from 'trueopen-sdk';
 import { Bip39, Slip10, Slip10Curve, EnglishMnemonic, stringToPath } from '@cosmjs/crypto';
 
@@ -821,6 +879,8 @@ const client = new TrueOpenClient({
   chain: chainClient,
   ingressTransport: nexusIngressTransport('https://nexus:8080'), // see §10 for TLS pinning
   ingressTransportFactory: (endpoint, tlsPubkeyHash) => nexusIngressTransport(endpoint, tlsPubkeyHash),
+  // Opens connections to the selected Builders while openTask signs (same shared agent).
+  ingressPrewarm: (endpoint, tlsPubkeyHash) => prewarmNexusConnections(endpoint, tlsPubkeyHash),
   hub, taskReader,
 });
 
@@ -869,30 +929,27 @@ const taskId = result.taskId;                 // e.g. 111fa1f3... (derived task_
 ### 15.2 Streaming
 
 ```ts
-// streamOutput streams from a specific Builder, so build a per-Builder client. The anchors
-// (taskHash + workerServicePubKey, needs taskReader + hub) are chain facts, the same for every
-// Builder: wait for them once, on the first client, so the first stream reuses its connection.
-// If the wait fails (no winner, timeout), no Builder can stream. Frames are verified against
-// the Worker's signature and the MMR root as they arrive; the stream ends with a Worker-signed
-// fin.
-const clients = result.builders.filter((x) => x.ack?.accepted).map((b) => makeClient(b.serviceEndpoint, b.tlsPubkeyHash));
-if (clients.length === 0) throw new Error('no Builder accepted the order');
-const { taskHash, workerServicePubKey } = await clients[0].waitForOutputTrustAnchors(taskId, { sessionId: session.sessionId });
+// One output source per Builder that accepted the order. Early subscribe: SubscribeOutput
+// opens now, while the SDK waits for the anchors (taskHash + workerServicePubKey, needs
+// taskReader + hub). Frames that arrive first are held unverified and released only once the
+// anchors are known and each verifies; the stream ends with a Worker-signed fin. If the wait
+// fails (no winner, timeout), the subscription is closed and that error is thrown.
+const sources = result.builders
+  .filter((x) => x.ack?.accepted)
+  .map((b) => ({ id: b.address, ingress: new IngressClient(nexusIngressTransport(b.serviceEndpoint, b.tlsPubkeyHash), client.ingressAuth()) }));
+if (sources.length === 0) throw new Error('no Builder accepted the order');
 let text = '';
-for (const bc of clients) {
-  try {
-    for await (const event of bc.streamOutput({ sessionId: session.sessionId, taskId, taskHash, workerServicePubKey })) {
-      if (event.kind === 'chunk') {
-        text += event.text;
-        process.stdout.write(event.text);
-      } else {
-        // kind === 'fin'
-        console.error(`\nfin: attested=${event.attested} finish_reason=${event.finishReason}`);
-      }
-    }
-    break;
-  } catch (e) {
-    // try the next Builder
+for await (const event of client.streamOutput({
+  sessionId: session.sessionId, taskId, sources, idleTimeoutMs: 20_000,
+  // Poll the chain for the winner, plus the first source's ASSIGNMENT_FINALIZED event as a hint.
+  waitForAnchors: true,
+})) {
+  if (event.kind === 'chunk') {
+    text += event.text;
+    process.stdout.write(event.text);
+  } else {
+    // kind === 'fin'
+    console.error(`\nfin: attested=${event.attested} finish_reason=${event.finishReason}`);
   }
 }
 console.log(text);                            // presented view (chat-template EOS stripped)

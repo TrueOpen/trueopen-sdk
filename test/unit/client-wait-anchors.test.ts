@@ -270,6 +270,98 @@ describe('waitForOutputTrustAnchors', () => {
   });
 });
 
+/** A chain whose every task read waits until the test releases it, with or without a winner. */
+function gatedChain() {
+  const gates: Array<(winner: boolean) => void> = [];
+  const r = {
+    get reads(): number {
+      return gates.length;
+    },
+    release(i: number, winner: boolean): void {
+      gates[i]!(winner);
+    },
+    async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
+      const winner = await new Promise<boolean>((resolve) => gates.push(resolve));
+      return {
+        view: 'active', taskId, acceptedTaskHash: TASK_HASH, winnerWorker: winner ? WINNER : '',
+        modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
+        acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: 'WORKER_ASSIGNMENT_PENDING',
+      };
+    },
+    async queryInferReceipt(): Promise<InferReceiptView | undefined> {
+      throw new Error('streaming anchors never read the receipt');
+    },
+  };
+  return r;
+}
+
+describe('waitForOutputTrustAnchors: the event read does not queue behind a read in flight', () => {
+  it('starts the event read at once while an older read is still in flight, and returns its winner', async () => {
+    const reader = gatedChain();
+    const log = { opened: 0, closed: 0 };
+    let emit!: (code: string) => void;
+    const t = eventsTransport(log, (e) => { emit = e; });
+    const waiting = makeClient(t, reader).waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 60_000 });
+    await tick(30);
+    expect(reader.reads).toBe(1);
+
+    emit('ASSIGNMENT_FINALIZED');
+    await tick(30);
+    // The first read is still in flight; the event's read did not wait for it.
+    expect(reader.reads).toBe(2);
+    reader.release(1, true);
+    const a = await waiting;
+    expect(a.winnerWorker).toBe(WINNER);
+    // The stale read finishing later changes nothing.
+    reader.release(0, false);
+    await tick(10);
+    expect(reader.reads).toBe(2);
+  });
+
+  it("an older read's pending answer does not override the newer read", async () => {
+    const reader = gatedChain();
+    let emit!: (code: string) => void;
+    const t = eventsTransport({ opened: 0, closed: 0 }, (e) => { emit = e; });
+    const started = Date.now();
+    const waiting = makeClient(t, reader).waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 60_000 });
+    await tick(30);
+    emit('ASSIGNMENT_FINALIZED');
+    await tick(30);
+    expect(reader.reads).toBe(2);
+    // The older read says "no winner yet" first: the wait must keep waiting for the newer read,
+    // not go to sleep for the poll interval.
+    reader.release(0, false);
+    await tick(30);
+    expect(reader.reads).toBe(2);
+    reader.release(1, true);
+    expect((await waiting).winnerWorker).toBe(WINNER);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('an older read succeeding first still wins', async () => {
+    const reader = gatedChain();
+    let emit!: (code: string) => void;
+    const t = eventsTransport({ opened: 0, closed: 0 }, (e) => { emit = e; });
+    const waiting = makeClient(t, reader).waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 60_000 });
+    await tick(30);
+    emit('ASSIGNMENT_FINALIZED');
+    await tick(30);
+    reader.release(0, true);
+    expect((await waiting).winnerWorker).toBe(WINNER);
+  });
+
+  it('abort ends the wait at once, even with a read in flight', async () => {
+    const reader = gatedChain();
+    const ac = new AbortController();
+    const waiting = makeClient(noEvents({ opened: 0, closed: 0 }), reader)
+      .waitForOutputTrustAnchors(TASK, { signal: ac.signal })
+      .catch((x: unknown) => x);
+    await tick(30);
+    ac.abort();
+    expect(await waiting).toMatchObject({ code: 'OUTPUT_TRUST_ANCHOR_WAIT_ABORTED' });
+  });
+});
+
 describe('resolveOutputTrustAnchors on a task that ended', () => {
   it('is final, not pending, when the task settled or failed without a winner', async () => {
     for (const reader of [chain({ phase: 'FAILED' }), chain({ phase: 'SETTLED' }), chain({ terminal: true })]) {

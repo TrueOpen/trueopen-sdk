@@ -165,8 +165,9 @@ describe('TrueOpenClient.openTask', () => {
     });
     const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
 
-    // Every BuilderSet read, for signing and for routing, is at the anchor height.
-    expect(heights).toEqual([998n, 998n]);
+    // The BuilderSet is read once, at the anchor height, and that one read serves both the
+    // signed context and the routing.
+    expect(heights).toEqual([998n]);
     expect(res.context.builderSetId).toBe('genesis-1');
     expect(res.context.builderSetHash).toBe(SET_HASH);
     // The Builders contacted are the anchor-height set's members, not the latest set's single member.
@@ -405,5 +406,106 @@ describe('request nonce without globalThis.crypto (node 18)', () => {
     // The regression is that this threw SDK_LOCAL_NO_CRYPTO before reaching the network.
     expect(res.accepted).toBe(true);
     expect(seen.calls).toBeGreaterThan(0);
+  });
+});
+
+describe('openTask: routing and prewarm run while the order is being signed', () => {
+  it('prewarms every selected Builder concurrently before the wallet finishes signing', async () => {
+    const prewarmed: string[] = [];
+    let allPrewarmed!: () => void;
+    const prewarmDone = new Promise<void>((r) => { allPrewarmed = r; });
+    // The wallet only answers once all three Builders were prewarmed: openTask cannot
+    // complete unless routing and prewarm ran during signing.
+    const slowWallet = {
+      signTypedData: async (data: Parameters<typeof wallet.signTypedData>[0]) => {
+        await Promise.race([prewarmDone, new Promise((_r, rej) => setTimeout(() => rej(new Error('not prewarmed during signing')), 2_000))]);
+        return wallet.signTypedData(data);
+      },
+    };
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet: slowWallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      ingressPrewarm: async (uri) => {
+        prewarmed.push(uri);
+        if (prewarmed.length === 3) allPrewarmed();
+      },
+      nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    expect(res.accepted).toBe(true);
+    expect(prewarmed.sort()).toEqual(ADDRS.map((a) => `grpc://${a}:8080`).sort());
+  });
+
+  it('a failing prewarm never fails the order', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      ingressPrewarm: async () => { throw new Error('unreachable'); },
+      nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    expect(res.accepted).toBe(true);
+    expect(seen.calls).toBe(3);
+  });
+
+  it('resolveTaskBuilders gives the same Builders openTask then uses, before anything is signed', async () => {
+    const contacted: string[] = [];
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: (uri) => { contacted.push(uri); return acceptTransport({ calls: 0, frames: [] }); },
+      nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    });
+    const pre = await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 3n });
+    expect(pre.taskId).toBe(deriveTaskId(SESSION, 3n));
+    expect(contacted).toEqual([]);
+    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1', context: pre.context });
+    expect(contacted.sort()).toEqual(pre.endpoints.map((e) => e.serviceEndpoint).sort());
+  });
+});
+
+describe('openTask: session anchor reuse across orders', () => {
+  function countingHub(window: bigint | undefined) {
+    const beacons: bigint[] = [];
+    const h = {
+      ...(hub as object),
+      getBeacon: async (height: bigint): Promise<BeaconView> => {
+        beacons.push(height);
+        return { height, blockHash: ANCHOR, randomnessHex: toHex(new Uint8Array(32).fill(0x01)), sourceTag: 'proposer_vrf_v1', verified: true };
+      },
+      ...(window !== undefined ? { getAnchorFreshnessWindowBlocks: async () => window } : {}),
+    };
+    return { h: h as never, beacons };
+  }
+  const clientWith = (h: never, reuse?: false) => new TrueOpenClient({
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
+    chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+    hub: h, ingressTransportFactory: () => acceptTransport({ calls: 0, frames: [] }),
+    nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    ...(reuse === false ? { orderContextReuse: false as const } : {}),
+  });
+
+  it('two orders on one client share the anchor: the beacon is read once', async () => {
+    const { h, beacons } = countingHub(10_000n);
+    const client = clientWith(h);
+    const a = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-3' });
+    const b = await client.openTask({ sessionId: SESSION, orderSequence: 4n, order, idempotencyKey: 'idem-4' });
+    expect(a.accepted && b.accepted).toBe(true);
+    expect(b.context.sessionAnchorHeight).toBe(a.context.sessionAnchorHeight);
+    expect(beacons).toEqual([998n]);
+  });
+
+  it('orderContextReuse: false, or a hub without the freshness window, resolves a fresh context per order', async () => {
+    for (const [window, reuse] of [[10_000n, false], [undefined, undefined]] as const) {
+      const { h, beacons } = countingHub(window);
+      const client = clientWith(h, reuse);
+      await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-3' });
+      await client.openTask({ sessionId: SESSION, orderSequence: 4n, order, idempotencyKey: 'idem-4' });
+      expect(beacons).toEqual([998n, 998n]);
+    }
   });
 });

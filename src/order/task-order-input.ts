@@ -161,6 +161,22 @@ export async function resolveTaskOrderContext(
   chainId: string,
   opts?: { readonly anchorLag?: bigint },
 ): Promise<TaskOrderChainContext> {
+  return (await resolveTaskOrderContextWithBuilderSet(hub, chainId, opts)).context;
+}
+
+/** An order context together with the BuilderSet it was read from (the set at the anchor height). */
+export interface ResolvedTaskOrderContext {
+  readonly context: TaskOrderChainContext;
+  /** The BuilderSet in effect at context.sessionAnchorHeight; Task Builder routing selects from it. */
+  readonly builderSet: BuilderSetSnapshot;
+}
+
+/** resolveTaskOrderContext, also returning the BuilderSet it read, so routing need not read it again. */
+export async function resolveTaskOrderContextWithBuilderSet(
+  hub: TaskOrderContextReader,
+  chainId: string,
+  opts?: { readonly anchorLag?: bigint },
+): Promise<ResolvedTaskOrderContext> {
   const latestHeight = await hub.getLatestHeight();
   const lag = opts?.anchorLag ?? 2n;
   const anchorHeight = latestHeight > lag ? latestHeight - lag : latestHeight;
@@ -175,26 +191,44 @@ export async function resolveTaskOrderContext(
   if (beacon.height !== anchorHeight) {
     throw invalid('SDK_LOCAL_ANCHOR_HEIGHT_MISMATCH', `beacon height ${beacon.height} != requested ${anchorHeight}`);
   }
+  return assembleTaskOrderContext(chainId, { height: anchorHeight, blockHash: beacon.blockHash }, set, timeout, generationLimits, latestHeight);
+}
+
+/**
+ * Checks an anchor against the BuilderSet read at its height and builds the context. Shared
+ * by a fresh resolution and by TaskOrderContextCache reusing an anchor.
+ */
+export function assembleTaskOrderContext(
+  chainId: string,
+  anchor: { readonly height: bigint; readonly blockHash: string },
+  set: BuilderSetSnapshot,
+  timeout: ParameterBucketView,
+  generationLimits: TaskGenerationLimits,
+  latestHeight: bigint,
+): ResolvedTaskOrderContext {
   // The anchor must not be earlier than that set's effective height - otherwise the
   // builder_set_hash signed into the order wouldn't be authoritative at that height.
   // The old term window (start/end/snapshot) was removed along with the term model.
-  if (set.effectiveHeight > anchorHeight) {
+  if (set.effectiveHeight > anchor.height) {
     throw invalid(
       'SDK_LOCAL_ANCHOR_BEFORE_BUILDER_SET',
-      `anchor height ${anchorHeight} is before builder set ${set.builderSetId} takes effect at ${set.effectiveHeight}`,
+      `anchor height ${anchor.height} is before builder set ${set.builderSetId} takes effect at ${set.effectiveHeight}`,
     );
   }
 
   return {
-    chainId,
-    sessionAnchorHeight: anchorHeight,
-    sessionAnchorBlockHash: beacon.blockHash,
-    builderSetId: set.builderSetId,
-    builderSetHash: set.setHash,
-    // What gets signed in must be the **currently effective version**, not the version recorded on the bucket itself.
-    timeoutBucketVersion: timeout.currentVersion,
-    generationLimits,
-    latestHeight,
+    context: {
+      chainId,
+      sessionAnchorHeight: anchor.height,
+      sessionAnchorBlockHash: anchor.blockHash,
+      builderSetId: set.builderSetId,
+      builderSetHash: set.setHash,
+      // What gets signed in must be the **currently effective version**, not the version recorded on the bucket itself.
+      timeoutBucketVersion: timeout.currentVersion,
+      generationLimits,
+      latestHeight,
+    },
+    builderSet: set,
   };
 }
 

@@ -141,4 +141,11 @@ describe('HubReader (REST field mapping)', () => {
     const empty = readerFor({ '/hub/v1/params': { params: { phase0: { business_denom: '' } } } });
     await expect(empty.getBusinessDenom()).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
   });
+
+  it('getAnchorFreshnessWindowBlocks reads task params.session.anchor_freshness_window_blocks', async () => {
+    const r = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '10000' } } } });
+    expect(await r.getAnchorFreshnessWindowBlocks()).toBe(10_000n);
+    const zero = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '0' } } } });
+    await expect(zero.getAnchorFreshnessWindowBlocks()).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+  });
 });

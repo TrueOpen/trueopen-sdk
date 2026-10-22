@@ -73,11 +73,13 @@ and the mnemonic are yours to supply; everything chain-specific is read from the
 ```ts
 import {
   TrueOpenClient,
+  IngressClient,
   HubReader,
   RestChainReader,
   connectTrueOpenChainClient,
   ethSecp256k1SignerFromMnemonic,
   nexusIngressTransport,
+  prewarmNexusConnections,
   privateKeyTypedDataSigner,
   secp256k1PublicKey,
   ethSecp256k1Address,
@@ -128,6 +130,10 @@ const makeClient = (ingressTransport: ReturnType<typeof nexus>) =>
     chain, hub, taskReader,
     ingressTransport, // default transport for calls not routed by the SDK
     ingressTransportFactory: nexus, // openTask picks Builders by task_builder_seed
+    // Optional: while the order is being signed, open TLS connections to the selected Builders,
+    // so OpenTask and the output stream skip the handshake. nexusIngressTransport shares one
+    // keep-alive agent per pinned certificate, which is what makes these connections reusable.
+    ingressPrewarm: (url, tlsPubkeyHash) => prewarmNexusConnections(url, tlsPubkeyHash),
   });
 const client = makeClient(nexus('http://nexus.unused.invalid'));
 
@@ -185,30 +191,37 @@ The same order, delivered as verified frames as the Worker generates them, inste
 fetching the whole object after the receipt lands:
 
 ```ts
-// streamOutput streams from a specific Builder, so build a per-Builder client exactly like
-// the non-streaming path above. The anchors are chain facts, the same for every Builder, so
-// wait for them once: waitForOutputTrustAnchors reads the chain about once a block, plus once
-// straight away on the first Builder's ASSIGNMENT_FINALIZED event. If the wait fails (no
-// winner, timeout), no Builder can stream. The first stream reuses the connection it waited on.
-const clients = res.builders.filter((x) => x.ack?.accepted).map((b) => makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)));
-if (clients.length === 0) throw new Error('no Builder accepted the order');
-const { taskHash, workerServicePubKey } = await clients[0].waitForOutputTrustAnchors(res.taskId, { sessionId });
+// One output source per Builder that accepted the order, signing with this client's identity.
+const sources = res.builders
+  .filter((b) => b.ack?.accepted)
+  .map((b) => ({ id: b.address, ingress: new IngressClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash), client.ingressAuth()) }));
+if (sources.length === 0) throw new Error('no Builder accepted the order');
+// Early subscribe: SubscribeOutput opens right away, while the SDK waits for the anchors
+// (waitForOutputTrustAnchors). Frames that arrive first are held, unverified and undelivered,
+// and are released only once the anchors are known and each frame verifies. No winner, a
+// timeout or a failed read closes the subscription and is thrown.
 let text = '';
-for (const bc of clients) {
-  try {
-    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId, taskHash, workerServicePubKey })) {
-      if (event.kind === 'chunk') {
-        text += event.text;                   // per-frame Worker signature + MMR root verified
-      } else {
-        console.error(`fin: attested=${event.attested} finish_reason=${event.finishReason}`);
-      }
-    }
-    break;
-  } catch (e) {
-    // try the next Builder
+for await (const event of client.streamOutput({
+  sessionId, taskId: res.taskId, sources,
+  waitForAnchors: true,  // also watches the first source's task events as a hint; { pollIntervalMs } polls only
+  idleTimeoutMs: 20_000,
+})) {
+  if (event.kind === 'chunk') {
+    text += event.text;                       // per-frame Worker signature + MMR root verified
+  } else {
+    console.error(`fin: attested=${event.attested} finish_reason=${event.finishReason}`);
   }
 }
 console.log(text);                            // the presented view (chat-template EOS marker stripped)
+```
+
+Already waiting for the anchors yourself? Pass that promise as `pendingAnchors` instead of
+`waitForAnchors`. With both `taskHash` and `workerServicePubKey` given, `streamOutput`
+subscribes only then, as before:
+
+```ts
+const { taskHash, workerServicePubKey } = await client.waitForOutputTrustAnchors(res.taskId, { sessionId });
+for await (const event of client.streamOutput({ sessionId, taskId: res.taskId, sources, taskHash, workerServicePubKey })) { /* ... */ }
 ```
 
 To resume after a disconnect, persist the checkpoint and pass it back (same per-Builder
@@ -249,12 +262,14 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 | `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
 | `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
-| `waitForOutputTrustAnchors(taskId, { sessionId?, pollIntervalMs?, timeoutMs?, signal? })` | waits until the chain names the winner and returns the streaming anchors: polls the chain (default every 1000 ms, at most 60 s) and, with `sessionId`, reads once more straight away on the Builder's `ASSIGNMENT_FINALIZED` event; a task that failed or settled without a winner ends the wait with `OUTPUT_TRUST_ANCHOR_NO_WINNER` |
+| `waitForOutputTrustAnchors(taskId, { sessionId?, pollIntervalMs?, timeoutMs?, signal? })` | waits until the chain names the winner and returns the streaming anchors: polls the chain (default every 1000 ms, at most 60 s) and, with `sessionId`, reads once more straight away on the Builder's `ASSIGNMENT_FINALIZED` event (without waiting for a read already in flight); a task that failed or settled without a winner ends the wait with `OUTPUT_TRUST_ANCHOR_NO_WINNER` |
+| `resolveTaskBuilders({ sessionId, orderSequence?, context? })` | the Task Builders an order will go to, before anything is signed (selection depends only on task_id and the order context); pass the returned `context` to `openTask` |
+| `prewarmTaskBuilders(endpoints)` | opens connections to those Builders through `config.ingressPrewarm` (openTask does this itself while signing) |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
 | `watchTask(sessionId, taskId, fromCursor?, { signal? })` | subscribes to the task event stream (`AsyncIterable`); abort `signal` to close it |
 | `fetchTaskOutput({ sessionId, taskId, builderAddress, taskHash?, outputHash?, expiresAtHeight? })` | fetches the full output in ranges and recomputes the MMR root from `chunk_lengths` to verify it against the on-chain receipt (see section 4) |
-| `streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
+| `streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack?, waitForAnchors?, pendingAnchors?, maxPendingFrames?, signal? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame; `waitForAnchors` / `pendingAnchors` subscribe before the anchors are known (see section 4) |
 | `confirmOutput({ taskId, taskHash, checkpoint, receipt })` | uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
@@ -334,6 +349,21 @@ winner Worker's current service key)
 - The terminal event is `{ kind: 'fin', attested: true, finishReason }` for a signed Fin, or
   `{ kind: 'fin', attested: false, finishReason: undefined }` under the opt-in.
 - Phase 0 requires `attachment` / `attachment_signature` to be empty; a non-empty value fails closed.
+- **Early subscribe** (`waitForAnchors` or `pendingAnchors`): the subscription opens as soon as
+  the order is accepted, in parallel with the anchor wait. Until the anchors arrive, frames are
+  held unverified; they are never delivered, checkpointed or acked before they verify. The
+  read-ahead is bounded by `maxPendingFrames` (default 256): at the bound the SDK stops reading
+  the subscription. If nexus then drops the slow subscriber (ResourceExhausted), the SDK verifies
+  what it holds and resubscribes after the last verified frame (at most
+  `MAX_OVERFLOW_RESUBSCRIBES`, 64, such free resubscribes; after that each counts as a failed
+  attempt). With `waitForAnchors` and a session ID, the `ASSIGNMENT_FINALIZED` hint is read from
+  the first source when it is an `IngressClient`, else from the client's own ingress. A Fin can arrive before the
+  anchors; it is held too and checked, after the frames before it, once they arrive. The checks
+  are the same as without early subscribe; as before, the Worker's service key is read once, so
+  a key rotated mid-stream is not covered. nexus never ends a subscription because the task
+  reached a terminal state, so when the anchor wait fails (`OUTPUT_TRUST_ANCHOR_NO_WINNER`,
+  `OUTPUT_TRUST_ANCHOR_TIMEOUT`, an inactive key, a failed read) the SDK closes the subscription
+  and throws that error. Aborting `signal` closes both and throws `OUTPUT_STREAM_ABORTED`.
 - `workerServicePubKey` must be supplied by the caller; the SDK has no switch to skip this check
   -- accepting output without verifying it discards all of the streamed-output guarantees. To obtain it:
   on-chain `assignment.winner_worker` -> `hub.getCurrentServiceKey(PARTICIPANT_TYPE.CORTEX,

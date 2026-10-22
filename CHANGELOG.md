@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Lower time to first token
+
+- **Added:** early subscribe. `streamOutput({ waitForAnchors })` (or `pendingAnchors`, a promise
+  the caller already has) opens SubscribeOutput at once and waits for the trust anchors in
+  parallel. Frames that arrive first are held unverified, bounded by `maxPendingFrames` (default
+  `DEFAULT_MAX_PENDING_FRAMES`, 256; at the bound the SDK stops reading the subscription), and are
+  released only once the anchors arrive and each frame verifies; nothing is delivered,
+  checkpointed or acked before that. A Fin held before the anchors is checked after the frames
+  before it. If the anchor wait fails, the SDK closes the subscription and throws that error. The
+  checks are the same as before; the Worker service key is still read once, so a key rotated
+  mid-stream is not covered. Calls with both `taskHash` and `workerServicePubKey` behave as
+  before.
+- **Added:** `streamOutput({ signal })`: aborting closes the subscription and any anchor wait and
+  throws `OUTPUT_STREAM_ABORTED`.
+- **Changed:** `streamOutput` resubscribes on the same source after the last verified frame,
+  without using an attempt, when nexus drops a slow subscriber with ResourceExhausted after this
+  subscription delivered new verified frames (at most `MAX_OVERFLOW_RESUBSCRIBES`, 64, times).
+  With `waitForAnchors`, the `ASSIGNMENT_FINALIZED` hint is read from the first source when it is
+  an `IngressClient`.
+- **Changed:** `waitForOutputTrustAnchors`: an `ASSIGNMENT_FINALIZED` event that lands while a
+  chain read is in flight starts the event's read at once instead of after it; an older read's
+  "not yet" never overrides a newer read. `signal` now ends the wait at once, even mid-read.
+- **Added:** connection warm-up. Transports from `nexusIngressTransport` for the same pinned
+  certificate key now share one keep-alive agent (`sharedPinnedHttpsAgent`; opt out with
+  `shareConnections: false`), and `prewarmNexusConnections(uri, hash, { connections })` leaves
+  idle TLS connections in that agent's pool. `TrueOpenClientConfig.ingressPrewarm` makes
+  `openTask` prewarm every selected Builder concurrently while the order is being signed;
+  `prewarmTaskBuilders` does it on demand.
+- **Changed:** `openTask` reads the fee denom, pricing, order sequence and context concurrently,
+  resolves the selected Builders while the order is being signed, reads their descriptors
+  concurrently, and no longer reads the anchor-height BuilderSet twice.
+- **Added:** `resolveTaskBuilders({ sessionId, orderSequence?, context? })`: the Builders an
+  order will go to, before anything is signed.
+- **Added:** `TaskOrderContextCache` (used by `TrueOpenClient` unless
+  `orderContextReuse: false`): reuses the session anchor across orders while
+  `latest - anchor <= floor(anchor_freshness_window_blocks * 0.25)` and the anchor-height
+  BuilderSet still reads back, re-reading the latest height, that set, the timeout bucket
+  version, the generation limits and the window in one concurrent round.
+  `HubReader.getAnchorFreshnessWindowBlocks()` reads the window. Also exported:
+  `resolveTaskOrderContextWithBuilderSet`.
+
 ### Breaking: Hash32 text is 0x-prefixed (ADR-0034, wire #44)
 
 Every client-facing string form of a Hash32 (a 32-byte digest or ID) is now `0x` followed by

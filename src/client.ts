@@ -1,3 +1,4 @@
+import { Code, ConnectError } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { TypedDataSigner } from './signer/typed-data-signer';
@@ -9,6 +10,7 @@ import { DEFAULT_SIGNATURE_CHAIN_ID, signatureChainIdBigInt } from './signature-
 import type {
   PrepareChallengeResponse,
   GetTaskEventsResponse,
+  SubscribeOutputResponse,
 } from './gen/nexus/v1/ingress_pb.js';
 import { SessionManager } from './session/session-manager';
 import type { SessionHandle } from './session/session-manager';
@@ -18,8 +20,10 @@ import { fanOutToEndpoints } from './transport/fan-out-submit';
 import { nexusGrpcEndpoint } from './types/hub';
 import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
-import { buildTaskOrder, resolveTaskOrderContext } from './order/task-order-input';
-import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader } from './order/task-order-input';
+import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet } from './order/task-order-input';
+import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader, ResolvedTaskOrderContext } from './order/task-order-input';
+import { TaskOrderContextCache } from './order/task-order-context-cache';
+import type { TaskOrderContextCacheOptions } from './order/task-order-context-cache';
 import { buildOpenTaskRequest } from './order/build-open-task';
 import { deriveTaskId } from './order/order-signing';
 import { TrueOpenError, dataError } from './errors/errors';
@@ -140,6 +144,24 @@ export interface TrueOpenClientConfig {
    * can use nexusIngressTransport directly (transport/nexus-tls).
    */
   readonly ingressTransportFactory?: (serviceEndpoint: string, tlsPubkeyHash?: string) => Transport;
+  /**
+   * Opens connections to a Builder's nexus ahead of use, so OpenTask and the output stream
+   * skip the TCP + TLS handshake. Under Node, pass
+   * `(uri, hash) => prewarmNexusConnections(uri, hash)` together with
+   * `ingressTransportFactory: nexusIngressTransport`: both use the same shared keep-alive agent
+   * per pinned certificate, which is what makes the warm connections reusable. When set,
+   * openTask prewarms every selected Builder concurrently while the order is being signed, and
+   * prewarmTaskBuilders does it on demand. Failures are ignored (the real request reports
+   * them). Unset (the default, and the right choice in a browser), nothing is prewarmed.
+   */
+  readonly ingressPrewarm?: (serviceEndpoint: string, tlsPubkeyHash: string) => Promise<unknown>;
+  /**
+   * Reuse of the session anchor across orders (TaskOrderContextCache): on by default when the
+   * hub reader can read the anchor freshness window (HubReader can), saving a sequential chain
+   * round trip per order. The options bound the anchor age; `false` resolves a fresh context
+   * for every order. A `context` passed to openTask is always used as is.
+   */
+  readonly orderContextReuse?: false | TaskOrderContextCacheOptions;
 }
 
 /**
@@ -157,6 +179,8 @@ export type FacadeHubReader = TaskBuilderReader &
     getCurrentServiceKey?(participantType: ParticipantTypeName, operatorAddress: string): Promise<ServiceKeyBinding>;
     /** Latest height, for the task-data request expiry. */
     getLatestHeight(): Promise<bigint>;
+    /** Task params session.anchor_freshness_window_blocks, for reusing a session anchor across orders. */
+    getAnchorFreshnessWindowBlocks?(): Promise<bigint>;
   };
 
 /** On-chain task reads needed to derive the output trust anchors (RestChainReader satisfies it). */
@@ -326,6 +350,44 @@ export interface StreamOutputParams {
    * A Fin with a bad signature is never trusted under any policy.
    */
   readonly finSignaturePolicy?: 'require' | 'accept-unsigned';
+  /**
+   * Early subscribe: open SubscribeOutput at once, while the anchors are still being waited
+   * for, instead of after. Applies when taskHash / workerServicePubKey are not both given
+   * (and pendingAnchors is not set). `true` waits with waitForOutputTrustAnchors and
+   * `{ sessionId }`; an options object is passed to it as is (its `signal` is combined with
+   * this call's `signal`). With a sessionId, the event hint is read from the first source when
+   * its ingress can serve task events (an IngressClient), else from this client's ingress.
+   *
+   * Frames that arrive before the anchors are held unverified and are **never** delivered,
+   * checkpointed or acked before they verify. Once the anchors arrive, every held frame, a
+   * held Fin included, goes through exactly the checks it would have gone through on arrival,
+   * in arrival order; the checks are the same as without early subscribe (the Worker key is
+   * read once, so a service key rotated mid-stream is not covered, as before). If the wait
+   * fails (no winner, timeout, an inactive key, a failed read), the subscription is closed and
+   * that error is thrown. nexus never ends a subscription because a task reached a terminal
+   * state, so the SDK closes it itself.
+   */
+  readonly waitForAnchors?: boolean | WaitForOutputTrustAnchorsOptions;
+  /**
+   * Early subscribe with anchors the caller is already waiting for (for example its own
+   * waitForOutputTrustAnchors call). Same behaviour as `waitForAnchors`; takes precedence
+   * over it. Explicit taskHash / workerServicePubKey still override what it resolves to. A
+   * rejection closes the subscription and is thrown as is. The caller owns cancelling it.
+   */
+  readonly pendingAnchors?: PromiseLike<{ readonly taskHash: string; readonly workerServicePubKey: Uint8Array }>;
+  /**
+   * How many frames early subscribe reads ahead while the anchors are pending (default
+   * DEFAULT_MAX_PENDING_FRAMES). At the limit the SDK simply stops reading the subscription
+   * until the anchors arrive, so memory stays bounded and nothing is dropped. If the Builder
+   * then gives up on the slow subscriber (ResourceExhausted), the SDK verifies what it holds
+   * and resubscribes after the last verified frame.
+   */
+  readonly maxPendingFrames?: number;
+  /**
+   * Aborting stops the stream: the subscription and any anchor wait are closed and
+   * `OUTPUT_STREAM_ABORTED` is thrown.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -378,12 +440,18 @@ export interface ConfirmOutputParams {
   readonly receipt: InferReceiptView;
 }
 
-async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?: number): Promise<IteratorResult<T>> {
-  if (idleTimeoutMs === undefined) return iterator.next();
+async function nextWithIdleTimeout<T>(
+  iterator: AsyncIterator<T>,
+  idleTimeoutMs?: number,
+  /** A next() already in flight (started before the anchors arrived), consumed instead of a new one. */
+  pending?: Promise<IteratorResult<T>>,
+): Promise<IteratorResult<T>> {
+  const next = pending ?? iterator.next();
+  if (idleTimeoutMs === undefined) return next;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      iterator.next(),
+      next,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
           () => reject(new TrueOpenError('NEXUS_INGRESS', 'OUTPUT_STREAM_IDLE_TIMEOUT', `output stream idle for ${idleTimeoutMs}ms`, { retriable: true })),
@@ -411,6 +479,9 @@ export class TrueOpenClient {
   /** The session key and its grant, when config.session is set. */
   readonly sessionGrants: SessionKeyManager | undefined;
 
+  /** Order contexts with session-anchor reuse; undefined without a hub or with orderContextReuse: false. */
+  private readonly contextCache: TaskOrderContextCache | undefined;
+
   constructor(cfg: TrueOpenClientConfig) {
     // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
     // address; anything else must already be canonical with the account prefix.
@@ -431,6 +502,10 @@ export class TrueOpenClient {
             ...(cfg.session.renewBeforeBlocks !== undefined ? { renewBeforeBlocks: cfg.session.renewBeforeBlocks } : {}),
           });
     this.ingress = new IngressClient(cfg.ingressTransport, this.ingressAuth());
+    this.contextCache =
+      cfg.hub === undefined || cfg.orderContextReuse === false
+        ? undefined
+        : new TaskOrderContextCache(cfg.hub, cfg.chainId, cfg.orderContextReuse ?? {});
   }
 
   /**
@@ -496,13 +571,16 @@ export class TrueOpenClient {
       );
     }
     const signatureChainId = this.signatureChainId();
-    // Both go into the signature or decide whether the chain accepts the order, and a
-    // mistake in either only surfaces after nexus accepted the order: the task just vanishes.
-    const feeDenom = await this.resolveFeeDenom();
-    const pricing = params.pricing ?? (await this.readProfilePricing(params.order));
-
-    const orderSequence = params.orderSequence ?? (await this.nextOrderSequence(params.sessionId));
-    const ctx = params.context ?? (await resolveTaskOrderContext(hub, this.cfg.chainId));
+    // These reads are independent, so they run concurrently. The fee denom and the pricing go
+    // into the signature or decide whether the chain accepts the order, and a mistake in
+    // either only surfaces after nexus accepted the order: the task just vanishes.
+    const [feeDenom, pricing, orderSequence, resolved] = await Promise.all([
+      this.resolveFeeDenom(),
+      params.pricing !== undefined ? Promise.resolve(params.pricing) : this.readProfilePricing(params.order),
+      params.orderSequence !== undefined ? Promise.resolve(params.orderSequence) : this.nextOrderSequence(params.sessionId),
+      params.context !== undefined ? Promise.resolve({ context: params.context }) : this.resolveOrderContext(),
+    ]);
+    const ctx = resolved.context;
     const order = buildTaskOrder(
       ctx,
       {
@@ -516,6 +594,22 @@ export class TrueOpenClient {
     const taskId = deriveTaskId(params.sessionId, orderSequence);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     const expiryHeight = params.expiryHeight ?? ctx.latestHeight + BigInt(this.cfg.requestTtlBlocks ?? 10);
+
+    // Routing needs only task_id and the context, not the signature, so it runs while the
+    // order is being signed (a browser wallet prompt can take seconds), and the selected
+    // Builders are prewarmed as soon as they are known. The selection seed and the candidate
+    // pool must use the same BuilderSet / anchor that is signed into the order: the set in
+    // effect at session_anchor_height.
+    const routing = resolveTaskBuilderEndpoints(hub, {
+      chainId: this.cfg.chainId,
+      taskId,
+      builderSetHash: ctx.builderSetHash,
+      sessionAnchorBlockHash: ctx.sessionAnchorBlockHash,
+      sessionAnchorHeight: ctx.sessionAnchorHeight,
+      ...('builderSet' in resolved ? { builderSet: resolved.builderSet } : {}),
+    });
+    // Handled here so a signing failure below does not leave it unobserved; awaited after signing.
+    routing.then((r) => this.prewarmTaskBuilders(r.endpoints), () => undefined);
 
     const built = await buildOpenTaskRequest({
       order,
@@ -533,15 +627,7 @@ export class TrueOpenClient {
       ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),
     });
 
-    // The selection seed and the candidate pool must use the same BuilderSet / anchor that was
-    // signed into the order: the set in effect at session_anchor_height.
-    const { endpoints, errors } = await resolveTaskBuilderEndpoints(hub, {
-      chainId: this.cfg.chainId,
-      taskId,
-      builderSetHash: ctx.builderSetHash,
-      sessionAnchorBlockHash: ctx.sessionAnchorBlockHash,
-      sessionAnchorHeight: ctx.sessionAnchorHeight,
-    });
+    const { endpoints, errors } = await routing;
     if (endpoints.length === 0) {
       throw new TrueOpenError(
         'NEXUS_INGRESS',
@@ -602,6 +688,75 @@ export class TrueOpenClient {
     const read = this.cfg.hub?.getBusinessDenom;
     const chainDenom = read !== undefined ? await read.call(this.cfg.hub) : undefined;
     return resolveFeeDenom(chainDenom, this.cfg.feeDenom);
+  }
+
+  /** A fresh or anchor-reusing order context (see TrueOpenClientConfig.orderContextReuse). */
+  private async resolveOrderContext(): Promise<ResolvedTaskOrderContext> {
+    const hub = this.cfg.hub!;
+    return this.contextCache !== undefined
+      ? this.contextCache.resolve()
+      : resolveTaskOrderContextWithBuilderSet(hub, this.cfg.chainId);
+  }
+
+  /**
+   * The Task Builders an order would be sent to, before anything is signed: the selection
+   * depends only on task_id (session_id + order_sequence) and the order context. openTask
+   * resolves them itself (while signing); call this to prewarm connections even earlier, for
+   * example while the user is still typing. Pass the returned `context` to openTask so the
+   * order is signed against the same anchor and BuilderSet; a different context selects
+   * different Builders.
+   */
+  async resolveTaskBuilders(p: {
+    readonly sessionId: string;
+    /** Defaults to the on-chain next order sequence. */
+    readonly orderSequence?: bigint;
+    /** Defaults to a fresh (or anchor-reusing) context. */
+    readonly context?: TaskOrderChainContext;
+  }): Promise<{
+    readonly taskId: string;
+    readonly orderSequence: bigint;
+    readonly context: TaskOrderChainContext;
+    readonly endpoints: readonly TaskBuilderEndpoint[];
+    readonly unresolvedBuilders: readonly { readonly address: string; readonly error: unknown }[];
+  }> {
+    const hub = this.cfg.hub;
+    if (hub === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'resolveTaskBuilders requires config.hub');
+    }
+    const [orderSequence, resolved] = await Promise.all([
+      p.orderSequence !== undefined ? Promise.resolve(p.orderSequence) : this.nextOrderSequence(p.sessionId),
+      p.context !== undefined ? Promise.resolve({ context: p.context }) : this.resolveOrderContext(),
+    ]);
+    const ctx = resolved.context;
+    const taskId = deriveTaskId(p.sessionId, orderSequence);
+    const { endpoints, errors } = await resolveTaskBuilderEndpoints(hub, {
+      chainId: this.cfg.chainId,
+      taskId,
+      builderSetHash: ctx.builderSetHash,
+      sessionAnchorBlockHash: ctx.sessionAnchorBlockHash,
+      sessionAnchorHeight: ctx.sessionAnchorHeight,
+      ...('builderSet' in resolved ? { builderSet: resolved.builderSet } : {}),
+    });
+    return { taskId, orderSequence, context: ctx, endpoints, unresolvedBuilders: errors };
+  }
+
+  /**
+   * Opens connections to these Builders concurrently through config.ingressPrewarm (a no-op
+   * without it). Never rejects: a Builder that cannot be reached shows up when the real
+   * request is made.
+   */
+  async prewarmTaskBuilders(endpoints: readonly Pick<TaskBuilderEndpoint, 'serviceEndpoint' | 'tlsPubkeyHash'>[]): Promise<void> {
+    const prewarm = this.cfg.ingressPrewarm;
+    if (prewarm === undefined) return;
+    await Promise.all(
+      endpoints.map(async (e) => {
+        try {
+          await prewarm(e.serviceEndpoint, e.tlsPubkeyHash ?? '');
+        } catch {
+          // Best effort only.
+        }
+      }),
+    );
   }
 
   /** Profile pricing for the local order-value checks; refuses to sign when it cannot be read. */
@@ -756,11 +911,13 @@ export class TrueOpenClient {
    *
    * The chain is read once straight away, then every `pollIntervalMs`. With `sessionId`, the
    * client's Builder event stream is watched too: the first ASSIGNMENT_FINALIZED event triggers
-   * one immediate read (if a read is already in flight, one more read follows it). The event is
-   * only a hint, so a failed or silent event stream changes nothing and polling carries on. Reads
-   * stay serial (task, then the winner's key) and the event stream is closed when the wait ends.
-   * `timeoutMs` and `signal` take effect between reads; a single chain read is bounded only by
-   * the reader's own limits.
+   * one immediate read. If a read is already in flight then, the event's read starts at once
+   * alongside it instead of waiting for it; the first read to find the winner wins, and an
+   * older read's "not yet" never overrides a newer read. The event is only a hint, so a failed
+   * or silent event stream changes nothing and polling carries on. Each read is the task, then
+   * the winner's key, in order, and the event stream is closed when the wait ends. `signal`
+   * takes effect at once; `timeoutMs` takes effect between reads (a single chain read is
+   * bounded only by the reader's own limits).
    *
    * Only `OUTPUT_TRUST_ANCHOR_PENDING` is waited out; any other error (an inactive Worker key, a
    * task that ended without a winner, a failed read) is thrown at once. Running out of
@@ -768,6 +925,15 @@ export class TrueOpenClient {
    * `OUTPUT_TRUST_ANCHOR_WAIT_ABORTED`.
    */
   async waitForOutputTrustAnchors(taskId: string, opts: WaitForOutputTrustAnchorsOptions = {}): Promise<OutputTrustAnchors> {
+    return this.waitForAnchorsWithEvents(taskId, opts, this.ingress);
+  }
+
+  /** waitForOutputTrustAnchors, with the event hint read from `events` (an IngressClient for some Builder). */
+  private async waitForAnchorsWithEvents(
+    taskId: string,
+    opts: WaitForOutputTrustAnchorsOptions,
+    events: Pick<IngressClient, 'getTaskEvents'>,
+  ): Promise<OutputTrustAnchors> {
     const pollMs = opts.pollIntervalMs ?? DEFAULT_TRUST_ANCHOR_POLL_MS;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TRUST_ANCHOR_WAIT_MS;
     if (!Number.isFinite(pollMs) || pollMs <= 0) {
@@ -786,23 +952,47 @@ export class TrueOpenClient {
     const done = new AbortController();
     const onAbort = (): void => done.abort();
     opts.signal?.addEventListener('abort', onAbort, { once: true });
+    const abortedP = new Promise<'abort'>((resolve) => done.signal.addEventListener('abort', () => resolve('abort'), { once: true }));
 
-    // At most one event-triggered read: `kicked` covers an event that lands mid-read, `wake`
-    // one that lands while sleeping.
+    // The event triggers at most one extra read. `kicked` records that it fired; `kickUsed`
+    // that the extra read was started.
     let kicked = false;
-    let wake: (() => void) | undefined;
+    let kickUsed = false;
+    let fireKick!: () => void;
+    const kickP = new Promise<'kick'>((resolve) => {
+      fireKick = () => resolve('kick');
+    });
     // The event stream has its own controller so it can close right after its one trigger.
     const eventsDone = new AbortController();
 
+    // Reads carry a generation number. Only the newest read's PENDING or error counts: an
+    // older read that is still in flight when a newer one starts can only win by succeeding,
+    // never by overwriting the newer read's answer with an older "not yet".
+    type ReadOutcome =
+      | { readonly gen: number; readonly ok: true; readonly value: OutputTrustAnchors }
+      | { readonly gen: number; readonly ok: false; readonly error: unknown };
+    let gen = 0;
+    const inflight = new Map<number, Promise<ReadOutcome>>();
+    const startRead = (): void => {
+      const g = ++gen;
+      inflight.set(
+        g,
+        this.resolveOutputTrustAnchors(taskId, { withReceipt: false }).then(
+          (value): ReadOutcome => ({ gen: g, ok: true, value }),
+          (error: unknown): ReadOutcome => ({ gen: g, ok: false, error }),
+        ),
+      );
+    };
+
     try {
       if (opts.sessionId !== undefined) {
-        const events = this.watchTask(opts.sessionId, taskId, undefined, { signal: eventsDone.signal });
+        const stream = events.getTaskEvents({ sessionId: opts.sessionId, taskId, signal: eventsDone.signal });
         void (async () => {
           try {
-            for await (const ev of events) {
+            for await (const ev of stream) {
               if (ev.eventCode === ASSIGNMENT_FINALIZED_EVENT) {
                 kicked = true;
-                wake?.();
+                fireKick();
                 eventsDone.abort();
                 return;
               }
@@ -813,13 +1003,30 @@ export class TrueOpenClient {
         })();
       }
 
+      startRead();
       for (;;) {
-        let last: TrueOpenError;
-        try {
-          return await this.resolveOutputTrustAnchors(taskId, { withReceipt: false });
-        } catch (e) {
+        let last: TrueOpenError | undefined;
+        while (inflight.size > 0) {
+          if (kicked && !kickUsed) {
+            // The event landed while a read was in flight: read again now rather than after it.
+            kickUsed = true;
+            startRead();
+          }
+          const r = await Promise.race<ReadOutcome | 'abort' | 'kick'>([
+            ...inflight.values(),
+            abortedP,
+            ...(kickUsed ? [] : [kickP]),
+          ]);
+          if (r === 'abort') throw aborted();
+          if (r === 'kick') continue;
+          inflight.delete(r.gen);
+          if (r.ok) return r.value;
+          // A stale read's "not yet" (or failure) says nothing the newer read will not.
+          if (r.gen !== gen) continue;
+          const e = r.error;
           if (!(e instanceof TrueOpenError && e.code === 'OUTPUT_TRUST_ANCHOR_PENDING')) throw e;
           last = e;
+          inflight.clear();
         }
         if (done.signal.aborted) throw aborted();
         const left = deadline - Date.now();
@@ -828,24 +1035,19 @@ export class TrueOpenClient {
             cause: last,
           });
         }
-        if (kicked) {
-          // The event landed during that read: read again now.
-          kicked = false;
-          continue;
+        if (!(kicked && !kickUsed)) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const slept = new Promise<'tick'>((resolve) => {
+            timer = setTimeout(() => resolve('tick'), Math.min(pollMs, left));
+          });
+          const r = await Promise.race<'tick' | 'abort' | 'kick'>([slept, abortedP, ...(kickUsed ? [] : [kickP])]);
+          clearTimeout(timer);
+          if (r === 'abort') throw aborted();
         }
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(finish, Math.min(pollMs, left));
-          function finish(): void {
-            clearTimeout(timer);
-            done.signal.removeEventListener('abort', finish);
-            wake = undefined;
-            resolve();
-          }
-          done.signal.addEventListener('abort', finish, { once: true });
-          wake = finish;
-        });
-        kicked = false;
-        if (done.signal.aborted) throw aborted();
+        // A read started after the event (or straight after the sleep it cut short) is the
+        // event's one read.
+        if (kicked) kickUsed = true;
+        startRead();
       }
     } finally {
       opts.signal?.removeEventListener('abort', onAbort);
@@ -1039,37 +1241,59 @@ export class TrueOpenClient {
    * The on-chain InferReceipt.output_hash remains the authoritative final commitment.
    */
   async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent> {
-    // Anchors default to the chain: the accepted task_hash and the winner Worker's current
-    // service key. The receipt is not needed (and usually not there yet) while streaming.
-    let taskHashHex = p.taskHash;
-    let workerServicePubKey = p.workerServicePubKey;
-    if (taskHashHex === undefined || workerServicePubKey === undefined) {
-      const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
-      taskHashHex ??= anchors.taskHash;
-      workerServicePubKey ??= anchors.workerServicePubKey;
-    }
-    const taskHash = strictHash32('task_hash', taskHashHex);
-    const verifier = new OutputStreamVerifier({
-      chainId: this.cfg.chainId,
-      taskHash,
-      workerServicePubKey,
-    }, p.checkpoint);
+    const aborted = (): TrueOpenError =>
+      new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_ABORTED', `output stream for task ${p.taskId} was aborted`);
+    if (p.signal?.aborted === true) throw aborted();
 
-    if (p.resumeAfterSeq !== undefined) {
-      if (p.checkpoint === undefined) {
-        throw new TrueOpenError(
-          'SDK_LOCAL',
-          'OUTPUT_STREAM_RESUME_CHECKPOINT_REQUIRED',
-          'resumeAfterSeq alone cannot restore MMR state; pass checkpoint returned by OutputStreamVerifier.checkpoint()',
-        );
-      }
-      if (p.resumeAfterSeq !== verifier.resumeAfterSeq) {
+    // Early subscribe: the anchors are waited for while the subscription is already open.
+    const explicitAnchors = p.taskHash !== undefined && p.workerServicePubKey !== undefined;
+    const early = !explicitAnchors && (p.pendingAnchors !== undefined || (p.waitForAnchors !== undefined && p.waitForAnchors !== false));
+
+    let verifier: OutputStreamVerifier | undefined;
+    let taskHash: Uint8Array = new Uint8Array();
+    let workerServicePubKey: Uint8Array = new Uint8Array();
+    const setAnchors = (taskHashHex: string, key: Uint8Array): OutputStreamVerifier => {
+      taskHash = strictHash32('task_hash', taskHashHex);
+      workerServicePubKey = key;
+      const v = new OutputStreamVerifier({ chainId: this.cfg.chainId, taskHash, workerServicePubKey }, p.checkpoint);
+      if (p.resumeAfterSeq !== undefined && p.resumeAfterSeq !== v.resumeAfterSeq) {
         throw new TrueOpenError(
           'SDK_LOCAL',
           'OUTPUT_STREAM_RESUME_CURSOR_MISMATCH',
-          `resumeAfterSeq=${p.resumeAfterSeq} does not match checkpoint cursor ${verifier.resumeAfterSeq}`,
+          `resumeAfterSeq=${p.resumeAfterSeq} does not match checkpoint cursor ${v.resumeAfterSeq}`,
         );
       }
+      return v;
+    };
+
+    if (p.resumeAfterSeq !== undefined && p.checkpoint === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'OUTPUT_STREAM_RESUME_CHECKPOINT_REQUIRED',
+        'resumeAfterSeq alone cannot restore MMR state; pass checkpoint returned by OutputStreamVerifier.checkpoint()',
+      );
+    }
+    if (!early) {
+      // Anchors default to the chain: the accepted task_hash and the winner Worker's current
+      // service key. The receipt is not needed (and usually not there yet) while streaming.
+      let taskHashHex = p.taskHash;
+      let key = p.workerServicePubKey;
+      if (taskHashHex === undefined || key === undefined) {
+        const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
+        taskHashHex ??= anchors.taskHash;
+        key ??= anchors.workerServicePubKey;
+      }
+      verifier = setAnchors(taskHashHex, key);
+    }
+    // Without a verifier yet, the subscription cursor comes from the checkpoint alone; the
+    // verifier rechecks the checkpoint against the anchors once they arrive.
+    const checkpointLeafCount = p.checkpoint?.mmr.leafCount ?? 0n;
+    if (early && p.resumeAfterSeq !== undefined && p.resumeAfterSeq !== checkpointLeafCount - 1n) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'OUTPUT_STREAM_RESUME_CURSOR_MISMATCH',
+        `resumeAfterSeq=${p.resumeAfterSeq} does not match checkpoint cursor ${checkpointLeafCount - 1n}`,
+      );
     }
     if (p.idleTimeoutMs !== undefined && (!Number.isFinite(p.idleTimeoutMs) || p.idleTimeoutMs <= 0)) {
       throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_IDLE_TIMEOUT_INVALID', 'idleTimeoutMs must be a positive finite number');
@@ -1081,145 +1305,286 @@ export class TrueOpenClient {
     if (!Number.isInteger(maxAttempts) || maxAttempts <= 0) {
       throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_ATTEMPTS_INVALID', 'maxAttempts must be a positive integer');
     }
+    const maxPendingFrames = p.maxPendingFrames ?? DEFAULT_MAX_PENDING_FRAMES;
+    if (!Number.isInteger(maxPendingFrames) || maxPendingFrames <= 0) {
+      throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_PENDING_FRAMES_INVALID', 'maxPendingFrames must be a positive integer');
+    }
 
-    const failures: string[] = [];
-    let finSource: OutputStreamSource | undefined;
-    // The termination reason declared by a signature-verified Fin; stays undefined for an unattested Fin.
-    let finishReason: FinishReasonV1 | undefined;
-    for (let attempt = 0; attempt < maxAttempts && finSource === undefined; attempt += 1) {
-      const source = sources[attempt % sources.length]!;
-      const cursor = verifier.leafCount > 0n ? verifier.resumeAfterSeq : undefined;
-      // A fresh AbortController per subscription: abandoning this stream must actually cut the
-      // underlying request. iterator.return() only stops reading -- connect-node does not close
-      // the HTTP connection because of it. If the Builder being asked isn't the dispatching one,
-      // it has no frame to push, and that connection just hangs waiting for a response, keeping
-      // the event loop referenced and preventing the caller's process from exiting (this was
-      // observed hanging the CLI output stream).
-      const abort = new AbortController();
-      const iterator = source.ingress.subscribeOutput({
-        sessionId: p.sessionId,
-        taskId: p.taskId,
-        ...(cursor !== undefined ? { resumeAfterSeq: cursor } : {}),
-        signal: abort.signal,
-      })[Symbol.asyncIterator]();
-      let sawFin = false;
-      try {
-        for (;;) {
-          const step = await nextWithIdleTimeout(iterator, p.idleTimeoutMs);
-          if (step.done) break;
-          const frame = step.value.frame;
-          if (frame.case === 'chunk') {
-            const c = frame.value;
-            if (c.attachment.length > 0 || c.attachmentSignature.length > 0) {
-              throw dataError('DATA_OUTPUT_ATTACHMENT_NOT_ALLOWED', `frame ${c.seq} carries an attachment; Phase 0 requires it empty`);
+    // Lives as long as this stream: the caller's signal aborts it, and so does the stream
+    // ending for any reason (including the caller breaking out of its loop), which closes the
+    // anchor wait and any open subscription.
+    const life = new AbortController();
+    const onAbort = (): void => life.abort();
+    p.signal?.addEventListener('abort', onAbort, { once: true });
+    const lifeEnded = new Promise<'abort'>((resolve) => life.signal.addEventListener('abort', () => resolve('abort'), { once: true }));
+
+    type AnchorOutcome =
+      | { readonly ok: true; readonly taskHash: string; readonly workerServicePubKey: Uint8Array }
+      | { readonly ok: false; readonly error: unknown };
+    let anchorsP: Promise<AnchorOutcome> | undefined;
+    // Errors that end the whole stream rather than one attempt.
+    const fatal = (error: unknown): StreamFatal => new StreamFatal(error);
+    // Listeners on caller-owned signals, removed when the stream ends.
+    const cleanups: Array<() => void> = [];
+
+    try {
+      if (early) {
+        let source: PromiseLike<{ readonly taskHash: string; readonly workerServicePubKey: Uint8Array }>;
+        if (p.pendingAnchors !== undefined) {
+          source = p.pendingAnchors;
+        } else {
+          const waitOpts: WaitForOutputTrustAnchorsOptions = p.waitForAnchors === true ? { sessionId: p.sessionId } : (p.waitForAnchors as WaitForOutputTrustAnchorsOptions);
+          const waitAbort = new AbortController();
+          const stopWait = (): void => waitAbort.abort();
+          life.signal.addEventListener('abort', stopWait, { once: true });
+          const callerSignal = waitOpts.signal;
+          if (callerSignal !== undefined) {
+            if (callerSignal.aborted) waitAbort.abort();
+            else {
+              callerSignal.addEventListener('abort', stopWait, { once: true });
+              cleanups.push(() => callerSignal.removeEventListener('abort', stopWait));
             }
-            const acceptance = verifier.acceptOrDeduplicate({
-              seq: c.seq,
-              text: c.text,
-              mmrRoot: c.mmrRoot,
-              signature: c.workerSignature,
-            });
-            if (acceptance === 'duplicate') continue;
-            if (p.onCheckpoint !== undefined) {
-              try {
-                await p.onCheckpoint(verifier.checkpoint());
-              } catch (cause) {
-                throw new TrueOpenError(
-                  'SDK_LOCAL',
-                  'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED',
-                  `failed to persist checkpoint after frame ${c.seq}`,
-                  { cause },
+          }
+          // The event hint goes to the first source when it can serve task events (an
+          // IngressClient for a Builder that took the order), else to this client's ingress.
+          const first = sources[0]!.ingress as Partial<Pick<IngressClient, 'getTaskEvents'>>;
+          const events: Pick<IngressClient, 'getTaskEvents'> =
+            typeof first.getTaskEvents === 'function' ? (first as Pick<IngressClient, 'getTaskEvents'>) : this.ingress;
+          source = this.waitForAnchorsWithEvents(p.taskId, { ...waitOpts, signal: waitAbort.signal }, events);
+        }
+        anchorsP = Promise.resolve(source).then(
+          (a): AnchorOutcome => ({
+            ok: true,
+            taskHash: p.taskHash ?? a.taskHash,
+            workerServicePubKey: p.workerServicePubKey ?? a.workerServicePubKey,
+          }),
+          (error: unknown): AnchorOutcome => ({ ok: false, error }),
+        );
+      }
+
+      const failures: string[] = [];
+      // Free resubscribes after a ResourceExhausted with progress, capped independently.
+      let overflowResubscribes = 0;
+      let finSource: OutputStreamSource | undefined;
+      // The termination reason declared by a signature-verified Fin; stays undefined for an unattested Fin.
+      let finishReason: FinishReasonV1 | undefined;
+      for (let attempt = 0; attempt < maxAttempts && finSource === undefined; attempt += 1) {
+        if (life.signal.aborted) throw aborted();
+        const source = sources[attempt % sources.length]!;
+        const leafCount = verifier?.leafCount ?? checkpointLeafCount;
+        const cursor = leafCount > 0n ? leafCount - 1n : undefined;
+        // A fresh AbortController per subscription: abandoning this stream must actually cut the
+        // underlying request. iterator.return() only stops reading -- connect-node does not close
+        // the HTTP connection because of it. If the Builder being asked isn't the dispatching one,
+        // it has no frame to push, and that connection just hangs waiting for a response, keeping
+        // the event loop referenced and preventing the caller's process from exiting (this was
+        // observed hanging the CLI output stream).
+        const abort = new AbortController();
+        const onLifeEnd = (): void => abort.abort();
+        life.signal.addEventListener('abort', onLifeEnd, { once: true });
+        const iterator = source.ingress.subscribeOutput({
+          sessionId: p.sessionId,
+          taskId: p.taskId,
+          ...(cursor !== undefined ? { resumeAfterSeq: cursor } : {}),
+          signal: abort.signal,
+        })[Symbol.asyncIterator]();
+        // A next() started before the anchors arrived and still in flight.
+        let pending: Promise<IteratorResult<SubscribeOutputResponse>> | undefined;
+        // What the subscription delivered before the anchors arrived, in arrival order: frames,
+        // then possibly its end or its error. Nothing in here has been verified.
+        const held: Array<{ readonly step: IteratorResult<SubscribeOutputResponse> } | { readonly error: unknown }> = [];
+        let progressFrom = leafCount;
+        let sawFin = false;
+        try {
+          if (verifier === undefined) {
+            const anchors = anchorsP!;
+            // Read ahead until the anchors settle, the subscription ends, or the bound is hit.
+            // At the bound, stop reading: the transport's flow control then pushes back on nexus.
+            for (;;) {
+              const last = held[held.length - 1];
+              const ended = last !== undefined && ('error' in last || last.step.done === true || last.step.value.frame.case === 'fin');
+              if (ended || held.length >= maxPendingFrames) break;
+              if (pending === undefined) {
+                pending = iterator.next();
+                // Observed here so an abandoned next() never becomes an unhandled rejection.
+                pending.catch(() => undefined);
+              }
+              const r = await Promise.race([
+                pending.then(
+                  (step) => ({ step }),
+                  (error: unknown) => ({ error }),
+                ),
+                anchors.then(() => 'anchors' as const),
+                lifeEnded,
+              ]);
+              if (r === 'abort') throw fatal(aborted());
+              if (r === 'anchors') break;
+              pending = undefined;
+              held.push(r);
+            }
+            const settled = await Promise.race([anchors, lifeEnded]);
+            if (settled === 'abort') throw fatal(aborted());
+            // No winner, a timeout or a failed read: nothing can verify these frames, and nexus
+            // will not end the subscription on its own, so it is closed (finally) and the
+            // anchor error is the answer.
+            if (!settled.ok) throw fatal(settled.error);
+            try {
+              verifier = setAnchors(settled.taskHash, settled.workerServicePubKey);
+            } catch (e) {
+              throw fatal(e);
+            }
+            progressFrom = verifier.leafCount;
+          }
+          const v = verifier;
+          for (;;) {
+            let step: IteratorResult<SubscribeOutputResponse>;
+            const h = held.shift();
+            if (h !== undefined) {
+              if ('error' in h) throw h.error;
+              step = h.step;
+            } else {
+              const carried = pending;
+              pending = undefined;
+              // The idle clock starts when the anchors are known, not when the subscription opened.
+              step = await nextWithIdleTimeout(iterator, p.idleTimeoutMs, carried);
+            }
+            if (step.done) break;
+            const frame = step.value.frame;
+            if (frame.case === 'chunk') {
+              const c = frame.value;
+              if (c.attachment.length > 0 || c.attachmentSignature.length > 0) {
+                throw dataError('DATA_OUTPUT_ATTACHMENT_NOT_ALLOWED', `frame ${c.seq} carries an attachment; Phase 0 requires it empty`);
+              }
+              const acceptance = v.acceptOrDeduplicate({
+                seq: c.seq,
+                text: c.text,
+                mmrRoot: c.mmrRoot,
+                signature: c.workerSignature,
+              });
+              if (acceptance === 'duplicate') continue;
+              if (p.onCheckpoint !== undefined) {
+                try {
+                  await p.onCheckpoint(v.checkpoint());
+                } catch (cause) {
+                  throw fatal(
+                    new TrueOpenError(
+                      'SDK_LOCAL',
+                      'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED',
+                      `failed to persist checkpoint after frame ${c.seq}`,
+                      { cause },
+                    ),
+                  );
+                }
+              }
+              yield {
+                kind: 'chunk',
+                seq: c.seq,
+                // text is the presented view (chat-template EOS stripped); mmrRoot still
+                // covers the committed bytes, so it is what verification ran against.
+                text: stripChatTemplateEos(new TextDecoder().decode(c.text)),
+                mmrRoot: Uint8Array.from(c.mmrRoot),
+              };
+              continue;
+            }
+            if (frame.case === 'fin') {
+              const f = frame.value;
+              if (f.finalSeq !== v.resumeAfterSeq) {
+                throw dataError('DATA_OUTPUT_FIN_SEQ_MISMATCH', `fin says final_seq=${f.finalSeq} but ${v.resumeAfterSeq} was verified`);
+              }
+              if (!v.matchesReceipt(f.outputMmrRoot)) {
+                throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `fin root does not match the locally computed root for task ${p.taskId}`);
+              }
+              // Fin carries finish_reason + worker_signature.
+              // If present it must verify; if absent, the stream only ends under an explicit 'accept-unsigned'.
+              const policy = p.finSignaturePolicy ?? 'require';
+              const signed = f.workerSignature.length > 0;
+              if (!signed && policy === 'require') {
+                throw dataError(
+                  'DATA_OUTPUT_FIN_UNSIGNED',
+                  `fin for task ${p.taskId} carries no worker_signature but finSignaturePolicy is 'require'`,
                 );
               }
+              if (signed) {
+                const finFields = {
+                  chainId: this.cfg.chainId,
+                  taskHash,
+                  finalSeq: f.finalSeq,
+                  outputMmrRoot: Uint8Array.from(f.outputMmrRoot),
+                  finishReason: Number(f.finishReason),
+                };
+                if (!verifyOutputFinSignature(finFields, f.workerSignature, workerServicePubKey)) {
+                  throw dataError(
+                    'DATA_OUTPUT_FIN_SIGNATURE_INVALID',
+                    `fin signature for task ${p.taskId} did not verify (finish_reason=${f.finishReason})`,
+                  );
+                }
+                finishReason = f.finishReason;
+              }
+              sawFin = true;
+              finSource = source;
+              break;
             }
-            yield {
-              kind: 'chunk',
-              seq: c.seq,
-              // text is the presented view (chat-template EOS stripped); mmrRoot still
-              // covers the committed bytes, so it is what verification ran against.
-              text: stripChatTemplateEos(new TextDecoder().decode(c.text)),
-              mmrRoot: Uint8Array.from(c.mmrRoot),
-            };
+            throw dataError('DATA_OUTPUT_STREAM_FRAME_MISSING', `SubscribeOutput returned no frame for task ${p.taskId}`);
+          }
+          if (!sawFin) {
+            failures.push(`${source.id}: stream ended without fin after seq ${v.resumeAfterSeq}`);
+          }
+        } catch (e) {
+          if (e instanceof StreamFatal) throw e.error;
+          if (life.signal.aborted) throw aborted();
+          // nexus drops a subscriber that fell 256 frames behind with ResourceExhausted
+          // ("re-subscribe with resume_after_seq"). When this subscription still delivered new
+          // verified frames, resuming on the same source is progress, not a failed attempt, up
+          // to MAX_OVERFLOW_RESUBSCRIBES; past that it counts as one.
+          if (
+            isResourceExhausted(e) &&
+            verifier !== undefined &&
+            verifier.leafCount > progressFrom &&
+            overflowResubscribes < MAX_OVERFLOW_RESUBSCRIBES
+          ) {
+            overflowResubscribes += 1;
+            attempt -= 1;
             continue;
           }
-          if (frame.case === 'fin') {
-            const f = frame.value;
-            if (f.finalSeq !== verifier.resumeAfterSeq) {
-              throw dataError('DATA_OUTPUT_FIN_SEQ_MISMATCH', `fin says final_seq=${f.finalSeq} but ${verifier.resumeAfterSeq} was verified`);
-            }
-            if (!verifier.matchesReceipt(f.outputMmrRoot)) {
-              throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `fin root does not match the locally computed root for task ${p.taskId}`);
-            }
-            // Fin carries finish_reason + worker_signature.
-            // If present it must verify; if absent, the stream only ends under an explicit 'accept-unsigned'.
-            const policy = p.finSignaturePolicy ?? 'require';
-            const signed = f.workerSignature.length > 0;
-            if (!signed && policy === 'require') {
-              throw dataError(
-                'DATA_OUTPUT_FIN_UNSIGNED',
-                `fin for task ${p.taskId} carries no worker_signature but finSignaturePolicy is 'require'`,
-              );
-            }
-            if (signed) {
-              const finFields = {
-                chainId: this.cfg.chainId,
-                taskHash,
-                finalSeq: f.finalSeq,
-                outputMmrRoot: Uint8Array.from(f.outputMmrRoot),
-                finishReason: Number(f.finishReason),
-              };
-              if (!verifyOutputFinSignature(finFields, f.workerSignature, workerServicePubKey)) {
-                throw dataError(
-                  'DATA_OUTPUT_FIN_SIGNATURE_INVALID',
-                  `fin signature for task ${p.taskId} did not verify (finish_reason=${f.finishReason})`,
-                );
-              }
-              finishReason = f.finishReason;
-            }
-            sawFin = true;
-            finSource = source;
-            break;
-          }
-          throw dataError('DATA_OUTPUT_STREAM_FRAME_MISSING', `SubscribeOutput returned no frame for task ${p.taskId}`);
+          const err = e as { message?: string };
+          failures.push(`${source.id}: ${err.message ?? String(e)}`);
+        } finally {
+          // Order matters: call return() first to let the generator wind down, then abort() to cut
+          // the underlying connection. Even the one that received fin must be aborted -- keep-alive
+          // would otherwise leave it sitting in the idle pool; that doesn't block process exit, but
+          // a short-lived process never gets to reuse it, so it's just occupying the peer's connection.
+          life.signal.removeEventListener('abort', onLifeEnd);
+          void iterator.return?.().catch(() => undefined);
+          abort.abort();
         }
-        if (!sawFin) {
-          failures.push(`${source.id}: stream ended without fin after seq ${verifier.resumeAfterSeq}`);
-        }
-      } catch (e) {
-        if (e instanceof TrueOpenError && e.code === 'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED') throw e;
-        const err = e as { message?: string };
-        failures.push(`${source.id}: ${err.message ?? String(e)}`);
-      } finally {
-        // Order matters: call return() first to let the generator wind down, then abort() to cut
-        // the underlying connection. Even the one that received fin must be aborted -- keep-alive
-        // would otherwise leave it sitting in the idle pool; that doesn't block process exit, but
-        // a short-lived process never gets to reuse it, so it's just occupying the peer's connection.
-        void iterator.return?.().catch(() => undefined);
-        abort.abort();
       }
-    }
 
-    if (finSource === undefined) {
-      throw new TrueOpenError(
-        'DATA',
-        'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED',
-        `output stream did not reach a valid fin after ${maxAttempts} attempts:\n  ${failures.join('\n  ')}`,
-        { retriable: true },
-      );
+      if (finSource === undefined) {
+        throw new TrueOpenError(
+          'DATA',
+          'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED',
+          `output stream did not reach a valid fin after ${maxAttempts} attempts:\n  ${failures.join('\n  ')}`,
+          { retriable: true },
+        );
+      }
+      if (finishReason === undefined) {
+        // Unattested Fin (only reachable under an explicit 'accept-unsigned'): nothing says the
+        // output is complete, so report no delivery progress for it.
+        yield { kind: 'fin', attested: false, finishReason: undefined };
+        return;
+      }
+      if (p.ack !== false && verifier !== undefined && verifier.leafCount > 0n) {
+        await finSource.ingress.ackOutput({ sessionId: p.sessionId, taskId: p.taskId, lastSeq: verifier.resumeAfterSeq });
+      }
+      // After the ack, not before: `break`ing on the fin event runs the generator's cleanup
+      // path, so anything left after the yield never executes. Acking first makes the caller's
+      // loop shape irrelevant to whether delivery progress is reported.
+      yield { kind: 'fin', attested: true, finishReason };
+    } finally {
+      p.signal?.removeEventListener('abort', onAbort);
+      for (const cleanup of cleanups) cleanup();
+      life.abort();
     }
-    if (finishReason === undefined) {
-      // Unattested Fin (only reachable under an explicit 'accept-unsigned'): nothing says the
-      // output is complete, so report no delivery progress for it.
-      yield { kind: 'fin', attested: false, finishReason: undefined };
-      return;
-    }
-    if (p.ack !== false && verifier.leafCount > 0n) {
-      await finSource.ingress.ackOutput({ sessionId: p.sessionId, taskId: p.taskId, lastSeq: verifier.resumeAfterSeq });
-    }
-    // After the ack, not before: `break`ing on the fin event runs the generator's cleanup
-    // path, so anything left after the yield never executes. Acking first makes the caller's
-    // loop shape irrelevant to whether delivery progress is reported.
-    yield { kind: 'fin', attested: true, finishReason };
   }
 
   /** Upgrade a locally verified output to confirmed, using the root/count/size from the on-chain InferReceipt. */
@@ -1315,6 +1680,31 @@ export const DEFAULT_TRUST_ANCHOR_WAIT_MS = 60_000;
 
 /** The nexus task event that follows the chain finalizing the winner. */
 const ASSIGNMENT_FINALIZED_EVENT = 'ASSIGNMENT_FINALIZED';
+
+/**
+ * Early subscribe's default read-ahead bound while the anchors are pending: the size of
+ * nexus's per-subscriber buffer, so a full read-ahead plus nexus's buffer covers about twice
+ * that before nexus asks for a resubscribe.
+ */
+export const DEFAULT_MAX_PENDING_FRAMES = 256;
+
+/** Cap on streamOutput's free resubscribes after nexus drops a slow subscriber; past it each counts as a failed attempt. */
+export const MAX_OVERFLOW_RESUBSCRIBES = 64;
+
+/** Carries an error out of streamOutput's per-attempt handling: it ends the stream instead of the attempt. */
+class StreamFatal {
+  constructor(readonly error: unknown) {}
+}
+
+/** Whether a stream ended with Connect ResourceExhausted (nexus's slow-subscriber overflow), anywhere in the cause chain. */
+function isResourceExhausted(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth += 1) {
+    if (current instanceof ConnectError) return current.code === Code.ResourceExhausted;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /**
  * Qwen3's chat template ends every assistant turn with the literal `<|im_end|>` marker (its

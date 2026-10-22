@@ -67,6 +67,12 @@
  *                         winner_confirm lands on chain, verify signatures and the MMR
  *                         root frame by frame as output is generated, without waiting
  *                         for the receipt. Once frames arrive, skip the full-output fetch.
+ *   --fast-stream         with --stream: wait for the winner with
+ *                         waitForOutputTrustAnchors (chain poll plus the
+ *                         ASSIGNMENT_FINALIZED event) on the connection OpenTask used, then
+ *                         subscribe on that same connection. Reports ttft_client_ms, from
+ *                         just before OpenTask to the first verified frame
+ *   --anchor-poll-ms <n>  chain poll interval for --fast-stream (default: the SDK default)
  *   --stream-idle <s>     idle timeout for a single stream, in seconds (default 20);
  *                         on timeout, resubscribe to another endpoint carrying the
  *                         verifier checkpoint
@@ -153,6 +159,12 @@ const FETCH_OUTPUT = !has('--no-fetch-output');
 // Streaming retrieval: subscribe as soon as winner_confirm lands on chain, receiving
 // frames as they're generated, without waiting for the receipt.
 const STREAM = has('--stream');
+// Wait for the winner with waitForOutputTrustAnchors on the OpenTask connection (chain poll
+// plus the ASSIGNMENT_FINALIZED event), then subscribe on that same connection, instead of
+// waiting for the script's own poll loop to see winner_worker.
+const FAST_STREAM = has('--fast-stream');
+// Chain poll interval for --fast-stream; unset means the SDK default.
+const ANCHOR_POLL_MS = has('--anchor-poll-ms') ? Number(flag('--anchor-poll-ms', '')) : undefined;
 // Idle cap for a single stream. If the subscription starts before the Worker begins
 // producing output, nexus will keep the stream open without pushing data, so this is
 // what breaks out and triggers a retry.
@@ -466,10 +478,16 @@ if (NEXUS_URL_OVERRIDE) {
 // throws that redundancy away. Widening the expiry would paper over the problem rather
 // than fix it: a larger signed window is also a larger replay window.
 const acks = [];
+// Client-clock origin for time to first token: just before OpenTask goes out.
+const openTaskStartedAt = Date.now();
+// Kept so the stream can reuse the connection OpenTask already opened.
+const openTaskTransports = new Map();
 if (DO_SUBMIT) {
   const settled = await Promise.all(routed.endpoints.map(async (ep) => {
     const base = { rank: ep.rank, address: ep.address, endpoint: ep.serviceEndpoint };
-    const ic = new IngressClient(nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? ""));
+    const tr = nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? "");
+    openTaskTransports.set(ep.serviceEndpoint, tr);
+    const ic = new IngressClient(tr);
     try {
       const ack = await ic.openTask(built.input);
       return { ...base, ack: { accepted: ack.accepted, taskId: ack.taskId, reason: ack.reason } };
@@ -582,6 +600,7 @@ async function startStream(winnerWorker) {
   let resumedFromSeq = null;
   // From the terminating fin, which streamOutput requires to be Worker-signed by default.
   let finishReason;
+  let firstFrameAt;
 
   while (Date.now() < overallDeadline) {
     for (const ep of streamCandidates()) {
@@ -632,6 +651,7 @@ async function startStream(winnerWorker) {
             continue;
           }
           frames.push({ seq: f.seq.toString(), at_ms: Date.now() - t0, text: f.text });
+          if (frames.length === 1) firstFrameAt = Date.now();
           resumeAfterSeq = f.seq;
           if (breakArmed && frames.length >= STREAM_BREAK_AFTER) {
             breakArmed = false;
@@ -648,6 +668,7 @@ async function startStream(winnerWorker) {
           first_frame_ms: frames[0].at_ms,
           last_frame_ms: frames[frames.length - 1].at_ms,
           finished_ms: Date.now() - t0,
+          ttft_client_ms: firstFrameAt - openTaskStartedAt,
           attempts,
           // Non-null proves the "resubscribe with a non-empty checkpoint" path was
           // actually exercised: subsequent frames continue from the verified seq
@@ -679,6 +700,57 @@ async function startStream(winnerWorker) {
 }
 
 const chainReader = new RestChainReader({ baseUrl: REST, fetch: (u) => fetch(u) });
+
+/** --fast-stream: wait for the winner on the OpenTask connection, then subscribe on it. */
+async function startClientStream() {
+  const mode = 'fast';
+  const t0 = Date.now();
+  const ep = streamCandidates()[0];
+  const sc = new TrueOpenClient({
+    chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
+    signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM, chain: conn.client,
+    ingressTransport: openTaskTransports.get(ep.serviceEndpoint) ?? nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? ''),
+    hub, taskReader: chainReader,
+  });
+  const a = await sc.waitForOutputTrustAnchors(taskId, {
+    sessionId,
+    timeoutMs: OUTPUT_TIMEOUT_MS * 3,
+    ...(ANCHOR_POLL_MS !== undefined ? { pollIntervalMs: ANCHOR_POLL_MS } : {}),
+  });
+  const anchorsAt = Date.now();
+  const winner = a.winnerWorker;
+  const servicePubKey = a.workerServicePubKey;
+  log(`  ${mode} stream: chain names winner ${winner} at +${anchorsAt - t0}ms`);
+  const frames = [];
+  let finishReason;
+  let firstFrameAt;
+  const anchorParams = { taskHash: a.taskHash, workerServicePubKey: a.workerServicePubKey };
+  const onCheckpoint = (next) => { streamCheckpoint = next; };
+  for await (const f of sc.streamOutput({ sessionId, taskId, ...anchorParams, onCheckpoint, maxAttempts: 3, idleTimeoutMs: STREAM_IDLE_MS })) {
+    if (f.kind === 'fin') { finishReason = f.finishReason; continue; }
+    if (frames.length === 0) firstFrameAt = Date.now();
+    frames.push({ seq: f.seq.toString(), at_ms: Date.now() - t0, text: f.text });
+  }
+  if (frames.length === 0) throw new Error(`${mode} stream ended without frames`);
+  log(`Stream finished: ${ep.serviceEndpoint}, ${frames.length} frames, first frame +${frames[0].at_ms}ms (${mode}), elapsed ${Date.now() - t0}ms`);
+  return {
+    mode,
+    endpoint: ep.serviceEndpoint, builder_address: ep.address,
+    winner_worker: winner,
+    worker_service_pubkey: servicePubKey ? hex(servicePubKey) : null,
+    anchors_ms: anchorsAt - t0,
+    frame_count: frames.length,
+    first_frame_ms: frames[0].at_ms,
+    last_frame_ms: frames[frames.length - 1].at_ms,
+    finished_ms: Date.now() - t0,
+    ttft_client_ms: firstFrameAt - openTaskStartedAt,
+    attempts: [], resumed_from_seq: null,
+    finish_reason: finishReason === undefined ? null : finishReason,
+    per_frame_verified: true,
+    output_text: frames.map((f) => f.text).join(''),
+    frames,
+  };
+}
 const polls = [];
 let chainTask = null;
 // Values picked up incidentally during polling, to avoid two extra round trips after
@@ -690,6 +762,12 @@ let heightAtReceipt = null;
 let streamTask = null;
 let streamInfo = null;
 let streamCheckpoint = null;
+if (DO_SUBMIT && STREAM && FAST_STREAM) {
+  streamTask = startClientStream().then(
+    (r) => { streamInfo = r; },
+    (e) => { streamInfo = { mode: 'fast', error: String(e.message || e).slice(0, 300) }; },
+  );
+}
 
 if (DO_SUBMIT && POLL_TIMES > 0) {
   const ic = routed.endpoints.length > 0

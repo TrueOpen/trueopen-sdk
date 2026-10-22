@@ -101,7 +101,7 @@ builders, and returns the per-builder result.
 
 ```ts
 taskStatus(sessionId: string, taskId: string): Promise<TaskStatusView>
-watchTask(sessionId: string, taskId: string, fromCursor?: string): AsyncIterable<GetTaskEventsResponse>
+watchTask(sessionId: string, taskId: string, fromCursor?: string, opts?: { signal?: AbortSignal }): AsyncIterable<GetTaskEventsResponse>
 ```
 
 - `taskStatus` is a **local, informational** nexus snapshot. Never a correctness criterion.
@@ -109,6 +109,8 @@ watchTask(sessionId: string, taskId: string, fromCursor?: string): AsyncIterable
   `cursor`, `state`, `taskPhase`, `eventCode`, `chainHeight`, `taskId`. Use for UX feedback
   and reconnect recovery (pass `fromCursor` to resume); feeding a state-machine reducer is
   left to the caller. It carries **no** content-level commitment, unlike `streamOutput`.
+  Abort `opts.signal` to close the request when giving up on it: stopping reads alone does
+  not. It cancels only this stream, not the transport.
 
 ---
 
@@ -401,8 +403,32 @@ Derives, from chain queries, everything output is verified against: accepted `ta
 and `winner_worker`; the winner's current service key (must be `ACTIVE`); and (with
 `withReceipt`) the accepted `InferReceipt` → `output_hash` / size / leaf count. Requires
 `config.taskReader` and `hub.getCurrentServiceKey`. A missing winner or receipt is a
-retriable `OUTPUT_TRUST_ANCHOR_PENDING`. The anchors are only as trustworthy as the
+retriable `OUTPUT_TRUST_ANCHOR_PENDING`; a task that failed or settled without a winner (task
+phase `FAILED` / `SETTLED`, or the terminal arm once the task is compacted) is a final
+`OUTPUT_TRUST_ANCHOR_NO_WINNER`. The anchors are only as trustworthy as the
 endpoints the readers point at.
+
+```ts
+async waitForOutputTrustAnchors(taskId, opts?: WaitForOutputTrustAnchorsOptions): Promise<OutputTrustAnchors>
+```
+
+Waits until the chain names the winner, then returns the streaming anchors
+(`resolveOutputTrustAnchors(taskId, { withReceipt: false })`) to pass to `streamOutput` as
+`taskHash` / `workerServicePubKey`. Call it on the client that will stream, so the stream
+reuses its connection.
+
+| Option | Notes |
+|---|---|
+| `sessionId?` | Also watch this client's Builder event stream: the first `ASSIGNMENT_FINALIZED` triggers one immediate chain read (if a read is already in flight, one more follows it). The event is only a hint; without it, or if the event stream fails, the wait just polls. |
+| `pollIntervalMs?` | Chain read interval, default `DEFAULT_TRUST_ANCHOR_POLL_MS` (1000, about one block). |
+| `timeoutMs?` | Bound on the whole wait, default `DEFAULT_TRUST_ANCHOR_WAIT_MS` (60000); then `OUTPUT_TRUST_ANCHOR_TIMEOUT`. |
+| `signal?` | Abort the wait: `OUTPUT_TRUST_ANCHOR_WAIT_ABORTED`. |
+
+Reads stay serial (the task, then the winner's key). Only `OUTPUT_TRUST_ANCHOR_PENDING` is
+waited out; any other error (for example `OUTPUT_TRUST_ANCHOR_WORKER_KEY_INACTIVE` or
+`OUTPUT_TRUST_ANCHOR_NO_WINNER`) is thrown at once. The event stream is closed when the wait
+ends. `timeoutMs` and `signal` take effect between reads; a single chain read is bounded only
+by the reader's own limits.
 
 ### 8.3 Streaming
 
@@ -843,14 +869,19 @@ const taskId = result.taskId;                 // e.g. 111fa1f3... (derived task_
 ### 15.2 Streaming
 
 ```ts
-// streamOutput streams from a specific Builder, so build a per-Builder client. It derives
-// taskHash + workerServicePubKey from the chain (needs taskReader + hub). Frames are
-// verified against the Worker's signature and the MMR root as they arrive; the stream ends
-// with a Worker-signed fin.
+// streamOutput streams from a specific Builder, so build a per-Builder client. The anchors
+// (taskHash + workerServicePubKey, needs taskReader + hub) are chain facts, the same for every
+// Builder: wait for them once, on the first client, so the first stream reuses its connection.
+// If the wait fails (no winner, timeout), no Builder can stream. Frames are verified against
+// the Worker's signature and the MMR root as they arrive; the stream ends with a Worker-signed
+// fin.
+const clients = result.builders.filter((x) => x.ack?.accepted).map((b) => makeClient(b.serviceEndpoint, b.tlsPubkeyHash));
+if (clients.length === 0) throw new Error('no Builder accepted the order');
+const { taskHash, workerServicePubKey } = await clients[0].waitForOutputTrustAnchors(taskId, { sessionId: session.sessionId });
 let text = '';
-for (const b of result.builders.filter((x) => x.ack?.accepted)) {
+for (const bc of clients) {
   try {
-    for await (const event of makeClient(b.serviceEndpoint, b.tlsPubkeyHash).streamOutput({ sessionId: session.sessionId, taskId })) {
+    for await (const event of bc.streamOutput({ sessionId: session.sessionId, taskId, taskHash, workerServicePubKey })) {
       if (event.kind === 'chunk') {
         text += event.text;
         process.stdout.write(event.text);

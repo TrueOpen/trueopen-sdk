@@ -171,6 +171,7 @@ export class RestChainReader implements ChainReader {
       // winner fields are present together or absent together, so a pending
       // assignment never reports a default winner.
       winnerWorker: assignment === undefined ? '' : pendingField(assignment, 'winner_worker'),
+      ...optEnumField(core, 'task_phase', 'TASK_PHASE_', 'taskPhase'),
       receiptStatus: enumField(core, 'receipt_status', 'RECEIPT_STATUS_'),
       assignmentStatus: enumField(core, 'assignment_status', 'ASSIGNMENT_STATUS_'),
       // model_id is a Hash32 as of TaskOrderV3, so it goes through the same decoder
@@ -361,6 +362,17 @@ function u64Field(o: Record<string, unknown>, snakeKey: string): bigint {
 function enumField(o: Record<string, unknown>, snakeKey: string, prefix: string): string {
   const v = field(o, snakeKey);
   return v.startsWith(prefix) ? v.slice(prefix.length) : v;
+}
+
+/** Like enumField, but an absent field yields no property instead of a malformed error. */
+function optEnumField<K extends string>(
+  o: Record<string, unknown>,
+  snakeKey: string,
+  prefix: string,
+  as: K,
+): Partial<Record<K, string>> {
+  if (raw(o, snakeKey) === undefined) return {};
+  return { [as]: enumField(o, snakeKey, prefix) } as Partial<Record<K, string>>;
 }
 
 function malformed(what: string): TrueOpenError {

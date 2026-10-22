@@ -283,6 +283,13 @@ describe('RestChainReader', () => {
     expect((await readTask({ task: { terminal } })).modelId).toBe(MODEL_ID);
   });
 
+  it('queryTask maps the active arm task_phase, and leaves it undefined when absent', async () => {
+    const body = pendingTask(null);
+    (body.task.active.core as Record<string, unknown>)['task_phase'] = 'TASK_PHASE_FAILED';
+    expect((await readTask(body)).taskPhase).toBe('FAILED');
+    expect('taskPhase' in (await readTask(pendingTask(null)))).toBe(false);
+  });
+
   it('queryTask reports the active arm', async () => {
     expect((await readTask(pendingTask(null))).view).toBe('active');
   });

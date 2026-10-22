@@ -315,13 +315,21 @@ export type {
   OutputFrameAcceptance,
 } from './output/output-commitment';
 
-export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS, stripChatTemplateEos } from './client';
+export {
+  TrueOpenClient,
+  DEFAULT_MAX_RANGE_BYTES,
+  DEFAULT_TASK_DATA_EXPIRY_BLOCKS,
+  DEFAULT_TRUST_ANCHOR_POLL_MS,
+  DEFAULT_TRUST_ANCHOR_WAIT_MS,
+  stripChatTemplateEos,
+} from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,
   FacadeHubReader,
   OutputTaskReader,
   OutputTrustAnchors,
+  WaitForOutputTrustAnchorsOptions,
   OpenTaskBuilderResult,
   OpenTaskParams,
   OpenTaskResult,

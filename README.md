@@ -186,13 +186,17 @@ fetching the whole object after the receipt lands:
 
 ```ts
 // streamOutput streams from a specific Builder, so build a per-Builder client exactly like
-// the non-streaming path above. It derives the trust anchors from chain when `taskReader`
-// and `hub.getCurrentServiceKey` are configured (they are).
+// the non-streaming path above. The anchors are chain facts, the same for every Builder, so
+// wait for them once: waitForOutputTrustAnchors reads the chain about once a block, plus once
+// straight away on the first Builder's ASSIGNMENT_FINALIZED event. If the wait fails (no
+// winner, timeout), no Builder can stream. The first stream reuses the connection it waited on.
+const clients = res.builders.filter((x) => x.ack?.accepted).map((b) => makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)));
+if (clients.length === 0) throw new Error('no Builder accepted the order');
+const { taskHash, workerServicePubKey } = await clients[0].waitForOutputTrustAnchors(res.taskId, { sessionId });
 let text = '';
-ç
+for (const bc of clients) {
   try {
-    const bc = makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash));
-    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId })) {
+    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId, taskHash, workerServicePubKey })) {
       if (event.kind === 'chunk') {
         text += event.text;                   // per-frame Worker signature + MMR root verified
       } else {
@@ -245,9 +249,10 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 | `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
 | `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
+| `waitForOutputTrustAnchors(taskId, { sessionId?, pollIntervalMs?, timeoutMs?, signal? })` | waits until the chain names the winner and returns the streaming anchors: polls the chain (default every 1000 ms, at most 60 s) and, with `sessionId`, reads once more straight away on the Builder's `ASSIGNMENT_FINALIZED` event; a task that failed or settled without a winner ends the wait with `OUTPUT_TRUST_ANCHOR_NO_WINNER` |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
-| `watchTask(sessionId, taskId, fromCursor?)` | subscribes to the task event stream (`AsyncIterable`) |
+| `watchTask(sessionId, taskId, fromCursor?, { signal? })` | subscribes to the task event stream (`AsyncIterable`); abort `signal` to close it |
 | `fetchTaskOutput({ sessionId, taskId, builderAddress, taskHash?, outputHash?, expiresAtHeight? })` | fetches the full output in ranges and recomputes the MMR root from `chunk_lengths` to verify it against the on-chain receipt (see section 4) |
 | `streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
 | `confirmOutput({ taskId, taskHash, checkpoint, receipt })` | uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |

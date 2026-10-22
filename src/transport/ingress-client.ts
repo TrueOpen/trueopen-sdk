@@ -260,6 +260,8 @@ export class IngressClient {
     sessionId: string;
     taskId: string;
     fromCursor?: string;
+    /** Abort signal; as with subscribeOutput, abort to tear down the request when giving up on it. */
+    signal?: AbortSignal;
   }): AsyncIterable<GetTaskEventsResponse> {
     const cursor = p.fromCursor ?? '';
     const bd = getTaskEventsBodyDigest(p.sessionId, p.taskId, cursor);
@@ -271,6 +273,7 @@ export class IngressClient {
           fromCursor: cursor,
           requestEnvelope: envelopeMessage(env),
         }),
+        p.signal !== undefined ? { signal: p.signal } : undefined,
       ),
     );
   }

@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### Added: registered session keys sign orders (ADR-0037, wire PR #47, untagged)
+
+A session can have one registered key (a 20-byte eth-style address on chain). That key, not the
+wallet, then signs the session's OpenTask orders and the session-allowed requests, so a browser
+wallet prompts once per registration instead of once per order. **Enable it only once the chain
+and the Task Builders support it**: a chain whose `max_session_key_blocks` is absent, 0 or below 2
+is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
+
+- **Added:** `createSession(label | { label?, sessionKey?: { expiryBlocks?, spendCap? } })`.
+  With `sessionKey` the SDK generates the key from a CSPRNG, registers it in the same
+  `MsgCreateSession`, loads it, and returns it once in `SessionHandle.sessionKey`
+  (`{ address, privateKey, expiryHeight, spendCap }`). `expiryBlocks` is an integer in
+  `[2, max_session_key_blocks]` (default `max_session_key_blocks - 2`, at least 2; one block never
+  lands). `spendCap` defaults to `"0"`, which is unlimited: a leaked key can then authorize orders
+  up to the whole account balance.
+- **Added:** `updateSessionKey(sessionId, { renew } | { rotate } | { clear: true })`, returning
+  `{ response, newKey? }`. All three are `MsgUpdateSessionKey`, signed by the wallet; the session
+  key never signs a transaction. `renew` keeps the loaded key (it must still be the chain's key);
+  `rotate` generates a fresh key, loads it and returns it as `newKey`; `clear` removes the
+  registration and the loaded key. `renew` and `rotate` default the cap to the chain's current
+  one. `spent` is never reset.
+- **Added:** `useSessionKey(sessionId, privateKey)`, `forgetSessionKey(sessionId)` and
+  `sessionKeyState(sessionId)` (`registered`, `matchesLoadedKey`, `expiryHeight`, `spendCap`,
+  `spent`, `setHeight`, `status`). Also exported: `generateSessionKey`, `sessionKeyFromPrivateKey`,
+  `registeredSessionKey`, `RegisteredSessionKeys`, `sessionKeyAddressHex`,
+  `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS` and the `SessionKeyOptions` / `SessionKeyUpdate` /
+  `UpdateSessionKeyResult` / `SessionKeyState` / `SessionKeyHandle` types.
+- **Key custody:** the SDK generates the key and never derives it from a signature. It keeps keys in
+  memory only and never logs them. **The caller persists `privateKey`** and reloads it with
+  `useSessionKey` after a restart; it cannot be recovered.
+- **Added:** `openTask` prechecks, before anything is signed, what the chain checks at admission:
+  the session is not CLOSED, the registered key is the loaded one, the latest height is at or
+  before the key's expiry, the session anchor is at or after the key's `set_height`, and (with a
+  nonzero cap) `spent + max_fee <= cap`. A failed check never falls back to the wallet: renew or
+  raise the cap, load the current key, or call `forgetSessionKey` to sign with the wallet. Right
+  after a registration the anchor can still be below `set_height`, so `openTask` waits up to
+  `sessionKeyAnchorWaitMs` (default 15 s; `sessionKeyAnchorPollMs`, default 1 s; 0 disables) for a
+  fresh anchor; a caller-supplied `context` is used as is and refused if too old.
+- **Added:** `StreamStateView` gains `sessionKey?`, `sessionKeyExpiryHeight`, `sessionKeySpendCap`,
+  `sessionKeySpent` and `sessionKeySetHeight`; `HubReader.getMaxSessionKeyBlocks()` reads
+  `params.session.max_session_key_blocks`.
+- **Added:** error codes `SDK_LOCAL_SESSION_KEY_INVALID`, `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`,
+  `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED`, `SDK_LOCAL_SESSION_KEY_EXPIRED`,
+  `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED`, `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT`
+  (retriable when the SDK resolved the context) and `SDK_LOCAL_SESSION_CLOSED`, plus the nexus code
+  `SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED` (category `auth`). The chain's
+  `ERR_SESSION_KEY_INVALID`, `ERR_SESSION_KEY_EXPIRED` and `ERR_SESSION_KEY_SPEND_CAP_EXCEEDED`
+  appear in a Builder's tx result or a tx log.
+- **Unchanged:** the order domain, EIP-712 types and digest. Only the recovered signer differs. A
+  registered-key request carries `signer_address` = the owner, no `session_grant` and an all-zero
+  `sessionGrantHash`, and is allowed only for the session-allowed requests (OUTPUT task data
+  included). A `SessionGrant` key (the opt-in `session` config) still cannot sign orders. Requests
+  never consume the cap; only admitted orders do.
+- **Recovery:** there is no automatic resubmission on `ASSIGN_REJECTED`. Check `sessionKeyState`,
+  fix the cause (renew, raise the cap, load the current key), then re-sign the same sequence by
+  passing `orderSequence` to `openTask`.
+- Pinned to wire PR #47 @ `88d1238` (untagged, on top of `41af15b`); re-pin to the release tag once
+  it ships.
+
 ### Lower time to first token
 
 - **Added:** early subscribe. `streamOutput({ waitForAnchors })` (or `pendingAnchors`, a promise
@@ -78,7 +137,7 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   stay raw 32 bytes. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. Bech32 and EVM
   addresses, signatures, the 33-byte service key, nonces and the beacon `randomness_hex` keep
   their spelling. No digest changes.
-- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); re-pin to the v0.5.0 tag once it ships.
+- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `88d1238` pin (see the registered session keys entry above).
 
 ### Breaking: session-signed OpenTask
 

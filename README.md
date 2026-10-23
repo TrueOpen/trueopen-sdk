@@ -513,6 +513,37 @@ more when a Builder reports it expired (`SDK_AUTH_SESSION_GRANT_EXPIRED` /
 a signature. Without `session`, the default, every request is signed by the wallet directly,
 which is what the CLI and raw-key clients do.
 
+**Registered session keys (ADR-0037, opt-in).** A different mechanism from the grant above: the
+chain itself stores one key per session, and that key signs the session's **orders** too, so a
+browser wallet prompts once per registration, not once per order. A `SessionGrant` key cannot sign
+orders; a registered key can, and its requests carry no grant.
+
+```ts
+const s = await client.createSession({ label: 'chat', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n } });
+saveSecurely(s.sessionId, s.sessionKey!.privateKey);     // you persist it; the SDK never will
+await client.openTask({ sessionId: s.sessionId, /* ... */ });   // signed by the key, not the wallet
+// after a restart:
+await client.useSessionKey(sessionId, loadSecurely(sessionId));
+// renew / rotate / clear are wallet-signed MsgUpdateSessionKey transactions:
+const { newKey } = await client.updateSessionKey(sessionId, { rotate: { expiryBlocks: 100 } });
+```
+
+- **Custody.** The SDK generates the key from a CSPRNG, never derives it from a signature, keeps it
+  in memory only and never logs it. Persist `privateKey` yourself; it cannot be recovered. The key
+  never signs a transaction: every registration change is signed by the wallet.
+- **Zero cap is unlimited.** `spendCap` defaults to `"0"`: a leaked key can then authorize orders
+  up to the whole account balance. Set a cap where that matters. The cap counts the cumulative
+  `max_fee` of admitted orders and is never reset.
+- **No silent wallet fallback.** Before signing, `openTask` checks what the chain will check: not
+  CLOSED, the registered key is the loaded one, not expired, the session anchor is at or after the
+  key's registration height (it waits up to `sessionKeyAnchorWaitMs` for that), and
+  `spent + max_fee <= cap`. A failed check throws an `SDK_LOCAL_SESSION_*` error. Use
+  `sessionKeyState(sessionId)` to see why; `forgetSessionKey` returns the session to wallet signing.
+- **`ASSIGN_REJECTED`.** Nothing is resubmitted automatically. Check `sessionKeyState`, fix the
+  cause, then re-sign the same sequence by passing `orderSequence` to `openTask`.
+- **Rollout.** Enable it only after the chain (`max_session_key_blocks` of at least 2) and the Task
+  Builders support it; otherwise registration is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
+
 A client built by hand for another Builder should share the signing context:
 `new IngressClient(transport, client.ingressAuth())`.
 
@@ -716,8 +747,8 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to `main` (`41af15b`, pre-v0.5.0), carrying the
-signer-chosen `signature_chain_id` and the `0x`-prefixed Hash32 text form (wire #44). **This repo no longer keeps
+pinned as a submodule at `third_party/wire` to wire PR #47 (`88d1238`, untagged), carrying the
+signer-chosen `signature_chain_id`, the `0x`-prefixed Hash32 text form (wire #44) and registered session keys (ADR-0037). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -731,8 +762,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (`main` @ `41af15b`) |
-| `task.v1` / `shared.v1` | `third_party/wire` (`main` @ `41af15b`) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (wire PR #47 @ `88d1238`, untagged) |
+| `task.v1` / `shared.v1` | `third_party/wire` (wire PR #47 @ `88d1238`, untagged) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

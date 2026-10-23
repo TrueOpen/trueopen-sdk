@@ -13,7 +13,12 @@ import type {
   SubscribeOutputResponse,
 } from './gen/nexus/v1/ingress_pb.js';
 import { SessionManager } from './session/session-manager';
-import type { SessionHandle } from './session/session-manager';
+import type { SessionHandle, SessionKeyHandle } from './session/session-manager';
+import { generateSessionKey, registeredSessionKey, RegisteredSessionKeys, sessionKeyAddressHex } from './session/registered-session-key';
+import type { RegisteredSessionKey, SessionKeyMaterial } from './session/registered-session-key';
+import type { MsgUpdateSessionKeyResponse } from './transport/task-msgs';
+import type { StreamStateView } from './types/node';
+import { canonicalAccountAddressBytes } from './codec/address';
 import { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 import type { TaskBuilderReader } from './hub/stage1-routing';
 import { fanOutToEndpoints } from './transport/fan-out-submit';
@@ -56,7 +61,9 @@ export interface TrueOpenClientConfig {
   /**
    * The user's wallet (see TypedDataSigner): signs the order, the OpenTask request envelope,
    * and every other request to Builder Ingress, all as EIP-712 typed data (65-byte R||S||V).
-   * Each signature is recovered and checked against userAddress before it is sent.
+   * Each signature is recovered and checked against userAddress before it is sent. A session
+   * with a registered session key loaded (createSession / useSessionKey) is the exception: that
+   * key signs its orders and session-allowed requests instead.
    *
    * privateKeyTypedDataSigner (CLI, servers), eip1193TypedDataSigner (browser wallets) or
    * keplrTypedDataSigner (Keplr).
@@ -100,9 +107,12 @@ export interface TrueOpenClientConfig {
    * in-memory session key, and that key signs SubscribeOutput, AckOutput, GetTaskEvents,
    * PrepareChallenge and the OUTPUT GetTaskDataMetadata / FetchTaskData requests, so a browser
    * wallet prompts once per grant instead of once per request. The session key also signs the
-   * OpenTask request envelope (wire PR #43); the order itself is always signed by the wallet, so
-   * each order costs one wallet prompt. The grant is renewed before it expires (and once more if a
-   * Builder reports it expired). The key is never persisted.
+   * OpenTask request envelope (wire PR #43); a granted key cannot sign the order itself, so with
+   * a grant alone each order costs one wallet prompt. A session with a registered session key
+   * loaded (ADR-0037, createSession({ sessionKey }) / useSessionKey) needs no grant and no wallet
+   * prompt: its key signs both the order and those requests, and takes precedence over the grant
+   * for that session. The grant is renewed before it expires (and once more if a Builder reports
+   * it expired). The key is never persisted.
    *
    * `maxGrantBlocks` must be the Builders' max_session_grant_blocks (off-chain configuration,
    * the same on every Task Builder); see SessionKeyManagerOptions for the other two. Needs
@@ -288,6 +298,55 @@ export interface OpenTaskResult extends OpenTaskAck {
   readonly builders: readonly OpenTaskBuilderResult[];
   /** Selected Builders whose nexus endpoint could not be resolved from chain; the order was not sent to them. */
   readonly unresolvedBuilders: readonly { readonly address: string; readonly error: unknown }[];
+}
+
+/** Expiry and cap of a registered session key grant (ADR-0037). */
+export interface SessionKeyOptions {
+  /**
+   * Blocks from the latest height until the key expires: an integer in
+   * [1, max_session_key_blocks]. Defaults to max_session_key_blocks - 2 (at least 1).
+   */
+  readonly expiryBlocks?: number;
+  /**
+   * Cap on the cumulative max_fee of the orders the key authorizes, in atomic units. "0" (or 0n)
+   * is unlimited: a leaked key can then authorize orders up to the whole account balance.
+   */
+  readonly spendCap?: bigint | string;
+}
+
+export interface CreateSessionOptions {
+  readonly label?: string;
+  /** Registers a freshly generated session key in the same MsgCreateSession. */
+  readonly sessionKey?: SessionKeyOptions;
+}
+
+/** See TrueOpenClient.updateSessionKey. */
+export type SessionKeyUpdate =
+  | { readonly renew: SessionKeyOptions }
+  | { readonly rotate: SessionKeyOptions }
+  | { readonly clear: true };
+
+export interface UpdateSessionKeyResult {
+  /** The chain's session-key state after the update. */
+  readonly response: MsgUpdateSessionKeyResponse;
+  /** For `rotate`: the new key, already loaded. The caller persists its privateKey. */
+  readonly newKey?: SessionKeyHandle;
+}
+
+/** A session's registered-key state as the chain reports it (QuerySession). */
+export interface SessionKeyState {
+  /** The chain has a key registered for the session. */
+  readonly registered: boolean;
+  /** A key is loaded on this client for the session and it is the registered one. */
+  readonly matchesLoadedKey: boolean;
+  readonly expiryHeight: bigint;
+  /** Canonical decimal atomic units; "0" is unlimited (or no key). */
+  readonly spendCap: string;
+  /** Cumulative max_fee of the orders admitted under a key; never reset. */
+  readonly spent: string;
+  /** Height of the key's registration; orders need a session anchor at or after it. */
+  readonly setHeight: bigint;
+  readonly status: StreamStateView['status'];
 }
 
 /** A Builder/Nexus data source that can be subscribed to for the same task's OUTPUT. */
@@ -484,6 +543,9 @@ export class TrueOpenClient {
   /** Order contexts with session-anchor reuse; undefined without a hub or with orderContextReuse: false. */
   private readonly contextCache: TaskOrderContextCache | undefined;
 
+  /** Registered session keys loaded on this client, by session (memory only). */
+  private readonly registeredKeys = new RegisteredSessionKeys();
+
   constructor(cfg: TrueOpenClientConfig) {
     // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
     // address; anything else must already be canonical with the account prefix.
@@ -513,7 +575,7 @@ export class TrueOpenClient {
   /**
    * The signing context for Builder Ingress requests. A client built by the caller for another
    * Builder (for example an OutputStreamSource) should use this, so that it shares the wallet,
-   * the nonce source and the session grant.
+   * the nonce source, the session grant and the registered session keys.
    */
   ingressAuth(): IngressAuth {
     return {
@@ -524,6 +586,7 @@ export class TrueOpenClient {
       nonce: () => this.nextNonce(),
       expiry: () => this.nextExpiry(),
       ...(this.sessionGrants !== undefined ? { session: this.sessionGrants } : {}),
+      registeredKeys: this.registeredKeys,
     };
   }
 
@@ -540,8 +603,166 @@ export class TrueOpenClient {
     return signatureChainIdBigInt(this.cfg.signatureChainId ?? DEFAULT_SIGNATURE_CHAIN_ID);
   }
 
-  createSession(label?: string): Promise<SessionHandle> {
-    return this.sessionManager.create(label);
+  /**
+   * Creates a session (MsgCreateSession, signed by the wallet). A string is the local label.
+   *
+   * With `sessionKey` (ADR-0037), the SDK generates a fresh key from a CSPRNG and registers its
+   * address in the same transaction, then loads it: from then on that key, not the wallet, signs
+   * this session's orders and session-allowed requests. The returned handle carries the key
+   * material once. **The caller persists `sessionKey.privateKey`** and reloads it after a restart
+   * with useSessionKey; the SDK never derives it from a signature, never logs it and keeps it in
+   * memory only. `spendCap` defaults to "0", which is unlimited: a leaked key can then authorize
+   * orders up to the whole account balance, so set a cap where that matters.
+   *
+   * `expiryBlocks` (default `max_session_key_blocks - 2`, at least 1) must be an integer in
+   * [1, max_session_key_blocks]; the key expires at the latest height plus that. Needs a hub
+   * reader with getMaxSessionKeyBlocks; a chain without session keys (absent or 0) is refused
+   * with SDK_LOCAL_SESSION_KEY_UNSUPPORTED.
+   *
+   * A key registered at height H authorizes only orders whose session anchor is at or after H;
+   * openTask resolves a fresh anchor when its reused one is older, so the first order right
+   * after registration may need to wait a block or two for one (retriable
+   * SDK_LOCAL_SESSION_KEY_NOT_REGISTERED).
+   */
+  async createSession(opts?: string | CreateSessionOptions): Promise<SessionHandle> {
+    const o: CreateSessionOptions = typeof opts === 'string' ? { label: opts } : opts ?? {};
+    if (o.sessionKey === undefined) return this.sessionManager.create(o.label);
+    const { expiryHeight, spendCap } = await this.sessionKeyTerms(o.sessionKey, async () => '0');
+    const key = this.freshSessionKey();
+    const handle = await this.sessionManager.create(o.label, { sessionKey: key.address, expiryHeight, spendCap });
+    this.registeredKeys.set(registeredSessionKey(handle.sessionId, key.privateKey));
+    return { ...handle, sessionKey: keyHandle(key, expiryHeight, spendCap) };
+  }
+
+  /**
+   * Renews, rotates or clears a session's registered key with MsgUpdateSessionKey. The wallet
+   * signs it as a Cosmos transaction; a session key never signs a transaction.
+   *
+   *  - `renew` keeps the loaded key (one must be loaded for the session, else
+   *    SDK_LOCAL_SESSION_KEY_NOT_REGISTERED) with a new expiry and cap; `spendCap` defaults to the
+   *    chain's current cap.
+   *  - `rotate` generates a fresh key (never the old one) and, once the chain applied it,
+   *    replaces the loaded key; `newKey` is its material, which the caller persists (see
+   *    createSession). Orders the old key signed that are not admitted yet will be rejected.
+   *    `spendCap` defaults to the chain's current cap, so a rotation never lifts a cap silently.
+   *  - `clear` removes the registration and, after success, the loaded key: the wallet signs
+   *    this session's orders again.
+   *
+   * `spent` is never reset. `expiryBlocks` is validated as in createSession.
+   */
+  async updateSessionKey(sessionId: string, update: SessionKeyUpdate): Promise<UpdateSessionKeyResult> {
+    const sid = sessionIdText(sessionId);
+    if ('clear' in update) {
+      const response = await this.cfg.chain.updateSessionKey({ sessionId: sid, action: { clear: true } });
+      this.registeredKeys.delete(sid);
+      return { response };
+    }
+    if ('renew' in update) {
+      const loaded = this.registeredKeys.get(sid);
+      if (loaded === undefined) {
+        throw local('SDK_LOCAL_SESSION_KEY_NOT_REGISTERED', `no session key is loaded for session ${sid}: rotate, or load it with useSessionKey`);
+      }
+      const { expiryHeight, spendCap } = await this.sessionKeyTerms(update.renew, async () =>
+        (await this.cfg.chain.querySession(sid)).sessionKeySpendCap,
+      );
+      const response = await this.cfg.chain.updateSessionKey({
+        sessionId: sid,
+        action: { set: { sessionKey: loaded.address, expiryHeight, spendCap } },
+      });
+      return { response };
+    }
+    const { expiryHeight, spendCap } = await this.sessionKeyTerms(update.rotate, async () =>
+      (await this.cfg.chain.querySession(sid)).sessionKeySpendCap,
+    );
+    const old = this.registeredKeys.get(sid);
+    const key = this.freshSessionKey(old?.address);
+    const response = await this.cfg.chain.updateSessionKey({
+      sessionId: sid,
+      action: { set: { sessionKey: key.address, expiryHeight, spendCap } },
+    });
+    this.registeredKeys.set(registeredSessionKey(sid, key.privateKey));
+    return { response, newKey: keyHandle(key, expiryHeight, spendCap) };
+  }
+
+  /**
+   * Loads a persisted registered key for a session (after a restart, or on another device). The
+   * chain must have exactly this key registered for the session, and the session must not be
+   * CLOSED; otherwise SDK_LOCAL_SESSION_KEY_NOT_REGISTERED / SDK_LOCAL_SESSION_CLOSED and nothing
+   * is loaded.
+   */
+  async useSessionKey(sessionId: string, privateKey: Uint8Array): Promise<void> {
+    const key = registeredSessionKey(sessionIdText(sessionId), privateKey);
+    const s = await this.cfg.chain.querySession(key.sessionId);
+    if (s.status === 'CLOSED') throw local('SDK_LOCAL_SESSION_CLOSED', `session ${key.sessionId} is CLOSED`);
+    if (s.sessionKey === undefined || !bytesEqual(s.sessionKey, key.address)) {
+      throw local(
+        'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
+        `key ${sessionKeyAddressHex(key.address)} is not the registered session key of session ${key.sessionId}` +
+          (s.sessionKey === undefined ? ' (it has none)' : ` (it has ${sessionKeyAddressHex(s.sessionKey)})`),
+      );
+    }
+    this.registeredKeys.set(key);
+  }
+
+  /** Unloads a session's registered key; the wallet signs that session's orders again. The registration on chain is unchanged. */
+  forgetSessionKey(sessionId: string): void {
+    this.registeredKeys.delete(sessionId);
+  }
+
+  /** The chain's session-key state for a session (QuerySession), and whether the loaded key is the registered one. */
+  async sessionKeyState(sessionId: string): Promise<SessionKeyState> {
+    const s = await this.cfg.chain.querySession(sessionIdText(sessionId));
+    const loaded = this.registeredKeys.get(s.sessionId);
+    return {
+      registered: s.sessionKey !== undefined,
+      matchesLoadedKey: loaded !== undefined && s.sessionKey !== undefined && bytesEqual(s.sessionKey, loaded.address),
+      expiryHeight: s.sessionKeyExpiryHeight,
+      spendCap: s.sessionKeySpendCap,
+      spent: s.sessionKeySpent,
+      setHeight: s.sessionKeySetHeight,
+      status: s.status,
+    };
+  }
+
+  /**
+   * The expiry height and spend cap of a key grant: checks the chain supports session keys and
+   * that `expiryBlocks` fits `current < expiry <= current + max_session_key_blocks`.
+   */
+  private async sessionKeyTerms(
+    o: SessionKeyOptions,
+    defaultCap: () => Promise<string>,
+  ): Promise<{ expiryHeight: bigint; spendCap: string }> {
+    const hub = this.cfg.hub;
+    if (hub?.getMaxSessionKeyBlocks === undefined) {
+      throw local(
+        'SDK_LOCAL_SESSION_KEY_UNSUPPORTED',
+        'registering a session key needs a hub reader with getMaxSessionKeyBlocks (HubReader)',
+      );
+    }
+    const spendCap = o.spendCap !== undefined ? canonicalSpendCap(o.spendCap) : undefined;
+    const [max, latest, cap] = await Promise.all([
+      hub.getMaxSessionKeyBlocks(),
+      hub.getLatestHeight(),
+      spendCap !== undefined ? Promise.resolve(spendCap) : defaultCap(),
+    ]);
+    if (max <= 0n) {
+      throw local('SDK_LOCAL_SESSION_KEY_UNSUPPORTED', 'the chain does not support session keys (max_session_key_blocks is 0)');
+    }
+    const blocks = o.expiryBlocks ?? Number(max > 3n ? max - 2n : 1n);
+    if (!Number.isSafeInteger(blocks) || blocks < 1 || BigInt(blocks) > max) {
+      throw local('SDK_LOCAL_SESSION_KEY_INVALID', `expiryBlocks must be an integer in [1, ${max}], got ${String(blocks)}`);
+    }
+    return { expiryHeight: latest + BigInt(blocks), spendCap: cap };
+  }
+
+  /** A new CSPRNG key: never the owner's address, nor `previous` (the key being rotated out). */
+  private freshSessionKey(previous?: Uint8Array): SessionKeyMaterial {
+    const key = generateSessionKey();
+    const owner = canonicalAccountAddressBytes('owner', this.cfg.userAddress);
+    if (bytesEqual(key.address, owner) || (previous !== undefined && bytesEqual(key.address, previous))) {
+      throw local('SDK_LOCAL_SESSION_KEY_INVALID', 'the generated session key collides with the owner or the previous key');
+    }
+    return key;
   }
 
   getSession(sessionId: string): Promise<SessionHandle> {
@@ -560,6 +781,17 @@ export class TrueOpenClient {
    * So is the request envelope, unless config.session is set, in which case the session key signs
    * it under a grant for the same user.
    *
+   * When a registered session key is loaded for `params.sessionId` (createSession / useSessionKey),
+   * that key signs both instead, and the session is read first (sharing the read that yields the
+   * order sequence) to check, before anything is signed, what the chain will check at admission:
+   * the session is not CLOSED (SDK_LOCAL_SESSION_CLOSED); its registered key is still the loaded
+   * one (SDK_LOCAL_SESSION_KEY_NOT_REGISTERED); the latest height is at or before the key's expiry
+   * (SDK_LOCAL_SESSION_KEY_EXPIRED); the session anchor is at or after the key's registration
+   * height (a reused anchor that is older is replaced by a fresh one once); and, with a nonzero
+   * cap, spent + max_fee <= cap (SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED). A failed check never
+   * falls back to the wallet: renew or raise the cap with updateSessionKey, load the current key,
+   * or forgetSessionKey to sign with the wallet.
+   *
    * Hard rule unchanged: an ingress ack is only local acceptance; the on-chain query/event is the
    * source of truth for final state.
    */
@@ -576,12 +808,41 @@ export class TrueOpenClient {
     // These reads are independent, so they run concurrently. The fee denom and the pricing go
     // into the signature or decide whether the chain accepts the order, and a mistake in
     // either only surfaces after nexus accepted the order: the task just vanishes.
-    const [feeDenom, pricing, orderSequence, resolved] = await Promise.all([
+    // With a registered key loaded, one session read serves both the key prechecks and the
+    // order sequence.
+    const registered = this.registeredKeys.get(params.sessionId);
+    const sessionRead = registered !== undefined ? this.cfg.chain.querySession(params.sessionId) : undefined;
+    const [feeDenom, pricing, orderSequence, firstResolved, stream] = await Promise.all([
       this.resolveFeeDenom(),
       params.pricing !== undefined ? Promise.resolve(params.pricing) : this.readProfilePricing(params.order),
-      params.orderSequence !== undefined ? Promise.resolve(params.orderSequence) : this.nextOrderSequence(params.sessionId),
+      params.orderSequence !== undefined
+        ? Promise.resolve(params.orderSequence)
+        : sessionRead !== undefined
+          ? sessionRead.then((s) => s.nextExpectedSequence)
+          : this.nextOrderSequence(params.sessionId),
       params.context !== undefined ? Promise.resolve({ context: params.context }) : this.resolveOrderContext(),
+      sessionRead,
     ]);
+    let resolved: ResolvedTaskOrderContext | { context: TaskOrderChainContext } = firstResolved;
+    if (registered !== undefined && stream !== undefined) {
+      const anchorOk = checkSessionKeyAdmission(registered, stream, resolved.context);
+      if (!anchorOk) {
+        // The anchor predates the key's registration (it was set or rotated after the anchor was
+        // taken). A reused anchor is replaced by a fresh one, once; a caller's context is used as is.
+        if (params.context === undefined && this.contextCache !== undefined) {
+          this.contextCache.invalidate();
+          resolved = await this.resolveOrderContext();
+        }
+        if (!checkSessionKeyAdmission(registered, stream, resolved.context)) {
+          throw local(
+            'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
+            `the session key was registered at height ${stream.sessionKeySetHeight}, after the order's session anchor ` +
+              `${resolved.context.sessionAnchorHeight}: retry once a later anchor is available`,
+            { retriable: true },
+          );
+        }
+      }
+    }
     const ctx = resolved.context;
     const order = buildTaskOrder(
       ctx,
@@ -593,6 +854,7 @@ export class TrueOpenClient {
       },
       pricing,
     );
+    if (registered !== undefined && stream !== undefined) checkSessionKeySpendCap(stream, order.maxFee.atomicUnits);
     const taskId = deriveTaskId(params.sessionId, orderSequence);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     const expiryHeight = params.expiryHeight ?? ctx.latestHeight + BigInt(this.cfg.requestTtlBlocks ?? 10);
@@ -622,7 +884,13 @@ export class TrueOpenClient {
       requestNonce: this.nextNonce(),
       idempotencyKey: params.idempotencyKey,
       wallet: this.cfg.wallet,
-      ...(this.sessionGrants !== undefined ? { session: await this.sessionGrants.current() } : {}),
+      // A registered key signs the order and the envelope, never falling back to the wallet; a
+      // grant is not used alongside it.
+      ...(registered !== undefined
+        ? { registeredKey: registered }
+        : this.sessionGrants !== undefined
+          ? { session: await this.sessionGrants.current() }
+          : {}),
       orderEip712: { signatureChainId, feeDenom },
       chainId: this.cfg.chainId,
       ...(params.inputMediaType !== undefined ? { inputMediaType: params.inputMediaType } : {}),
@@ -1779,4 +2047,71 @@ async function rereadNexusEndpoint(
   } catch {
     return undefined;
   }
+}
+
+function local(code: string, message: string, opts?: { readonly retriable?: boolean }): TrueOpenError {
+  return new TrueOpenError('SDK_LOCAL', code, message, opts);
+}
+
+const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
+
+/** A spend cap as the canonical unsigned decimal the grant carries ("0" = unlimited). */
+function canonicalSpendCap(cap: bigint | string): string {
+  if (typeof cap === 'bigint') {
+    if (cap < 0n) throw local('SDK_LOCAL_SESSION_KEY_INVALID', `spendCap must not be negative, got ${cap}`);
+    return cap.toString();
+  }
+  if (typeof cap !== 'string' || !CANONICAL_DECIMAL.test(cap)) {
+    throw local('SDK_LOCAL_SESSION_KEY_INVALID', `spendCap must be a canonical decimal (0 or [1-9][0-9]*), got ${JSON.stringify(cap)}`);
+  }
+  return cap;
+}
+
+function keyHandle(key: SessionKeyMaterial, expiryHeight: bigint, spendCap: string): SessionKeyHandle {
+  return { address: sessionKeyAddressHex(key.address), privateKey: key.privateKey, expiryHeight, spendCap };
+}
+
+/**
+ * The admission checks of a registered-key order the SDK can make before signing, in the
+ * chain's order (SESSION_KEYS_V1 "First order admission"), except the spend cap, which needs the
+ * built order (checkSessionKeySpendCap). Throws for a CLOSED session, a key that is no longer the
+ * registered one and an expired key; returns false when only the anchor predates the key's
+ * registration, so the caller can try a fresh anchor. `ctx.latestHeight` stands in for the
+ * admission height.
+ */
+function checkSessionKeyAdmission(key: RegisteredSessionKey, s: StreamStateView, ctx: TaskOrderChainContext): boolean {
+  if (s.status === 'CLOSED') throw local('SDK_LOCAL_SESSION_CLOSED', `session ${key.sessionId} is CLOSED`);
+  if (s.sessionKey === undefined || !bytesEqual(s.sessionKey, key.address)) {
+    throw local(
+      'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
+      `the loaded session key ${sessionKeyAddressHex(key.address)} is no longer registered for session ${key.sessionId}: ` +
+        'it was rotated or cleared. Use the wallet (forgetSessionKey) or load the current key (useSessionKey)',
+    );
+  }
+  if (ctx.latestHeight > s.sessionKeyExpiryHeight) {
+    throw local(
+      'SDK_LOCAL_SESSION_KEY_EXPIRED',
+      `the session key expired at height ${s.sessionKeyExpiryHeight} (latest ${ctx.latestHeight}): renew it via updateSessionKey`,
+    );
+  }
+  return ctx.sessionAnchorHeight >= s.sessionKeySetHeight;
+}
+
+/** With a nonzero cap, spent + max_fee must not exceed it; a zero cap is unlimited. */
+function checkSessionKeySpendCap(s: StreamStateView, maxFee: string): void {
+  const cap = BigInt(s.sessionKeySpendCap);
+  if (cap === 0n) return;
+  const spent = BigInt(s.sessionKeySpent);
+  if (spent + BigInt(maxFee) > cap) {
+    throw local(
+      'SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED',
+      `spent ${spent} + max_fee ${maxFee} exceeds the session key's spend cap ${cap}: raise it via updateSessionKey`,
+    );
+  }
+}
+
+/** A session ID as given, after checking it is Hash32 text (`0x` + 64 lowercase hex). */
+function sessionIdText(sessionId: string): string {
+  strictHash32('session_id', sessionId);
+  return sessionId;
 }

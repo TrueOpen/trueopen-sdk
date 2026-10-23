@@ -41,6 +41,8 @@ describe('classifyNexusError', () => {
       [new ConnectError('SDK_AUTH_SESSION_GRANT_INVALID: user signature', Code.Unauthenticated), 'SDK_AUTH_SESSION_GRANT_INVALID', 'auth', false, false],
       [new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: window', Code.Unauthenticated), 'SDK_AUTH_SESSION_GRANT_EXPIRED', 'expired', true, false],
       [new ConnectError('SDK_AUTH_SESSION_METHOD_NOT_ALLOWED: OpenTask', Code.PermissionDenied), 'SDK_AUTH_SESSION_METHOD_NOT_ALLOWED', 'auth', false, false],
+      // A registered session key's order past its nonzero spend_cap (ADR-0037).
+      [new ConnectError('SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED: spent + max_fee > cap', Code.PermissionDenied), 'SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED', 'auth', false, false],
       [new ConnectError('DATA_ACCESS_INVALID_SIGNATURE: recovered', Code.Unauthenticated), 'DATA_ACCESS_INVALID_SIGNATURE', 'auth', false, false],
       [new ConnectError('DATA_ACCESS_SESSION_GRANT_INVALID: chain', Code.Unauthenticated), 'DATA_ACCESS_SESSION_GRANT_INVALID', 'auth', false, false],
       [new ConnectError('DATA_ACCESS_SESSION_GRANT_EXPIRED: window', Code.Unauthenticated), 'DATA_ACCESS_SESSION_GRANT_EXPIRED', 'expired', true, false],

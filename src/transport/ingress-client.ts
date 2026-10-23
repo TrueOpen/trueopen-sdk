@@ -35,6 +35,7 @@ import { canonicalAccountAddressBytes } from '../codec/address';
 import { signSdkRequestEnvelope, HEIGHT_EXPIRY_THRESHOLD, SESSION_SDK_METHODS } from './sdk-request-envelope';
 import { sessionGrantMessage, SESSION_TASK_DATA_METHODS } from '../session/session-grant';
 import type { SessionAuthority, SignedSessionGrant } from '../session/session-grant';
+import type { RegisteredSessionKey, RegisteredSessionKeys } from '../session/registered-session-key';
 import {
   getTaskEventsBodyDigest,
   prepareChallengeBodyDigest,
@@ -128,9 +129,19 @@ export interface IngressAuth {
    * sent once more.
    */
   readonly session?: SessionAuthority;
+  /**
+   * Registered session keys (ADR-0037), by session. When the request's session has one, that key
+   * signs the same session-allowed requests instead of the wallet or a granted key: zero grant
+   * hash, no grant. It takes precedence over `session`. Nothing is renewed for a registered key:
+   * a Builder reporting it expired is a real failure (renew it with updateSessionKey).
+   */
+  readonly registeredKeys?: RegisteredSessionKeys;
 }
 
-/** The Builder refused the attached session grant as outside its height window. */
+/**
+ * The Builder refused the attached session grant as outside its height window. Only a request
+ * that carried a grant is renewed and resent on this; a registered-key request never is.
+ */
 export function isSessionGrantExpired(e: unknown): boolean {
   return e instanceof TrueOpenError && (e.code === 'SDK_AUTH_SESSION_GRANT_EXPIRED' || e.code === 'DATA_ACCESS_SESSION_GRANT_EXPIRED');
 }
@@ -335,6 +346,7 @@ export class IngressClient {
         rpcMethod: TASK_DATA_RPC_METHOD.GetTaskDataMetadata,
         bodyDigest: taskDataMetadataBodyDigest(p.objectRef),
         objectKind: p.objectRef.objectKind,
+        sessionId: p.objectRef.sessionId,
       });
     const send = (signed: SignedTaskDataAuth) =>
       this.client.getTaskDataMetadata(
@@ -345,6 +357,7 @@ export class IngressClient {
     try {
       res = await send(first);
     } catch (e) {
+      // Only a granted request is renewed; a wallet- or registered-key-signed one carries no grant.
       if (first.grant === undefined || !isSessionGrantExpired(e)) throw e;
       auth.session?.expired(first.grant);
       res = await send(await sign());
@@ -398,6 +411,7 @@ export class IngressClient {
         rpcMethod: TASK_DATA_RPC_METHOD.FetchTaskData,
         bodyDigest: taskDataFetchBodyDigest(p.objectRef, p.range),
         objectKind: p.objectRef.objectKind,
+        sessionId: p.objectRef.sessionId,
       });
     const open = (signed: SignedTaskDataAuth) =>
       this.client.fetchTaskData(
@@ -497,6 +511,10 @@ export class IngressClient {
    * key is not trusted": requester_kind alone determines the verification path, and USER
    * always means EIP-712 plus a 65-byte signature, with service_authorization_nonce fixed
    * at 0. The signature is checked to recover to requester_address before it is sent.
+   *
+   * For an OUTPUT object, the object's session's registered key signs when one is loaded (zero
+   * grant hash, no grant, recovering to the key's address); else a granted session key; else the
+   * wallet.
    */
   private async signTaskDataRequest(
     auth: IngressAuth,
@@ -506,6 +524,8 @@ export class IngressClient {
       rpcMethod: string;
       bodyDigest: Uint8Array;
       objectKind: number;
+      /** The object ref's session: picks its registered key. */
+      sessionId: string;
     },
   ): Promise<SignedTaskDataAuth> {
     const fields = {
@@ -521,12 +541,10 @@ export class IngressClient {
       expiryHeight: p.expiresAtHeight,
     };
     // A session key may read only an OUTPUT object; everything else is wallet-signed.
+    const sessionAllowed = SESSION_TASK_DATA_METHODS.includes(p.rpcMethod) && p.objectKind === TASK_DATA_OBJECT_KIND.OUTPUT;
+    const registered = sessionAllowed ? auth.registeredKeys?.get(p.sessionId) : undefined;
     const session =
-      auth.session !== undefined &&
-      SESSION_TASK_DATA_METHODS.includes(p.rpcMethod) &&
-      p.objectKind === TASK_DATA_OBJECT_KIND.OUTPUT
-        ? await auth.session.current()
-        : undefined;
+      registered === undefined && auth.session !== undefined && sessionAllowed ? await auth.session.current() : undefined;
     if (session !== undefined && session.grant.user !== auth.userAddress) {
       throw new TrueOpenError(
         'SDK_LOCAL',
@@ -537,9 +555,11 @@ export class IngressClient {
     const signatureChainId = auth.signatureChainId;
     const data = taskDataRequestTypedData(fields, signatureChainId, session?.grantHash);
     const signature =
-      session === undefined
-        ? await signTypedDataAs(auth.wallet, data, canonicalAccountAddressBytes('requester_address', auth.userAddress))
-        : await signTypedDataAs(session.key, data, session.grant.sessionKey);
+      registered !== undefined
+        ? await signTypedDataAs(registered.signer, data, registered.address)
+        : session === undefined
+          ? await signTypedDataAs(auth.wallet, data, canonicalAccountAddressBytes('requester_address', auth.userAddress))
+          : await signTypedDataAs(session.key, data, session.grant.sessionKey);
     const requestAuth = create(TaskDataRequestAuthV1Schema, {
       schemaVersion: fields.schemaVersion,
       chainId: fields.chainId,
@@ -582,8 +602,9 @@ export class IngressClient {
 
 
   /**
-   * Signs and sends a unary request. When a session key signed it and the Builder answers that
-   * the grant expired, the grant is renewed and the request is signed and sent once more.
+   * Signs and sends a unary request. When a granted session key signed it and the Builder answers
+   * that the grant expired, the grant is renewed and the request is signed and sent once more. A
+   * registered-key request carries no grant, so the same answer is thrown as is.
    */
   private async signedCall<T>(
     method: string,
@@ -596,6 +617,7 @@ export class IngressClient {
     try {
       return await send(env);
     } catch (e) {
+      // Grants only: a registered-key (or wallet) envelope has no sessionGrant and is not retried.
       if (env.sessionGrant === undefined || !isSessionGrantExpired(e)) throw e;
       this.auth?.session?.expired(env.sessionGrant);
       return send(await this.signEnvelope(method, sessionId, taskId, bodyDigest));
@@ -631,7 +653,10 @@ export class IngressClient {
         `${method} expiry must be Unix milliseconds (>= ${HEIGHT_EXPIRY_THRESHOLD}), got ${expiry}`,
       );
     }
-    const session = a.session !== undefined && SESSION_SDK_METHODS.includes(method) ? await a.session.current() : undefined;
+    // The session's registered key, when loaded, takes precedence over a grant.
+    const allowed = SESSION_SDK_METHODS.includes(method);
+    const registered: RegisteredSessionKey | undefined = allowed ? a.registeredKeys?.get(sessionId) : undefined;
+    const session = registered === undefined && a.session !== undefined && allowed ? await a.session.current() : undefined;
     return signSdkRequestEnvelope(
       { chainId: a.chainId, method, sessionId, taskId, requestNonce: nonce32(a), expiryHeightOrTime: expiry, bodyDigest },
       {
@@ -639,6 +664,7 @@ export class IngressClient {
         signer: a.wallet,
         signatureChainId: a.signatureChainId,
         chainId: a.chainId,
+        ...(registered !== undefined ? { registeredKey: registered } : {}),
         ...(session !== undefined ? { session } : {}),
       },
     );
@@ -686,8 +712,9 @@ interface SignedTaskDataAuth {
 }
 
 /**
- * Opens a server stream; when a session key signed the request and the stream fails with an
- * expired grant before its first message, renews the grant and opens it once more.
+ * Opens a server stream; when a granted session key signed the request and the stream fails with
+ * an expired grant before its first message, renews the grant and opens it once more. Requests
+ * without a grant (wallet or registered key) are never retried here.
  */
 async function* retryExpiredGrantOnce<A extends { readonly grant?: SignedSessionGrant }, T>(
   auth: IngressAuth,

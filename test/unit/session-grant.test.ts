@@ -20,6 +20,7 @@ import type { TypedData, TypedDataSigner } from '../../src/signer/typed-data-sig
 import { recoverEip712PubKey, ethAddressBytes } from '../../src/signer/eth-secp256k1';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { ACCOUNT_SIGNING, fixtureKey, fixtureTypedData, section } from '../helpers/account-signing';
+import { registeredSessionKey, RegisteredSessionKeys } from '../../src/session/registered-session-key';
 
 const G = section('session_grant');
 const R = section('sdk_request_session');
@@ -331,5 +332,84 @@ describe('session-signed OpenTask (account_signing_v1.json sdk_request_open_task
     // signer_address stays the granting user, who must also be the order user.
     expect(env.signerAddress).toBe(USER);
     expect(env.sessionGrant).toBe(grant);
+  });
+});
+
+describe('IngressClient with a registered session key (ADR-0037)', () => {
+  const S = `0x${R.message.sessionId!}`;
+  const TASK = `0x${R.message.taskId!}`;
+  const KEY_PRIV = new Uint8Array(32).fill(0x31);
+  const key = registeredSessionKey(S, KEY_PRIV);
+
+  function setup(failures: { ack: number; subscribe: number }, loadFor: string = S) {
+    const acks: AckOutputRequest[] = [];
+    const subs: SubscribeOutputRequest[] = [];
+    const transport = createRouterTransport(({ service }) => {
+      service(IngressAPI, {
+        ackOutput(req: AckOutputRequest) {
+          acks.push(req);
+          if (failures.ack-- > 0) throw new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: key expired', Code.Unauthenticated);
+          return { acked: true, alreadyAcked: false, ackedAt: 1n };
+        },
+        async *subscribeOutput(req: SubscribeOutputRequest) {
+          subs.push(req);
+          if (failures.subscribe-- > 0) throw new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: key expired', Code.Unauthenticated);
+          yield { frame: { case: 'fin', value: { finalSeq: 0n, outputMmrRoot: new Uint8Array(32), finishReason: 1, workerSignature: new Uint8Array() } } };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+    const w = countingWallet(wallet);
+    // A grant is configured too: the registered key takes precedence over it for its session.
+    const session = new SessionKeyManager({
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, signatureChainId: EVM,
+      latestHeight: async () => 1000n, maxGrantBlocks: 400,
+    });
+    const registeredKeys = new RegisteredSessionKeys();
+    registeredKeys.set(loadFor === S ? key : registeredSessionKey(loadFor, KEY_PRIV));
+    const auth: IngressAuth = {
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: w, signatureChainId: EVM,
+      nonce: (() => { let n = 0; return () => new Uint8Array(32).fill(++n); })(),
+      expiry: () => 1_790_000_000_000n, session, registeredKeys,
+    };
+    return { client: new IngressClient(transport, auth), acks, subs, w };
+  }
+
+  const recoveredOf = (env: NonNullable<SubscribeOutputRequest['requestEnvelope']>): string =>
+    toHex(ethAddressBytes(recoverEip712PubKey(
+      sdkRequestEip712Digest(
+        { chainId: env.chainId, method: env.method, sessionId: env.sessionId, taskId: env.taskId, requestNonce: env.requestNonce, expiryHeightOrTime: env.expiryHeightOrTime, bodyDigest: env.bodyDigest },
+        EVM,
+      ),
+      env.signature,
+    )));
+
+  it('SubscribeOutput and AckOutput: signed by the key with a zero grant hash, no grant, signer_address the user; no wallet prompt', async () => {
+    const { client, subs, acks, w } = setup({ ack: 0, subscribe: 0 });
+    for await (const _ of client.subscribeOutput({ sessionId: S, taskId: TASK })) void _;
+    await client.ackOutput({ sessionId: S, taskId: TASK, lastSeq: 0n });
+    for (const env of [subs[0]!.requestEnvelope!, acks[0]!.requestEnvelope!]) {
+      expect(env.sessionGrant).toBeUndefined();
+      expect(env.signerAddress).toBe(USER);
+      expect(recoveredOf(env)).toBe(toHex(key.address));
+    }
+    expect(w.prompts).toHaveLength(0);
+  });
+
+  it('a key loaded for another session is not used: that session falls back to the grant', async () => {
+    const { client, subs } = setup({ ack: 0, subscribe: 0 }, `0x${'66'.repeat(32)}`);
+    for await (const _ of client.subscribeOutput({ sessionId: S, taskId: TASK })) void _;
+    expect(subs[0]!.requestEnvelope!.sessionGrant).toBeDefined();
+  });
+
+  it('SDK_AUTH_SESSION_GRANT_EXPIRED on a registered-key request is thrown, not retried (unary and stream)', async () => {
+    const a = setup({ ack: 1, subscribe: 0 });
+    await expect(a.client.ackOutput({ sessionId: S, taskId: TASK, lastSeq: 0n })).rejects.toMatchObject({ code: 'SDK_AUTH_SESSION_GRANT_EXPIRED' });
+    expect(a.acks).toHaveLength(1);
+    const b = setup({ ack: 0, subscribe: 1 });
+    const drain = async (): Promise<void> => { for await (const _ of b.client.subscribeOutput({ sessionId: S, taskId: TASK })) void _; };
+    await expect(drain()).rejects.toMatchObject({ code: 'SDK_AUTH_SESSION_GRANT_EXPIRED' });
+    expect(b.subs).toHaveLength(1);
+    expect(b.w.prompts).toHaveLength(0);
   });
 });

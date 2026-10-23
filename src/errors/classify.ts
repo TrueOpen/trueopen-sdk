@@ -24,6 +24,11 @@ const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
   SDK_AUTH_SESSION_GRANT_INVALID: rule('auth', false, false),
   SDK_AUTH_SESSION_GRANT_EXPIRED: rule('expired', true, false),
   SDK_AUTH_SESSION_METHOD_NOT_ALLOWED: rule('auth', false, false),
+  // A registered session key's order would take spent + max_fee past its nonzero spend_cap
+  // (ADR-0037): the owner raises the cap with MsgUpdateSessionKey, or the wallet signs instead.
+  // A registered key reported expired arrives as SDK_AUTH_SESSION_GRANT_EXPIRED; IngressClient
+  // only renews and resends a request that carried a grant.
+  SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED: rule('auth', false, false),
   // The same failures on the Task data path (TaskDataRequestAuthV1).
   DATA_ACCESS_INVALID_SIGNATURE: rule('auth', false, false),
   DATA_ACCESS_DENIED: rule('auth', false, false),

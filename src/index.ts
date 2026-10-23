@@ -80,7 +80,7 @@ export type {
 } from './transport/trueopen-chain-client';
 
 export { SessionManager } from './session/session-manager';
-export type { SessionHandle } from './session/session-manager';
+export type { SessionHandle, SessionKeyHandle } from './session/session-manager';
 export {
   SessionKeyManager,
   SESSION_GRANT_EIP712_TYPES,
@@ -357,6 +357,11 @@ export type {
   StreamOutputParams,
   OutputStreamEvent,
   ConfirmOutputParams,
+  SessionKeyOptions,
+  CreateSessionOptions,
+  SessionKeyUpdate,
+  UpdateSessionKeyResult,
+  SessionKeyState,
 } from './client';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----

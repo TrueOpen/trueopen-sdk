@@ -1,7 +1,7 @@
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { TrueOpenError } from '../errors/errors';
-import { classifyBroadcastError } from '../errors/classify';
+import { classifyBroadcastError, sessionTxFailureCode } from '../errors/classify';
 import {
   TYPE_URL,
   decodeMsgCreateSessionResponse,
@@ -107,12 +107,18 @@ export class CosmjsChainWriter {
     const tx = await this.awaitInclusion(hash);
     if (tx.code !== 0) {
       // Included but rejected by the state machine. Not retriable: the same bytes will be
-      // rejected the same way, and the sequence has already advanced.
+      // rejected the same way, and the sequence has already advanced. A session-key
+      // registration failure gets its own code (CHAIN_SESSION_KEY_INVALID, ...; see
+      // sessionTxFailureCode), with details.txFailure 'CHAIN_TX_FAILED'.
+      const session = sessionTxFailureCode(tx.code, tx.rawLog);
       throw new TrueOpenError(
         'CHAIN_REJECT',
-        'CHAIN_TX_FAILED',
+        session ?? 'CHAIN_TX_FAILED',
         `tx ${hash} failed on chain with code ${tx.code}: ${tx.rawLog}`,
-        { category: 'chain-rejected', details: { txHash: hash, code: tx.code, log: tx.rawLog } },
+        {
+          category: 'chain-rejected',
+          details: { txHash: hash, code: tx.code, log: tx.rawLog, ...(session !== undefined ? { txFailure: 'CHAIN_TX_FAILED' } : {}) },
+        },
       );
     }
     return tx;

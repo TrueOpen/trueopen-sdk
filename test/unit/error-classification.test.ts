@@ -153,6 +153,14 @@ describe('classifyBroadcastError', () => {
     expect(c.details).toEqual({ codespace: 'sdk', code: 32, log: 'account sequence mismatch' });
   });
 
+  it('a session-key CheckTx failure gets its own code when codespace, code and text match', () => {
+    const c = classifyBroadcastError(new BroadcastTxError(1144, 'task', 'expiry is outside the current registration window: invalid session key')) as TrueOpenError;
+    expect(c).toMatchObject({ code: 'CHAIN_SESSION_KEY_INVALID', retriable: false, details: { codespace: 'task', code: 1144, txFailure: 'CHAIN_TX_REJECTED' } });
+    expect((classifyBroadcastError(new BroadcastTxError(1144, 'other', 'invalid session key')) as TrueOpenError).code).toBe('CHAIN_TX_REJECTED');
+    expect((classifyBroadcastError(new BroadcastTxError(4, 'sdk', 'signer must be session owner: unauthorized')) as TrueOpenError).code)
+      .toBe('CHAIN_SESSION_NOT_OWNER');
+  });
+
   it('leaves an error that only looks similar alone', () => {
     // A Connect-style error carries a numeric code but no codespace.
     const connectish = Object.assign(new Error('unavailable'), { code: 14 });

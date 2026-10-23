@@ -14,9 +14,9 @@ const TASK_HEX = '0c57743effab15ce41ad3f75e0b190774e544c2ce20f1dd701298f89cfc83e
 const SESSION_ID = `0x${SESSION_HEX}`;
 const TASK_ID = `0x${TASK_HEX}`;
 
-function indexedTx(typeUrl: string, value: Uint8Array, code = 0): IndexedTx {
+function indexedTx(typeUrl: string, value: Uint8Array, code = 0, rawLog = ''): IndexedTx {
   return {
-    code, height: 1, txIndex: 0, hash: 'H', events: [], rawLog: '',
+    code, height: 1, txIndex: 0, hash: 'H', events: [], rawLog,
     tx: new Uint8Array(), gasUsed: 1n, gasWanted: 1n, msgResponses: [{ typeUrl, value }],
   } as unknown as IndexedTx;
 }
@@ -106,6 +106,32 @@ describe('CosmjsChainWriter', () => {
     const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), 5);
     const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
     await expect(w.createSession()).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
+  });
+
+  // node x/task/types/errors.go registrations, wrapped as DeliverTx raw logs carry them.
+  for (const [code, rawLog, sdkCode] of [
+    [1144, 'failed to execute message; message index: 0: expiry is outside the current registration window: invalid session key', 'CHAIN_SESSION_KEY_INVALID'],
+    [1144, 'failed to execute message; message index: 0: amount atomic_units exceeds uint64: invalid session key', 'CHAIN_SESSION_KEY_INVALID'],
+    [1145, 'failed to execute message; message index: 0: session key expired', 'CHAIN_SESSION_KEY_EXPIRED'],
+    [1146, 'failed to execute message; message index: 0: session key spend cap exceeded', 'CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED'],
+    [1105, 'failed to execute message; message index: 0: session cannot update authorization: invalid session id', 'CHAIN_SESSION_CLOSED'],
+    [4, 'failed to execute message; message index: 0: signer must be session owner: unauthorized', 'CHAIN_SESSION_NOT_OWNER'],
+  ] as const) {
+    it(`a session-key tx failing with code ${code} is ${sdkCode}`, async () => {
+      const failed = indexedTx(TYPE_URL.updateSessionKey, new Uint8Array(), code, rawLog);
+      const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
+      await expect(w.updateSessionKey({ sessionId: SESSION_ID, action: { clear: true } })).rejects.toMatchObject({
+        family: 'CHAIN_REJECT', code: sdkCode, retriable: false, details: { code, log: rawLog, txFailure: 'CHAIN_TX_FAILED' },
+      });
+    });
+  }
+
+  it('the code alone, or the text under another code, stays CHAIN_TX_FAILED', async () => {
+    for (const [code, rawLog] of [[1144, 'something else'], [1105, 'failed: session not found: invalid session id'], [7, 'x: invalid session key']] as const) {
+      const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), code, rawLog);
+      const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
+      await expect(w.createSession()).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
+    }
   });
 
   // ---- the point of splitting broadcast from wait ----

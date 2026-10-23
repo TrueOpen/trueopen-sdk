@@ -1329,6 +1329,9 @@ export class TrueOpenClient {
     // when the current read started.
     let pastDeadline = false;
     let deadlineAtRead = false;
+    // A failed height read is "not past the deadline yet": like a failed task read, a hub blip
+    // must not end the wait (abort still does, through race).
+    const heightOrUndefined = (): Promise<bigint | undefined> => this.readLatestHeight(hub).catch(() => undefined);
 
     try {
       for (;;) {
@@ -1339,7 +1342,7 @@ export class TrueOpenClient {
         } else if (deadlineAtRead || (acked.length > 0 && reports.size === acked.length && genAtRead === reportGen)) {
           const out = await rejected();
           if (out !== undefined) return out;
-        } else if (!pastDeadline && (await race(this.readLatestHeight(hub))) > res.orderExpireHeight) {
+        } else if (!pastDeadline && ((await race(heightOrUndefined())) ?? 0n) > res.orderExpireHeight) {
           // Confirm with one more read, straight away.
           pastDeadline = true;
           rearm();

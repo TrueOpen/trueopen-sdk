@@ -584,6 +584,26 @@ describe('waitForAdmission', () => {
       expect(s.chain.sessionReads).toBe(0);
     });
 
+    it('a failed height read is not past the deadline: the wait goes on and still decides', async () => {
+      const s = setup();
+      await withKey(s);
+      const res = await s.client.openTask(BASE);
+      clear(s);
+      s.builders.refuseKeySigned = true;
+      // The hub fails every height read for a while, then answers past the deadline.
+      let failing = true;
+      const real = s.client['cfg'].hub!.getLatestHeight.bind(s.client['cfg'].hub);
+      (s.client['cfg'].hub as { getLatestHeight: () => Promise<bigint> }).getLatestHeight = async () => {
+        if (failing) throw new Error('hub unavailable');
+        return real();
+      };
+      const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+      await tick(50);
+      s.hubState.latest = intent.orderExpireHeight + 1n;
+      failing = false;
+      expect(await waiting).toMatchObject({ kind: 'rejected', diagnosis: { reason: 'cleared' } });
+    });
+
     it('past the deadline but the task is on chain: accepted', async () => {
       const s = setup();
       const res = await s.client.openTask(BASE);

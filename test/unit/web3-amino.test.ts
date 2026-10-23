@@ -184,6 +184,13 @@ describe('MsgCancelOrder against the node encoder', () => {
 });
 
 describe('canonical JSON and typed data edge cases', () => {
+  it('refuses an empty object, whose encodeType geth writes differently ("Name)" vs "Name()")', () => {
+    const doc = canonicalJson({
+      account_number: '1', chain_id: 'c', fee: { amount: [], gas: '1' }, memo: '',
+      msgs: [{ type: 'trueopen/x/task/MsgCreateSession', value: {} }], sequence: '0',
+    });
+    expect(() => cosmosWeb3TypedData(1n, doc)).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_WEB3_TYPED_DATA_INVALID' }));
+  });
   it('Go encoding/json escaping', () => {
     expect(canonicalJson({ b: '\b\f\n\r\t\u001f', a: '<>&\u2028\u2029', c: [true, false] })).toBe(
       '{"a":"\\u003c\\u003e\\u0026\\u2028\\u2029","b":"\\b\\f\\n\\r\\t\\u001f","c":[true,false]}',

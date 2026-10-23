@@ -96,6 +96,10 @@ function primitiveType(v: Json): string {
 
 /** types.go recursivelyAddTypesToRoot. */
 function addObjectTypes(types: Types, rootType: string, prefix: string, payload: { [key: string]: Json }): string {
+  // geth trims a trailing comma when it writes an encodeType, so an empty struct becomes "Name)"
+  // where the EIP-712 rule (and this code) gives "Name()": the digests would differ. No user Msg
+  // produces one; refuse it rather than sign something the node computes differently.
+  if (Object.keys(payload).length === 0) throw malformed(`object ${JSON.stringify(prefix)} is empty`);
   const fields: Eip712Field[] = [];
   for (const name of Object.keys(payload).sort(descending)) {
     if (!FIELD_NAME.test(name)) throw malformed(`field name ${JSON.stringify(name)} is not snake_case`);

@@ -65,13 +65,15 @@ const PRICING = { minOrderValue: 0n, verifyRatioBps: 0n, initialOutputPrice: 0n 
 
 interface HubState {
   latest: bigint;
+  /** Each latest-height read moves the chain one block on (a chain producing blocks during a wait). */
+  advance?: boolean;
   maxKeyBlocks: bigint | undefined;
   beaconReads: bigint[];
 }
 
 function makeHub(state: HubState): FacadeHubReader {
   const hub = {
-    getLatestHeight: async (): Promise<bigint> => state.latest,
+    getLatestHeight: async (): Promise<bigint> => (state.advance === true ? (state.latest += 1n) : state.latest),
     getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
     getBeacon: async (height: bigint): Promise<BeaconView> => {
       state.beaconReads.push(height);
@@ -157,7 +159,7 @@ function acceptTransport(headers: OpenTaskHeader[]): Transport {
   });
 }
 
-function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint } = {}) {
+function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; anchorWaitMs?: number } = {}) {
   const hubState: HubState = {
     latest: opts.latest ?? 1_000n,
     maxKeyBlocks: 'maxKeyBlocks' in opts ? opts.maxKeyBlocks : 100n,
@@ -174,6 +176,8 @@ function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint } = {}
     ingressTransportFactory: () => acceptTransport(headers),
     nonce: () => new Uint8Array(32).fill(1),
     signatureChainId: EVM, feeDenom: 'utrueopen',
+    sessionKeyAnchorPollMs: 1,
+    ...(opts.anchorWaitMs !== undefined ? { sessionKeyAnchorWaitMs: opts.anchorWaitMs } : {}),
   });
   return { client, chain, hubState, headers, prompts };
 }
@@ -234,8 +238,8 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     const { client, chain } = setup();
     expect((await client.createSession({ sessionKey: { expiryBlocks: 100, spendCap: 5_000n } })).sessionKey)
       .toMatchObject({ expiryHeight: 1_100n, spendCap: '5000' });
-    expect((await client.createSession({ sessionKey: { expiryBlocks: 1, spendCap: '7' } })).sessionKey)
-      .toMatchObject({ expiryHeight: 1_001n, spendCap: '7' });
+    expect((await client.createSession({ sessionKey: { expiryBlocks: 2, spendCap: '7' } })).sessionKey)
+      .toMatchObject({ expiryHeight: 1_002n, spendCap: '7' });
     expect(chain.creates.map((c) => c?.sessionKey?.spendCap)).toEqual(['5000', '7']);
   });
 
@@ -247,8 +251,8 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     expect(chain.creates).toEqual([undefined]);
   });
 
-  it('refuses a chain without session keys: max_session_key_blocks 0, or a hub that cannot read it', async () => {
-    for (const maxKeyBlocks of [0n, undefined]) {
+  it('refuses a chain without session keys: max_session_key_blocks 0 (or 1, which no registration can land with), or a hub that cannot read it', async () => {
+    for (const maxKeyBlocks of [0n, 1n, undefined]) {
       const { client, chain } = setup({ maxKeyBlocks });
       await expect(client.createSession({ sessionKey: {} })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_UNSUPPORTED' });
       expect(chain.creates).toHaveLength(0);
@@ -257,7 +261,8 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
 
   it('refuses expiryBlocks outside [1, max_session_key_blocks] and a non-canonical cap', async () => {
     const { client, chain } = setup();
-    for (const expiryBlocks of [0, 101, 1.5, -1, Number.NaN]) {
+    // 1 block never lands: the tx executes at latest + 1 and needs height < expiry.
+    for (const expiryBlocks of [0, 1, 101, 1.5, -1, Number.NaN]) {
       await expect(client.createSession({ sessionKey: { expiryBlocks } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
     }
     for (const spendCap of ['01', '-1', '', '1.0', -1n]) {
@@ -266,9 +271,13 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     expect(chain.creates).toHaveLength(0);
   });
 
-  it('a small limit: the default expiry is at least one block', async () => {
-    const { client } = setup({ maxKeyBlocks: 2n });
-    expect((await client.createSession({ sessionKey: {} })).sessionKey!.expiryHeight).toBe(1_001n);
+  it('a small limit: the default expiry is at least two blocks', async () => {
+    for (const maxKeyBlocks of [2n, 3n, 4n]) {
+      const { client } = setup({ maxKeyBlocks });
+      expect((await client.createSession({ sessionKey: {} })).sessionKey!.expiryHeight).toBe(1_002n);
+    }
+    const { client } = setup({ maxKeyBlocks: 5n });
+    expect((await client.createSession({ sessionKey: {} })).sessionKey!.expiryHeight).toBe(1_003n);
   });
 });
 
@@ -317,6 +326,8 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
       SESSION_CLOSED: 'SDK_LOCAL_SESSION_CLOSED',
       ERR_SESSION_KEY_SPEND_CAP_EXCEEDED: 'SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED',
     };
+    /** Where the chain's single ERR_SESSION_KEY_INVALID splits into a more specific SDK code. */
+    const BY_NAME: Record<string, string> = { anchor_before_reregistration: 'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT' };
     const cases = (SESSION_KEY_AUTH.admission_cases as Case[]).filter((c) => NAMES.includes(c.name));
 
     it('every named case is in the fixture, with the delegated order and its max_fee', () => {
@@ -341,7 +352,7 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
           sessionKeySetHeight: BigInt(rest.set_height), ...(c.state.key !== '' ? { sessionKey: fromHex(c.state.key) } : {}),
         };
         const run = open(client, { context: context(BigInt(c.current_height), BigInt(c.anchor_height)) });
-        const want = SDK_CODE[c.expected];
+        const want = BY_NAME[name] ?? SDK_CODE[c.expected];
         expect(c.expected in SDK_CODE, c.expected).toBe(true);
         if (want === undefined) {
           const res = await run;
@@ -371,24 +382,53 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
     expect(headers).toHaveLength(3);
   });
 
-  it('when the fresh anchor is still older, refuses (retriable) without signing', async () => {
+  it('right after registration: waits for a fresh anchor at or after set_height, then signs with the key', async () => {
     const { client, chain, hubState, headers, prompts } = setup();
+    await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 0n });
+    hubState.latest = 1_003n;
+    const h = await client.createSession({ sessionKey: {} });
+    expect(chain.stream.sessionKeySetHeight).toBe(1_003n);
+    // The chain keeps producing blocks while openTask waits.
+    hubState.advance = true;
+    const res = await open(client);
+    expect(res.context.sessionAnchorHeight).toBeGreaterThanOrEqual(1_003n);
+    const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
+    expect(recovered(headers[0]!, res.context, 7n)).toMatchObject({ order: key, envelope: key, grant: false });
+    expect(prompts).toHaveLength(0);
+  });
+
+  it('the wait is bounded: past it, a retriable SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT with the heights, nothing signed', async () => {
+    const { client, chain, hubState, headers, prompts } = setup({ anchorWaitMs: 20 });
     await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 0n });
     hubState.latest = 1_003n;
     await client.createSession({ sessionKey: {} });
     expect(chain.stream.sessionKeySetHeight).toBe(1_003n);
-    await expect(open(client)).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED', retriable: true });
+    await expect(open(client)).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT',
+      retriable: true,
+      details: { setHeight: 1_003n, anchorHeight: 998n },
+    });
     expect(headers).toHaveLength(0);
     expect(prompts).toHaveLength(0);
   });
 
-  it("a caller's context is used as is: no fresh anchor", async () => {
-    const { client, chain, hubState } = setup();
+  it("a caller's stale context is refused at once, not retriable, without waiting or a fresh anchor", async () => {
+    const { client, chain, hubState, headers } = setup();
     await client.createSession({ sessionKey: {} });
     hubState.beaconReads = [];
-    await expect(open(client, { context: context(1_000n, 999n) })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED' });
+    hubState.advance = true;
+    const before = hubState.latest;
+    await expect(open(client, { context: context(1_000n, 999n) })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT',
+      retriable: false,
+      details: { setHeight: 1_000n, anchorHeight: 999n },
+      message: expect.stringContaining('pass a newer context'),
+    });
     expect(hubState.beaconReads).toEqual([]);
+    // No latest-height polling happened.
+    expect(hubState.latest).toBe(before);
     expect(chain.stream.sessionKeySetHeight).toBe(1_000n);
+    expect(headers).toHaveLength(0);
   });
 });
 
@@ -403,6 +443,16 @@ describe('TrueOpenClient.useSessionKey / updateSessionKey / forgetSessionKey', (
     chain.stream = { ...chain.stream, status: 'IDLE' };
     await client.useSessionKey(SESSION, skKey('session_key'));
     expect(await client.sessionKeyState(SESSION)).toMatchObject({ registered: true, matchesLoadedKey: true, status: 'IDLE' });
+  });
+
+  it("useSessionKey refuses a session owned by someone other than this client's user", async () => {
+    const { client, chain } = setup();
+    chain.stream = { ...chain.stream, owner: ADDRS[0]!, sessionKey: skAddress('session_key'), sessionKeyExpiryHeight: 2_000n };
+    await expect(client.useSessionKey(SESSION, skKey('session_key'))).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
+      message: expect.stringContaining('belongs to'),
+    });
+    expect((await client.sessionKeyState(SESSION)).matchesLoadedKey).toBe(false);
   });
 
   it('rotate registers a fresh key and replaces the loaded one; orders then recover to the new key', async () => {
@@ -433,6 +483,21 @@ describe('TrueOpenClient.useSessionKey / updateSessionKey / forgetSessionKey', (
     expect((chain.updates[1]!.action as { set: SessionKeyGrant }).set.spendCap).toBe('0');
   });
 
+  it('renew refuses a loaded key the chain no longer has (rotated elsewhere, or cleared), and a CLOSED session', async () => {
+    const { client, chain } = setup();
+    chain.stream = { ...chain.stream, sessionKey: skAddress('session_key'), sessionKeyExpiryHeight: 2_000n };
+    await client.useSessionKey(SESSION, skKey('session_key')); // K1 loaded
+    chain.stream = { ...chain.stream, sessionKey: skAddress('wrong_key') }; // another device rotated to K2
+    await expect(client.updateSessionKey(SESSION, { renew: {} })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED' });
+    const { sessionKey: _, ...cleared } = chain.stream;
+    void _;
+    chain.stream = cleared;
+    await expect(client.updateSessionKey(SESSION, { renew: {} })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED' });
+    chain.stream = { ...chain.stream, sessionKey: skAddress('session_key'), status: 'CLOSED' };
+    await expect(client.updateSessionKey(SESSION, { renew: {} })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_CLOSED' });
+    expect(chain.updates).toHaveLength(0);
+  });
+
   it('renew without a loaded key is refused before any transaction', async () => {
     const { client, chain } = setup();
     await expect(client.updateSessionKey(SESSION, { renew: {} })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED' });
@@ -443,7 +508,7 @@ describe('TrueOpenClient.useSessionKey / updateSessionKey / forgetSessionKey', (
     const { client, chain } = setup();
     await client.createSession({ sessionKey: {} });
     await expect(client.updateSessionKey(SESSION, { rotate: { expiryBlocks: 101 } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
-    await expect(client.updateSessionKey(SESSION, { renew: { expiryBlocks: 0 } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
+    await expect(client.updateSessionKey(SESSION, { renew: { expiryBlocks: 1 } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
     expect(chain.updates).toHaveLength(0);
   });
 

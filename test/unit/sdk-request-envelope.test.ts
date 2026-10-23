@@ -192,15 +192,21 @@ describe('signSdkRequestEnvelope with a registered session key (ADR-0037)', () =
       grantNonce: new Uint8Array(32).fill(0x05),
       signatureChainId: EVM,
     };
+    const calls = { wallet: 0, grantKey: 0, registeredKey: 0 };
+    const counting = (inner: { signTypedData: typeof wallet.signTypedData }, k: keyof typeof calls) => ({
+      signTypedData: (d: Parameters<typeof wallet.signTypedData>[0]) => { calls[k] += 1; return inner.signTypedData(d); },
+    });
     const session: ActiveSession = {
       grant: { ...grantFields, userSignature: new Uint8Array(65).fill(0x06) },
       grantHash: sessionGrantHash(grantFields),
-      key: privateKeyTypedDataSigner(grantPriv),
+      key: counting(privateKeyTypedDataSigner(grantPriv), 'grantKey'),
     };
-    await expect(signSdkRequestEnvelope(fields, { ...opts, session })).rejects.toMatchObject({
+    const countingOpts = { ...opts, signer: counting(wallet, 'wallet'), registeredKey: { ...key, signer: counting(key.signer, 'registeredKey') } };
+    await expect(signSdkRequestEnvelope(fields, { ...countingOpts, session })).rejects.toMatchObject({
       code: 'SDK_LOCAL_REQUEST_MALFORMED',
       message: expect.stringContaining('exclusive'),
     });
+    expect(calls).toEqual({ wallet: 0, grantKey: 0, registeredKey: 0 });
     const { registeredKey: _, ...withoutKey } = opts;
     void _;
     const env = await signSdkRequestEnvelope(fields, { ...withoutKey, session });

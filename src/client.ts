@@ -25,7 +25,7 @@ import { fanOutToEndpoints } from './transport/fan-out-submit';
 import { nexusGrpcEndpoint } from './types/hub';
 import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
-import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet } from './order/task-order-input';
+import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet, DEFAULT_ANCHOR_LAG } from './order/task-order-input';
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader, ResolvedTaskOrderContext } from './order/task-order-input';
 import { TaskOrderContextCache } from './order/task-order-context-cache';
 import type { TaskOrderContextCacheOptions } from './order/task-order-context-cache';
@@ -172,6 +172,16 @@ export interface TrueOpenClientConfig {
    * for every order. A `context` passed to openTask is always used as is.
    */
   readonly orderContextReuse?: false | TaskOrderContextCacheOptions;
+  /**
+   * How long openTask waits, in milliseconds, for an anchor at or after a registered session
+   * key's set_height (default DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS, a few blocks). A fresh anchor
+   * lags the latest height (anchorLag, 2 blocks by default), so right after createSession or a
+   * rotate the anchor is still below the registration height; openTask polls the latest height
+   * until a fresh anchor would reach it, then resolves one. 0 disables the wait.
+   */
+  readonly sessionKeyAnchorWaitMs?: number;
+  /** Poll interval of that wait (default DEFAULT_TRUST_ANCHOR_POLL_MS, about one block). */
+  readonly sessionKeyAnchorPollMs?: number;
 }
 
 /**
@@ -614,15 +624,15 @@ export class TrueOpenClient {
    * memory only. `spendCap` defaults to "0", which is unlimited: a leaked key can then authorize
    * orders up to the whole account balance, so set a cap where that matters.
    *
-   * `expiryBlocks` (default `max_session_key_blocks - 2`, at least 1) must be an integer in
-   * [1, max_session_key_blocks]; the key expires at the latest height plus that. Needs a hub
-   * reader with getMaxSessionKeyBlocks; a chain without session keys (absent or 0) is refused
-   * with SDK_LOCAL_SESSION_KEY_UNSUPPORTED.
+   * `expiryBlocks` (default `max_session_key_blocks - 2`, at least 2) must be an integer in
+   * [2, max_session_key_blocks]: the tx executes at the latest height + 1 or later and the chain
+   * needs height < expiry, so 1 block never lands. The key expires at the latest height plus
+   * that. Needs a hub reader with getMaxSessionKeyBlocks; a chain without session keys (absent
+   * or 0), or with a limit below 2, is refused with SDK_LOCAL_SESSION_KEY_UNSUPPORTED.
    *
    * A key registered at height H authorizes only orders whose session anchor is at or after H;
-   * openTask resolves a fresh anchor when its reused one is older, so the first order right
-   * after registration may need to wait a block or two for one (retriable
-   * SDK_LOCAL_SESSION_KEY_NOT_REGISTERED).
+   * openTask waits (sessionKeyAnchorWaitMs) for a fresh anchor to reach H, so the first order
+   * right after registration may take a block or two longer.
    */
   async createSession(opts?: string | CreateSessionOptions): Promise<SessionHandle> {
     const o: CreateSessionOptions = typeof opts === 'string' ? { label: opts } : opts ?? {};
@@ -638,8 +648,9 @@ export class TrueOpenClient {
    * Renews, rotates or clears a session's registered key with MsgUpdateSessionKey. The wallet
    * signs it as a Cosmos transaction; a session key never signs a transaction.
    *
-   *  - `renew` keeps the loaded key (one must be loaded for the session, else
-   *    SDK_LOCAL_SESSION_KEY_NOT_REGISTERED) with a new expiry and cap; `spendCap` defaults to the
+   *  - `renew` keeps the loaded key with a new expiry and cap. The key must be loaded and still be
+   *    the chain's registered key (else SDK_LOCAL_SESSION_KEY_NOT_REGISTERED), and the session not
+   *    CLOSED (SDK_LOCAL_SESSION_CLOSED); nothing is sent otherwise. `spendCap` defaults to the
    *    chain's current cap.
    *  - `rotate` generates a fresh key (never the old one) and, once the chain applied it,
    *    replaces the loaded key; `newKey` is its material, which the caller persists (see
@@ -662,9 +673,18 @@ export class TrueOpenClient {
       if (loaded === undefined) {
         throw local('SDK_LOCAL_SESSION_KEY_NOT_REGISTERED', `no session key is loaded for session ${sid}: rotate, or load it with useSessionKey`);
       }
-      const { expiryHeight, spendCap } = await this.sessionKeyTerms(update.renew, async () =>
-        (await this.cfg.chain.querySession(sid)).sessionKeySpendCap,
-      );
+      // Renew only the chain's current key: re-registering a key that was rotated out or cleared
+      // (perhaps on another device, perhaps because it leaked) would make it current again.
+      const s = await this.cfg.chain.querySession(sid);
+      if (s.status === 'CLOSED') throw local('SDK_LOCAL_SESSION_CLOSED', `session ${sid} is CLOSED`);
+      if (s.sessionKey === undefined || !bytesEqual(s.sessionKey, loaded.address)) {
+        throw local(
+          'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
+          `the loaded key ${sessionKeyAddressHex(loaded.address)} is no longer the registered key of session ${sid} ` +
+            '(rotated or cleared): rotate to a fresh key, or load the current one with useSessionKey',
+        );
+      }
+      const { expiryHeight, spendCap } = await this.sessionKeyTerms(update.renew, async () => s.sessionKeySpendCap);
       const response = await this.cfg.chain.updateSessionKey({
         sessionId: sid,
         action: { set: { sessionKey: loaded.address, expiryHeight, spendCap } },
@@ -686,13 +706,19 @@ export class TrueOpenClient {
 
   /**
    * Loads a persisted registered key for a session (after a restart, or on another device). The
-   * chain must have exactly this key registered for the session, and the session must not be
-   * CLOSED; otherwise SDK_LOCAL_SESSION_KEY_NOT_REGISTERED / SDK_LOCAL_SESSION_CLOSED and nothing
-   * is loaded.
+   * session must belong to this client's user and have exactly this key registered, and must not
+   * be CLOSED; otherwise SDK_LOCAL_SESSION_KEY_NOT_REGISTERED / SDK_LOCAL_SESSION_CLOSED and
+   * nothing is loaded.
    */
   async useSessionKey(sessionId: string, privateKey: Uint8Array): Promise<void> {
     const key = registeredSessionKey(sessionIdText(sessionId), privateKey);
     const s = await this.cfg.chain.querySession(key.sessionId);
+    if (s.owner !== this.cfg.userAddress) {
+      throw local(
+        'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
+        `session ${key.sessionId} belongs to ${s.owner}, not this client's user ${this.cfg.userAddress}`,
+      );
+    }
     if (s.status === 'CLOSED') throw local('SDK_LOCAL_SESSION_CLOSED', `session ${key.sessionId} is CLOSED`);
     if (s.sessionKey === undefined || !bytesEqual(s.sessionKey, key.address)) {
       throw local(
@@ -748,9 +774,19 @@ export class TrueOpenClient {
     if (max <= 0n) {
       throw local('SDK_LOCAL_SESSION_KEY_UNSUPPORTED', 'the chain does not support session keys (max_session_key_blocks is 0)');
     }
-    const blocks = o.expiryBlocks ?? Number(max > 3n ? max - 2n : 1n);
-    if (!Number.isSafeInteger(blocks) || blocks < 1 || BigInt(blocks) > max) {
-      throw local('SDK_LOCAL_SESSION_KEY_INVALID', `expiryBlocks must be an integer in [1, ${max}], got ${String(blocks)}`);
+    // The tx executes at latest + 1 or later and needs height < expiry, so 1 block never lands.
+    if (max < MIN_SESSION_KEY_EXPIRY_BLOCKS) {
+      throw local(
+        'SDK_LOCAL_SESSION_KEY_UNSUPPORTED',
+        `max_session_key_blocks ${max} leaves no expiry a transaction can land with (at least ${MIN_SESSION_KEY_EXPIRY_BLOCKS} blocks)`,
+      );
+    }
+    const blocks = o.expiryBlocks ?? Number(max - 2n > MIN_SESSION_KEY_EXPIRY_BLOCKS ? max - 2n : MIN_SESSION_KEY_EXPIRY_BLOCKS);
+    if (!Number.isSafeInteger(blocks) || blocks < Number(MIN_SESSION_KEY_EXPIRY_BLOCKS) || BigInt(blocks) > max) {
+      throw local(
+        'SDK_LOCAL_SESSION_KEY_INVALID',
+        `expiryBlocks must be an integer in [${MIN_SESSION_KEY_EXPIRY_BLOCKS}, ${max}], got ${String(blocks)}`,
+      );
     }
     return { expiryHeight: latest + BigInt(blocks), spendCap: cap };
   }
@@ -786,9 +822,11 @@ export class TrueOpenClient {
    * order sequence) to check, before anything is signed, what the chain will check at admission:
    * the session is not CLOSED (SDK_LOCAL_SESSION_CLOSED); its registered key is still the loaded
    * one (SDK_LOCAL_SESSION_KEY_NOT_REGISTERED); the latest height is at or before the key's expiry
-   * (SDK_LOCAL_SESSION_KEY_EXPIRED); the session anchor is at or after the key's registration
-   * height (a reused anchor that is older is replaced by a fresh one once); and, with a nonzero
-   * cap, spent + max_fee <= cap (SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED). A failed check never
+   * (SDK_LOCAL_SESSION_KEY_EXPIRED; admission happens at the latest height + 1 or later, so an
+   * order signed at latest == expiry may still be rejected); the session anchor is at or after
+   * the key's registration height (SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT; when the SDK
+   * resolved the context it first waits up to sessionKeyAnchorWaitMs for a fresh anchor that is,
+   * while a caller's context is used as is); and, with a nonzero cap, spent + max_fee <= cap (SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED). A failed check never
    * falls back to the wallet: renew or raise the cap with updateSessionKey, load the current key,
    * or forgetSessionKey to sign with the wallet.
    *
@@ -824,24 +862,9 @@ export class TrueOpenClient {
       sessionRead,
     ]);
     let resolved: ResolvedTaskOrderContext | { context: TaskOrderChainContext } = firstResolved;
-    if (registered !== undefined && stream !== undefined) {
-      const anchorOk = checkSessionKeyAdmission(registered, stream, resolved.context);
-      if (!anchorOk) {
-        // The anchor predates the key's registration (it was set or rotated after the anchor was
-        // taken). A reused anchor is replaced by a fresh one, once; a caller's context is used as is.
-        if (params.context === undefined && this.contextCache !== undefined) {
-          this.contextCache.invalidate();
-          resolved = await this.resolveOrderContext();
-        }
-        if (!checkSessionKeyAdmission(registered, stream, resolved.context)) {
-          throw local(
-            'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
-            `the session key was registered at height ${stream.sessionKeySetHeight}, after the order's session anchor ` +
-              `${resolved.context.sessionAnchorHeight}: retry once a later anchor is available`,
-            { retriable: true },
-          );
-        }
-      }
+    if (registered !== undefined && stream !== undefined && !checkSessionKeyAdmission(registered, stream, resolved.context)) {
+      // Only the anchor failed: it predates the key's registration (set or rotated after it).
+      resolved = await this.anchorAfterSetHeight(registered, stream, resolved.context, params.context !== undefined);
     }
     const ctx = resolved.context;
     const order = buildTaskOrder(
@@ -948,6 +971,46 @@ export class TrueOpenClient {
       builders,
       unresolvedBuilders: errors,
     };
+  }
+
+  /**
+   * A context whose anchor is at or after the registered key's set_height. A caller's context is
+   * used as is, so an older anchor is refused (not retriable: pass a newer context). Otherwise
+   * the latest height is polled, for at most sessionKeyAnchorWaitMs, until a fresh anchor
+   * (latest - anchorLag) reaches set_height; then one fresh context is resolved and rechecked.
+   */
+  private async anchorAfterSetHeight(
+    key: RegisteredSessionKey,
+    s: StreamStateView,
+    current: TaskOrderChainContext,
+    callerContext: boolean,
+  ): Promise<ResolvedTaskOrderContext | { context: TaskOrderChainContext }> {
+    const setHeight = s.sessionKeySetHeight;
+    const refuse = (anchorHeight: bigint, retriable: boolean, hint: string): TrueOpenError =>
+      local(
+        'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT',
+        `the session key was registered at height ${setHeight}, after the order's session anchor ${anchorHeight}: ${hint}`,
+        { retriable, details: { setHeight, anchorHeight } },
+      );
+    if (callerContext) throw refuse(current.sessionAnchorHeight, false, 'pass a newer context');
+    const hub = this.cfg.hub!;
+    const reuse = this.cfg.orderContextReuse;
+    const lag = (reuse !== false ? reuse?.anchorLag : undefined) ?? DEFAULT_ANCHOR_LAG;
+    const waitMs = this.cfg.sessionKeyAnchorWaitMs ?? DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS;
+    const pollMs = this.cfg.sessionKeyAnchorPollMs ?? DEFAULT_TRUST_ANCHOR_POLL_MS;
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      if ((await hub.getLatestHeight()) - lag >= setHeight) break;
+      const left = deadline - Date.now();
+      if (left <= 0) throw refuse(current.sessionAnchorHeight, true, `no fresh anchor reached it within ${waitMs} ms; retry shortly`);
+      await new Promise((r) => setTimeout(r, Math.min(pollMs, left)));
+    }
+    this.contextCache?.invalidate();
+    const fresh = await this.resolveOrderContext();
+    if (!checkSessionKeyAdmission(key, s, fresh.context)) {
+      throw refuse(fresh.context.sessionAnchorHeight, true, 'retry shortly');
+    }
+    return fresh;
   }
 
   /**
@@ -1945,6 +2008,9 @@ export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;
 /** waitForOutputTrustAnchors chain poll interval: about one block. */
 export const DEFAULT_TRUST_ANCHOR_POLL_MS = 1000;
 
+/** openTask's default wait for an anchor at or after a registered key's set_height: a few blocks. */
+export const DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS = 15_000;
+
 /** waitForOutputTrustAnchors upper bound on the whole wait. */
 export const DEFAULT_TRUST_ANCHOR_WAIT_MS = 60_000;
 
@@ -2049,9 +2115,16 @@ async function rereadNexusEndpoint(
   }
 }
 
-function local(code: string, message: string, opts?: { readonly retriable?: boolean }): TrueOpenError {
+function local(
+  code: string,
+  message: string,
+  opts?: { readonly retriable?: boolean; readonly details?: Readonly<Record<string, unknown>> },
+): TrueOpenError {
   return new TrueOpenError('SDK_LOCAL', code, message, opts);
 }
+
+/** The shortest key lifetime a registration can land with: it executes at latest + 1 and needs height < expiry. */
+const MIN_SESSION_KEY_EXPIRY_BLOCKS = 2n;
 
 const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
 
@@ -2088,6 +2161,8 @@ function checkSessionKeyAdmission(key: RegisteredSessionKey, s: StreamStateView,
         'it was rotated or cleared. Use the wallet (forgetSessionKey) or load the current key (useSessionKey)',
     );
   }
+  // The chain admits at latest + 1 or later, so latest == expiry passes here but may still be
+  // rejected; the constraint is checked as written, with no margin.
   if (ctx.latestHeight > s.sessionKeyExpiryHeight) {
     throw local(
       'SDK_LOCAL_SESSION_KEY_EXPIRED',

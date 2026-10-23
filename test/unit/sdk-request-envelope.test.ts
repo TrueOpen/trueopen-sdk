@@ -15,7 +15,9 @@ import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 import { ACCOUNT_SIGNING, fixtureKey, fixtureTypedData, section } from '../helpers/account-signing';
 import { registeredSessionKey } from '../../src/session/registered-session-key';
+import { sessionGrantHash } from '../../src/session/session-grant';
 import type { ActiveSession } from '../../src/session/session-grant';
+import { secp256k1 } from '@noble/curves/secp256k1';
 
 const V = section('sdk_request');
 const EVM = BigInt(V.domain.chain_id);
@@ -179,7 +181,29 @@ describe('signSdkRequestEnvelope with a registered session key (ADR-0037)', () =
   });
 
   it('refuses a session grant and a registered key together', async () => {
-    const session = { grant: {}, grantHash: new Uint8Array(32), key: wallet } as unknown as ActiveSession;
-    await expect(signSdkRequestEnvelope(fields, { ...opts, session })).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+    // A well-formed grant for this user and chain: alone, it signs (the control below), so only
+    // the exclusivity check can refuse the pair.
+    const grantPriv = new Uint8Array(32).fill(0x04);
+    const grantFields = {
+      chainId: fields.chainId,
+      user: USER,
+      sessionKey: ethAddressBytes(secp256k1.getPublicKey(grantPriv, true)),
+      expiryHeight: 2_000n,
+      grantNonce: new Uint8Array(32).fill(0x05),
+      signatureChainId: EVM,
+    };
+    const session: ActiveSession = {
+      grant: { ...grantFields, userSignature: new Uint8Array(65).fill(0x06) },
+      grantHash: sessionGrantHash(grantFields),
+      key: privateKeyTypedDataSigner(grantPriv),
+    };
+    await expect(signSdkRequestEnvelope(fields, { ...opts, session })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_REQUEST_MALFORMED',
+      message: expect.stringContaining('exclusive'),
+    });
+    const { registeredKey: _, ...withoutKey } = opts;
+    void _;
+    const env = await signSdkRequestEnvelope(fields, { ...withoutKey, session });
+    expect(env.sessionGrant).toBeDefined();
   });
 });

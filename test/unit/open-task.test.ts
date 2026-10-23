@@ -17,6 +17,7 @@ import {
   secp256k1PublicKey,
 } from '../../src/signer/secp256k1';
 import {
+  ethAddressBytes,
   ethSecp256k1Address,
   recoverEip712PubKey,
   recoverEip712Address,
@@ -26,6 +27,7 @@ import { sha256 } from '../../src/codec/hash';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { hash32Text, strictHash32 } from '../../src/codec/hash32';
 import { registeredSessionKey } from '../../src/session/registered-session-key';
+import { sessionGrantHash } from '../../src/session/session-grant';
 import type { ActiveSession } from '../../src/session/session-grant';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
@@ -211,10 +213,39 @@ describe('buildOpenTaskRequest with a registered session key (ADR-0037)', () => 
   });
 
   it('refuses a session grant and a registered key together, before anything is signed', async () => {
-    const session = { grant: {}, grantHash: new Uint8Array(32), key: refusingWallet } as unknown as ActiveSession;
+    // A well-formed grant for this user and chain: alone, it signs (the control below), so only
+    // the exclusivity check can refuse the pair.
+    const GRANT_PRIV = rep(0x04, 32);
+    const calls = { wallet: 0, grantKey: 0, registeredKey: 0 };
+    const counting = (priv: Uint8Array, k: keyof typeof calls) => {
+      const s = privateKeyTypedDataSigner(priv);
+      return { signTypedData: (d: Parameters<typeof s.signTypedData>[0]) => { calls[k] += 1; return s.signTypedData(d); } };
+    };
+    const grantFields = {
+      chainId: ctx.chainId,
+      user: USER,
+      sessionKey: ethAddressBytes(secp256k1PublicKey(GRANT_PRIV)),
+      expiryHeight: 2_000n,
+      grantNonce: rep(0x05, 32),
+      signatureChainId: ORDER_EIP712.signatureChainId,
+    };
+    const session: ActiveSession = {
+      grant: { ...grantFields, userSignature: rep(0x06, 65) },
+      grantHash: sessionGrantHash(grantFields),
+      key: counting(GRANT_PRIV, 'grantKey'),
+    };
+    const countingKey = { ...key, signer: counting(KEY_PRIV, 'registeredKey') };
+    const countingWallet = counting(PRIV, 'wallet');
+
     await expect(
-      buildOpenTaskRequest({ ...base, wallet: refusingWallet, registeredKey: key, session }),
-    ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+      buildOpenTaskRequest({ ...base, wallet: countingWallet, registeredKey: countingKey, session }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED', message: expect.stringContaining('exclusive') });
+    expect(calls).toEqual({ wallet: 0, grantKey: 0, registeredKey: 0 });
+
+    // Control: the same grant on its own is accepted, and its key signs the envelope.
+    const ok = await buildOpenTaskRequest({ ...base, wallet: countingWallet, session });
+    expect(ok.input.requestEnvelope.sessionGrant).toBeDefined();
+    expect(calls).toEqual({ wallet: 1, grantKey: 1, registeredKey: 0 });
   });
 });
 

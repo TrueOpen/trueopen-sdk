@@ -227,6 +227,46 @@ describe('session key material', () => {
     expect(keys.get(SESSION)).toBeUndefined();
   });
 
+  it('forRequest: the key up to its expiry height, then undefined (the caller falls back); orders keep get()', async () => {
+    let latest = 1_000n;
+    let now = 0;
+    let reads = 0;
+    const keys = new RegisteredSessionKeys({ latestHeight: async () => { reads += 1; return latest; }, heightMaxAgeMs: 1000, now: () => now });
+    keys.set(KEY, 1_002n);
+    expect(await keys.forRequest(SESSION)).toBe(KEY); // no height seen yet: read
+    expect(reads).toBe(1);
+    expect(await keys.forRequest(SESSION)).toBe(KEY); // a recent 1000 < 1002: reused
+    expect(reads).toBe(1);
+    latest = 1_002n;
+    now = 2_000; // stale: read again; latest == expiry still signs
+    expect(await keys.forRequest(SESSION)).toBe(KEY);
+    expect(reads).toBe(2);
+    // A recent height equal to the expiry may lag a block: read, not reused.
+    latest = 1_003n;
+    expect(await keys.forRequest(SESSION)).toBeUndefined();
+    expect(reads).toBe(3);
+    // A height past the expiry is final however old: no read.
+    now = 10_000;
+    expect(await keys.forRequest(SESSION)).toBeUndefined();
+    expect(reads).toBe(3);
+    expect(keys.get(SESSION)).toBe(KEY);
+    // A renew seen on chain moves the expiry; a different key's state does not.
+    keys.refreshExpiry(SESSION, new Uint8Array(20).fill(9), 5_000n);
+    expect(keys.expiryHeight(SESSION)).toBe(1_002n);
+    keys.refreshExpiry(SESSION, KEY.address, 5_000n);
+    expect(await keys.forRequest(SESSION)).toBe(KEY);
+  });
+
+  it('forRequest without a height source or a known expiry always returns the key', async () => {
+    const noHeight = new RegisteredSessionKeys();
+    noHeight.set(KEY, 1n);
+    expect(await noHeight.forRequest(SESSION)).toBe(KEY);
+    const noExpiry = new RegisteredSessionKeys({ latestHeight: async () => 1n << 60n });
+    noExpiry.set(KEY);
+    expect(await noExpiry.forRequest(SESSION)).toBe(KEY);
+    expect(await noExpiry.forRequest(`0x${'00'.repeat(32)}`)).toBeUndefined();
+  });
+
   it('sessionKeyAddressHex refuses anything but 20 bytes', () => {
     expect(() => sessionKeyAddressHex(new Uint8Array(19))).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' }));
   });

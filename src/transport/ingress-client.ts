@@ -132,8 +132,13 @@ export interface IngressAuth {
   /**
    * Registered session keys (ADR-0037), by session. When the request's session has one, that key
    * signs the same session-allowed requests instead of the wallet or a granted key: zero grant
-   * hash, no grant. It takes precedence over `session`. Nothing is renewed for a registered key:
-   * a Builder reporting it expired is a real failure (renew it with updateSessionKey).
+   * hash, no grant. It takes precedence over `session`, but only while the latest height is at
+   * or before the key's expiry height (RegisteredSessionKeys.forRequest): after it, that session's
+   * requests fall back to `session` (the grant) when configured, else to the wallet, so the output
+   * of orders admitted just before expiry can still be streamed, acked and fetched. Orders never
+   * fall back (openTask refuses with SDK_LOCAL_SESSION_KEY_EXPIRED). Nothing is renewed for a
+   * registered key: a Builder reporting it expired is final for that request (renew the key with
+   * updateSessionKey).
    */
   readonly registeredKeys?: RegisteredSessionKeys;
 }
@@ -423,7 +428,9 @@ export class IngressClient {
           requestAuth: signed.requestAuth,
         }),
       );
-    const stream = retryExpiredGrantOnce(auth, sign, open);
+    // A range retry (TrueOpenClient.fetchTaskOutput) must not repeat a registered-key request the
+    // Builder reported expired: that answer is final for it.
+    const stream = retryExpiredGrantOnce(auth, sign, open, { finalWithoutGrant: true });
 
     // The peer answered with bytes other than the ones asked for: do not trust it again.
     const bad = (message: string): TrueOpenError =>
@@ -512,9 +519,9 @@ export class IngressClient {
    * always means EIP-712 plus a 65-byte signature, with service_authorization_nonce fixed
    * at 0. The signature is checked to recover to requester_address before it is sent.
    *
-   * For an OUTPUT object, the object's session's registered key signs when one is loaded (zero
-   * grant hash, no grant, recovering to the key's address); else a granted session key; else the
-   * wallet.
+   * For an OUTPUT object, the object's session's registered key signs when one is loaded and not
+   * past its expiry height (zero grant hash, no grant, recovering to the key's address); else a
+   * granted session key; else the wallet.
    */
   private async signTaskDataRequest(
     auth: IngressAuth,
@@ -542,7 +549,7 @@ export class IngressClient {
     };
     // A session key may read only an OUTPUT object; everything else is wallet-signed.
     const sessionAllowed = SESSION_TASK_DATA_METHODS.includes(p.rpcMethod) && p.objectKind === TASK_DATA_OBJECT_KIND.OUTPUT;
-    const registered = sessionAllowed ? auth.registeredKeys?.get(p.sessionId) : undefined;
+    const registered = sessionAllowed ? await auth.registeredKeys?.forRequest(p.sessionId) : undefined;
     const session =
       registered === undefined && auth.session !== undefined && sessionAllowed ? await auth.session.current() : undefined;
     if (session !== undefined && session.grant.user !== auth.userAddress) {
@@ -655,7 +662,7 @@ export class IngressClient {
     }
     // The session's registered key, when loaded, takes precedence over a grant.
     const allowed = SESSION_SDK_METHODS.includes(method);
-    const registered: RegisteredSessionKey | undefined = allowed ? a.registeredKeys?.get(sessionId) : undefined;
+    const registered: RegisteredSessionKey | undefined = allowed ? await a.registeredKeys?.forRequest(sessionId) : undefined;
     const session = registered === undefined && a.session !== undefined && allowed ? await a.session.current() : undefined;
     return signSdkRequestEnvelope(
       { chainId: a.chainId, method, sessionId, taskId, requestNonce: nonce32(a), expiryHeightOrTime: expiry, bodyDigest },
@@ -720,6 +727,7 @@ async function* retryExpiredGrantOnce<A extends { readonly grant?: SignedSession
   auth: IngressAuth,
   sign: () => Promise<A>,
   open: (signed: A) => AsyncIterable<T>,
+  opts: { readonly finalWithoutGrant?: boolean } = {},
 ): AsyncGenerator<T> {
   let signed = await sign();
   for (let attempt = 0; ; attempt += 1) {
@@ -731,11 +739,30 @@ async function* retryExpiredGrantOnce<A extends { readonly grant?: SignedSession
       }
       return;
     } catch (e) {
+      if (opts.finalWithoutGrant === true && signed.grant === undefined) throw notRetriableGrantExpiry(e);
       if (received || attempt > 0 || signed.grant === undefined || !isSessionGrantExpired(e)) throw e;
       auth.session?.expired(signed.grant);
       signed = await sign();
     }
   }
+}
+
+/**
+ * A grant-expired answer to a request that carried no grant (a registered key signed it): no
+ * grant can be renewed and re-signing with the same key gets the same answer, so it is marked
+ * not retriable. Anything else is returned as is.
+ */
+function notRetriableGrantExpiry(e: unknown): unknown {
+  if (!isSessionGrantExpired(e) || !(e as TrueOpenError).retriable) return e;
+  const t = e as TrueOpenError;
+  return new TrueOpenError(t.family, t.code, t.message, {
+    retriable: false,
+    switchSource: t.switchSource,
+    ...(t.category !== undefined ? { category: t.category } : {}),
+    ...(t.details !== undefined ? { details: t.details } : {}),
+    ...(t.userAction !== undefined ? { userAction: t.userAction } : {}),
+    cause: t,
+  });
 }
 
 /** The only value currently accepted for TaskDataRequestAuthV1.schema_version. */

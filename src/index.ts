@@ -103,8 +103,9 @@ export {
   registeredSessionKey,
   RegisteredSessionKeys,
   sessionKeyAddressHex,
+  DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS,
 } from './session/registered-session-key';
-export type { SessionKeyMaterial, RegisteredSessionKey } from './session/registered-session-key';
+export type { SessionKeyMaterial, RegisteredSessionKey, RegisteredSessionKeysOptions } from './session/registered-session-key';
 
 export {
   validateModelId,
@@ -359,6 +360,7 @@ export type {
   OutputStreamEvent,
   ConfirmOutputParams,
   SessionKeyOptions,
+  RegisterSessionKeyOptions,
   CreateSessionOptions,
   SessionKeyUpdate,
   UpdateSessionKeyResult,

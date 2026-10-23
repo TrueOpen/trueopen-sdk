@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRouterTransport } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
-import type { OpenTaskHeader, OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
+import type { AckOutputRequest, OpenTaskHeader, OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenClient } from '../../src/client';
 import type { FacadeHubReader } from '../../src/client';
 import type { ChainClient, UpdateSessionKeyInput } from '../../src/transport/chain-client';
@@ -13,12 +13,13 @@ import { buildTaskOrder, defaultGenerationParams } from '../../src/order/task-or
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import { decodeSignedOrder, taskOrderEip712Digest } from '../../src/order/signed-order';
 import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
+import { sessionGrantHash } from '../../src/session/session-grant';
 import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
 import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { ethSecp256k1Address, ethAddressBytes, recoverEip712PubKey } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import type { TypedData } from '../../src/signer/typed-data-signer';
-import { sessionKeyFromPrivateKey } from '../../src/session/registered-session-key';
+import { generateSessionKey, sessionKeyFromPrivateKey } from '../../src/session/registered-session-key';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { hash32Text } from '../../src/codec/hash32';
 import { SESSION_KEY_AUTH, skKey, skAddress, fixtureOrder } from '../helpers/session-key-authorization';
@@ -159,7 +160,20 @@ function acceptTransport(headers: OpenTaskHeader[]): Transport {
   });
 }
 
-function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; anchorWaitMs?: number } = {}) {
+/** A Builder that answers AckOutput and records each request envelope. */
+function ackTransport(acks: AckOutputRequest[]): Transport {
+  return createRouterTransport(({ service }) => {
+    service(IngressAPI, {
+      ackOutput(req: AckOutputRequest) {
+        acks.push(req);
+        return { acked: true, alreadyAcked: false, ackedAt: 1n };
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  });
+}
+
+function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; anchorWaitMs?: number; grant?: boolean } = {}) {
   const hubState: HubState = {
     latest: opts.latest ?? 1_000n,
     maxKeyBlocks: 'maxKeyBlocks' in opts ? opts.maxKeyBlocks : 100n,
@@ -170,16 +184,31 @@ function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; ancho
   const prompts: TypedData[] = [];
   const inner = privateKeyTypedDataSigner(PRIV);
   const wallet = { signTypedData: async (d: TypedData) => { prompts.push(d); return inner.signTypedData(d); } };
+  const acks: AckOutputRequest[] = [];
   const client = new TrueOpenClient({
     chainId: 'trueopen-localnet-1', userAddress: USER, wallet, chain,
-    ingressTransport: acceptTransport([]), hub: makeHub(hubState),
+    ingressTransport: ackTransport(acks), hub: makeHub(hubState),
+    ...(opts.grant === true ? { session: { maxGrantBlocks: 400 } } : {}),
     ingressTransportFactory: () => acceptTransport(headers),
     nonce: () => new Uint8Array(32).fill(1),
     signatureChainId: EVM, feeDenom: 'utrueopen',
     sessionKeyAnchorPollMs: 1,
     ...(opts.anchorWaitMs !== undefined ? { sessionKeyAnchorWaitMs: opts.anchorWaitMs } : {}),
   });
-  return { client, chain, hubState, headers, prompts };
+  return { client, chain, hubState, headers, prompts, acks };
+}
+
+/** What an SDK request envelope's signature recovers to, and whether it carries a grant. */
+function envelopeSigner(env: NonNullable<AckOutputRequest['requestEnvelope']>): { signer: string; grant: boolean } {
+  const g = env.sessionGrant;
+  const digest = sdkRequestEip712Digest(
+    { chainId: env.chainId, method: env.method, sessionId: env.sessionId, taskId: env.taskId, requestNonce: env.requestNonce, expiryHeightOrTime: env.expiryHeightOrTime, bodyDigest: env.bodyDigest },
+    EVM,
+    g !== undefined
+      ? sessionGrantHash({ chainId: g.chainId, user: g.user, sessionKey: g.sessionKey, expiryHeight: g.expiryHeight, grantNonce: g.grantNonce, signatureChainId: g.signatureChainId })
+      : undefined,
+  );
+  return { signer: toHex(ethAddressBytes(recoverEip712PubKey(digest, env.signature))), grant: g !== undefined };
 }
 
 /** What a header's order signature and request envelope recover to. */
@@ -259,7 +288,7 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     }
   });
 
-  it('refuses expiryBlocks outside [1, max_session_key_blocks] and a non-canonical cap', async () => {
+  it('refuses expiryBlocks outside [2, max_session_key_blocks] and a non-canonical cap', async () => {
     const { client, chain } = setup();
     // 1 block never lands: the tx executes at latest + 1 and needs height < expiry.
     for (const expiryBlocks of [0, 1, 101, 1.5, -1, Number.NaN]) {
@@ -278,6 +307,64 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     }
     const { client } = setup({ maxKeyBlocks: 5n });
     expect((await client.createSession({ sessionKey: {} })).sessionKey!.expiryHeight).toBe(1_003n);
+  });
+
+  it('the default expiry is exact for a limit above 2^53 (computed in bigint)', async () => {
+    const max = (1n << 60n) + 1n;
+    const { client, chain } = setup({ maxKeyBlocks: max });
+    expect((await client.createSession({ sessionKey: {} })).sessionKey!.expiryHeight).toBe(1_000n + max - 2n);
+    expect(chain.creates[0]!.sessionKey!.expiryHeight).toBe(1_000n + max - 2n);
+  });
+
+  it('registers caller-supplied key material (persisted before the broadcast) as is', async () => {
+    const { client, chain } = setup();
+    const m = generateSessionKey();
+    const h = await client.createSession({ sessionKey: { key: m } });
+    expect(toHex(chain.creates[0]!.sessionKey!.sessionKey)).toBe(toHex(m.address));
+    expect(h.sessionKey!.address).toBe(`0x${toHex(m.address)}`);
+    expect(toHex(h.sessionKey!.privateKey)).toBe(toHex(m.privateKey));
+    expect((await client.sessionKeyState(SESSION)).matchesLoadedKey).toBe(true);
+  });
+
+  it('refuses invalid supplied material before any transaction, without key material in the error', async () => {
+    const { client, chain } = setup();
+    const m = generateSessionKey();
+    const other = generateSessionKey();
+    const bad = [
+      { privateKey: m.privateKey, address: other.address }, // address is not the key's
+      { privateKey: new Uint8Array(31), address: m.address },
+      { privateKey: new Uint8Array(32), address: m.address }, // zero key
+      sessionKeyFromPrivateKey(PRIV), // the owner's own key
+    ];
+    for (const key of bad) {
+      const e = (await client.createSession({ sessionKey: { key } }).then(() => undefined, (x: unknown) => x)) as Error;
+      expect(e).toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
+      for (const secret of [m.privateKey, PRIV]) expect(e.message).not.toContain(toHex(secret));
+    }
+    expect(chain.creates).toHaveLength(0);
+  });
+});
+
+describe('TrueOpenClient config: the session-key anchor wait', () => {
+  const make = (extra: Record<string, number>) => () => new TrueOpenClient({
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet: privateKeyTypedDataSigner(PRIV),
+    chain: new FakeChain({ latest: 1n, maxKeyBlocks: 100n, beaconReads: [] }), ingressTransport: acceptTransport([]),
+    ...extra,
+  });
+
+  it('refuses a wait that is not finite and >= 0, and a poll that is not finite and > 0', () => {
+    for (const w of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(make({ sessionKeyAnchorWaitMs: w })).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_SESSION_KEY_CONFIG_INVALID' }));
+    }
+    for (const p of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(make({ sessionKeyAnchorPollMs: p })).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_SESSION_KEY_CONFIG_INVALID' }));
+    }
+  });
+
+  it('accepts 0 (no wait), positive values and the defaults', () => {
+    expect(make({ sessionKeyAnchorWaitMs: 0, sessionKeyAnchorPollMs: 0.5 })).not.toThrow();
+    expect(make({ sessionKeyAnchorWaitMs: 15_000, sessionKeyAnchorPollMs: 1_000 })).not.toThrow();
+    expect(make({})).not.toThrow();
   });
 });
 
@@ -314,6 +401,7 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
     const NAMES = [
       'inclusive_expiry_and_exact_cap', 'idle_session', 'expiry_passed', 'anchor_before_reregistration', 'anchor_equals_set_height',
       'rotated_to_other_key', 'cleared_key', 'closed_retained_session', 'cap_one_unit_short', 'cap_reduced_below_spent', 'zero_cap_is_unlimited',
+      'unlimited_still_checks_overflow',
     ];
     /** The chain's admission result -> what the SDK refuses with before signing (undefined: it signs). */
     const SDK_CODE: Record<string, string | undefined> = {
@@ -325,6 +413,8 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
       SIGNATURE_MISMATCH: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
       SESSION_CLOSED: 'SDK_LOCAL_SESSION_CLOSED',
       ERR_SESSION_KEY_SPEND_CAP_EXCEEDED: 'SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED',
+      // spent + max_fee past u64, even with cap 0 (unlimited): the same local code, details.overflow.
+      AMOUNT_OVERFLOW: 'SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED',
     };
     /** Where the chain's single ERR_SESSION_KEY_INVALID splits into a more specific SDK code. */
     const BY_NAME: Record<string, string> = { anchor_before_reregistration: 'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT' };
@@ -524,6 +614,33 @@ describe('TrueOpenClient.useSessionKey / updateSessionKey / forgetSessionKey', (
     expect(prompts).toHaveLength(2);
   });
 
+  it('rotate when the chain has no key (after clear) needs an explicit spendCap: cap 0 would be unlimited', async () => {
+    const { client, chain } = setup();
+    await client.createSession({ sessionKey: { spendCap: 500n } });
+    await client.updateSessionKey(SESSION, { clear: true });
+    await expect(client.updateSessionKey(SESSION, { rotate: {} })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_SESSION_KEY_INVALID',
+      message: expect.stringContaining('rotate.spendCap'),
+    });
+    expect(chain.updates).toHaveLength(1); // only the clear
+    const r = await client.updateSessionKey(SESSION, { rotate: { spendCap: 700n } });
+    expect(r.newKey!.spendCap).toBe('700');
+    expect((chain.updates[1]!.action as { set: SessionKeyGrant }).set.spendCap).toBe('700');
+  });
+
+  it('rotate registers caller-supplied material, and refuses the key being rotated out', async () => {
+    const { client, chain } = setup();
+    const first = generateSessionKey();
+    await client.createSession({ sessionKey: { key: first } });
+    await expect(client.updateSessionKey(SESSION, { rotate: { key: first } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
+    expect(chain.updates).toHaveLength(0);
+    const next = generateSessionKey();
+    const r = await client.updateSessionKey(SESSION, { rotate: { key: next } });
+    expect(r.newKey!.address).toBe(`0x${toHex(next.address)}`);
+    expect(toHex((chain.updates[0]!.action as { set: SessionKeyGrant }).set.sessionKey)).toBe(toHex(next.address));
+    expect((await client.sessionKeyState(SESSION)).matchesLoadedKey).toBe(true);
+  });
+
   it('forgetSessionKey unloads the key locally only', async () => {
     const { client, chain, headers } = setup();
     await client.createSession({ sessionKey: {} });
@@ -532,5 +649,70 @@ describe('TrueOpenClient.useSessionKey / updateSessionKey / forgetSessionKey', (
     expect(chain.updates).toHaveLength(0);
     const res = await open(client, { context: context(1_000n, 998n) });
     expect(recovered(headers[0]!, res.context, 7n).order).toBe(USER_ADDRESS_HEX);
+  });
+});
+
+describe('requests after the registered key expires (orders never fall back)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const TASK = hexOf(0x42);
+  /** Moves the clock past the reuse window of the last observed height. */
+  const later = (): void => { const t = Date.now() + 5_000; vi.spyOn(Date, 'now').mockReturnValue(t); };
+
+  for (const grant of [false, true]) {
+    it(`before expiry the key signs a request; after it, ${grant ? 'the grant key' : 'the wallet'} does; an order is still refused`, async () => {
+      const { client, hubState, headers, acks, prompts } = setup({ grant });
+      const h = await client.createSession({ sessionKey: { expiryBlocks: 2 } }); // expiry 1002
+      const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
+      hubState.latest = 1_002n; // latest == expiry: still the key
+      later();
+      await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
+      expect(envelopeSigner(acks[0]!.requestEnvelope!)).toEqual({ signer: key, grant: false });
+      expect(prompts).toHaveLength(0);
+
+      hubState.latest = 1_003n;
+      later();
+      await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
+      const after = envelopeSigner(acks[1]!.requestEnvelope!);
+      if (grant) {
+        const g = acks[1]!.requestEnvelope!.sessionGrant!;
+        expect(after.grant).toBe(true);
+        expect(after.signer).toBe(toHex(g.sessionKey));
+        expect(after.signer).not.toBe(key);
+        expect(prompts.map((p) => p.primaryType)).toEqual(['SessionGrant']);
+      } else {
+        expect(after).toEqual({ signer: USER_ADDRESS_HEX, grant: false });
+        expect(prompts).toHaveLength(1);
+      }
+      const promptsBefore = prompts.length;
+      await expect(open(client, { context: context(1_003n, 1_001n) })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_EXPIRED' });
+      expect(headers).toHaveLength(0);
+      expect(prompts).toHaveLength(promptsBefore);
+    });
+  }
+
+  it('a renew seen on chain (sessionKeyState) brings the key back for requests', async () => {
+    const { client, chain, hubState, acks } = setup();
+    const h = await client.createSession({ sessionKey: { expiryBlocks: 2 } });
+    const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
+    hubState.latest = 1_003n;
+    later();
+    await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
+    expect(envelopeSigner(acks[0]!.requestEnvelope!).signer).toBe(USER_ADDRESS_HEX);
+    // Renewed on another device.
+    chain.stream = { ...chain.stream, sessionKeyExpiryHeight: 2_000n };
+    await client.sessionKeyState(SESSION);
+    await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
+    expect(envelopeSigner(acks[1]!.requestEnvelope!).signer).toBe(key);
+  });
+
+  it('renew through this client moves the expiry for requests too', async () => {
+    const { client, hubState, acks } = setup();
+    const h = await client.createSession({ sessionKey: { expiryBlocks: 2 } });
+    const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
+    await client.updateSessionKey(SESSION, { renew: { expiryBlocks: 50 } }); // 1050
+    hubState.latest = 1_010n;
+    later();
+    await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
+    expect(envelopeSigner(acks[0]!.requestEnvelope!).signer).toBe(key);
   });
 });

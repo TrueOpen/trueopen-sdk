@@ -63,21 +63,102 @@ export function registeredSessionKey(sessionId: string, privateKey: Uint8Array):
   return { sessionId, address: m.address, signer: privateKeyTypedDataSigner(m.privateKey) };
 }
 
-/** In-memory sessionId -> key map. */
-export class RegisteredSessionKeys {
-  private readonly keys = new Map<string, RegisteredSessionKey>();
+export interface RegisteredSessionKeysOptions {
+  /**
+   * Reads the latest block height, for the request-side expiry check (forRequest). Without it
+   * the expiry is not checked for requests and a loaded key always signs them.
+   */
+  readonly latestHeight?: () => Promise<bigint>;
+  /**
+   * How long an observed latest height may be reused, in milliseconds (default 1000, about one
+   * block). A reused height is trusted only while it is below the key's expiry, so a height one
+   * block stale still decides correctly; anything else is read again.
+   */
+  readonly heightMaxAgeMs?: number;
+  /** Clock, for tests. */
+  readonly now?: () => number;
+}
 
-  set(key: RegisteredSessionKey): void {
-    this.keys.set(key.sessionId, key);
+/** The default of RegisteredSessionKeysOptions.heightMaxAgeMs: about one block. */
+export const DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS = 1000;
+
+/**
+ * In-memory sessionId -> key map, with each key's expiry height as last seen on chain.
+ *
+ * Orders use `get`: the key always signs them, and openTask's prechecks refuse an expired one
+ * (no wallet fallback). Requests use `forRequest`: the key signs them only while
+ * `latest_height <= expiry_height`; after that the request falls back to the configured grant,
+ * else the wallet, so the output of the last orders admitted before expiry stays readable.
+ */
+export class RegisteredSessionKeys {
+  private readonly keys = new Map<string, { key: RegisteredSessionKey; expiryHeight: bigint | undefined }>();
+  private observed: { height: bigint; at: number } | undefined;
+  private readonly readLatestHeight: (() => Promise<bigint>) | undefined;
+  private readonly heightMaxAgeMs: number;
+  private readonly now: () => number;
+
+  constructor(opts: RegisteredSessionKeysOptions = {}) {
+    this.readLatestHeight = opts.latestHeight;
+    this.heightMaxAgeMs = opts.heightMaxAgeMs ?? DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS;
+    this.now = opts.now ?? (() => Date.now());
   }
 
+  /** Loads `key`; `expiryHeight` is its registration's expiry (undefined: unknown, never checked). */
+  set(key: RegisteredSessionKey, expiryHeight?: bigint): void {
+    this.keys.set(key.sessionId, { key, expiryHeight });
+  }
+
+  /** The loaded key, regardless of expiry: what an order is signed with. */
   get(sessionId: string): RegisteredSessionKey | undefined {
-    return this.keys.get(sessionId);
+    return this.keys.get(sessionId)?.key;
+  }
+
+  /** The loaded key's expiry height as last seen, or undefined. */
+  expiryHeight(sessionId: string): bigint | undefined {
+    return this.keys.get(sessionId)?.expiryHeight;
+  }
+
+  /**
+   * Records the chain's current expiry for `sessionId` when the loaded key is the registered one
+   * (`address`); a chain read showing another key or none changes nothing here.
+   */
+  refreshExpiry(sessionId: string, address: Uint8Array | undefined, expiryHeight: bigint): void {
+    const e = this.keys.get(sessionId);
+    if (e === undefined || address === undefined || !sameBytes(e.key.address, address)) return;
+    this.keys.set(sessionId, { key: e.key, expiryHeight });
+  }
+
+  /** Records a latest height the client just read (heights only grow, so the highest is kept). */
+  observeHeight(height: bigint): void {
+    if (this.observed === undefined || height >= this.observed.height) this.observed = { height, at: this.now() };
+  }
+
+  /**
+   * The key that signs a session-allowed request of `sessionId`: the loaded key while the latest
+   * height is at or before its expiry, else undefined (the caller falls back to the grant or the
+   * wallet). A recently observed height below the expiry is reused; otherwise the height is read.
+   */
+  async forRequest(sessionId: string): Promise<RegisteredSessionKey | undefined> {
+    const e = this.keys.get(sessionId);
+    if (e === undefined) return undefined;
+    if (e.expiryHeight === undefined || this.readLatestHeight === undefined) return e.key;
+    const seen = this.observed;
+    // Heights only grow: a height already past the expiry is final, however old.
+    if (seen !== undefined && seen.height > e.expiryHeight) return undefined;
+    // A recent height may lag the chain by a block, so it decides only with a block of slack.
+    if (seen !== undefined && this.now() - seen.at <= this.heightMaxAgeMs && seen.height < e.expiryHeight) return e.key;
+    const latest = await this.readLatestHeight();
+    this.observeHeight(latest);
+    return latest <= e.expiryHeight ? e.key : undefined;
   }
 
   delete(sessionId: string): void {
     this.keys.delete(sessionId);
   }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /** `0x` + 40 lowercase hex, for display and logging. */

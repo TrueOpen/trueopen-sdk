@@ -137,6 +137,10 @@ describe('MsgCreateSession with a session key grant', () => {
     expect(toHex(bytes)).toBe(expected);
   });
 
+  it('accepts the bounds: spend_cap u64 max, expiry_height 2^63 - 1', () => {
+    expect(() => encodeMsgCreateSession({ signer: 's', sessionKey: grant({ spendCap: ((1n << 64n) - 1n).toString(), expiryHeight: (1n << 63n) - 1n }) })).not.toThrow();
+  });
+
   it('rejects an invalid grant with SDK_LOCAL_SESSION_KEY_INVALID', () => {
     const bad: Partial<SessionKeyGrant>[] = [
       { sessionKey: new Uint8Array(19).fill(1) },
@@ -147,7 +151,9 @@ describe('MsgCreateSession with a session key grant', () => {
       { spendCap: '-1' },
       { spendCap: '1.5' },
       { spendCap: '0x10' },
+      { spendCap: (1n << 64n).toString() },
       { expiryHeight: 0n },
+      { expiryHeight: 1n << 63n },
     ];
     for (const b of bad) {
       expect(() => encodeMsgCreateSession({ signer: 's', sessionKey: grant(b) })).toThrowError(

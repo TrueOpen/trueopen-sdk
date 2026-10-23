@@ -64,8 +64,15 @@ function validateGrant(g: SessionKeyGrant): void {
   if (!/^(0|[1-9][0-9]*)$/.test(g.spendCap)) {
     throw invalidGrant(`spend_cap must be a canonical decimal (0 or [1-9][0-9]*), got ${JSON.stringify(g.spendCap)}`);
   }
+  // The chain parses the cap as a u64 (node ParseAmount) and heights live in [0, 2^63 - 1]
+  // (node IsBlockHeightV1); anything larger is ERR_SESSION_KEY_INVALID on chain, after the fee.
+  if (BigInt(g.spendCap) > U64_MAX) throw invalidGrant(`spend_cap must fit a u64 (at most ${U64_MAX}), got ${g.spendCap}`);
   if (g.expiryHeight <= 0n) throw invalidGrant('expiry_height must be non-zero');
+  if (g.expiryHeight > MAX_BLOCK_HEIGHT) throw invalidGrant(`expiry_height must be at most ${MAX_BLOCK_HEIGHT}, got ${g.expiryHeight}`);
 }
+
+const U64_MAX = (1n << 64n) - 1n;
+const MAX_BLOCK_HEIGHT = (1n << 63n) - 1n;
 
 /** Amount { atomic_units = 1 }; written even for "0" so an unlimited cap is explicit. */
 function encodeAmount(atomicUnits: string): Uint8Array {

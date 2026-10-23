@@ -345,6 +345,8 @@ export {
   DEFAULT_MAX_PENDING_FRAMES,
   MAX_OVERFLOW_RESUBSCRIBES,
   stripChatTemplateEos,
+  DEFAULT_ADMISSION_WAIT_MS,
+  nextRetryIdempotencyKey,
 } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
@@ -366,6 +368,10 @@ export type {
   SessionKeyUpdate,
   UpdateSessionKeyResult,
   SessionKeyState,
+  WaitForAdmissionOptions,
+  AdmissionOutcome,
+  RejectionDiagnosis,
+  RejectionReason,
 } from './client';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----

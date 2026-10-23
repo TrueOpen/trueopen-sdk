@@ -303,6 +303,15 @@ export interface OpenTaskParams {
    * `hub.getProfile(modelId, profileVersion).pricing`; pass it to skip that read.
    */
   readonly pricing?: ProfilePricing;
+  /**
+   * Who signs the order. `'auto'` (default): a registered session key loaded for the session
+   * signs it, after the key prechecks (see openTask), else the wallet. `'wallet'`: the wallet
+   * signs it even when a key is loaded, the key prechecks are skipped, and the request envelope
+   * is signed as for a session without a registered key (under config.session's grant when set,
+   * else by the wallet). Use it to recover from an order the chain rejected because the key was
+   * cleared, expired or ran out of cap, without unloading the key.
+   */
+  readonly orderSigner?: 'auto' | 'wallet';
 }
 
 /**
@@ -322,7 +331,76 @@ export interface OpenTaskResult extends OpenTaskAck {
   readonly builders: readonly OpenTaskBuilderResult[];
   /** Selected Builders whose nexus endpoint could not be resolved from chain; the order was not sent to them. */
   readonly unresolvedBuilders: readonly { readonly address: string; readonly error: unknown }[];
+  /** The order_sequence signed into the order (task_id is derived from it). */
+  readonly orderSequence: bigint;
+  /** Who signed the order: the wallet, or the session's registered key (ADR-0037). */
+  readonly orderSignedBy: 'wallet' | 'session-key';
+  /**
+   * The 20-byte address of the registered key that signed the order (orderSignedBy
+   * 'session-key' only). Never the private key.
+   */
+  readonly orderSignerAddress?: Uint8Array;
+  /** The order's max_fee in atomic units (what a registered key's spend cap is charged). */
+  readonly maxFee: bigint;
+  /**
+   * The parameters of a re-signed order under the same order_sequence, for when the chain
+   * rejects this one (see waitForAdmission): these params with `orderSequence` set to this
+   * order's, `context` and `expiryHeight` removed (a retry resolves fresh ones), and a new
+   * idempotency key `<key>#retry<n>` (a re-signed order has a new task_hash, and a key is only
+   * ever reused for the same task_hash). The payload is the same object, not a copy. The SDK
+   * never sends it by itself.
+   */
+  readonly retryParams: OpenTaskParams;
 }
+
+/** Options for waitForAdmission. */
+export interface WaitForAdmissionOptions {
+  /** Upper bound on the whole wait; default DEFAULT_ADMISSION_WAIT_MS. */
+  readonly timeoutMs?: number;
+  /** Milliseconds between chain reads; default DEFAULT_TRUST_ANCHOR_POLL_MS (about one block). */
+  readonly pollIntervalMs?: number;
+  /** Stops the wait (and the event streams) early; throws ORDER_ADMISSION_WAIT_ABORTED. */
+  readonly signal?: AbortSignal;
+}
+
+/** Why the chain most likely refused an order, derived from the session's committed state. */
+export type RejectionReason =
+  | 'session-closed'
+  | 'cleared'
+  | 'rotated'
+  | 'expired'
+  | 'anchor-before-set-height'
+  | 'spend-cap'
+  | 'unrelated';
+
+export interface RejectionDiagnosis {
+  /**
+   * The chain's next_expected_sequence is still this order's sequence, so a re-signed order can
+   * reuse it. When false (the sequence was consumed by another order or a MsgCancelOrder), the
+   * retry must use the next free sequence.
+   */
+  readonly sequenceFree: boolean;
+  readonly reason: RejectionReason;
+  /** The ASSIGN_REJECTED / ASSIGN_TIMEOUT events seen, one per Builder. */
+  readonly events: readonly { readonly builderAddress: string; readonly eventCode: string }[];
+  /** The session read the reason was derived from. */
+  readonly session: StreamStateView;
+}
+
+/** What waitForAdmission found on chain. */
+export type AdmissionOutcome =
+  /** The chain has the task with this order's task_hash. */
+  | { readonly kind: 'accepted'; readonly taskId: string }
+  /** The chain has a task for this task_id with a different task_hash: another order took the sequence. */
+  | { readonly kind: 'superseded'; readonly taskId: string; readonly chainTaskHash: string }
+  /**
+   * Every Builder that acked the order reported it rejected (or timed out), and the chain has
+   * no task for it. `retry` is the order's retryParams, without `orderSequence` when the
+   * sequence is no longer free. The caller decides what to change and calls openTask again.
+   */
+  | { readonly kind: 'rejected'; readonly taskId: string; readonly diagnosis: RejectionDiagnosis; readonly retry: OpenTaskParams }
+  /** Neither within timeoutMs. */
+  | { readonly kind: 'timeout'; readonly taskId: string };
 
 /** Expiry and cap of a registered session key grant (ADR-0037). */
 export interface SessionKeyOptions {
@@ -946,13 +1024,18 @@ export class TrueOpenClient {
         'openTask requires config.hub and config.ingressTransportFactory',
       );
     }
+    const signer = params.orderSigner ?? 'auto';
+    if (signer !== 'auto' && signer !== 'wallet') {
+      throw local('SDK_LOCAL_ORDER_SIGNER_INVALID', `orderSigner must be 'auto' or 'wallet', got ${JSON.stringify(signer)}`);
+    }
     const signatureChainId = this.signatureChainId();
     // These reads are independent, so they run concurrently. The fee denom and the pricing go
     // into the signature or decide whether the chain accepts the order, and a mistake in
     // either only surfaces after nexus accepted the order: the task just vanishes.
     // With a registered key loaded, one session read serves both the key prechecks and the
     // order sequence.
-    const registered = this.registeredKeys.get(params.sessionId);
+    // orderSigner 'wallet': as if no key were loaded (no prechecks, no key-signed envelope).
+    const registered = signer === 'wallet' ? undefined : this.registeredKeys.get(params.sessionId);
     const sessionRead = registered !== undefined ? this.cfg.chain.querySession(params.sessionId) : undefined;
     const [feeDenom, pricing, orderSequence, firstResolved, stream] = await Promise.all([
       this.resolveFeeDenom(),
@@ -1077,7 +1160,202 @@ export class TrueOpenClient {
       feeDenom,
       builders,
       unresolvedBuilders: errors,
+      orderSequence,
+      orderSignedBy: registered !== undefined ? 'session-key' : 'wallet',
+      ...(registered !== undefined ? { orderSignerAddress: Uint8Array.from(registered.address) } : {}),
+      maxFee: BigInt(order.maxFee.atomicUnits),
+      retryParams: retryParamsOf(params, orderSequence),
     };
+  }
+
+  /**
+   * Waits until the chain decides an order openTask placed, and diagnoses a rejection.
+   *
+   * openTask's acks are only local acceptance: the chain's Keeper is the final authority and can
+   * still refuse the order (a key rotated or cleared elsewhere, expired, a spend cap used up by
+   * concurrent orders, a session closed). A refused order does not consume its sequence, so the
+   * recovery is a new order, re-signed under the same order_sequence.
+   *
+   * The chain is the truth. It is read (QueryTask on config.taskReader) straight away and then
+   * every `pollIntervalMs`: a task with this order's task_hash is `accepted`; a task for the
+   * task_id with another task_hash is `superseded`. Meanwhile the task event stream of every
+   * Builder that acked the order is watched, as hints only: ASSIGNMENT_FINALIZED (or
+   * WORKER_ASSIGNMENT_FINALIZED / WORKER_HANDRAISES_ACCEPTED) triggers an immediate chain read;
+   * ASSIGN_REJECTED / ASSIGN_TIMEOUT is recorded. A failing event stream is ignored. One
+   * Builder's rejection does not prove another did not get the order admitted, so the result is
+   * `rejected` only once every acked Builder has reported a rejection or a timeout and a chain
+   * read started after the last report still finds no task. The session is then read
+   * (QuerySession) to diagnose the reason and whether the sequence is still free; `retry` is
+   * `res.retryParams`, without `orderSequence` when the sequence moved on (then openTask reads
+   * the next free one).
+   *
+   * The SDK never re-signs, renews, raises a cap or switches to the wallet by itself: the caller
+   * decides (renew or rotate with updateSessionKey, `orderSigner: 'wallet'`, ...) and calls
+   * openTask with `retry`. A re-signed order has a new task_hash, which is why the retry carries
+   * a new idempotency key. Re-sending to a Builder that already holds this task_id as a terminal
+   * task needs Nexus local terminal-task retry support, which is a separate Nexus requirement.
+   *
+   * Running out of `timeoutMs` resolves `{ kind: 'timeout' }`; aborting `signal` throws
+   * ORDER_ADMISSION_WAIT_ABORTED. `timeoutMs` takes effect between reads. Every event stream is
+   * closed when the wait ends. Needs config.taskReader and config.ingressTransportFactory.
+   */
+  async waitForAdmission(res: OpenTaskResult, opts: WaitForAdmissionOptions = {}): Promise<AdmissionOutcome> {
+    const { taskReader, ingressTransportFactory } = this.cfg;
+    if (taskReader === undefined || ingressTransportFactory === undefined) {
+      throw local(
+        'SDK_LOCAL_ADMISSION_UNCONFIGURED',
+        'waitForAdmission needs config.taskReader (RestChainReader) and config.ingressTransportFactory',
+      );
+    }
+    const pollMs = opts.pollIntervalMs ?? DEFAULT_TRUST_ANCHOR_POLL_MS;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_ADMISSION_WAIT_MS;
+    if (typeof pollMs !== 'number' || !Number.isFinite(pollMs) || pollMs <= 0) {
+      throw local('SDK_LOCAL_POLL_INTERVAL_INVALID', 'pollIntervalMs must be a positive finite number');
+    }
+    if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw local('SDK_LOCAL_TIMEOUT_INVALID', 'timeoutMs must be a positive finite number');
+    }
+    const taskId = res.taskId;
+    const sessionId = res.retryParams.sessionId;
+    const aborted = (): TrueOpenError => local('ORDER_ADMISSION_WAIT_ABORTED', `waiting for the admission of task ${taskId} was aborted`);
+    if (opts.signal?.aborted === true) throw aborted();
+
+    const deadline = Date.now() + timeoutMs;
+    const done = new AbortController();
+    const onAbort = (): void => done.abort();
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+    const abortedP = new Promise<'abort'>((resolve) => done.signal.addEventListener('abort', () => resolve('abort'), { once: true }));
+
+    // An event wakes the wait for an immediate chain read. `woken` covers an event that lands
+    // while a read is in flight: the next read then starts without sleeping.
+    let woken = false;
+    let wakeNow: () => void = () => undefined;
+    let wakeP: Promise<'wake'> = Promise.resolve('wake');
+    const rearm = (): void => {
+      woken = false;
+      wakeP = new Promise<'wake'>((resolve) => {
+        wakeNow = () => resolve('wake');
+      });
+    };
+    const wake = (): void => {
+      woken = true;
+      wakeNow();
+    };
+
+    // The Builders that accepted the order; each one's first rejection report, and a counter
+    // of reports so a read can tell whether one landed after it started.
+    const acked = res.builders.filter((b) => b.ack?.accepted === true);
+    const reports = new Map<string, { readonly builderAddress: string; readonly eventCode: string }>();
+    let reportGen = 0;
+    // Each read records reportGen when it starts. The first one starts before the event streams
+    // are set up (their requests are signed).
+    rearm();
+    let genAtRead = reportGen;
+    let read = this.readAdmittedTask(taskReader, taskId);
+    read.catch(() => undefined);
+    const streams: AbortController[] = [];
+    for (const b of acked) {
+      const ac = new AbortController();
+      streams.push(ac);
+      void (async () => {
+        try {
+          const events = new IngressClient(ingressTransportFactory(b.serviceEndpoint, b.tlsPubkeyHash), this.ingressAuth());
+          for await (const ev of events.getTaskEvents({ sessionId, taskId, signal: ac.signal })) {
+            if (ADMISSION_REJECT_EVENTS.has(ev.eventCode)) {
+              if (!reports.has(b.address)) {
+                reports.set(b.address, { builderAddress: b.address, eventCode: ev.eventCode });
+                reportGen += 1;
+                wake();
+              }
+            } else if (ADMISSION_HINT_EVENTS.has(ev.eventCode)) {
+              wake();
+            }
+          }
+        } catch {
+          // A hint only: polling does not depend on it.
+        }
+      })();
+    }
+
+    const race = async <T>(p: Promise<T>): Promise<T> => {
+      const r = await Promise.race([p, abortedP]);
+      if (r === 'abort') throw aborted();
+      return r as T;
+    };
+    const decided = (task: ChainTaskSnapshot): AdmissionOutcome =>
+      task.acceptedTaskHash === res.taskHash
+        ? { kind: 'accepted', taskId }
+        : { kind: 'superseded', taskId, chainTaskHash: task.acceptedTaskHash };
+
+    try {
+      for (;;) {
+        const task = await race(read);
+        if (task !== undefined) return decided(task);
+        if (acked.length > 0 && reports.size === acked.length && genAtRead === reportGen) {
+          const session = await race(this.cfg.chain.querySession(sessionId));
+          const sequenceFree = session.nextExpectedSequence === res.orderSequence;
+          if (!sequenceFree) {
+            // The sequence moved on: perhaps this very order was admitted after the read above.
+            const again = await race(this.readAdmittedTask(taskReader, taskId));
+            if (again !== undefined) return decided(again);
+          }
+          const reason = await race(this.rejectionReason(res, session));
+          const diagnosis: RejectionDiagnosis = { sequenceFree, reason, events: [...reports.values()], session };
+          let retry: OpenTaskParams = res.retryParams;
+          if (!sequenceFree) {
+            const { orderSequence: _, ...rest } = retry;
+            void _;
+            retry = rest;
+          }
+          return { kind: 'rejected', taskId, diagnosis, retry };
+        }
+        const left = deadline - Date.now();
+        if (left <= 0) return { kind: 'timeout', taskId };
+        if (!woken) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const slept = new Promise<'tick'>((resolve) => {
+            timer = setTimeout(() => resolve('tick'), Math.min(pollMs, left));
+          });
+          try {
+            await race(Promise.race([slept, wakeP]));
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        rearm();
+        genAtRead = reportGen;
+        read = this.readAdmittedTask(taskReader, taskId);
+      }
+    } finally {
+      opts.signal?.removeEventListener('abort', onAbort);
+      for (const ac of streams) ac.abort();
+      done.abort();
+    }
+  }
+
+  /** The chain's task for task_id, or undefined while there is none (node answers 404). */
+  private async readAdmittedTask(reader: OutputTaskReader, taskId: string): Promise<ChainTaskSnapshot | undefined> {
+    try {
+      return await reader.queryTask(taskId);
+    } catch (e) {
+      if (e instanceof TrueOpenError && e.code === 'CHAIN_QUERY_NOT_FOUND') return undefined;
+      throw e;
+    }
+  }
+
+  /** Why the chain most likely refused `res`, from the session state read after the rejection. */
+  private async rejectionReason(res: OpenTaskResult, s: StreamStateView): Promise<RejectionReason> {
+    if (s.status === 'CLOSED') return 'session-closed';
+    if (res.orderSignedBy !== 'session-key' || res.orderSignerAddress === undefined) return 'unrelated';
+    if (s.sessionKey === undefined) return 'cleared';
+    if (!bytesEqual(s.sessionKey, res.orderSignerAddress)) return 'rotated';
+    if ((await this.latestHeight('the session key expiry')) > s.sessionKeyExpiryHeight) return 'expired';
+    if (res.context.sessionAnchorHeight < s.sessionKeySetHeight) return 'anchor-before-set-height';
+    const cap = BigInt(s.sessionKeySpendCap);
+    const total = BigInt(s.sessionKeySpent) + res.maxFee;
+    // Past u64 the chain refuses even an unlimited cap (AMOUNT_OVERFLOW).
+    if ((cap !== 0n && total > cap) || total > U64_MAX) return 'spend-cap';
+    return 'unrelated';
   }
 
   /**
@@ -2123,6 +2401,35 @@ export const DEFAULT_TRUST_ANCHOR_WAIT_MS = 60_000;
 
 /** The nexus task event that follows the chain finalizing the winner. */
 const ASSIGNMENT_FINALIZED_EVENT = 'ASSIGNMENT_FINALIZED';
+
+/** waitForAdmission upper bound on the whole wait. */
+export const DEFAULT_ADMISSION_WAIT_MS = 60_000;
+
+/** Builder task events that report the order was not admitted (recorded by waitForAdmission). */
+const ADMISSION_REJECT_EVENTS: ReadonlySet<string> = new Set(['ASSIGN_REJECTED', 'ASSIGN_TIMEOUT']);
+
+/** Builder task events after which the chain likely has the task: waitForAdmission reads it at once. */
+const ADMISSION_HINT_EVENTS: ReadonlySet<string> = new Set([
+  ASSIGNMENT_FINALIZED_EVENT,
+  'WORKER_ASSIGNMENT_FINALIZED',
+  'WORKER_HANDRAISES_ACCEPTED',
+]);
+
+const RETRY_SUFFIX = /^(.*)#retry([1-9][0-9]*)$/s;
+
+/** `key#retry1` for a first retry; `key#retryK` becomes `key#retry(K+1)`. */
+export function nextRetryIdempotencyKey(key: string): string {
+  const m = RETRY_SUFFIX.exec(key);
+  return m === null ? `${key}#retry1` : `${m[1]}#retry${BigInt(m[2]!) + 1n}`;
+}
+
+/** An order's params for a re-signed retry under the same sequence (OpenTaskResult.retryParams). */
+function retryParamsOf(params: OpenTaskParams, orderSequence: bigint): OpenTaskParams {
+  const { context: _c, expiryHeight: _e, ...rest } = params;
+  void _c;
+  void _e;
+  return { ...rest, orderSequence, idempotencyKey: nextRetryIdempotencyKey(params.idempotencyKey) };
+}
 
 /**
  * Early subscribe's default read-ahead bound while the anchors are pending: the size of

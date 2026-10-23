@@ -58,7 +58,7 @@ function invalidGrant(why: string): TrueOpenError {
  * Checks what an encoder can know without the chain height: key length and non-zero, the cap
  * form, and a non-zero expiry. The owner-address and height-window checks belong to the client.
  */
-function validateGrant(g: SessionKeyGrant): void {
+export function validateGrant(g: SessionKeyGrant): void {
   if (g.sessionKey.length !== 20) throw invalidGrant(`session_key must be 20 bytes, got ${g.sessionKey.length}`);
   if (g.sessionKey.every((b) => b === 0)) throw invalidGrant('session_key must not be all zero');
   if (!/^(0|[1-9][0-9]*)$/.test(g.spendCap)) {
@@ -195,10 +195,41 @@ export interface MsgUpdateSessionKey {
   readonly action: { readonly set: SessionKeyGrant } | { readonly clear: true };
 }
 export function encodeMsgUpdateSessionKey(m: MsgUpdateSessionKey): Uint8Array {
+  const action = sessionKeyAction(m.action);
   const w = new ProtoWriter().string(1, m.signer).bytes(2, strictHash32('session_id', m.sessionId));
-  if ('set' in m.action) w.message(3, encodeGrant(m.action.set));
+  if (action.set !== undefined) w.message(3, encodeGrant(action.set));
   else w.message(4, new Uint8Array(0));
   return w.finish();
+}
+
+/**
+ * Checks a MsgUpdateSessionKey action at runtime, as the node's UnmarshalAmino does for the
+ * signed JSON: exactly one of `set` (a grant object) and `clear` (the boolean true). A missing
+ * action, both, a null arm, `clear: false` and `clear: {}` are refused (wire
+ * session_key_amino_v1.json negative_cases), so no encoder can commit an ambiguous action.
+ */
+export function sessionKeyAction(action: unknown): { readonly set?: SessionKeyGrant; readonly clear?: true } {
+  if (typeof action !== 'object' || action === null || Array.isArray(action)) {
+    throw invalidAction('the action must be an object');
+  }
+  const keys = Object.keys(action);
+  const a = action as Record<string, unknown>;
+  if (keys.length !== 1 || (keys[0] !== 'set' && keys[0] !== 'clear')) {
+    throw invalidAction(`exactly one of set or clear is required, got ${JSON.stringify(keys)}`);
+  }
+  if (keys[0] === 'clear') {
+    if (a.clear !== true) throw invalidAction(`clear must be the boolean true, got ${JSON.stringify(a.clear)}`);
+    return { clear: true };
+  }
+  const set = a.set;
+  if (typeof set !== 'object' || set === null || Array.isArray(set) || !((set as SessionKeyGrant).sessionKey instanceof Uint8Array)) {
+    throw invalidAction('set must be a session key grant');
+  }
+  return { set: set as SessionKeyGrant };
+}
+
+function invalidAction(why: string): TrueOpenError {
+  return new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_KEY_INVALID', `invalid session key update: ${why}`);
 }
 
 /**

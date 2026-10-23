@@ -73,11 +73,44 @@ export { CosmjsChainWriter, composeChainClient } from './transport/cosmjs-chain-
 export type { TxBroadcaster, CosmjsChainWriterOptions, TxInclusionPolicy } from './transport/cosmjs-chain-writer';
 export { DEFAULT_TX_INCLUSION } from './transport/cosmjs-chain-writer';
 
-export { createTrueOpenChainClient, connectTrueOpenChainClient } from './transport/trueopen-chain-client';
+export {
+  createTrueOpenChainClient,
+  connectTrueOpenChainClient,
+  createTrueOpenWeb3ChainClient,
+  connectTrueOpenWeb3ChainClient,
+} from './transport/trueopen-chain-client';
 export type {
   CreateTrueOpenChainClientConfig,
   ConnectTrueOpenChainClientOptions,
+  CreateTrueOpenWeb3ChainClientConfig,
+  ConnectTrueOpenWeb3ChainClientOptions,
 } from './transport/trueopen-chain-client';
+
+// ---- Web3 (EIP-712 wallet) transaction path: LEGACY_AMINO_JSON + ExtensionOptionsWeb3Tx ----
+export {
+  AMINO_NAME,
+  aminoMsgCreateSession,
+  aminoMsgUpdateSessionKey,
+  aminoMsgCancelOrder,
+  canonicalAminoSignDoc,
+  canonicalJson,
+} from './transport/amino-json';
+export type { AminoMsg, AminoJsonValue, AminoSignDocInput } from './transport/amino-json';
+export { cosmosWeb3TypedData, cosmosWeb3Domain } from './codec/cosmos-web3';
+export {
+  WEB3_EXTENSION_TYPE_URL,
+  encodeExtensionOptionsWeb3Tx,
+  assembleWeb3TxRaw,
+  signWeb3Tx,
+  Web3TxBroadcaster,
+} from './transport/web3-tx';
+export type {
+  Web3TxRawInput,
+  SignWeb3TxInput,
+  SignedWeb3Tx,
+  Web3ChainRpc,
+  Web3TxBroadcasterOptions,
+} from './transport/web3-tx';
 
 export { SessionManager } from './session/session-manager';
 export type { SessionHandle, SessionKeyHandle } from './session/session-manager';

@@ -83,8 +83,9 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 - **Added:** `waitForAdmission(res, { timeoutMs?, pollIntervalMs?, signal? })` waits for the chain
   to decide an order and resolves `accepted` (chain task has this `task_hash`), `superseded`
   (another `task_hash` for the `task_id`), `rejected` or `timeout`. The chain is the truth; every
-  acking Builder's task events are hints (finalized/handraise events trigger a read;
-  `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are recorded). `rejected` needs every acked Builder to have
+  acking Builder's task events are hints (`ASSIGN_ACCEPTED` / `ASSIGNMENT_FINALIZED` trigger a
+  read; `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` after the Builder's last `ORDER_RECEIVED`, or a
+  NotFound event stream, are that Builder's report). `rejected` needs every acked Builder to have
   reported and a later chain read to show no task, since one Builder's rejection does not prove
   another did not get the order admitted; or, with no reports needed, the latest height past the
   order's `orderExpireHeight` and a later read with no task (a Builder may refuse the key-signed
@@ -107,9 +108,61 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 - **Added:** `openTask({ orderSigner: 'wallet' })` signs the order with the wallet while a key is
   loaded, skipping the key prechecks; the envelope is signed as without a key (grant, else
   wallet). The default `'auto'` is unchanged. An unknown value is `SDK_LOCAL_ORDER_SIGNER_INVALID`.
-- The SDK never re-signs, renews, raises a cap or switches to the wallet by itself. Re-sending
-  the same `task_id` to a Builder that holds it as a terminal task needs Nexus local
-  terminal-task retry support, a separate Nexus requirement not available yet.
+- The SDK never re-signs, renews, raises a cap or switches to the wallet by itself. Builders that
+  abandoned a rejected order accept its retry; a task that reached the chain and finished refuses
+  a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
+- **Interop with the deployed node (PR #34) and nexus (PR #56):**
+  - **Fixed:** `waitForAdmission` on a retry no longer counts the previous attempt's
+    `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT`: Nexus keeps an abandoned task's journal and the event
+    stream replays it, so a Builder's report is reset on every `ORDER_RECEIVED`.
+  - **Fixed:** the admission hints are `ASSIGN_ACCEPTED` and `ASSIGNMENT_FINALIZED`; the chain
+    codes `WORKER_ASSIGNMENT_FINALIZED` / `WORKER_HANDRAISES_ACCEPTED` never reach the SDK.
+  - **Added:** a GetTaskEvents NotFound from a Builder that acked the order is its report
+    (`ABANDONED_REPORT`, `'ABANDONED'`), so a fast rejection is not a wait until the deadline.
+  - **Fixed:** `retryParams` keeps the order window relative (`OpenTaskParams.orderWindow`,
+    `OrderWindowOffsets`), rebased on the retry's context, so a retry after a past-deadline
+    rejection is not refused by every Builder. `openTask` refuses an order whose
+    `orderExpireHeight` is below the latest height with `SDK_LOCAL_ORDER_EXPIRED`. An invalid
+    `orderWindow` is `SDK_LOCAL_ORDER_WINDOW_INVALID`.
+  - **Added:** a retry whose order is identical to the rejected one (the Builders keep a tombstone
+    of its input) resolves one fresh context, then fails with `SDK_LOCAL_RETRY_ORDER_UNCHANGED`.
+  - **Added:** a retry answered `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` by a Builder still
+    tracking the rejected version is re-sent to it after `orderReplacementRetryMs` (default
+    `DEFAULT_ORDER_REPLACEMENT_RETRY_MS`, 1000), at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` (3)
+    times, with the envelope re-signed under a fresh nonce. A bad value is `SDK_LOCAL_CONFIG_INVALID`.
+  - **Added:** Builders may lag a key change by up to `MAX_SESSION_KEY_CACHE_TTL_BLOCKS` (10)
+    blocks. The client records each session's last key-change height (createSession with a key,
+    rotate, renew, `useSessionKey`); within 10 blocks of it a key-signed request or OpenTask
+    refused with `SDK_AUTH_INVALID_SIGNATURE` / `DATA_ACCESS_INVALID_SIGNATURE` /
+    `*_SESSION_GRANT_EXPIRED` is re-signed with a fresh nonce and re-sent after
+    `sessionKeyChangeRetryMs` (default `DEFAULT_KEY_CHANGE_RETRY_DELAY_MS`, 1000), at most
+    `DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS` (10) times. Outside the window those answers are final.
+    `RegisteredSessionKeys` gains `retryAfterKeyChange`, `keyChangeHeight`, `noteKeyChange` and the
+    `keyChangeRetryDelayMs` / `keyChangeRetryAttempts` / `sleep` options; `set` and `refreshExpiry`
+    take an optional key-change / set height.
+  - **Changed:** a `*_SESSION_GRANT_EXPIRED` answer to a request that carried no grant is
+    `retriable: false` on every path (SDK envelopes, streams, Task Data, OpenTask fan-out
+    results), outside the key-change window. A key-signed Task Data request answered
+    `DATA_ACCESS_INVALID_SIGNATURE` (what a Builder without the local Task says) is
+    `switchSource: true`.
+  - **Added:** `openTask` with a registered key refuses an order whose `earliestSubmitHeight` is
+    after the key's expiry (`SDK_LOCAL_SESSION_KEY_EXPIRED`; the Keeper checks the expiry at the
+    admitting height); a window that only ends after it is sent with
+    `OpenTaskResult.keyExpiresInOrderWindow`. `OpenTaskResult` gains `earliestSubmitHeight` and
+    `sessionKeyExpiryHeight`. The `expired` diagnosis compares the expiry with the later of the
+    latest height and `earliestSubmitHeight`.
+  - **Added:** a spend cap above u64 max, or an expiry above 2^63 - 1, is
+    `SDK_LOCAL_SESSION_KEY_INVALID` before any transaction (client and `MsgCreateSession` /
+    `MsgUpdateSessionKey` encoders).
+  - **Added:** registration tx failures are classified: `CHAIN_SESSION_KEY_INVALID` (task 1144),
+    `CHAIN_SESSION_KEY_EXPIRED` (1145), `CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED` (1146),
+    `CHAIN_SESSION_CLOSED` (1105 "session cannot update authorization") and
+    `CHAIN_SESSION_NOT_OWNER` (sdk 4), matched on code and raw-log text (and codespace for
+    CheckTx), with the generic code in `details.txFailure`; `sessionTxFailureCode` is exported.
+    **Changed:** these failures no longer surface as `CHAIN_TX_FAILED` / `CHAIN_TX_REJECTED`.
+  - **Added:** `updateSessionKey` `clear` and `rotate` (and `renew`) read the session first and send
+    nothing for a CLOSED session (`SDK_LOCAL_SESSION_CLOSED`) or another user's
+    (`SDK_LOCAL_SESSION_NOT_OWNER`).
 - Pinned to wire PR #47 @ `602cb18` (untagged, two commits after `v0.5.0`; proto identical to `88d1238`,
   which adds server-side request vectors and the session key Amino vectors); re-pin to the release
   tag once it ships.

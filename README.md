@@ -547,15 +547,40 @@ const { newKey } = await client.updateSessionKey(sessionId, { rotate: { expiryBl
 - **Rotate after clear.** A clear zeroes the cap, so a later `rotate` must pass `spendCap`
   explicitly (`SDK_LOCAL_SESSION_KEY_INVALID` otherwise). `renew` checks the chain's key, then
   sends the tx; that is not atomic, so do not renew on one device while rotating on another.
+  `clear`, `rotate` and `renew` all read the session first and send nothing for a CLOSED session
+  (`SDK_LOCAL_SESSION_CLOSED`) or another user's (`SDK_LOCAL_SESSION_NOT_OWNER`).
+- **Registration failures are classified.** A refused `MsgCreateSession` / `MsgUpdateSessionKey`
+  is `CHAIN_SESSION_KEY_INVALID` (task 1144: bad key, expiry outside the registration window, cap
+  above u64), `CHAIN_SESSION_KEY_EXPIRED` (1145), `CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED` (1146),
+  `CHAIN_SESSION_CLOSED` (1105 "session cannot update authorization") or `CHAIN_SESSION_NOT_OWNER`
+  (sdk 4), instead of the generic `CHAIN_TX_FAILED` / `CHAIN_TX_REJECTED` (kept in
+  `details.txFailure`). A cap above u64 max or an expiry above 2^63 - 1 is refused locally first
+  (`SDK_LOCAL_SESSION_KEY_INVALID`).
+- **Builders may lag a key change by up to 10 blocks.** A Builder caches a session's key state for
+  up to `MAX_SESSION_KEY_CACHE_TTL_BLOCKS` (10) blocks, so right after a rotate or renew (or
+  createSession with a key) it can still judge against the old key or expiry. Within 10 blocks of
+  the change, a key-signed request or OpenTask refused with `SDK_AUTH_INVALID_SIGNATURE` /
+  `DATA_ACCESS_INVALID_SIGNATURE` / `*_SESSION_GRANT_EXPIRED` is re-signed with a fresh nonce and
+  sent again after about a block (`sessionKeyChangeRetryMs`, default 1000), at most
+  `DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS` (10) times; after the window those answers are final. Renew at
+  least 10 blocks before the expiry.
 - **Zero cap is unlimited.** `spendCap` defaults to `"0"`: a leaked key can then authorize orders
   up to the whole account balance. Set a cap where that matters. The cap counts the cumulative
   `max_fee` of admitted orders and is never reset.
 - **No silent wallet fallback.** Before signing, `openTask` checks what the chain will check: not
   CLOSED, the registered key is the loaded one, not expired, the session anchor is at or after the
   key's registration height (it waits up to `sessionKeyAnchorWaitMs` for that), and
-  `spent + max_fee <= cap` (and fits a u64 even with cap 0). A failed check throws an
-  `SDK_LOCAL_SESSION_*` error. Use
+  `spent + max_fee <= cap` (and fits a u64 even with cap 0). The chain checks the expiry at the
+  admitting height, which is at or after `earliestSubmitHeight`: an order whose window starts after
+  the expiry is refused (`SDK_LOCAL_SESSION_KEY_EXPIRED`); one whose window only ends after it is
+  sent with `res.keyExpiresInOrderWindow` set (it is rejected if admitted after the expiry). A
+  failed check throws an `SDK_LOCAL_SESSION_*` error. Use
   `sessionKeyState(sessionId)` to see why; `forgetSessionKey` returns the session to wallet signing.
+- **Expired answers to key-signed requests are final.** A registered-key request carries no grant,
+  so `SDK_AUTH_SESSION_GRANT_EXPIRED` / `DATA_ACCESS_SESSION_GRANT_EXPIRED` for it is
+  `retriable: false` (outside the key-change window above). A Builder that does not hold the Task
+  answers a key-signed Task Data request with `DATA_ACCESS_INVALID_SIGNATURE`, not NOT_FOUND; that
+  answer is `switchSource: true`, so try the Builder that holds the Task.
 - **If the chain rejects an order.** See below; nothing is resubmitted automatically.
 - **Rollout.** Enable it only after the chain (`max_session_key_blocks` of at least 2) and the Task
   Builders support it; otherwise registration is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
@@ -583,23 +608,38 @@ if (out.kind === 'rejected') {
 ```
 
 - `accepted` / `superseded` come from the chain task (same or another `task_hash`). `rejected`
-  needs **every** acking Builder to report `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` and a later chain
-  read to still show no task: one Builder's rejection does not prove another did not get the
-  order admitted. A Builder may refuse the key-signed event stream once the key changed, so
-  `rejected` also follows, without any report, once the latest height is past the order's
-  `orderExpireHeight` and the chain still has no task. Otherwise the wait ends as `timeout`.
+  needs **every** acking Builder to report and a later chain read to still show no task: one
+  Builder's rejection does not prove another did not get the order admitted. A report is
+  `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` after the Builder's last `ORDER_RECEIVED` (a Builder keeps
+  an abandoned task's journal, so a retry's stream replays the previous attempt first), or
+  `ABANDONED` when the event stream answers NotFound (the Builder dropped the task it acked).
+  `ASSIGN_ACCEPTED` / `ASSIGNMENT_FINALIZED` trigger an immediate chain read. A Builder may refuse
+  the key-signed event stream once the key changed, so `rejected` also follows, without any
+  report, once the latest height is past the order's `orderExpireHeight` and the chain still has
+  no task. Otherwise the wait ends as `timeout`.
 - `reason` comes from the session read after the rejection: `session-closed`, `cleared`,
-  `rotated`, `expired`, `anchor-before-set-height`, `spend-cap` or `unrelated` (always
+  `rotated`, `expired` (the expiry is compared with the later of the latest height and the
+  order's `earliestSubmitHeight`), `anchor-before-set-height`, `spend-cap` or `unrelated` (always
   `unrelated` for a wallet-signed order).
 - `retry` is `res.retryParams`: the same params and sequence, without `context` / `expiryHeight`,
-  and a new idempotency key `<key>#retry<n>`, because the re-signed order has a new `task_hash`
-  and a key only repeats the same one. When the sequence was used up meanwhile (another order, or
-  `cancelOrder`), `sequenceFree` is false and `retry` has no `orderSequence`.
+  and a new idempotency key `<key>#retry<n>`, because the re-signed order has a new `task_hash`.
+  Its `orderWindow` keeps the order window relative to the original context's latest height, and
+  openTask rebases it on the retry's fresh context, so a retry after a past-deadline rejection is
+  not born expired. When the sequence was used up meanwhile (another order, or `cancelOrder`),
+  `sequenceFree` is false and `retry` has no `orderSequence`.
+- A retry identical to the rejected order (same anchor, heights and fees) would hit the Builders'
+  tombstone of the deleted input: openTask then resolves one fresh context, and if the order is
+  still identical throws `SDK_LOCAL_RETRY_ORDER_UNCHANGED` (retriable: a block later, or change
+  the order). A Builder still tracking the rejected version answers
+  `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` until it reconciles; openTask re-sends the retry to
+  it after about a block (`orderReplacementRetryMs`), at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` (3)
+  times, re-signing the envelope with a fresh nonce (a wallet-signed envelope prompts each time).
+- Any order whose `orderExpireHeight` is below the latest height is refused locally
+  (`SDK_LOCAL_ORDER_EXPIRED`) instead of by every Builder.
 - **The SDK never re-signs, renews, raises a cap or switches to the wallet by itself.** You decide,
   then call `openTask(retry)`. `orderSigner: 'wallet'` signs one order with the wallet while a key
   stays loaded (no key prechecks).
-- Re-sending the same `task_id` to a Builder that already holds it as a terminal task needs Nexus
-  local terminal-task retry support, a separate Nexus requirement not available yet.
+- A task that reached the chain and finished refuses a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
 
 ### ✅ On-chain writes: direct ethsecp256k1 signing (`EthSecp256k1DirectSigner`)
 

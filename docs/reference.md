@@ -39,6 +39,8 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `hub` | `FacadeHubReader` | Needed by `openTask` (builder set, order context, pricing). |
 | `taskReader` | `OutputTaskReader` | Needed to derive output trust anchors (§10). |
 | `sessionKeyRequestExpiryMarginBlocks` | `number` | Blocks of margin before a registered key's expiry for requests (default 3): the key signs a session's requests only while `latest + margin <= expiry`, then they fall back to the grant or the wallet. Orders are unaffected. A non-negative integer, else `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID`. |
+| `sessionKeyChangeRetryMs` | `number` | Delay before a key-signed request or OpenTask refused inside the key-change window is re-signed and re-sent (default `DEFAULT_KEY_CHANGE_RETRY_DELAY_MS`, 1000, about a block; §6.1). Finite and `>= 0`, else `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID`. |
+| `orderReplacementRetryMs` | `number` | Delay before a retry (`waitForAdmission`'s `retry`) is re-sent to a Builder answering `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` (default `DEFAULT_ORDER_REPLACEMENT_RETRY_MS`, 1000), at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` (3) times. Finite and `>= 0`, else `SDK_LOCAL_CONFIG_INVALID`. |
 | `sessionKeyAnchorWaitMs` / `sessionKeyAnchorPollMs` | `number` | How long `openTask` waits for an anchor at or after a registered key's `set_height` (default `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`, 15000; 0 disables; finite and `>= 0`) and the poll interval (default 1000; finite and `> 0`). Anything else throws `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` from the constructor. |
 | `session` | `{ maxGrantBlocks, grantBlocks?, renewBeforeBlocks? }` | Opt-in session grants: the wallet signs one `SessionGrant` for an in-memory session key, which then signs SubscribeOutput / AckOutput / GetTaskEvents / PrepareChallenge / OUTPUT task-data requests. For OpenTask the grant key signs the request envelope; the order itself is signed by the wallet, or by a registered key (§6.1). The key is never persisted. |
 | `nonce` | `() => Uint8Array` | Request nonce (exactly 32 bytes). Defaults to the platform secure RNG. |
@@ -84,6 +86,20 @@ async openTask(params: OpenTaskParams): Promise<OpenTaskResult>
 | `inputMediaType?` / `chunkSizeBytes?` | OpenTask transport tuning. |
 | `pricing?` | Defaults to `hub.getProfile(...).pricing`; pass to skip the read. |
 | `orderSigner?` | `'auto'` (default): a loaded registered key signs the order, after its prechecks, else the wallet. `'wallet'`: the wallet signs even with a key loaded; no key prechecks run and the envelope is signed as without a key (grant when `session` is configured, else the wallet). Anything else is `SDK_LOCAL_ORDER_SIGNER_INVALID`. |
+| `orderWindow?` | `OrderWindowOffsets` `{ earliestSubmitBlocks, orderExpireBlocks }` (bigint, may be negative): when set, `order.earliestSubmitHeight` / `orderExpireHeight` are ignored and become `context.latestHeight + offset` (at least 1). `retryParams` sets it. Not two bigints: `SDK_LOCAL_ORDER_WINDOW_INVALID`. |
+
+An order whose `orderExpireHeight` is below the context's latest height is refused before
+signing (`SDK_LOCAL_ORDER_EXPIRED`, `details.{orderExpireHeight, latestHeight}`): every Builder
+would answer `NEXUS_INGRESS_ORDER_EXPIRED`.
+
+Re-sends to one Builder, each with the request envelope re-signed under a fresh nonce (the
+Builder consumed the previous one; the signed order is unchanged), happen inside the fan-out:
+a key-signed OpenTask refused inside the key-change window (§6.1), and a retry (params from
+`retryParams`) refused with `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` by a Builder still
+tracking the rejected version (it abandons it on its next reconcile), after
+`orderReplacementRetryMs`, at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` times. A wallet-signed
+envelope prompts the wallet on each re-send. `openTask` returns once every Builder settled. A
+`SDK_AUTH_SESSION_GRANT_EXPIRED` answer to an envelope without a grant is `retriable: false`.
 
 `openTask` resolves the fee denom, pricing, order sequence and context concurrently (fails
 closed with `SDK_LOCAL_PRICING_UNAVAILABLE` / `SDK_LOCAL_FEE_DENOM_MISMATCH` if unavailable),
@@ -118,8 +134,11 @@ and never rejects (no-op without `ingressPrewarm`). Under Node, set
 | `orderSignedBy` | `'wallet' \| 'session-key'`. |
 | `orderSignerAddress?` | 20-byte address of the registered key that signed (session-key orders only; never the private key). |
 | `maxFee` | The order's `max_fee` (bigint, atomic units). The anchor height is `context.sessionAnchorHeight`. |
+| `earliestSubmitHeight` | The order's `earliest_submit_height`: the Keeper cannot admit it earlier. |
 | `orderExpireHeight` | The order's `order_expire_height`: the Keeper cannot admit it at a later height (`waitForAdmission`'s deadline rule). |
-| `retryParams` | `OpenTaskParams` for a re-signed order under the same sequence: these params with `orderSequence` set, `context` / `expiryHeight` removed, and `idempotencyKey` = `<key>#retry1` (`<key>#retryK` becomes `#retry(K+1)`, see `nextRetryIdempotencyKey`). The payload is the same object. Never sent by the SDK itself. |
+| `sessionKeyExpiryHeight?` | The signing key's expiry as the session read showed it (session-key orders only). |
+| `keyExpiresInOrderWindow?` | `true` when a registered key signed and `orderExpireHeight > sessionKeyExpiryHeight`: admitted after the expiry, the chain rejects the order. |
+| `retryParams` | `OpenTaskParams` for a re-signed order under the same sequence: these params with `orderSequence` set, `context` / `expiryHeight` removed, `orderWindow` = this order's window minus its context's `latestHeight` (so a retry is rebased, not born expired), and `idempotencyKey` = `<key>#retry1` (`<key>#retryK` becomes `#retry(K+1)`, see `nextRetryIdempotencyKey`). `order` and the payload are the same objects. It also carries this order's `task_hash` (an internal symbol key, kept by an object spread): a retry whose order comes out identical resolves one fresh context (bypassing the anchor-reuse cache), then throws `SDK_LOCAL_RETRY_ORDER_UNCHANGED` (retriable) if still identical, because the Builders keep a tombstone of the rejected order's input. Never sent by the SDK itself. |
 
 ```ts
 async waitForAdmission(res: OpenTaskResult, opts?: WaitForAdmissionOptions): Promise<AdmissionOutcome>
@@ -150,10 +169,15 @@ Waits for the chain to decide an order (acks are only local acceptance). Needs `
   is "not on chain yet", any other read error is thrown. A task whose `acceptedTaskHash` is empty
   or not Hash32 text decides nothing yet (polling continues).
 - The task event stream of every Builder whose ack was `accepted` is opened (signed with this
-  client's `ingressAuth()`) and closed when the wait ends. `ASSIGNMENT_FINALIZED`,
-  `WORKER_ASSIGNMENT_FINALIZED` and `WORKER_HANDRAISES_ACCEPTED` trigger an immediate read;
-  `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are recorded (first per Builder). A failing stream is
-  ignored, and that Builder never reports. With a registered key loaded the streams are signed by
+  client's `ingressAuth()`) and closed when the wait ends. `ASSIGN_ACCEPTED` (the AssignTx landed
+  and the task exists on chain) and `ASSIGNMENT_FINALIZED` trigger an immediate read (Nexus never
+  emits the chain codes `WORKER_*` on this stream). `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are
+  recorded as the Builder's report, but an `ORDER_RECEIVED` clears it: Nexus keeps an abandoned
+  task's journal and appends a retry's events to it, and the stream replays from the start, so
+  only a report after the last `ORDER_RECEIVED` is about this order (a woken read waits one
+  macrotask turn so a replay burst is processed first). A stream that fails with NotFound counts
+  as the report `ABANDONED_REPORT` (`'ABANDONED'`): the Builder no longer tracks a task it acked.
+  Any other stream failure is ignored, and that Builder never reports. With a registered key loaded the streams are signed by
   that key, so a Builder refuses them (`SDK_AUTH_INVALID_SIGNATURE`) once the key was rotated or
   cleared or the session closed: exactly the cases being diagnosed. The deadline rule below then
   decides.
@@ -164,7 +188,7 @@ Waits for the chain to decide an order (acks are only local acceptance). Needs `
   read made after that shows no task. Then `chain.querySession` is read: `sequenceFree` compares
   `nextExpectedSequence`; if it moved on, the task is read once more (this order may have just
   been admitted). The reason, in order: CLOSED → `session-closed`; for a key-signed order, no key
-  → `cleared`, another key → `rotated`, latest height > expiry → `expired`, anchor <
+  → `cleared`, another key → `rotated`, max(latest height, `earliestSubmitHeight`) > expiry → `expired`, anchor <
   `set_height` → `anchor-before-set-height`, `spent + maxFee` over a nonzero cap (or past u64)
   → `spend-cap`; else (and always for a wallet order) `unrelated`. `expired` is judged against
   the latest height at diagnosis time, not at the rejection: a key that expired since then
@@ -172,9 +196,9 @@ Waits for the chain to decide an order (acks are only local acceptance). Needs `
 - `retry` is `res.retryParams`, without `orderSequence` when `sequenceFree` is false.
 - The SDK never re-signs, renews, raises a cap or switches to the wallet by itself; the caller
   decides and calls `openTask(retry)` (optionally with `orderSigner: 'wallet'`). The retry uses a
-  new idempotency key because the re-signed order's `task_hash` differs. Re-sending the same
-  `task_id` to a Builder that holds it as a terminal task needs Nexus local terminal-task retry
-  support, a separate Nexus requirement not yet available.
+  new idempotency key because the re-signed order's `task_hash` differs. Builders that abandoned
+  the rejected order accept the new version; see `openTask` for the one still tracking it. A task
+  that reached the chain and finished refuses a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
 
 ### 1.4 Task status and events
 
@@ -472,6 +496,7 @@ sessionKeyState(sessionId: string): Promise<SessionKeyState>
 | `updateSessionKey(.., { renew })` | `MsgUpdateSessionKey` (wallet-signed) with the loaded key and a new expiry and cap. The key must be loaded and still the chain's key (`SDK_LOCAL_SESSION_KEY_NOT_REGISTERED`); the session must not be CLOSED. The check and the tx are not atomic: if another device rotates in between, the renew re-registers the old key (there is no compare-and-set on chain), so do not renew on one device while rotating on another. |
 | `updateSessionKey(.., { rotate })` | Generates a fresh key (never the old one; or takes `rotate.key`), registers it, and after the chain applied it loads it; `newKey` is its material, which you persist. Orders the old key signed that were not yet admitted are rejected. When the chain has no key (never set, or cleared) `spendCap` is required (`SDK_LOCAL_SESSION_KEY_INVALID`): there is no cap to keep, and the cleared cap 0 would be unlimited. |
 | `updateSessionKey(.., { clear: true })` | Removes the registration and, on success, the loaded key; the wallet signs the session's orders again. |
+| every `updateSessionKey` action | Reads the session first and sends nothing when it is another user's (`SDK_LOCAL_SESSION_NOT_OWNER`) or CLOSED (`SDK_LOCAL_SESSION_CLOSED`). A refused transaction is classified (see the chain codes below). |
 | `useSessionKey` | Loads a persisted key after a restart. The session must belong to this user, not be CLOSED, and have exactly this key registered; else nothing is loaded. |
 | `forgetSessionKey` | Unloads the key; the chain registration is unchanged. |
 | `sessionKeyState` | `QuerySession` view plus `matchesLoadedKey`. Use it to diagnose a rejection. |
@@ -482,7 +507,9 @@ is `max_session_key_blocks - 2`, at least 2. The key expires at the latest heigh
 `expiryBlocks`. `max_session_key_blocks` (`params.session.max_session_key_blocks`, read through
 `HubReader.getMaxSessionKeyBlocks`) absent, 0 or below 2 is
 `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`. `spendCap` is a canonical unsigned decimal; `"0"` (the create
-default) is unlimited, so a leaked key can then authorize orders up to the whole balance.
+default) is unlimited, so a leaked key can then authorize orders up to the whole balance; at
+most u64 max (the chain parses a u64), and the expiry at most 2^63 - 1, else
+`SDK_LOCAL_SESSION_KEY_INVALID` before any transaction.
 `renew` and `rotate` default to the chain's current cap. `spent` is never reset; requests never
 consume the cap, only admitted orders do. The key is exactly 20 bytes, not all zero and not the
 owner's address. Supplied material (`key`) is checked with `sessionKeyFromPrivateKey`: a valid
@@ -496,7 +523,10 @@ it. The caller persists `privateKey`.
 registered key is the loaded one; `latest_height <= session_key_expiry_height`; the session anchor
 is at or after `session_key_set_height`; `spent + max_fee` fits a u64 even with cap 0 (the chain's
 `AMOUNT_OVERFLOW`, reported as `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` with `details.overflow`);
-and, with a nonzero cap, `spent + max_fee <= cap`. A failed check never falls back to the wallet. Right after a registration the fresh anchor is still
+and, with a nonzero cap, `spent + max_fee <= cap`; and `earliestSubmitHeight <=
+session_key_expiry_height` (the Keeper checks the expiry at the admitting height, at or after
+`earliest_submit_height`; else `SDK_LOCAL_SESSION_KEY_EXPIRED`). A window that only ends after the
+expiry is sent, with `keyExpiresInOrderWindow` set. A failed check never falls back to the wallet. Right after a registration the fresh anchor is still
 below `set_height`, so `openTask` polls (up to `sessionKeyAnchorWaitMs`) until one reaches it; a
 caller-supplied `context` is used as is and refused when its anchor is older. Recovery after
 `ASSIGN_REJECTED`: `waitForAdmission` (§1.3) diagnoses the rejection from chain state and returns
@@ -516,7 +546,27 @@ reused from one of the client's own reads made within about one block
 (`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`), read again otherwise.
 Orders never fall back: `openTask` refuses with `SDK_LOCAL_SESSION_KEY_EXPIRED`. A registered-key
 request the Builder reports expired is not renewed or resent, and a `fetchTaskOutput` range retry
-does not repeat it (the error is marked not retriable).
+does not repeat it: a `*_SESSION_GRANT_EXPIRED` answer to any request without a grant (SDK
+envelopes, streams, Task Data, OpenTask fan-out results) is marked not retriable.
+
+Key-change window. **Builders may lag a key change by up to `MAX_SESSION_KEY_CACHE_TTL_BLOCKS`
+(10) blocks**: Nexus caches a session's key state (TTL 5 blocks by default, capped at 10), and
+invalidates it on a key event only for sessions it tracks a live task for. The client records the
+height of the last key change per session: `createSession` with a key and `renew` take the
+latest height read after the transaction (at least the pre-tx latest + 1), `rotate` the new
+`set_height`, `useSessionKey` the registration's `set_height`, and a session read showing a later
+`set_height` moves it forward. While `latest < change + 10`, a key-signed request or OpenTask
+refused with `SDK_AUTH_INVALID_SIGNATURE` / `DATA_ACCESS_INVALID_SIGNATURE` /
+`SDK_AUTH_SESSION_GRANT_EXPIRED` / `DATA_ACCESS_SESSION_GRANT_EXPIRED` is re-signed with a fresh
+nonce and re-sent after `sessionKeyChangeRetryMs` (about a block), at most
+`DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS` (10) times (`RegisteredSessionKeys.retryAfterKeyChange`;
+streams only before their first message). Outside the window these answers stay final. Renew at
+least 10 blocks before the expiry.
+
+Wrong Builder. A Builder without the local Task answers a key-signed Task Data request with
+`DATA_ACCESS_INVALID_SIGNATURE` (it cannot check the key without the Task), where a wallet-signed
+request would get `NEXUS_DATA_NOT_FOUND` / `NEXUS_INGRESS_NOT_SELECTED_BUILDER`. For a key-signed
+Task Data request that answer is marked `switchSource: true`.
 
 `StreamStateView` gains `sessionKey?: Uint8Array` (absent = wallet-only), `sessionKeyExpiryHeight:
 bigint` (0 without a key), `sessionKeySpendCap: string`, `sessionKeySpent: string` and
@@ -524,7 +574,9 @@ bigint` (0 without a key), `sessionKeySpendCap: string`, `sessionKeySpent: strin
 
 Exports: `generateSessionKey`, `sessionKeyFromPrivateKey`, `registeredSessionKey`,
 `RegisteredSessionKeys`, `sessionKeyAddressHex`, `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`,
-`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`,
+`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`, `MAX_SESSION_KEY_CACHE_TTL_BLOCKS`,
+`DEFAULT_KEY_CHANGE_RETRY_DELAY_MS`, `DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS`, `ABANDONED_REPORT`,
+`DEFAULT_ORDER_REPLACEMENT_RETRY_MS`, `ORDER_REPLACEMENT_RETRY_ATTEMPTS`, `sessionTxFailureCode`,
 `encodeMsgUpdateSessionKey`, `decodeMsgUpdateSessionKeyResponse` and the types above.
 
 Error codes:
@@ -537,13 +589,22 @@ Error codes:
 | `ORDER_ADMISSION_WAIT_ABORTED` | `waitForAdmission`'s `signal` was aborted (family `SDK_LOCAL`). |
 | `SDK_LOCAL_SESSION_KEY_UNSUPPORTED` | No `getMaxSessionKeyBlocks` reader, or the chain's limit is absent, 0 or below 2. |
 | `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED` | No key, or a different key, is registered or loaded for the session; also `useSessionKey` on a session owned by another user. |
-| `SDK_LOCAL_SESSION_KEY_EXPIRED` | `latest_height` is past the key's expiry; renew. |
+| `SDK_LOCAL_SESSION_KEY_EXPIRED` | `latest_height` is past the key's expiry, or the order's `earliestSubmitHeight` is (`details.{earliestSubmitHeight, expiryHeight}`); renew. |
+| `SDK_LOCAL_ORDER_EXPIRED` | The order's `orderExpireHeight` is below the latest height. |
+| `SDK_LOCAL_ORDER_WINDOW_INVALID` | Also: `orderWindow` does not hold two bigints. |
+| `SDK_LOCAL_RETRY_ORDER_UNCHANGED` | A retry's order is identical to the rejected one, even on a fresh context (retriable). |
+| `SDK_LOCAL_SESSION_NOT_OWNER` | `updateSessionKey` on a session of another user. |
+| `SDK_LOCAL_CONFIG_INVALID` | `orderReplacementRetryMs` is not finite and `>= 0`. |
 | `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` | `spent + max_fee` would exceed the cap (raise it), or overflow a u64 even with cap 0 (`details.overflow`; `spent` is never reset, so sign with the wallet). |
-| `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` | `sessionKeyAnchorWaitMs` is not finite and `>= 0`, `sessionKeyAnchorPollMs` not finite and `> 0`, or `sessionKeyRequestExpiryMarginBlocks` not a non-negative integer. |
+| `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` | `sessionKeyAnchorWaitMs` or `sessionKeyChangeRetryMs` is not finite and `>= 0`, `sessionKeyAnchorPollMs` not finite and `> 0`, or `sessionKeyRequestExpiryMarginBlocks` not a non-negative integer. |
 | `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT` | The order's anchor is below the key's `set_height`; retriable when the SDK resolved the context. |
 | `SDK_LOCAL_SESSION_CLOSED` | The session is CLOSED. |
 | `SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED` | Nexus refused an order over the cap (family `SDK_AUTH`, category `auth`, not retriable). |
-| `ERR_SESSION_KEY_INVALID` / `_EXPIRED` / `_SPEND_CAP_EXCEEDED` | Chain codes, seen in a Builder's tx result or a tx log (not classified by the SDK). |
+| `CHAIN_SESSION_KEY_INVALID` | A registration tx failed with task 1144 "invalid session key" (bad key, expiry outside the window, cap above u64). Family `CHAIN_REJECT`; `details.txFailure` is `CHAIN_TX_FAILED` (DeliverTx) or `CHAIN_TX_REJECTED` (CheckTx). |
+| `CHAIN_SESSION_KEY_EXPIRED` / `CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED` | task 1145 "session key expired" / 1146 "session key spend cap exceeded". |
+| `CHAIN_SESSION_CLOSED` | task 1105 with "session cannot update authorization" (the session is neither ACTIVE nor IDLE). |
+| `CHAIN_SESSION_NOT_OWNER` | sdk 4 with "signer must be session owner". |
+| `ERR_SESSION_KEY_INVALID` / `_EXPIRED` / `_SPEND_CAP_EXCEEDED` | The chain's names for 1144-1146; they never appear on the wire. Order admission failures land in a Builder's tx, which the SDK does not see (`waitForAdmission` diagnoses them). |
 
 ---
 

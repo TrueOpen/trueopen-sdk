@@ -24,6 +24,14 @@ const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
   SDK_AUTH_SESSION_GRANT_INVALID: rule('auth', false, false),
   SDK_AUTH_SESSION_GRANT_EXPIRED: rule('expired', true, false),
   SDK_AUTH_SESSION_METHOD_NOT_ALLOWED: rule('auth', false, false),
+  // A registered session key's order would take spent + max_fee past its nonzero spend_cap
+  // (ADR-0037): the owner raises the cap with MsgUpdateSessionKey, or the wallet signs instead.
+  // A registered key reported expired arrives as SDK_AUTH_SESSION_GRANT_EXPIRED; IngressClient
+  // only renews and resends a request that carried a grant, and marks the answer to a request
+  // without one not retriable (except inside the key-change window, see
+  // RegisteredSessionKeys.retryAfterKeyChange). A key-signed Task Data request answered
+  // DATA_ACCESS_INVALID_SIGNATURE is marked switchSource (a Builder without the Task says that).
+  SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED: rule('auth', false, false),
   // The same failures on the Task data path (TaskDataRequestAuthV1).
   DATA_ACCESS_INVALID_SIGNATURE: rule('auth', false, false),
   DATA_ACCESS_DENIED: rule('auth', false, false),
@@ -200,22 +208,54 @@ function isBroadcastTxError(e: unknown): e is Error & BroadcastTxErrorLike {
 }
 
 /**
+ * The chain errors of a session-key registration (MsgCreateSession with a key,
+ * MsgUpdateSessionKey): codespace, code and the registered description the raw log ends with
+ * (node x/task/types/errors.go; the ERR_* names never appear on the wire).
+ */
+const SESSION_TX_FAILURES: readonly { codespace: string; code: number; text: RegExp; sdkCode: string }[] = [
+  // Bad key (owner's, zero, wrong length), expiry outside the registration window, cap above u64.
+  { codespace: 'task', code: 1144, text: /(^|: )invalid session key$/, sdkCode: 'CHAIN_SESSION_KEY_INVALID' },
+  { codespace: 'task', code: 1145, text: /(^|: )session key expired$/, sdkCode: 'CHAIN_SESSION_KEY_EXPIRED' },
+  { codespace: 'task', code: 1146, text: /(^|: )session key spend cap exceeded$/, sdkCode: 'CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED' },
+  // ErrInvalidSessionID wrapped by an update to a session that is neither ACTIVE nor IDLE.
+  { codespace: 'task', code: 1105, text: /session cannot update authorization/, sdkCode: 'CHAIN_SESSION_CLOSED' },
+  // sdk ErrUnauthorized wrapped by an update whose signer is not the session owner.
+  { codespace: 'sdk', code: 4, text: /signer must be session owner/, sdkCode: 'CHAIN_SESSION_NOT_OWNER' },
+];
+
+/**
+ * The SDK code of a failed session-key transaction, or undefined for any other failure. The
+ * code and the raw log text must both match; `codespace` is checked when known (CheckTx), and is
+ * unknown for an included transaction (CosmJS IndexedTx carries no codespace).
+ */
+export function sessionTxFailureCode(code: number, log: string | undefined, codespace?: string): string | undefined {
+  const text = (log ?? '').trim();
+  const hit = SESSION_TX_FAILURES.find(
+    (f) => f.code === code && (codespace === undefined || f.codespace === codespace) && f.text.test(text),
+  );
+  return hit?.sdkCode;
+}
+
+/**
  * Turns a CheckTx failure (CosmJS `BroadcastTxError`) into `CHAIN_TX_REJECTED`, keeping the
  * codespace, code and log in `details`. The transaction never entered the mempool, so an
  * account sequence mismatch (sdk code 32) is safe to re-sign and retry; everything else will
- * be rejected the same way again. Other errors are returned unchanged.
+ * be rejected the same way again. A session-key registration failure gets its own code
+ * (sessionTxFailureCode), with `details.txFailure: 'CHAIN_TX_REJECTED'`. Other errors are
+ * returned unchanged.
  */
 export function classifyBroadcastError(err: unknown): unknown {
   if (!isBroadcastTxError(err)) return err;
   const sequenceMismatch = err.codespace === 'sdk' && err.code === 32;
+  const session = sessionTxFailureCode(err.code, err.log, err.codespace);
   return new TrueOpenError(
     'CHAIN_REJECT',
-    'CHAIN_TX_REJECTED',
+    session ?? 'CHAIN_TX_REJECTED',
     `tx rejected by CheckTx (codespace ${err.codespace}, code ${err.code}): ${err.log ?? ''}`,
     {
       retriable: sequenceMismatch,
       category: 'chain-rejected',
-      details: { codespace: err.codespace, code: err.code, log: err.log },
+      details: { codespace: err.codespace, code: err.code, log: err.log, ...(session !== undefined ? { txFailure: 'CHAIN_TX_REJECTED' } : {}) },
       cause: err,
     },
   );

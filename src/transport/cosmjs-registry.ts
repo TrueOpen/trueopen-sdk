@@ -5,6 +5,7 @@ import {
   TYPE_URL,
   encodeMsgCreateSession,
   encodeMsgCancelOrder,
+  encodeMsgUpdateSessionKey,
 } from './task-msgs';
 
 /**
@@ -21,10 +22,11 @@ function outgoingType(encode: (m: never) => Uint8Array): GeneratedType {
   };
 }
 
-/** Registry containing the Cosmos default types plus the two task user Msgs, for use with SigningStargateClient. */
+/** Registry containing the Cosmos default types plus the task user Msgs, for use with SigningStargateClient. */
 export function taskRegistry(): Registry {
   const registry = new Registry(defaultRegistryTypes);
   registry.register(TYPE_URL.createSession, outgoingType(encodeMsgCreateSession));
   registry.register(TYPE_URL.cancelOrder, outgoingType(encodeMsgCancelOrder));
+  registry.register(TYPE_URL.updateSessionKey, outgoingType(encodeMsgUpdateSessionKey));
   return registry;
 }

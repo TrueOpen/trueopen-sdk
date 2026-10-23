@@ -12,7 +12,8 @@ import { TrueOpenClient, stripChatTemplateEos } from '../../src/client';
 import { TrueOpenError } from '../../src/errors/errors';
 import type { OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
-import type { ChainTaskSnapshot, InferReceiptView } from '../../src/types/node';
+import type { ChainTaskSnapshot, InferReceiptView, StreamStateView } from '../../src/types/node';
+import { sessionKeyFromPrivateKey } from '../../src/session/registered-session-key';
 import type { ServiceKeyBinding } from '../../src/types/hub';
 import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
@@ -83,6 +84,7 @@ const fakeChain: ChainClient = {
   querySessionNonce: async () => ({ nextSessionNonce: 0n }),
   createSession: async () => { throw new Error('unused'); },
   cancelOrder: async () => { throw new Error('unused'); },
+  updateSessionKey: async () => { throw new Error('unused'); },
 };
 
 interface ServeLog {
@@ -96,7 +98,7 @@ function dataTransport(
   object: Uint8Array,
   chunkLengths: number[],
   log: ServeLog,
-  opts: { failOnce?: bigint; lieServed?: boolean; badOffset?: boolean; leafCount?: bigint } = {},
+  opts: { failOnce?: bigint; lieServed?: boolean; badOffset?: boolean; leafCount?: bigint; grantExpired?: boolean } = {},
 ): Transport {
   let failed = false;
   return createRouterTransport(({ service }) => {
@@ -118,6 +120,7 @@ function dataTransport(
         const range = req.range ?? { offset: 0n, length: size };
         if (range.offset >= size) throw new ConnectError('range invalid', Code.InvalidArgument);
         log.ranges.push({ offset: range.offset, length: range.length });
+        if (opts.grantExpired === true) throw new ConnectError('DATA_ACCESS_SESSION_GRANT_EXPIRED: key expired', Code.PermissionDenied);
         if (opts.failOnce !== undefined && range.offset === opts.failOnce && !failed) {
           failed = true;
           throw new ConnectError('connection reset', Code.Unavailable);
@@ -261,6 +264,31 @@ describe('fetchTaskOutput', () => {
     // Unavailable and ResourceExhausted mean the peer is already past what it can serve, so the
     // retry waits instead of adding another request to the same overload.
     expect(Date.now() - started).toBeGreaterThanOrEqual(150);
+  });
+
+  it('does not retry a range whose registered-key request the Builder reported expired (no grant to renew)', async () => {
+    const KEY_PRIV = new Uint8Array(32).fill(0x41);
+    const keyAddress = sessionKeyFromPrivateKey(KEY_PRIV).address;
+    const user = ethSecp256k1Address(secp256k1PublicKey(PRIV), 'trueopen');
+    const chain: ChainClient = {
+      ...fakeChain,
+      querySession: async (id: string): Promise<StreamStateView> => ({
+        sessionId: id, owner: user, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE',
+        sessionKey: keyAddress, sessionKeyExpiryHeight: 10_000n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 1n,
+      }),
+    };
+    const log = newLog();
+    const client = new TrueOpenClient({
+      chainId: CHAIN_ID, userAddress: user, wallet: privateKeyTypedDataSigner(PRIV),
+      chain, ingressTransport: dataTransport(BYTES, [6, 6, 6], log, { grantExpired: true }), signatureChainId: 424242n,
+      nonce: () => new Uint8Array(32).fill(7), taskReader: taskReader(), hub: hub() as never,
+    });
+    await client.useSessionKey(SESSION, KEY_PRIV);
+    await expect(
+      client.fetchTaskOutput({ sessionId: SESSION, taskId: TASK, builderAddress: BUILDER, rangeAttempts: 3 }),
+    ).rejects.toMatchObject({ code: 'DATA_ACCESS_SESSION_GRANT_EXPIRED', retriable: false });
+    // One attempt: the same key would get the same answer.
+    expect(log.fetchCalls).toBe(1);
   });
 
   it('refuses a served_range or chunk offset other than the one requested', async () => {

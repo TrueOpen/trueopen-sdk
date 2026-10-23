@@ -17,6 +17,7 @@ import { privateKeyTypedDataSigner, typedDataDigest } from '../../src/signer/typ
 import { recoverEip712PubKey, ethAddressBytes } from '../../src/signer/eth-secp256k1';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { ACCOUNT_SIGNING, fixtureKey, fixtureTypedData, section } from '../helpers/account-signing';
+import { registeredSessionKey, RegisteredSessionKeys } from '../../src/session/registered-session-key';
 
 const D = section('task_data_request');
 const DS = section('task_data_request_session');
@@ -197,5 +198,90 @@ describe('IngressClient Task data requests with a session', () => {
     await expect(
       client.getTaskDataMetadata({ objectRef: ref(TASK_DATA_OBJECT_KIND.OUTPUT), builderAddress: BUILDER, expiresAtHeight: 1010n }),
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
+  });
+});
+
+describe('IngressClient Task data requests with a registered session key (ADR-0037)', () => {
+  const S = '0x77625100ba4faa1306ae6eaf5a872a661443aa94f87c5530c4b178614e3d62f7';
+  const T = '0xbce966ae829f212a35982bcd85aaea77d8893539afa04f32ea540c46ff8323b0';
+  const BUILDER = 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man';
+  const ref = (objectKind: number) => ({ taskHash: `0x${'58'.repeat(32)}`, sessionId: S, taskId: T, objectKind, contentHash: `0x${'22'.repeat(32)}` });
+  const key = registeredSessionKey(S, new Uint8Array(32).fill(0x41));
+
+  function setup(expiredOnce = false) {
+    const meta: GetTaskDataMetadataRequest[] = [];
+    const fetches: FetchTaskDataRequest[] = [];
+    let failMeta = expiredOnce;
+    let failFetch = expiredOnce;
+    const transport = createRouterTransport(({ service }) => {
+      service(IngressAPI, {
+        getTaskDataMetadata(req: GetTaskDataMetadataRequest) {
+          meta.push(req);
+          if (failMeta) { failMeta = false; throw new ConnectError('DATA_ACCESS_SESSION_GRANT_EXPIRED: key expired', Code.PermissionDenied); }
+          return {};
+        },
+        async *fetchTaskData(req: FetchTaskDataRequest) {
+          fetches.push(req);
+          if (failFetch) { failFetch = false; throw new ConnectError('DATA_ACCESS_SESSION_GRANT_EXPIRED: key expired', Code.PermissionDenied); }
+          yield { frame: { case: 'header', value: { totalSizeBytes: 1n, mediaType: 'x', servedRange: { offset: 0n, length: 1n } } } };
+          yield { frame: { case: 'chunk', value: { offset: 0n, data: new Uint8Array([7]), eof: true } } };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+    const prompts: string[] = [];
+    const countingWallet = { signTypedData: (d: Parameters<typeof wallet.signTypedData>[0]) => { prompts.push(d.primaryType); return wallet.signTypedData(d); } };
+    const session = new SessionKeyManager({
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: countingWallet, signatureChainId: EVM,
+      latestHeight: async () => 1000n, maxGrantBlocks: 400,
+    });
+    const registeredKeys = new RegisteredSessionKeys();
+    registeredKeys.set(key);
+    const auth: IngressAuth = {
+      chainId: 'trueopen-golden-1', userAddress: USER, wallet: countingWallet, signatureChainId: EVM,
+      nonce: () => new Uint8Array(32).fill(9), expiry: () => 1_790_000_000_000n, session, registeredKeys,
+    };
+    return { client: new IngressClient(transport, auth), meta, fetches, prompts };
+  }
+
+  const recoversTo = (a: NonNullable<GetTaskDataMetadataRequest['requestAuth']>): string => {
+    const f: TaskDataRequestAuthFields = {
+      schemaVersion: a.schemaVersion, chainId: a.chainId, builderOperatorAddress: a.builderOperatorAddress, rpcMethod: a.rpcMethod,
+      bodyDigest: strictHash32('body_digest', a.bodyDigest), requesterKind: a.requesterKind, requesterAddress: a.requesterAddress,
+      serviceAuthorizationNonce: a.serviceAuthorizationNonce, requestNonce: a.requestNonce, expiryHeight: a.expiryHeight,
+    };
+    // No grant hash argument: 32 zero bytes.
+    return toHex(ethAddressBytes(recoverEip712PubKey(taskDataRequestEip712Digest(f, EVM), a.signature)));
+  };
+
+  it('OUTPUT Metadata and Fetch: signed by the key, zero grant hash, no grant, requester the user; no wallet prompt', async () => {
+    const { client, meta, fetches, prompts } = setup();
+    await client.getTaskDataMetadata({ objectRef: ref(TASK_DATA_OBJECT_KIND.OUTPUT), builderAddress: BUILDER, expiresAtHeight: 1010n });
+    await client.fetchTaskDataRange({ objectRef: ref(TASK_DATA_OBJECT_KIND.OUTPUT), builderAddress: BUILDER, expiresAtHeight: 1010n, range: { offset: 0n, length: 1n } });
+    for (const a of [meta[0]!.requestAuth!, fetches[0]!.requestAuth!]) {
+      expect(a.sessionGrant).toBeUndefined();
+      expect(a.requesterAddress).toBe(USER);
+      expect(recoversTo(a)).toBe(toHex(key.address));
+    }
+    expect(prompts).toEqual([]);
+  });
+
+  it('an INPUT object stays wallet-signed', async () => {
+    const { client, meta } = setup();
+    await client.getTaskDataMetadata({ objectRef: ref(TASK_DATA_OBJECT_KIND.INPUT), builderAddress: BUILDER, expiresAtHeight: 1010n });
+    expect(meta[0]!.requestAuth!.sessionGrant).toBeUndefined();
+    expect(recoversTo(meta[0]!.requestAuth!)).toBe(ACCOUNT_SIGNING.account.address_bytes);
+  });
+
+  it('DATA_ACCESS_SESSION_GRANT_EXPIRED on a registered-key request is thrown, not retried (unary and stream)', async () => {
+    const { client, meta, fetches } = setup(true);
+    await expect(
+      client.getTaskDataMetadata({ objectRef: ref(TASK_DATA_OBJECT_KIND.OUTPUT), builderAddress: BUILDER, expiresAtHeight: 1010n }),
+    ).rejects.toMatchObject({ code: 'DATA_ACCESS_SESSION_GRANT_EXPIRED' });
+    expect(meta).toHaveLength(1);
+    await expect(
+      client.fetchTaskDataRange({ objectRef: ref(TASK_DATA_OBJECT_KIND.OUTPUT), builderAddress: BUILDER, expiresAtHeight: 1010n, range: { offset: 0n, length: 1n } }),
+    ).rejects.toMatchObject({ code: 'DATA_ACCESS_SESSION_GRANT_EXPIRED' });
+    expect(fetches).toHaveLength(1);
   });
 });

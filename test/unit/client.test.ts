@@ -40,11 +40,12 @@ const PAYLOAD = new TextEncoder().encode('trueopen-input');
 function fakeChain(cap: { cancel?: unknown } = {}): ChainClient {
   return {
     async querySession(id) {
-      return { sessionId: id, owner: 'trueopen1u', nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
+      return { sessionId: id, owner: 'trueopen1u', nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
     async createSession() { return { sessionId: SESSION, owner: 'trueopen1u', nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
     async cancelOrder(i) { cap.cancel = i; return { taskId: TASK, cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
+    async updateSessionKey() { throw new Error('unused'); },
   };
 }
 

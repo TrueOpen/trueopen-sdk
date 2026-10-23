@@ -129,6 +129,7 @@ const fakeChain: ChainClient = {
   querySessionNonce: async () => ({ nextSessionNonce: 0n }),
   createSession: async () => { throw new Error('unused'); },
   cancelOrder: async () => { throw new Error('unused'); },
+  updateSessionKey: async () => { throw new Error('unused'); },
 };
 
 /** A chain whose task gets its winner after `assignAfter` reads (never by default), or that failed. */

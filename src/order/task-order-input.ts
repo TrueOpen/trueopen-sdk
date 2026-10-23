@@ -171,6 +171,9 @@ export interface ResolvedTaskOrderContext {
   readonly builderSet: BuilderSetSnapshot;
 }
 
+/** Default lag of a fresh session anchor behind the latest height (see resolveTaskOrderContext). */
+export const DEFAULT_ANCHOR_LAG = 2n;
+
 /** resolveTaskOrderContext, also returning the BuilderSet it read, so routing need not read it again. */
 export async function resolveTaskOrderContextWithBuilderSet(
   hub: TaskOrderContextReader,
@@ -178,7 +181,7 @@ export async function resolveTaskOrderContextWithBuilderSet(
   opts?: { readonly anchorLag?: bigint },
 ): Promise<ResolvedTaskOrderContext> {
   const latestHeight = await hub.getLatestHeight();
-  const lag = opts?.anchorLag ?? 2n;
+  const lag = opts?.anchorLag ?? DEFAULT_ANCHOR_LAG;
   const anchorHeight = latestHeight > lag ? latestHeight - lag : latestHeight;
 
   const [set, beacon, timeout, generationLimits] = await Promise.all([

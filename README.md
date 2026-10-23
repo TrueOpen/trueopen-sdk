@@ -505,16 +505,141 @@ Every signature is recovered and checked against `userAddress` before it is sent
 **Session grants (opt-in).** With `session: { maxGrantBlocks }` in the config, the wallet signs
 one `SessionGrant` for an in-memory session key, and that key signs `SubscribeOutput`,
 `AckOutput`, `GetTaskEvents`, `PrepareChallenge`, and `GetTaskDataMetadata` / `FetchTaskData`
-of an OUTPUT object: one wallet prompt per grant instead of one per request. `OpenTask` and
-everything else is always wallet-signed. `maxGrantBlocks` must be the Builders'
+of an OUTPUT object: one wallet prompt per grant instead of one per request. For `OpenTask` the
+grant key signs the request envelope, and the order is signed by the wallet, or by a registered key
+(below); every other request is wallet-signed. `maxGrantBlocks` must be the Builders'
 `max_session_grant_blocks`; the grant is renewed with a fresh key before it expires, and once
 more when a Builder reports it expired (`SDK_AUTH_SESSION_GRANT_EXPIRED` /
 `DATA_ACCESS_SESSION_GRANT_EXPIRED`). The session key is never persisted and never derived from
 a signature. Without `session`, the default, every request is signed by the wallet directly,
 which is what the CLI and raw-key clients do.
 
+**Registered session keys (ADR-0037, opt-in).** A different mechanism from the grant above: the
+chain itself stores one key per session, and that key signs the session's **orders** too, so a
+browser wallet prompts once per registration, not once per order. A `SessionGrant` key cannot sign
+orders; a registered key can, and its requests carry no grant.
+
+```ts
+const key = generateSessionKey();                         // or omit `key` and read s.sessionKey!.privateKey
+saveSecurely('chat', key.privateKey);                     // persist before the broadcast; the SDK never will
+const s = await client.createSession({ label: 'chat', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n, key } });
+await client.openTask({ sessionId: s.sessionId, /* ... */ });   // signed by the key, not the wallet
+// after a restart:
+await client.useSessionKey(sessionId, loadSecurely('chat'));
+// renew / rotate / clear are wallet-signed MsgUpdateSessionKey transactions:
+const { newKey } = await client.updateSessionKey(sessionId, { rotate: { expiryBlocks: 100 } });
+```
+
+- **Custody.** The SDK generates the key from a CSPRNG, never derives it from a signature, keeps it
+  in memory only and never logs it. Persist `privateKey` yourself; it cannot be recovered. To
+  persist it before the transaction is broadcast (a timed-out broadcast may still land), pass
+  material from `generateSessionKey()` as `sessionKey.key` / `rotate.key`. The key never signs a
+  transaction: every registration change is signed by the wallet.
+- **Expiry.** Orders stop at the key's expiry height (`SDK_LOCAL_SESSION_KEY_EXPIRED`, no wallet
+  fallback). Requests do fall back: from a few blocks before the expiry
+  (`sessionKeyRequestExpiryMarginBlocks`, default 3, so a request is not refused as expired on
+  arrival), the session's `SubscribeOutput` /
+  `AckOutput` / `GetTaskEvents` / `PrepareChallenge` / OUTPUT task-data requests are signed by the
+  grant key when `session` is configured, else by the wallet, so the output of the last orders
+  admitted before expiry stays readable. The client tracks the expiry from create / rotate / renew
+  / `useSessionKey` and from every `openTask` and `sessionKeyState` read; renew before expiry to
+  keep the key.
+- **Rotate after clear.** A clear zeroes the cap, so a later `rotate` must pass `spendCap`
+  explicitly (`SDK_LOCAL_SESSION_KEY_INVALID` otherwise). `renew` checks the chain's key, then
+  sends the tx; that is not atomic, so do not renew on one device while rotating on another.
+  `clear`, `rotate` and `renew` all read the session first and send nothing for a CLOSED session
+  (`SDK_LOCAL_SESSION_CLOSED`) or another user's (`SDK_LOCAL_SESSION_NOT_OWNER`).
+- **Registration failures are classified.** A refused `MsgCreateSession` / `MsgUpdateSessionKey`
+  is `CHAIN_SESSION_KEY_INVALID` (task 1144: bad key, expiry outside the registration window, cap
+  above u64), `CHAIN_SESSION_KEY_EXPIRED` (1145), `CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED` (1146),
+  `CHAIN_SESSION_CLOSED` (1105 "session cannot update authorization") or `CHAIN_SESSION_NOT_OWNER`
+  (sdk 4), instead of the generic `CHAIN_TX_FAILED` / `CHAIN_TX_REJECTED` (kept in
+  `details.txFailure`). A cap above u64 max or an expiry above 2^63 - 1 is refused locally first
+  (`SDK_LOCAL_SESSION_KEY_INVALID`).
+- **Builders may lag a key change by up to 10 blocks.** A Builder caches a session's key state for
+  up to `MAX_SESSION_KEY_CACHE_TTL_BLOCKS` (10) blocks, so right after a rotate or renew (or
+  createSession with a key) it can still judge against the old key or expiry. Within 10 blocks of
+  the change, a key-signed request or OpenTask refused with `SDK_AUTH_INVALID_SIGNATURE` /
+  `DATA_ACCESS_INVALID_SIGNATURE` / `*_SESSION_GRANT_EXPIRED` is re-signed with a fresh nonce and
+  sent again after about a block (`sessionKeyChangeRetryMs`, default 1000), at most
+  `DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS` (10) times; after the window those answers are final. Renew at
+  least 10 blocks before the expiry.
+- **Zero cap is unlimited.** `spendCap` defaults to `"0"`: a leaked key can then authorize orders
+  up to the whole account balance. Set a cap where that matters. The cap counts the cumulative
+  `max_fee` of admitted orders and is never reset.
+- **No silent wallet fallback.** Before signing, `openTask` checks what the chain will check: not
+  CLOSED, the registered key is the loaded one, not expired, the session anchor is at or after the
+  key's registration height (it waits up to `sessionKeyAnchorWaitMs` for that), and
+  `spent + max_fee <= cap` (and fits a u64 even with cap 0). The chain checks the expiry at the
+  admitting height, which is at or after `earliestSubmitHeight`: an order whose window starts after
+  the expiry is refused (`SDK_LOCAL_SESSION_KEY_EXPIRED`); one whose window only ends after it is
+  sent with `res.keyExpiresInOrderWindow` set (it is rejected if admitted after the expiry). A
+  failed check throws an `SDK_LOCAL_SESSION_*` error. Use
+  `sessionKeyState(sessionId)` to see why; `forgetSessionKey` returns the session to wallet signing.
+- **Expired answers to key-signed requests are final.** A registered-key request carries no grant,
+  so `SDK_AUTH_SESSION_GRANT_EXPIRED` / `DATA_ACCESS_SESSION_GRANT_EXPIRED` for it is
+  `retriable: false` (outside the key-change window above). A Builder that does not hold the Task
+  answers a key-signed Task Data request with `DATA_ACCESS_INVALID_SIGNATURE`, not NOT_FOUND; that
+  answer is `switchSource: true`, so try the Builder that holds the Task.
+- **If the chain rejects an order.** See below; nothing is resubmitted automatically.
+- **Rollout.** Enable it only after the chain (`max_session_key_blocks` of at least 2) and the Task
+  Builders support it; otherwise registration is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
+
 A client built by hand for another Builder should share the signing context:
 `new IngressClient(transport, client.ingressAuth())`.
+
+**If the chain rejects an order.** `openTask`'s acks are only local acceptance; the chain's Keeper
+can still refuse the order (key rotated or cleared elsewhere, expired, cap used up by concurrent
+orders, session closed). A refused order does not consume its sequence. `waitForAdmission` reads
+the chain until it decides, watching every acking Builder's task events as hints:
+
+```ts
+const res = await client.openTask(params);
+const out = await client.waitForAdmission(res);           // { timeoutMs?, pollIntervalMs?, signal? }
+if (out.kind === 'rejected') {
+  // out.diagnosis: { reason, sequenceFree, events, session }
+  if (out.diagnosis.reason === 'cleared') {
+    await client.openTask({ ...out.retry, orderSigner: 'wallet' });   // the chain has no key now
+  } else {
+    if (out.diagnosis.reason === 'expired') await client.updateSessionKey(sid, { renew: {} });
+    await client.openTask(out.retry);
+  }
+}
+```
+
+- `accepted` / `superseded` come from the chain task (same or another `task_hash`). `rejected`
+  needs **every** acking Builder to report and a later chain read to still show no task: one
+  Builder's rejection does not prove another did not get the order admitted. A report is
+  `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` after the Builder's last `ORDER_RECEIVED` (a Builder keeps
+  an abandoned task's journal, so a retry's stream replays the previous attempt first), or
+  `ABANDONED` when the event stream answers NotFound (the Builder dropped the task it acked).
+  `ASSIGN_ACCEPTED` / `ASSIGNMENT_FINALIZED` trigger an immediate chain read. A Builder may refuse
+  the key-signed event stream once the key changed, so `rejected` also follows, without any
+  report, once the latest height is past the order's `orderExpireHeight` and the chain still has
+  no task. Otherwise the wait ends as `timeout`.
+- `reason` comes from the session read after the rejection: `session-closed`, `cleared`,
+  `rotated`, `expired` (the expiry is compared with the later of the latest height and the
+  order's `earliestSubmitHeight`), `anchor-before-set-height`, `spend-cap` or `unrelated` (always
+  `unrelated` for a wallet-signed order).
+- `retry` is `res.retryParams`: the same params and sequence, without `context` / `expiryHeight`,
+  and a new idempotency key `<key>#retry<n>`, because the re-signed order has a new `task_hash`.
+  Its `orderWindow` keeps the order window relative to the original context's latest height, and
+  openTask rebases it on the retry's fresh context, so a retry after a past-deadline rejection is
+  not born expired. When the sequence was used up meanwhile (another order, or `cancelOrder`),
+  `sequenceFree` is false and `retry` has no `orderSequence`.
+- A retry identical to the rejected order (same anchor, heights and fees) would hit the Builders'
+  tombstone of the deleted input: openTask then resolves one fresh context, and if the order is
+  still identical throws `SDK_LOCAL_RETRY_ORDER_UNCHANGED` (retriable: a block later, or change
+  the order). A Builder still tracking the rejected version answers
+  `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` until it reconciles; openTask re-sends the retry to
+  it after about a block (`orderReplacementRetryMs`), at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` (3)
+  times, re-signing the envelope with a fresh nonce (a wallet-signed envelope prompts each time).
+- Any order whose `orderExpireHeight` is below the latest height is refused locally
+  (`SDK_LOCAL_ORDER_EXPIRED`) instead of by every Builder.
+- **The SDK never re-signs, renews, raises a cap or switches to the wallet by itself.** You decide,
+  then call `openTask(retry)`. `orderSigner: 'wallet'` signs one order with the wallet while a key
+  stays loaded (no key prechecks).
+- A task that reached the chain and finished refuses a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
 
 ### ✅ On-chain writes: direct ethsecp256k1 signing (`EthSecp256k1DirectSigner`)
 
@@ -563,6 +688,68 @@ the account's first tx, the chain stores its public key as ethsecp256k1, and the
 > `MsgCreateSession` was broadcast for real through this signer and landed on-chain multiple
 > times: the address derivation via keccak, the keccak256(SignDoc) digest, and the rewritten
 > ethsecp256k1 public key type URL all passed node's ante handler.
+
+### ✅ On-chain writes from a browser wallet: the Web3 path (`connectTrueOpenWeb3ChainClient`)
+
+A browser wallet (MetaMask or any EIP-1193 provider, Keplr `signEthereum`) cannot produce a
+DIRECT signature; it can only sign EIP-712 typed data. node accepts a second transaction envelope
+for it (`app/account_ante.go`): one critical `/cosmos.evm.eip712.v1.ExtensionOptionsWeb3Tx`
+option, `SIGN_MODE_LEGACY_AMINO_JSON`, and a 65-byte R||S||V signature over the "Cosmos Web3"
+typed data (cosmos-evm v0.6.3 `WrapTxToTypedData`) of the canonical Amino sign doc.
+`connectTrueOpenWeb3ChainClient` builds and broadcasts exactly that, returning the same
+`ChainClient` (`createSession`, `updateSessionKey`, `cancelOrder` and the reads), so a browser app
+can create a session with a registered session key with one wallet prompt for the transaction.
+
+> The transactions this path builds are accepted by node's full ante handler (checked against the
+> deployed node code, with the wire `session_key_amino_v1.json` vectors). It has not yet been tried
+> with a real MetaMask or Keplr: the "Cosmos Web3" domain uses the string fields
+> `verifyingContract: "cosmos"` and `salt: "0"`, and wallet-side acceptance of that domain is
+> unverified. Smoke-test your wallet before relying on it.
+
+
+```ts
+import {
+  TrueOpenClient, connectTrueOpenWeb3ChainClient, eip1193TypedDataSigner, toAccountAddress, HubReader,
+} from 'trueopen-sdk';
+
+const [address0x] = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+const wallet = eip1193TypedDataSigner({ provider: window.ethereum, address: address0x });
+const signatureChainId = BigInt((await window.ethereum.request({ method: 'eth_chainId' })) as string);
+const userAddress = toAccountAddress(address0x);
+const businessDenom = await new HubReader({ baseUrl: restUrl, fetch: (u) => fetch(u) }).getBusinessDenom();
+
+const { client: chain } = await connectTrueOpenWeb3ChainClient({
+  rpcUrl, restUrl, wallet, signerAddress: userAddress,
+  typedDataChainId: signatureChainId, // the wallet's active network, same as signatureChainId below
+  fee: { amount: [{ denom: businessDenom, amount: '7500' }], gas: '300000' }, // explicit, never 'auto'
+});
+const client = new TrueOpenClient({ chainId, userAddress, wallet, signatureChainId, chain, hub, taskReader, /* ... */ });
+
+// One wallet prompt: the MsgCreateSession that also registers the session key.
+const s = await client.createSession({ label: 'chat', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n } });
+saveSecurely('chat', s.sessionKey!.privateKey);
+// Orders are now signed by the session key; renew / rotate / clear and cancelOrder are Web3 txs too.
+```
+
+- **Shape.** One Msg per transaction, signer = the wallet account, no fee payer / granter, default
+  timeout, ordered. The fee must be explicit: node only simulates DIRECT transactions, so
+  `fee: 'auto'` is refused (`SDK_LOCAL_TX_FEE_AUTO`).
+- **The account must exist** (it pays the fee; `CHAIN_ACCOUNT_NOT_FOUND` otherwise). On its first
+  transaction it has no public key on chain: the SDK recovers the key from the wallet's signature
+  and puts it in the SignerInfo. When the chain has one, it must derive the signer address
+  (`SDK_LOCAL_TX_PUBKEY_MISMATCH`, checked before the wallet is asked) and the signature must
+  recover to it.
+- **Domain chainId.** `typedDataChainId` is the signer-chosen EIP-712 domain chainId (1..MaxInt64),
+  carried in the extension option; replay across chains is stopped by the Cosmos `chain_id`
+  inside the signed document. MetaMask needs its active network here.
+- The signature is recovered and checked against the signer before broadcast
+  (`SDK_LOCAL_SIGNER_ADDRESS_MISMATCH`). `createTrueOpenWeb3ChainClient` takes an injected
+  `Web3ChainRpc` (a CosmJS `StargateClient` connected with `ethAccountParser` satisfies it).
+
+> ✅ Verified against the frozen wire vectors (`task/session_key_amino_v1.json`,
+> `shared/account_signing_v1.json` `msg_create_session_transaction`) and against node's own ante
+> handler: the SDK's TxRaw bytes for all three Msgs, including a first transaction with no stored
+> public key, were accepted, and tampered ones refused.
 
 ### ✅ Model manifest retrieval (`ManifestSource`)
 
@@ -716,8 +903,8 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to `main` (`41af15b`, pre-v0.5.0), carrying the
-signer-chosen `signature_chain_id` and the `0x`-prefixed Hash32 text form (wire #44). **This repo no longer keeps
+pinned as a submodule at `third_party/wire` to wire PR #47 (`602cb18`, untagged), carrying the
+signer-chosen `signature_chain_id`, the `0x`-prefixed Hash32 text form (wire #44) and registered session keys (ADR-0037). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -731,8 +918,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (`main` @ `41af15b`) |
-| `task.v1` / `shared.v1` | `third_party/wire` (`main` @ `41af15b`) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (wire PR #47 @ `602cb18`, untagged) |
+| `task.v1` / `shared.v1` | `third_party/wire` (wire PR #47 @ `602cb18`, untagged) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

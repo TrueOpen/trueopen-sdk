@@ -14,6 +14,10 @@ import { recoverEip712PubKey, ethAddressBytes } from '../../src/signer/eth-secp2
 import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 import { ACCOUNT_SIGNING, fixtureKey, fixtureTypedData, section } from '../helpers/account-signing';
+import { registeredSessionKey } from '../../src/session/registered-session-key';
+import { sessionGrantHash } from '../../src/session/session-grant';
+import type { ActiveSession } from '../../src/session/session-grant';
+import { secp256k1 } from '@noble/curves/secp256k1';
 
 const V = section('sdk_request');
 const EVM = BigInt(V.domain.chain_id);
@@ -148,5 +152,64 @@ describe('request_auth_negative_cases on sdk_request', () => {
   it('method and endpoint cannot disagree: the endpoint is derived', () => {
     expect(sdkRequestTypedData({ ...fields, method: 'AckOutput' }, EVM).message['endpoint']).toBe('/nexus.v1.IngressAPI/AckOutput');
     expect(() => sdkRequestTypedData({ ...fields, method: '/nexus.v1.IngressAPI/OpenTask' }, EVM)).toThrow(TrueOpenError);
+  });
+});
+
+describe('signSdkRequestEnvelope with a registered session key (ADR-0037)', () => {
+  const key = registeredSessionKey(fields.sessionId, fixtureKey('session_key'));
+  const opts = { signerAddress: USER, signer: wallet, signatureChainId: EVM, registeredKey: key };
+
+  it('signs with the key and a zero grant hash: signer_address is the user, no grant', async () => {
+    const env = await signSdkRequestEnvelope(fields, opts);
+    expect(recover(toHex(sdkRequestEip712Digest(fields, EVM)), toHex(env.signature))).toBe(toHex(key.address));
+    expect(toHex(key.address)).not.toBe(V.recovered_address);
+    expect(env.signerAddress).toBe(USER);
+    expect('sessionGrant' in env).toBe(false);
+  });
+
+  it('refuses a method outside the session-allowed set', async () => {
+    await expect(signSdkRequestEnvelope({ ...fields, method: 'GetTaskDataMetadata' }, opts)).rejects.toMatchObject({
+      code: 'SDK_LOCAL_REQUEST_MALFORMED',
+    });
+  });
+
+  it("refuses a key loaded for another session than the request's", async () => {
+    const other = registeredSessionKey(`0x${'77'.repeat(32)}`, fixtureKey('session_key'));
+    await expect(signSdkRequestEnvelope(fields, { ...opts, registeredKey: other })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_REQUEST_MALFORMED',
+    });
+  });
+
+  it('refuses a session grant and a registered key together', async () => {
+    // A well-formed grant for this user and chain: alone, it signs (the control below), so only
+    // the exclusivity check can refuse the pair.
+    const grantPriv = new Uint8Array(32).fill(0x04);
+    const grantFields = {
+      chainId: fields.chainId,
+      user: USER,
+      sessionKey: ethAddressBytes(secp256k1.getPublicKey(grantPriv, true)),
+      expiryHeight: 2_000n,
+      grantNonce: new Uint8Array(32).fill(0x05),
+      signatureChainId: EVM,
+    };
+    const calls = { wallet: 0, grantKey: 0, registeredKey: 0 };
+    const counting = (inner: { signTypedData: typeof wallet.signTypedData }, k: keyof typeof calls) => ({
+      signTypedData: (d: Parameters<typeof wallet.signTypedData>[0]) => { calls[k] += 1; return inner.signTypedData(d); },
+    });
+    const session: ActiveSession = {
+      grant: { ...grantFields, userSignature: new Uint8Array(65).fill(0x06) },
+      grantHash: sessionGrantHash(grantFields),
+      key: counting(privateKeyTypedDataSigner(grantPriv), 'grantKey'),
+    };
+    const countingOpts = { ...opts, signer: counting(wallet, 'wallet'), registeredKey: { ...key, signer: counting(key.signer, 'registeredKey') } };
+    await expect(signSdkRequestEnvelope(fields, { ...countingOpts, session })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_REQUEST_MALFORMED',
+      message: expect.stringContaining('exclusive'),
+    });
+    expect(calls).toEqual({ wallet: 0, grantKey: 0, registeredKey: 0 });
+    const { registeredKey: _, ...withoutKey } = opts;
+    void _;
+    const env = await signSdkRequestEnvelope(fields, { ...withoutKey, session });
+    expect(env.sessionGrant).toBeDefined();
   });
 });

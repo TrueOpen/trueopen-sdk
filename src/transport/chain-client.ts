@@ -1,4 +1,5 @@
 import type { StreamStateView } from '../types/node';
+import type { SessionKeyGrant, MsgUpdateSessionKeyResponse } from './task-msgs';
 
 /**
  * Read port: node task.v1 Query (the authoritative snapshot).
@@ -14,8 +15,17 @@ export interface ChainReader {
  * Adapters implement this separately; business logic and mocks depend on this interface only.
  */
 export interface ChainClient extends ChainReader {
-  createSession(): Promise<CreateSessionResult>;
+  /** With `sessionKey`, the key is registered in the same tx that creates the session. */
+  createSession(input?: { readonly sessionKey?: SessionKeyGrant }): Promise<CreateSessionResult>;
+  /** Registers, replaces or clears the session's registered key. */
+  updateSessionKey(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse>;
   cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult>;
+}
+
+export interface UpdateSessionKeyInput {
+  /** Hash32 text, `0x` + 64 lowercase hex. */
+  readonly sessionId: string;
+  readonly action: { readonly set: SessionKeyGrant } | { readonly clear: true };
 }
 
 export interface CreateSessionResult {

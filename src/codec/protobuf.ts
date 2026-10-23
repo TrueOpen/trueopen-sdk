@@ -49,6 +49,18 @@ export class ProtoWriter {
     return this;
   }
 
+  /**
+   * Embedded message: always written, even when `value` is empty. A set sub-message field is
+   * present on the wire regardless of its content (an empty message is a length-0 field),
+   * which is what distinguishes a oneof arm like `clear` from an unset one.
+   */
+  message(field: number, value: Uint8Array): this {
+    this.tag(field, 2);
+    this.varint(BigInt(value.length));
+    for (const b of value) this.buf.push(b);
+    return this;
+  }
+
   /** proto3: 0 is omitted. */
   uint64(field: number, value: bigint): this {
     if (value < 0n) throw new Error('proto uint64 must be non-negative');

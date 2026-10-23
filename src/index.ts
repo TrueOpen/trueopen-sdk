@@ -2,7 +2,7 @@ export const SDK_WIRE_VERSION = 'SDK_WIRE_V1' as const;
 
 export { TrueOpenError, dataError } from './errors/errors';
 export type { ErrorFamily, ErrorCategory, TrueOpenErrorOptions } from './errors/errors';
-export { classifyNexusError, classifyBroadcastError, nexusErrorCode } from './errors/classify';
+export { classifyNexusError, classifyBroadcastError, nexusErrorCode, sessionTxFailureCode } from './errors/classify';
 
 // Task lifecycle enums come straight from the wire contract.
 export { TaskPhase, AssignmentStatus, ReceiptStatus, VerificationStatus, SettlementStatus } from './gen/task/v1/assignment_pb.js';
@@ -18,6 +18,7 @@ export type {
   ChainReader,
   ChainClient,
   CreateSessionResult,
+  UpdateSessionKeyInput,
   CancelOrderInput,
   CancelOrderResult,
 } from './transport/chain-client';
@@ -52,14 +53,19 @@ export {
   TYPE_URL,
   encodeMsgCreateSession,
   encodeMsgCancelOrder,
+  encodeMsgUpdateSessionKey,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
+  decodeMsgUpdateSessionKeyResponse,
 } from './transport/task-msgs';
 export type {
   MsgCreateSession,
   MsgCreateSessionResponse,
   MsgCancelOrder,
   MsgCancelOrderResponse,
+  MsgUpdateSessionKey,
+  MsgUpdateSessionKeyResponse,
+  SessionKeyGrant,
 } from './transport/task-msgs';
 
 export { taskRegistry } from './transport/cosmjs-registry';
@@ -67,14 +73,47 @@ export { CosmjsChainWriter, composeChainClient } from './transport/cosmjs-chain-
 export type { TxBroadcaster, CosmjsChainWriterOptions, TxInclusionPolicy } from './transport/cosmjs-chain-writer';
 export { DEFAULT_TX_INCLUSION } from './transport/cosmjs-chain-writer';
 
-export { createTrueOpenChainClient, connectTrueOpenChainClient } from './transport/trueopen-chain-client';
+export {
+  createTrueOpenChainClient,
+  connectTrueOpenChainClient,
+  createTrueOpenWeb3ChainClient,
+  connectTrueOpenWeb3ChainClient,
+} from './transport/trueopen-chain-client';
 export type {
   CreateTrueOpenChainClientConfig,
   ConnectTrueOpenChainClientOptions,
+  CreateTrueOpenWeb3ChainClientConfig,
+  ConnectTrueOpenWeb3ChainClientOptions,
 } from './transport/trueopen-chain-client';
 
+// ---- Web3 (EIP-712 wallet) transaction path: LEGACY_AMINO_JSON + ExtensionOptionsWeb3Tx ----
+export {
+  AMINO_NAME,
+  aminoMsgCreateSession,
+  aminoMsgUpdateSessionKey,
+  aminoMsgCancelOrder,
+  canonicalAminoSignDoc,
+  canonicalJson,
+} from './transport/amino-json';
+export type { AminoMsg, AminoJsonValue, AminoSignDocInput } from './transport/amino-json';
+export { cosmosWeb3TypedData, cosmosWeb3Domain } from './codec/cosmos-web3';
+export {
+  WEB3_EXTENSION_TYPE_URL,
+  encodeExtensionOptionsWeb3Tx,
+  assembleWeb3TxRaw,
+  signWeb3Tx,
+  Web3TxBroadcaster,
+} from './transport/web3-tx';
+export type {
+  Web3TxRawInput,
+  SignWeb3TxInput,
+  SignedWeb3Tx,
+  Web3ChainRpc,
+  Web3TxBroadcasterOptions,
+} from './transport/web3-tx';
+
 export { SessionManager } from './session/session-manager';
-export type { SessionHandle } from './session/session-manager';
+export type { SessionHandle, SessionKeyHandle } from './session/session-manager';
 export {
   SessionKeyManager,
   SESSION_GRANT_EIP712_TYPES,
@@ -91,6 +130,19 @@ export type {
   SessionAuthority,
   SessionKeyManagerOptions,
 } from './session/session-grant';
+export {
+  generateSessionKey,
+  sessionKeyFromPrivateKey,
+  registeredSessionKey,
+  RegisteredSessionKeys,
+  sessionKeyAddressHex,
+  DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS,
+  DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS,
+  MAX_SESSION_KEY_CACHE_TTL_BLOCKS,
+  DEFAULT_KEY_CHANGE_RETRY_DELAY_MS,
+  DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS,
+} from './session/registered-session-key';
+export type { SessionKeyMaterial, RegisteredSessionKey, RegisteredSessionKeysOptions } from './session/registered-session-key';
 
 export {
   validateModelId,
@@ -325,9 +377,15 @@ export {
   DEFAULT_TASK_DATA_EXPIRY_BLOCKS,
   DEFAULT_TRUST_ANCHOR_POLL_MS,
   DEFAULT_TRUST_ANCHOR_WAIT_MS,
+  DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS,
   DEFAULT_MAX_PENDING_FRAMES,
   MAX_OVERFLOW_RESUBSCRIBES,
   stripChatTemplateEos,
+  DEFAULT_ADMISSION_WAIT_MS,
+  nextRetryIdempotencyKey,
+  ABANDONED_REPORT,
+  DEFAULT_ORDER_REPLACEMENT_RETRY_MS,
+  ORDER_REPLACEMENT_RETRY_ATTEMPTS,
 } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
@@ -343,6 +401,17 @@ export type {
   StreamOutputParams,
   OutputStreamEvent,
   ConfirmOutputParams,
+  SessionKeyOptions,
+  RegisterSessionKeyOptions,
+  CreateSessionOptions,
+  SessionKeyUpdate,
+  UpdateSessionKeyResult,
+  SessionKeyState,
+  WaitForAdmissionOptions,
+  AdmissionOutcome,
+  RejectionDiagnosis,
+  RejectionReason,
+  OrderWindowOffsets,
 } from './client';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----

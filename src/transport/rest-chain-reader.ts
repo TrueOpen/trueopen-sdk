@@ -1,4 +1,4 @@
-import { stringToU64, restHash32 } from '../codec/wire';
+import { stringToU64, restHash32, base64ToBytes } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { ChainReader } from './chain-client';
 import type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from '../types/node';
@@ -263,7 +263,44 @@ function toStreamState(s: Record<string, unknown>): StreamStateView {
     // uint32: protojson leaves it unquoted; verified to arrive as a bare number.
     openPendingCount: u64Field(s, 'open_pending_count'),
     status: status as 'ACTIVE' | 'IDLE' | 'CLOSED',
+    ...optSessionKey(s),
+    sessionKeyExpiryHeight: optU64Field(s, 'session_key_expiry_height'),
+    sessionKeySpendCap: amountField(s, 'session_key_spend_cap'),
+    sessionKeySpent: amountField(s, 'session_key_spent'),
+    sessionKeySetHeight: optU64Field(s, 'session_key_set_height'),
   };
+}
+
+/** session_key is ProtoJSON Base64; absent/null = no key, present must be exactly 20 bytes. */
+function optSessionKey(s: Record<string, unknown>): { sessionKey?: Uint8Array } {
+  const v = raw(s, 'session_key');
+  if (v === undefined || v === null) return {};
+  if (typeof v !== 'string') throw malformed('field session_key');
+  let key: Uint8Array;
+  try {
+    key = base64ToBytes(v);
+  } catch {
+    throw malformed('field session_key');
+  }
+  if (key.length !== 20) throw malformed(`field session_key (${key.length} bytes)`);
+  return { sessionKey: key };
+}
+
+/** u64 that older nodes may not send: absent reads as 0n. */
+function optU64Field(o: Record<string, unknown>, snakeKey: string): bigint {
+  const v = raw(o, snakeKey);
+  if (v === undefined || v === null) return 0n;
+  return u64Field(o, snakeKey);
+}
+
+/** shared.v1.Amount `{atomic_units}`; an absent object (or absent atomic_units) reads as "0". */
+function amountField(o: Record<string, unknown>, snakeKey: string): string {
+  const a = optObj(o, snakeKey);
+  if (a === undefined) return '0';
+  const v = raw(a, 'atomic_units');
+  if (v === undefined || v === null) return '0';
+  if (typeof v !== 'string' || !/^(0|[1-9][0-9]*)$/.test(v)) throw malformed(`field ${snakeKey}.atomic_units`);
+  return v;
 }
 
 /** Reads the raw value, preferring snake_case and falling back to camelCase. */

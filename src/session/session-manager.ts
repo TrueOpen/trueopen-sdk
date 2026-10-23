@@ -1,5 +1,25 @@
 import type { ChainClient } from '../transport/chain-client';
+import type { SessionKeyGrant } from '../transport/task-msgs';
 import type { StreamStateView } from '../types/node';
+
+/**
+ * A registered session key's material (ADR-0037), returned once when the SDK generates it.
+ *
+ * The caller persists `privateKey` (in memory, an encrypted store, a KMS or a keychain) and
+ * reloads it with TrueOpenClient.useSessionKey; the SDK never derives it from a signature, never
+ * logs it and keeps it in memory only. A `spendCap` of "0" is unlimited: a leaked key can then
+ * authorize orders up to the whole account balance.
+ */
+export interface SessionKeyHandle {
+  /** The key's eth-style address, `0x` + 40 lowercase hex: what is registered on chain. */
+  readonly address: string;
+  /** 32 bytes. */
+  readonly privateKey: Uint8Array;
+  /** The key signs nothing the chain accepts after this height. */
+  readonly expiryHeight: bigint;
+  /** Canonical decimal atomic units of cumulative max_fee; "0" means unlimited. */
+  readonly spendCap: string;
+}
 
 export interface SessionHandle {
   readonly sessionId: string;
@@ -7,6 +27,11 @@ export interface SessionHandle {
   readonly nextExpectedSequence: bigint;
   readonly status: 'ACTIVE' | 'IDLE' | 'CLOSED';
   readonly label?: string;
+  /**
+   * Present only on the handle TrueOpenClient.createSession returns when it registered a key.
+   * Persist `privateKey` now: it is not kept in any cache and cannot be recovered.
+   */
+  readonly sessionKey?: SessionKeyHandle;
 }
 
 /**
@@ -20,8 +45,9 @@ export class SessionManager {
 
   constructor(private readonly chain: ChainClient) {}
 
-  async create(label?: string): Promise<SessionHandle> {
-    const r = await this.chain.createSession();
+  /** With `sessionKey`, the key is registered in the same MsgCreateSession. */
+  async create(label?: string, sessionKey?: SessionKeyGrant): Promise<SessionHandle> {
+    const r = await (sessionKey !== undefined ? this.chain.createSession({ sessionKey }) : this.chain.createSession());
     const handle: SessionHandle = {
       sessionId: r.sessionId,
       owner: r.owner,

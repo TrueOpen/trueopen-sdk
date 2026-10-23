@@ -18,6 +18,7 @@ export type {
   ChainReader,
   ChainClient,
   CreateSessionResult,
+  UpdateSessionKeyInput,
   CancelOrderInput,
   CancelOrderResult,
 } from './transport/chain-client';
@@ -52,14 +53,19 @@ export {
   TYPE_URL,
   encodeMsgCreateSession,
   encodeMsgCancelOrder,
+  encodeMsgUpdateSessionKey,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
+  decodeMsgUpdateSessionKeyResponse,
 } from './transport/task-msgs';
 export type {
   MsgCreateSession,
   MsgCreateSessionResponse,
   MsgCancelOrder,
   MsgCancelOrderResponse,
+  MsgUpdateSessionKey,
+  MsgUpdateSessionKeyResponse,
+  SessionKeyGrant,
 } from './transport/task-msgs';
 
 export { taskRegistry } from './transport/cosmjs-registry';

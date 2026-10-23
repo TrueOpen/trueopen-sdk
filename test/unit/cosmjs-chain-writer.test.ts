@@ -78,6 +78,30 @@ describe('CosmjsChainWriter', () => {
     expect(bc.last?.messages[0]?.value).not.toHaveProperty('ownerSignature');
   });
 
+  it('createSession with a session key puts the grant in the Msg value', async () => {
+    const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, new ProtoWriter().bytes(1, fromHex(SESSION_HEX)).uint64(2, 1n).uint64(3, 1n).finish()));
+    const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
+    const sessionKey = { sessionKey: new Uint8Array(20).fill(3), expiryHeight: 50n, spendCap: '0' };
+    await w.createSession({ sessionKey });
+    expect(bc.last?.messages[0]?.value).toEqual({ signer: 'trueopen1me', sessionKey });
+  });
+
+  // node MsgUpdateSessionKeyResponse: optional bytes key=1, expiry=2, Amount cap=3, Amount spent=4, set_height=5, status=6.
+  it('updateSessionKey: broadcasts the right typeUrl and decodes the response', async () => {
+    const amt = (v: string) => new ProtoWriter().string(1, v).finish();
+    const key = new Uint8Array(20).fill(3);
+    const respBytes = new ProtoWriter()
+      .bytes(1, key).uint64(2, 50n).message(3, amt('100')).message(4, amt('0')).uint64(5, 10n).uint64(6, 1n)
+      .finish();
+    const bc = new FakeBroadcaster(indexedTx(TYPE_URL.updateSessionKey, respBytes));
+    const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
+    const action = { set: { sessionKey: key, expiryHeight: 50n, spendCap: '100' } };
+    const r = await w.updateSessionKey({ sessionId: SESSION_ID, action });
+    expect(bc.last?.messages[0]?.typeUrl).toBe(TYPE_URL.updateSessionKey);
+    expect(bc.last?.messages[0]?.value).toEqual({ signer: 'trueopen1me', sessionId: SESSION_ID, action });
+    expect(r).toEqual({ sessionKey: key, expiryHeight: 50n, spendCap: '100', spent: '0', setHeight: 10n, status: 'MUTATION_STATUS_V1_APPLIED' });
+  });
+
   it('throws when the tx was included but the state machine rejected it (code != 0)', async () => {
     const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), 5);
     const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });

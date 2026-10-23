@@ -83,6 +83,7 @@ const fakeChain: ChainClient = {
   querySessionNonce: async () => ({ nextSessionNonce: 0n }),
   createSession: async () => { throw new Error('unused'); },
   cancelOrder: async () => { throw new Error('unused'); },
+  updateSessionKey: async () => { throw new Error('unused'); },
 };
 
 interface ServeLog {

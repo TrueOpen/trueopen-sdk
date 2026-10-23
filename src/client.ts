@@ -181,6 +181,8 @@ export type FacadeHubReader = TaskBuilderReader &
     getLatestHeight(): Promise<bigint>;
     /** Task params session.anchor_freshness_window_blocks, for reusing a session anchor across orders. */
     getAnchorFreshnessWindowBlocks?(): Promise<bigint>;
+    /** Task params session.max_session_key_blocks (0 = session keys unsupported); required to register a key. */
+    getMaxSessionKeyBlocks?(): Promise<bigint>;
   };
 
 /** On-chain task reads needed to derive the output trust anchors (RestChainReader satisfies it). */

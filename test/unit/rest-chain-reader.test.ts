@@ -369,3 +369,62 @@ describe('RestChainReader', () => {
     await expect(r.querySession('s')).rejects.toThrowError(TrueOpenError);
   });
 });
+
+describe('RestChainReader.querySession: session key fields', () => {
+  const base = {
+    session_id: SID1, owner_user_address: 'o', next_expected_sequence: '1',
+    last_active_height: '2', open_pending_count: 0, status: 'SESSION_STATUS_ACTIVE',
+  };
+  const read = (session: Record<string, unknown>) => {
+    const { fetch } = stubFetch(okJson({ session }));
+    return new RestChainReader({ baseUrl: 'http://n', fetch }).querySession(SID1);
+  };
+  const KEY20 = new Uint8Array(20).fill(0xab);
+  const b64 = Buffer.from(KEY20).toString('base64');
+
+  it('reads a registered key with its cap, spend and heights', async () => {
+    const s = await read({
+      ...base, session_key: b64, session_key_expiry_height: '5000',
+      session_key_spend_cap: { atomic_units: '700' }, session_key_spent: { atomic_units: '20' },
+      session_key_set_height: '4000',
+    });
+    expect(s.sessionKey).toEqual(KEY20);
+    expect(s.sessionKeyExpiryHeight).toBe(5000n);
+    expect(s.sessionKeySpendCap).toBe('700');
+    expect(s.sessionKeySpent).toBe('20');
+    expect(s.sessionKeySetHeight).toBe(4000n);
+  });
+
+  it('a wallet-only session (fields absent, or zero amounts) has no key and zero defaults', async () => {
+    for (const body of [
+      base,
+      { ...base, session_key_expiry_height: '0', session_key_spend_cap: { atomic_units: '0' }, session_key_spent: { atomic_units: '0' }, session_key_set_height: '0' },
+      { ...base, session_key: null, session_key_spend_cap: {}, session_key_spent: null },
+    ]) {
+      const s = await read(body);
+      expect(s.sessionKey).toBeUndefined();
+      expect('sessionKey' in s).toBe(false);
+      expect(s.sessionKeyExpiryHeight).toBe(0n);
+      expect(s.sessionKeySpendCap).toBe('0');
+      expect(s.sessionKeySpent).toBe('0');
+      expect(s.sessionKeySetHeight).toBe(0n);
+    }
+  });
+
+  it('accepts camelCase field names', async () => {
+    const s = await read({ ...base, sessionKey: b64, sessionKeyExpiryHeight: '9', sessionKeySpendCap: { atomicUnits: '3' } });
+    expect(s.sessionKey).toEqual(KEY20);
+    expect(s.sessionKeyExpiryHeight).toBe(9n);
+    expect(s.sessionKeySpendCap).toBe('3');
+  });
+
+  it('a present but empty or wrong-length key is CHAIN_QUERY_MALFORMED', async () => {
+    for (const k of ['', Buffer.from(new Uint8Array(19)).toString('base64'), Buffer.from(new Uint8Array(32)).toString('base64'), '!!!!', 5]) {
+      await expect(read({ ...base, session_key: k })).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+    }
+  });
+
+  it('a malformed amount is CHAIN_QUERY_MALFORMED', async () => {
+    await expect(read({ ...base, session_key_spend_cap: { atomic_units: 'abc' } })).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+  });
+});

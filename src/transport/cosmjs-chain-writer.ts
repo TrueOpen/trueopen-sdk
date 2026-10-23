@@ -6,13 +6,16 @@ import {
   TYPE_URL,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
+  decodeMsgUpdateSessionKeyResponse,
 } from './task-msgs';
+import type { SessionKeyGrant, MsgUpdateSessionKeyResponse } from './task-msgs';
 import type {
   ChainReader,
   ChainClient,
   CreateSessionResult,
   CancelOrderInput,
   CancelOrderResult,
+  UpdateSessionKeyInput,
 } from './chain-client';
 
 /**
@@ -141,9 +144,15 @@ export class CosmjsChainWriter {
     );
   }
 
-  async createSession(): Promise<CreateSessionResult> {
+  async createSession(input?: { readonly sessionKey?: SessionKeyGrant }): Promise<CreateSessionResult> {
     const res = await this.broadcast([
-      { typeUrl: TYPE_URL.createSession, value: { signer: this.opts.signerAddress } },
+      {
+        typeUrl: TYPE_URL.createSession,
+        value: {
+          signer: this.opts.signerAddress,
+          ...(input?.sessionKey !== undefined ? { sessionKey: input.sessionKey } : {}),
+        },
+      },
     ]);
     const r = decodeMsgCreateSessionResponse(firstResponse(res, TYPE_URL.createSession));
     // The node response has no owner field; MsgCreateSession.signer_address is the session
@@ -162,6 +171,12 @@ export class CosmjsChainWriter {
     const res = await this.broadcast([{ typeUrl: TYPE_URL.cancelOrder, value }]);
     return decodeMsgCancelOrderResponse(firstResponse(res, TYPE_URL.cancelOrder));
   }
+
+  async updateSessionKey(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse> {
+    const value = { signer: this.opts.signerAddress, sessionId: input.sessionId, action: input.action };
+    const res = await this.broadcast([{ typeUrl: TYPE_URL.updateSessionKey, value }]);
+    return decodeMsgUpdateSessionKeyResponse(firstResponse(res, TYPE_URL.updateSessionKey));
+  }
 }
 
 function firstResponse(res: IndexedTx, typeUrl: string): Uint8Array {
@@ -177,7 +192,8 @@ export function composeChainClient(reader: ChainReader, writer: CosmjsChainWrite
   return {
     querySession: (id) => reader.querySession(id),
     querySessionNonce: (a) => reader.querySessionNonce(a),
-    createSession: () => writer.createSession(),
+    createSession: (i) => writer.createSession(i),
     cancelOrder: (i) => writer.cancelOrder(i),
+    updateSessionKey: (i) => writer.updateSessionKey(i),
   };
 }

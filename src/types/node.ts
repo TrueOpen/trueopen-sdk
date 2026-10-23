@@ -7,6 +7,14 @@ export interface StreamStateView {
   readonly lastActiveHeight: bigint;
   readonly openPendingCount: bigint;
   readonly status: 'ACTIVE' | 'IDLE' | 'CLOSED';
+  /** The registered session key's 20-byte address; absent = wallet-only session. */
+  readonly sessionKey?: Uint8Array;
+  /** 0 when there is no key. */
+  readonly sessionKeyExpiryHeight: bigint;
+  /** Canonical decimal atomic units; "0" when there is no key or the key is unlimited. */
+  readonly sessionKeySpendCap: string;
+  readonly sessionKeySpent: string;
+  readonly sessionKeySetHeight: bigint;
 }
 
 /**

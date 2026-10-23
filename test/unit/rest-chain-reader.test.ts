@@ -425,6 +425,8 @@ describe('RestChainReader.querySession: session key fields', () => {
   });
 
   it('a malformed amount is CHAIN_QUERY_MALFORMED', async () => {
-    await expect(read({ ...base, session_key_spend_cap: { atomic_units: 'abc' } })).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+    for (const v of ['abc', '', '01', '-1', '1.5', '00']) {
+      await expect(read({ ...base, session_key_spend_cap: { atomic_units: v } })).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+    }
   });
 });

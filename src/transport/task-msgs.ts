@@ -198,7 +198,8 @@ export function encodeMsgUpdateSessionKey(m: MsgUpdateSessionKey): Uint8Array {
  * MsgUpdateSessionKeyResponse (node msg_session.proto):
  *   optional bytes session_key_or_empty = 1; uint64 expiry_height = 2; Amount spend_cap = 3;
  *   Amount spent = 4; uint64 set_height = 5; MutationStatusV1 status = 6;
- * The state after the update. An absent (or empty) key means the session has no key.
+ * The state after the update. An absent key means the session has no key; a present key
+ * that is empty or not 20 bytes is a malformed response.
  */
 export interface MsgUpdateSessionKeyResponse {
   readonly sessionKey?: Uint8Array;
@@ -233,8 +234,17 @@ export function decodeMsgUpdateSessionKeyResponse(bytes: Uint8Array): MsgUpdateS
     const { field, wire } = r.tag();
     switch (field) {
       case 1: {
+        // Field 1 is `optional`, so presence is observable: absent = no key, but a key that
+        // is present must be exactly 20 bytes (an empty one is malformed, not "no key").
         const k = r.bytes();
-        sessionKey = k.length > 0 ? k : undefined;
+        if (k.length !== 20) {
+          throw new TrueOpenError(
+            'CHAIN_REJECT',
+            'CHAIN_QUERY_MALFORMED',
+            `chain response returned malformed session_key_or_empty (${k.length} bytes, want 20)`,
+          );
+        }
+        sessionKey = k;
         break;
       }
       case 2: expiryHeight = r.uint64(); break;

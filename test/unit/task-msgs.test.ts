@@ -202,6 +202,15 @@ describe('MsgUpdateSessionKey', () => {
     expect(r).toMatchObject({ expiryHeight: 1000n, spendCap: '5000', spent: '12', setHeight: 900n, status: 'MUTATION_STATUS_V1_APPLIED' });
   });
 
+  it('a present but empty or non-20-byte key in the response is malformed', () => {
+    for (const k of [new Uint8Array(0), new Uint8Array(19).fill(1), new Uint8Array(21).fill(1)]) {
+      const bytes = new ProtoWriter().message(1, k).uint64(6, 1n).finish();
+      expect(() => decodeMsgUpdateSessionKeyResponse(bytes)).toThrowError(
+        expect.objectContaining({ code: 'CHAIN_QUERY_MALFORMED' }),
+      );
+    }
+  });
+
   it('decodes the response after CLEAR (no key, zero amounts)', () => {
     const r = decodeMsgUpdateSessionKeyResponse(new ProtoWriter().uint64(6, 1n).finish());
     expect(r.sessionKey).toBeUndefined();

@@ -299,7 +299,7 @@ function amountField(o: Record<string, unknown>, snakeKey: string): string {
   if (a === undefined) return '0';
   const v = raw(a, 'atomic_units');
   if (v === undefined || v === null) return '0';
-  if (typeof v !== 'string' || !/^[0-9]+$/.test(v)) throw malformed(`field ${snakeKey}.atomic_units`);
+  if (typeof v !== 'string' || !/^(0|[1-9][0-9]*)$/.test(v)) throw malformed(`field ${snakeKey}.atomic_units`);
   return v;
 }
 

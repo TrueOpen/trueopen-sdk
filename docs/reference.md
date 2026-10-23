@@ -38,6 +38,7 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `feeDenom` | `string` | Optional override; checked against the chain `business_denom` (§3). |
 | `hub` | `FacadeHubReader` | Needed by `openTask` (builder set, order context, pricing). |
 | `taskReader` | `OutputTaskReader` | Needed to derive output trust anchors (§10). |
+| `sessionKeyRequestExpiryMarginBlocks` | `number` | Blocks of margin before a registered key's expiry for requests (default 3): the key signs a session's requests only while `latest + margin <= expiry`, then they fall back to the grant or the wallet. Orders are unaffected. A non-negative integer, else `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID`. |
 | `sessionKeyAnchorWaitMs` / `sessionKeyAnchorPollMs` | `number` | How long `openTask` waits for an anchor at or after a registered key's `set_height` (default `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`, 15000; 0 disables; finite and `>= 0`) and the poll interval (default 1000; finite and `> 0`). Anything else throws `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` from the constructor. |
 | `session` | `{ maxGrantBlocks, grantBlocks?, renewBeforeBlocks? }` | Opt-in session grants: the wallet signs one `SessionGrant` for an in-memory session key, which then signs SubscribeOutput / AckOutput / GetTaskEvents / PrepareChallenge / OUTPUT task-data requests. For OpenTask the grant key signs the request envelope; the order itself is signed by the wallet, or by a registered key (§6.1). The key is never persisted. |
 | `nonce` | `() => Uint8Array` | Request nonce (exactly 32 bytes). Defaults to the platform secure RNG. |
@@ -441,11 +442,15 @@ caller-supplied `context` is used as is and refused when its anchor is older. Re
 
 Expiry and requests. The client tracks the loaded key's expiry height: set by `createSession`,
 `rotate`, `renew` and `useSessionKey`, and refreshed by every `openTask` session read and
-`sessionKeyState`. The key signs the session-allowed requests only while `latest_height <=
-expiry`; after that those requests fall back to the configured grant (`session`), else the wallet,
-so the output of the last orders admitted before expiry can still be streamed, acked and fetched.
-The height is the hub's, reused from one of the client's own reads made within about one block
-(`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`) while it is below the expiry, read again otherwise.
+`sessionKeyState`. The key signs the session-allowed requests only while `latest_height + margin
+<= expiry`, where the margin is `sessionKeyRequestExpiryMarginBlocks` (default
+`DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS`, 3). After that those requests fall back to the
+configured grant (`session`), else the wallet, so the output of the last orders admitted before
+expiry can still be streamed, acked and fetched. The margin keeps a request judged against a
+slightly old height, or reaching the Builder a block later, from being refused as expired (testnet
+makes a block about every 0.5 s); raise it on chains with shorter blocks. The height is the hub's,
+reused from one of the client's own reads made within about one block
+(`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`), read again otherwise.
 Orders never fall back: `openTask` refuses with `SDK_LOCAL_SESSION_KEY_EXPIRED`. A registered-key
 request the Builder reports expired is not renewed or resent, and a `fetchTaskOutput` range retry
 does not repeat it (the error is marked not retriable).
@@ -468,7 +473,7 @@ Error codes:
 | `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED` | No key, or a different key, is registered or loaded for the session; also `useSessionKey` on a session owned by another user. |
 | `SDK_LOCAL_SESSION_KEY_EXPIRED` | `latest_height` is past the key's expiry; renew. |
 | `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` | `spent + max_fee` would exceed the cap (raise it), or overflow a u64 even with cap 0 (`details.overflow`; `spent` is never reset, so sign with the wallet). |
-| `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` | `sessionKeyAnchorWaitMs` is not finite and `>= 0`, or `sessionKeyAnchorPollMs` not finite and `> 0`. |
+| `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` | `sessionKeyAnchorWaitMs` is not finite and `>= 0`, `sessionKeyAnchorPollMs` not finite and `> 0`, or `sessionKeyRequestExpiryMarginBlocks` not a non-negative integer. |
 | `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT` | The order's anchor is below the key's `set_height`; retriable when the SDK resolved the context. |
 | `SDK_LOCAL_SESSION_CLOSED` | The session is CLOSED. |
 | `SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED` | Nexus refused an order over the cap (family `SDK_AUTH`, category `auth`, not retriable). |

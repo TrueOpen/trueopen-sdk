@@ -71,10 +71,17 @@ export interface RegisteredSessionKeysOptions {
   readonly latestHeight?: () => Promise<bigint>;
   /**
    * How long an observed latest height may be reused, in milliseconds (default 1000, about one
-   * block). A reused height is trusted only while it is below the key's expiry, so a height one
-   * block stale still decides correctly; anything else is read again.
+   * block); an older one is read again. The expiry margin covers the blocks a reused height lags.
    */
   readonly heightMaxAgeMs?: number;
+  /**
+   * Blocks of margin before the expiry (default 3): a request is key-signed only while
+   * `latest + margin <= expiry`. A request reaches a Builder a moment after it is signed, the
+   * height it was judged against can be a block or two old (about 0.5 s blocks on testnet), and
+   * the Builder refuses an expired key with a final error; inside the margin the request falls
+   * back to the grant or the wallet instead.
+   */
+  readonly expiryMarginBlocks?: number;
   /** Clock, for tests. */
   readonly now?: () => number;
 }
@@ -82,24 +89,34 @@ export interface RegisteredSessionKeysOptions {
 /** The default of RegisteredSessionKeysOptions.heightMaxAgeMs: about one block. */
 export const DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS = 1000;
 
+/** The default of RegisteredSessionKeysOptions.expiryMarginBlocks. */
+export const DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS = 3;
+
 /**
  * In-memory sessionId -> key map, with each key's expiry height as last seen on chain.
  *
  * Orders use `get`: the key always signs them, and openTask's prechecks refuse an expired one
  * (no wallet fallback). Requests use `forRequest`: the key signs them only while
- * `latest_height <= expiry_height`; after that the request falls back to the configured grant,
- * else the wallet, so the output of the last orders admitted before expiry stays readable.
+ * `latest_height + expiryMarginBlocks <= expiry_height`; after that the request falls back to the
+ * configured grant, else the wallet, so the output of the last orders admitted before expiry stays
+ * readable.
  */
 export class RegisteredSessionKeys {
   private readonly keys = new Map<string, { key: RegisteredSessionKey; expiryHeight: bigint | undefined }>();
   private observed: { height: bigint; at: number } | undefined;
   private readonly readLatestHeight: (() => Promise<bigint>) | undefined;
   private readonly heightMaxAgeMs: number;
+  private readonly margin: bigint;
   private readonly now: () => number;
 
   constructor(opts: RegisteredSessionKeysOptions = {}) {
     this.readLatestHeight = opts.latestHeight;
     this.heightMaxAgeMs = opts.heightMaxAgeMs ?? DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS;
+    const margin = opts.expiryMarginBlocks ?? DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS;
+    if (!Number.isSafeInteger(margin) || margin < 0) {
+      throw invalid(`expiryMarginBlocks must be a non-negative integer, got ${margin}`);
+    }
+    this.margin = BigInt(margin);
     this.now = opts.now ?? (() => Date.now());
   }
 
@@ -135,21 +152,22 @@ export class RegisteredSessionKeys {
 
   /**
    * The key that signs a session-allowed request of `sessionId`: the loaded key while the latest
-   * height is at or before its expiry, else undefined (the caller falls back to the grant or the
-   * wallet). A recently observed height below the expiry is reused; otherwise the height is read.
+   * height plus the margin is at or before its expiry, else undefined (the caller falls back to
+   * the grant or the wallet). A recently observed height is reused; otherwise the height is read.
    */
   async forRequest(sessionId: string): Promise<RegisteredSessionKey | undefined> {
     const e = this.keys.get(sessionId);
     if (e === undefined) return undefined;
     if (e.expiryHeight === undefined || this.readLatestHeight === undefined) return e.key;
+    const usable = (height: bigint): boolean => height + this.margin <= e.expiryHeight!;
     const seen = this.observed;
-    // Heights only grow: a height already past the expiry is final, however old.
-    if (seen !== undefined && seen.height > e.expiryHeight) return undefined;
-    // A recent height may lag the chain by a block, so it decides only with a block of slack.
-    if (seen !== undefined && this.now() - seen.at <= this.heightMaxAgeMs && seen.height < e.expiryHeight) return e.key;
+    // Heights only grow: a height already inside the margin is final, however old.
+    if (seen !== undefined && !usable(seen.height)) return undefined;
+    // A recent height lags the chain by at most about a block; the margin covers that.
+    if (seen !== undefined && this.now() - seen.at <= this.heightMaxAgeMs) return e.key;
     const latest = await this.readLatestHeight();
     this.observeHeight(latest);
-    return latest <= e.expiryHeight ? e.key : undefined;
+    return usable(latest) ? e.key : undefined;
   }
 
   delete(sessionId: string): void {

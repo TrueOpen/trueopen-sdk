@@ -536,7 +536,9 @@ const { newKey } = await client.updateSessionKey(sessionId, { rotate: { expiryBl
   material from `generateSessionKey()` as `sessionKey.key` / `rotate.key`. The key never signs a
   transaction: every registration change is signed by the wallet.
 - **Expiry.** Orders stop at the key's expiry height (`SDK_LOCAL_SESSION_KEY_EXPIRED`, no wallet
-  fallback). Requests do fall back: past the expiry, the session's `SubscribeOutput` /
+  fallback). Requests do fall back: from a few blocks before the expiry
+  (`sessionKeyRequestExpiryMarginBlocks`, default 3, so a request is not refused as expired on
+  arrival), the session's `SubscribeOutput` /
   `AckOutput` / `GetTaskEvents` / `PrepareChallenge` / OUTPUT task-data requests are signed by the
   grant key when `session` is configured, else by the wallet, so the output of the last orders
   admitted before expiry stays readable. The client tracks the expiry from create / rotate / renew

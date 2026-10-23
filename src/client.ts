@@ -186,6 +186,16 @@ export interface TrueOpenClientConfig {
    * finite and > 0 (else the constructor throws SDK_LOCAL_SESSION_KEY_CONFIG_INVALID).
    */
   readonly sessionKeyAnchorPollMs?: number;
+  /**
+   * Blocks of margin before a registered key's expiry for requests (default
+   * DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS = 3): the key signs a session's requests only while
+   * `latest + margin <= expiry`, so a request judged against a slightly old height, or arriving a
+   * block later, is not refused by the Builder as expired; inside the margin requests fall back to
+   * the grant or the wallet. Raise it on chains with very short blocks. Must be a non-negative
+   * integer (else the constructor throws SDK_LOCAL_SESSION_KEY_CONFIG_INVALID). Orders are not
+   * affected: openTask still accepts an order up to the expiry.
+   */
+  readonly sessionKeyRequestExpiryMarginBlocks?: number;
 }
 
 /**
@@ -585,13 +595,21 @@ export class TrueOpenClient {
     if (pollMs !== undefined && (!Number.isFinite(pollMs) || pollMs <= 0)) {
       throw local('SDK_LOCAL_SESSION_KEY_CONFIG_INVALID', `sessionKeyAnchorPollMs must be a finite number > 0, got ${String(pollMs)}`);
     }
+    const margin = cfg.sessionKeyRequestExpiryMarginBlocks;
+    if (margin !== undefined && (!Number.isSafeInteger(margin) || margin < 0)) {
+      throw local(
+        'SDK_LOCAL_SESSION_KEY_CONFIG_INVALID',
+        `sessionKeyRequestExpiryMarginBlocks must be a non-negative integer, got ${String(margin)}`,
+      );
+    }
     this.sessionManager = new SessionManager(cfg.chain);
-    // Requests use a registered key only up to its expiry height; the height comes from the hub,
+    // Requests use a registered key only up to a margin before its expiry height; the height comes from the hub,
     // reused from the client's own recent reads (readLatestHeight) where one exists.
     const hub = cfg.hub;
     this.registeredKeys = new RegisteredSessionKeys({
       ...(hub !== undefined ? { latestHeight: () => hub.getLatestHeight() } : {}),
       heightMaxAgeMs: DEFAULT_TRUST_ANCHOR_POLL_MS,
+      ...(margin !== undefined ? { expiryMarginBlocks: margin } : {}),
     });
     this.sessionGrants =
       cfg.session === undefined

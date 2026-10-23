@@ -55,10 +55,12 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
   fresh anchor; a caller-supplied `context` is used as is and refused if too old. Both settings
   are validated in the constructor (wait finite and `>= 0`, poll finite and `> 0`, else
   `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID`).
-- **Added:** requests fall back after the key's expiry. The client tracks the loaded key's expiry
-  height (create, rotate, renew, `useSessionKey`, and every `openTask` / `sessionKeyState` read);
-  past it, the session-allowed requests are signed by the configured grant key, else the wallet,
-  so output of orders admitted just before expiry stays readable. Orders never fall back. A
+- **Added:** requests fall back near the key's expiry. The client tracks the loaded key's expiry
+  height (create, rotate, renew, `useSessionKey`, and every `openTask` / `sessionKeyState` read).
+  From `sessionKeyRequestExpiryMarginBlocks` (default 3) blocks before it, the session-allowed
+  requests are signed by the configured grant key, else the wallet: the margin keeps a request
+  from being refused as expired on arrival, and output of orders admitted just before expiry stays
+  readable. Orders never fall back. A
   registered-key `FetchTaskData` the Builder reports expired is not retried by `fetchTaskOutput`.
 - **Added:** `HubReader.getMaxSessionKeyBlocks()` reads `params.session.max_session_key_blocks`
   (the `StreamStateView` fields are listed under Breaking above).

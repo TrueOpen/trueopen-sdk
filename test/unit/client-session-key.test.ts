@@ -4,7 +4,7 @@ import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type { AckOutputRequest, OpenTaskHeader, OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenClient } from '../../src/client';
-import type { FacadeHubReader } from '../../src/client';
+import type { FacadeHubReader, TrueOpenClientConfig } from '../../src/client';
 import type { ChainClient, UpdateSessionKeyInput } from '../../src/transport/chain-client';
 import type { SessionKeyGrant } from '../../src/transport/task-msgs';
 import type { StreamStateView } from '../../src/types/node';
@@ -173,7 +173,7 @@ function ackTransport(acks: AckOutputRequest[]): Transport {
   });
 }
 
-function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; anchorWaitMs?: number; grant?: boolean } = {}) {
+function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; anchorWaitMs?: number; grant?: boolean; config?: Partial<TrueOpenClientConfig> } = {}) {
   const hubState: HubState = {
     latest: opts.latest ?? 1_000n,
     maxKeyBlocks: 'maxKeyBlocks' in opts ? opts.maxKeyBlocks : 100n,
@@ -194,6 +194,7 @@ function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; ancho
     signatureChainId: EVM, feeDenom: 'utrueopen',
     sessionKeyAnchorPollMs: 1,
     ...(opts.anchorWaitMs !== undefined ? { sessionKeyAnchorWaitMs: opts.anchorWaitMs } : {}),
+    ...opts.config,
   });
   return { client, chain, hubState, headers, prompts, acks };
 }
@@ -659,17 +660,17 @@ describe('requests after the registered key expires (orders never fall back)', (
   const later = (): void => { const t = Date.now() + 5_000; vi.spyOn(Date, 'now').mockReturnValue(t); };
 
   for (const grant of [false, true]) {
-    it(`before expiry the key signs a request; after it, ${grant ? 'the grant key' : 'the wallet'} does; an order is still refused`, async () => {
+    it(`before the margin the key signs a request; inside it, ${grant ? 'the grant key' : 'the wallet'} does; an expired order is still refused`, async () => {
       const { client, hubState, headers, acks, prompts } = setup({ grant });
-      const h = await client.createSession({ sessionKey: { expiryBlocks: 2 } }); // expiry 1002
+      const h = await client.createSession({ sessionKey: { expiryBlocks: 10 } }); // expiry 1010
       const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
-      hubState.latest = 1_002n; // latest == expiry: still the key
+      hubState.latest = 1_007n; // 1007 + the default 3-block margin == expiry: still the key
       later();
       await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
       expect(envelopeSigner(acks[0]!.requestEnvelope!)).toEqual({ signer: key, grant: false });
       expect(prompts).toHaveLength(0);
 
-      hubState.latest = 1_003n;
+      hubState.latest = 1_008n; // two blocks before the expiry: inside the margin, falls back
       later();
       await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
       const after = envelopeSigner(acks[1]!.requestEnvelope!);
@@ -684,11 +685,26 @@ describe('requests after the registered key expires (orders never fall back)', (
         expect(prompts).toHaveLength(1);
       }
       const promptsBefore = prompts.length;
-      await expect(open(client, { context: context(1_003n, 1_001n) })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_EXPIRED' });
+      await expect(open(client, { context: context(1_011n, 1_009n) })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_EXPIRED' });
       expect(headers).toHaveLength(0);
       expect(prompts).toHaveLength(promptsBefore);
     });
   }
+
+  it('sessionKeyRequestExpiryMarginBlocks sets the margin; a bad value is refused at construction', async () => {
+    const { client, hubState, acks } = setup({ config: { sessionKeyRequestExpiryMarginBlocks: 0 } });
+    const h = await client.createSession({ sessionKey: { expiryBlocks: 10 } }); // expiry 1010
+    const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
+    hubState.latest = 1_010n; // margin 0: the expiry height itself still signs
+    later();
+    await client.ingress.ackOutput({ sessionId: SESSION, taskId: TASK, lastSeq: 0n });
+    expect(envelopeSigner(acks[0]!.requestEnvelope!).signer).toBe(key);
+    for (const bad of [-1, 2.5, Number.NaN]) {
+      expect(() => setup({ config: { sessionKeyRequestExpiryMarginBlocks: bad } })).toThrow(
+        expect.objectContaining({ code: 'SDK_LOCAL_SESSION_KEY_CONFIG_INVALID' }),
+      );
+    }
+  });
 
   it('a renew seen on chain (sessionKeyState) brings the key back for requests', async () => {
     const { client, chain, hubState, acks } = setup();

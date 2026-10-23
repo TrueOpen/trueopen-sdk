@@ -132,8 +132,9 @@ export interface IngressAuth {
   /**
    * Registered session keys (ADR-0037), by session. When the request's session has one, that key
    * signs the same session-allowed requests instead of the wallet or a granted key: zero grant
-   * hash, no grant. It takes precedence over `session`, but only while the latest height is at
-   * or before the key's expiry height (RegisteredSessionKeys.forRequest): after it, that session's
+   * hash, no grant. It takes precedence over `session`, but only while the latest height plus a
+   * margin (default 3 blocks) is at or before the key's expiry height
+   * (RegisteredSessionKeys.forRequest): after that, the session's
    * requests fall back to `session` (the grant) when configured, else to the wallet, so the output
    * of orders admitted just before expiry can still be streamed, acked and fetched. Orders never
    * fall back (openTask refuses with SDK_LOCAL_SESSION_KEY_EXPIRED). Nothing is renewed for a

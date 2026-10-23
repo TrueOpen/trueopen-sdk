@@ -104,6 +104,7 @@ export {
   RegisteredSessionKeys,
   sessionKeyAddressHex,
   DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS,
+  DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS,
 } from './session/registered-session-key';
 export type { SessionKeyMaterial, RegisteredSessionKey, RegisteredSessionKeysOptions } from './session/registered-session-key';
 

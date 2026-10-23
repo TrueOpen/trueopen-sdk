@@ -4,6 +4,7 @@ import {
   sessionKeyFromPrivateKey,
   registeredSessionKey,
   RegisteredSessionKeys,
+  DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS,
   sessionKeyAddressHex,
 } from '../../src/session/registered-session-key';
 import { signAndEncodeOrder, taskOrderTypedData, decodeSignedOrder } from '../../src/order/signed-order';
@@ -227,34 +228,63 @@ describe('session key material', () => {
     expect(keys.get(SESSION)).toBeUndefined();
   });
 
-  it('forRequest: the key up to its expiry height, then undefined (the caller falls back); orders keep get()', async () => {
+  it('forRequest: the key until latest + margin passes the expiry, then undefined (the caller falls back); orders keep get()', async () => {
     let latest = 1_000n;
     let now = 0;
     let reads = 0;
     const keys = new RegisteredSessionKeys({ latestHeight: async () => { reads += 1; return latest; }, heightMaxAgeMs: 1000, now: () => now });
-    keys.set(KEY, 1_002n);
+    keys.set(KEY, 1_010n);
     expect(await keys.forRequest(SESSION)).toBe(KEY); // no height seen yet: read
     expect(reads).toBe(1);
-    expect(await keys.forRequest(SESSION)).toBe(KEY); // a recent 1000 < 1002: reused
+    expect(await keys.forRequest(SESSION)).toBe(KEY); // a recent 1000 (+3 <= 1010): reused
     expect(reads).toBe(1);
-    latest = 1_002n;
-    now = 2_000; // stale: read again; latest == expiry still signs
+    latest = 1_007n;
+    now = 2_000; // stale: read again; 1007 + 3 == 1010 is the last height that signs
     expect(await keys.forRequest(SESSION)).toBe(KEY);
     expect(reads).toBe(2);
-    // A recent height equal to the expiry may lag a block: read, not reused.
-    latest = 1_003n;
+    latest = 1_008n;
+    now = 4_000; // inside the default 3-block margin: falls back, two blocks before the expiry
     expect(await keys.forRequest(SESSION)).toBeUndefined();
     expect(reads).toBe(3);
-    // A height past the expiry is final however old: no read.
+    // A height already inside the margin is final however old: no read.
     now = 10_000;
     expect(await keys.forRequest(SESSION)).toBeUndefined();
     expect(reads).toBe(3);
     expect(keys.get(SESSION)).toBe(KEY);
     // A renew seen on chain moves the expiry; a different key's state does not.
     keys.refreshExpiry(SESSION, new Uint8Array(20).fill(9), 5_000n);
-    expect(keys.expiryHeight(SESSION)).toBe(1_002n);
+    expect(keys.expiryHeight(SESSION)).toBe(1_010n);
     keys.refreshExpiry(SESSION, KEY.address, 5_000n);
     expect(await keys.forRequest(SESSION)).toBe(KEY);
+  });
+
+  it('forRequest: a reused recent height never signs inside the margin, even if it is a block stale', async () => {
+    let latest = 1_006n;
+    let now = 0;
+    const keys = new RegisteredSessionKeys({ latestHeight: async () => latest, now: () => now });
+    keys.set(KEY, 1_010n);
+    expect(await keys.forRequest(SESSION)).toBe(KEY); // read 1006: 1006 + 3 <= 1010
+    latest = 1_008n; // the chain moved two blocks within the reuse window (0.5 s blocks)
+    now = 900;
+    // The reused 1006 still decides, but the real height 1008 is two blocks short of the expiry, so
+    // a Builder at 1008 or 1009 accepts the key: the margin absorbed the lag.
+    expect(await keys.forRequest(SESSION)).toBe(KEY);
+  });
+
+  it('forRequest honours a configured margin, and margin 0 signs up to the expiry itself', async () => {
+    const at = (margin: number, height: bigint, expiry: bigint) => {
+      const k = new RegisteredSessionKeys({ latestHeight: async () => height, expiryMarginBlocks: margin });
+      k.set(KEY, expiry);
+      return k.forRequest(SESSION);
+    };
+    expect(await at(0, 1_010n, 1_010n)).toBe(KEY);
+    expect(await at(0, 1_011n, 1_010n)).toBeUndefined();
+    expect(await at(5, 1_005n, 1_010n)).toBe(KEY);
+    expect(await at(5, 1_006n, 1_010n)).toBeUndefined();
+    expect(DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS).toBe(3);
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      expect(() => new RegisteredSessionKeys({ expiryMarginBlocks: bad })).toThrow(/expiryMarginBlocks/);
+    }
   });
 
   it('forRequest without a height source or a known expiry always returns the key', async () => {

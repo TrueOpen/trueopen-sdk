@@ -987,6 +987,7 @@ describe('openTask retry: NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED', () => {
     s.builders.openTaskErrors.set(ADDRS[0]!, [replacement()]);
     const res = await s.client.openTask(BASE);
     const r = res.builders.find((b) => b.address === ADDRS[0]);
+    expect(r).toBeDefined();
     if (r !== undefined) {
       expect(s.builders.headersBy.get(ADDRS[0]!)).toHaveLength(1);
       expect(r.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });

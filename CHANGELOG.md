@@ -163,9 +163,9 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
   - **Added:** `updateSessionKey` `clear` and `rotate` (and `renew`) read the session first and send
     nothing for a CLOSED session (`SDK_LOCAL_SESSION_CLOSED`) or another user's
     (`SDK_LOCAL_SESSION_NOT_OWNER`).
-- Pinned to wire PR #47 @ `602cb18` (untagged, two commits after `v0.5.0`; proto identical to `88d1238`,
-  which adds server-side request vectors and the session key Amino vectors); re-pin to the release
-  tag once it ships.
+- Pinned to wire PR #47 @ `602cb18` (untagged, two commits after `v0.5.0`). Its proto is identical to
+  `88d1238`; `602cb18` adds the server-side request vectors and the session key Amino vectors.
+  Re-pin to the release tag once it ships.
 
 ### Lower time to first token
 

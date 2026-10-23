@@ -274,6 +274,8 @@ export class RegisteredSessionKeys {
       }
       this.observeHeight(latest);
     }
+    // Judged on the hub's height: a Builder a block behind the hub may still hold the old entry at
+    // the window's last height, and its refusal then stays final.
     if (latest >= change + MAX_SESSION_KEY_CACHE_TTL_BLOCKS) return false;
     await this.sleep(this.retryDelayMs);
     return true;

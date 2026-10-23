@@ -689,6 +689,61 @@ the account's first tx, the chain stores its public key as ethsecp256k1, and the
 > times: the address derivation via keccak, the keccak256(SignDoc) digest, and the rewritten
 > ethsecp256k1 public key type URL all passed node's ante handler.
 
+### ✅ On-chain writes from a browser wallet: the Web3 path (`connectTrueOpenWeb3ChainClient`)
+
+A browser wallet (MetaMask or any EIP-1193 provider, Keplr `signEthereum`) cannot produce a
+DIRECT signature; it can only sign EIP-712 typed data. node accepts a second transaction envelope
+for it (`app/account_ante.go`): one critical `/cosmos.evm.eip712.v1.ExtensionOptionsWeb3Tx`
+option, `SIGN_MODE_LEGACY_AMINO_JSON`, and a 65-byte R||S||V signature over the "Cosmos Web3"
+typed data (cosmos-evm v0.6.3 `WrapTxToTypedData`) of the canonical Amino sign doc.
+`connectTrueOpenWeb3ChainClient` builds and broadcasts exactly that, returning the same
+`ChainClient` (`createSession`, `updateSessionKey`, `cancelOrder` and the reads), so a browser app
+can create a session with a registered session key with one wallet prompt for the transaction:
+
+```ts
+import {
+  TrueOpenClient, connectTrueOpenWeb3ChainClient, eip1193TypedDataSigner, toAccountAddress, HubReader,
+} from 'trueopen-sdk';
+
+const [address0x] = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+const wallet = eip1193TypedDataSigner({ provider: window.ethereum, address: address0x });
+const signatureChainId = BigInt((await window.ethereum.request({ method: 'eth_chainId' })) as string);
+const userAddress = toAccountAddress(address0x);
+const businessDenom = await new HubReader({ baseUrl: restUrl, fetch: (u) => fetch(u) }).getBusinessDenom();
+
+const { client: chain } = await connectTrueOpenWeb3ChainClient({
+  rpcUrl, restUrl, wallet, signerAddress: userAddress,
+  typedDataChainId: signatureChainId, // the wallet's active network, same as signatureChainId below
+  fee: { amount: [{ denom: businessDenom, amount: '7500' }], gas: '300000' }, // explicit, never 'auto'
+});
+const client = new TrueOpenClient({ chainId, userAddress, wallet, signatureChainId, chain, hub, taskReader, /* ... */ });
+
+// One wallet prompt: the MsgCreateSession that also registers the session key.
+const s = await client.createSession({ label: 'chat', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n } });
+saveSecurely('chat', s.sessionKey!.privateKey);
+// Orders are now signed by the session key; renew / rotate / clear and cancelOrder are Web3 txs too.
+```
+
+- **Shape.** One Msg per transaction, signer = the wallet account, no fee payer / granter, default
+  timeout, ordered. The fee must be explicit: node only simulates DIRECT transactions, so
+  `fee: 'auto'` is refused (`SDK_LOCAL_TX_FEE_AUTO`).
+- **The account must exist** (it pays the fee; `CHAIN_ACCOUNT_NOT_FOUND` otherwise). On its first
+  transaction it has no public key on chain: the SDK recovers the key from the wallet's signature
+  and puts it in the SignerInfo. When the chain has one, it must derive the signer address
+  (`SDK_LOCAL_TX_PUBKEY_MISMATCH`, checked before the wallet is asked) and the signature must
+  recover to it.
+- **Domain chainId.** `typedDataChainId` is the signer-chosen EIP-712 domain chainId (1..MaxInt64),
+  carried in the extension option; replay across chains is stopped by the Cosmos `chain_id`
+  inside the signed document. MetaMask needs its active network here.
+- The signature is recovered and checked against the signer before broadcast
+  (`SDK_LOCAL_SIGNER_ADDRESS_MISMATCH`). `createTrueOpenWeb3ChainClient` takes an injected
+  `Web3ChainRpc` (a CosmJS `StargateClient` connected with `ethAccountParser` satisfies it).
+
+> ✅ Verified against the frozen wire vectors (`task/session_key_amino_v1.json`,
+> `shared/account_signing_v1.json` `msg_create_session_transaction`) and against node's own ante
+> handler: the SDK's TxRaw bytes for all three Msgs, including a first transaction with no stored
+> public key, were accepted, and tampered ones refused.
+
 ### ✅ Model manifest retrieval (`ManifestSource`)
 
 The chain stores a profile's `manifest_hash` and a retrieval hint, `ProfileState.manifest_uri`.

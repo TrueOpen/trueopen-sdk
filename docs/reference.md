@@ -32,7 +32,7 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `chainId` | `string` | Cosmos chain id (e.g. `"trueopen-testnet-1"`). Signed into every order. |
 | `userAddress` | `string` | The user's account (order user + signer of every request). Canonical bech32, or a `0x` EVM address which is converted. |
 | `wallet` | `TypedDataSigner` | Signs the order, the OpenTask request envelope, and every other Builder request, all as EIP-712 typed data (65-byte R‖S‖V, each recovered and checked against `userAddress` before sending). Use `privateKeyTypedDataSigner` (CLI/servers), `eip1193TypedDataSigner` (browser wallets) or `keplrTypedDataSigner` (Keplr). |
-| `chain` | `ChainClient` | Chain read+write (use `connectTrueOpenChainClient`). |
+| `chain` | `ChainClient` | Chain read+write (use `connectTrueOpenChainClient`, or `connectTrueOpenWeb3ChainClient` for a browser wallet). |
 | `ingressTransport` | `Transport` | Connect transport for nexus `IngressAPI`. |
 | `signatureChainId` | `bigint \| number \| string` | The signer-chosen EIP-712 domain chainId (the wallet's active network). Defaults to `1` (Ethereum mainnet) for session keys and servers. |
 | `feeDenom` | `string` | Optional override; checked against the chain `business_denom` (§3). |
@@ -848,6 +848,59 @@ endpoints with the given signer. `CosmjsChainWriter` encodes and broadcasts
 `decodeMsgCreateSessionResponse`, etc.), classifies a CheckTx rejection as
 `CHAIN_TX_REJECTED`, and enforces the tx-inclusion policy. `taskRegistry` is the CosmJS
 type registry.
+
+### 9.4 Web3 transactions (EIP-712 wallets)
+
+```ts
+connectTrueOpenWeb3ChainClient({ rpcUrl, restUrl, wallet, signerAddress, typedDataChainId, fee, memo?, fetch?, inclusion? })
+  : Promise<{ client: ChainClient; queryClient: StargateClient }>
+createTrueOpenWeb3ChainClient({ rpc: Web3ChainRpc, restUrl, wallet, signerAddress, typedDataChainId, fee, ... }): ChainClient
+class Web3TxBroadcaster implements TxBroadcaster   // new Web3TxBroadcaster({ rpc, wallet, typedDataChainId })
+interface Web3ChainRpc { getChainId(); getAccount(address); broadcastTxSync(txBytes); getTx(hash) }
+signWeb3Tx(input: SignWeb3TxInput): Promise<SignedWeb3Tx>   // { txBytes, signDoc, typedData, signature, pubKey }
+assembleWeb3TxRaw(input: Web3TxRawInput): Uint8Array
+encodeExtensionOptionsWeb3Tx(typedDataChainId): Uint8Array
+const WEB3_EXTENSION_TYPE_URL = '/cosmos.evm.eip712.v1.ExtensionOptionsWeb3Tx'
+
+aminoMsgCreateSession(m) / aminoMsgUpdateSessionKey(m) / aminoMsgCancelOrder(m): AminoMsg
+const AMINO_NAME   // trueopen/x/task/MsgCreateSession | MsgUpdateSessionKey | MsgCancelOrder
+canonicalAminoSignDoc({ chainId, accountNumber, sequence, fee, memo, msgs }): string
+canonicalJson(value): string   // Go encoding/json + sdk.SortJSON output
+cosmosWeb3TypedData(typedDataChainId, signDoc): TypedData
+cosmosWeb3Domain(typedDataChainId): Eip712Struct
+```
+
+The node's second signature envelope (`app/account_ante.go`), for wallets that can only sign
+typed data (`eip1193TypedDataSigner`, `keplrTypedDataSigner`, `privateKeyTypedDataSigner`):
+
+- **TxBody**: exactly one Msg, the memo, one *critical* `extension_options` entry
+  `ExtensionOptionsWeb3Tx { typed_data_chain_id }` (fee_payer / fee_payer_sig empty; non-critical
+  options are refused by node). **AuthInfo**: one SignerInfo, `eth_secp256k1` compressed key, mode
+  `SIGN_MODE_LEGACY_AMINO_JSON`, the account sequence; the fee with no payer / granter.
+  **signatures**: one 65-byte R||S||V (V 27/28, low S).
+- **Signed bytes**: the canonical Amino StdSignDoc (`account_number`, `chain_id`,
+  `fee{amount,gas}`, `memo`, `msgs[{type,value}]`, `sequence`; integers as strings, keys sorted,
+  Go's HTML-safe escaping). Amino values: `MsgCreateSession {signer_address, session_key?}`,
+  `MsgUpdateSessionKey {signer_address, session_id, set | clear: true}`, `MsgCancelOrder
+  {session_id, order_sequence (absent when 0), signer_address}`; bytes in standard Base64, a grant
+  as `{session_key, expiry_height, spend_cap: {atomic_units}}`. An update action that is not
+  exactly one of `set` (a grant) / `clear: true` is `SDK_LOCAL_SESSION_KEY_INVALID`.
+- **Typed data**: cosmos-evm v0.6.3 `WrapTxToTypedData` (primary type `Tx`, `msg0`, types
+  inferred from the Msg JSON with descending field order) with TrueOpen's `Type...0` -> `Type...`
+  rename; domain `{name: "Cosmos Web3", version: "1.0.0", chainId: typed_data_chain_id,
+  verifyingContract: "cosmos", salt: "0"}`.
+- **Account**: read from the chain (`account_number`, `sequence`). No stored key: the key is
+  recovered from the signature. A stored key that does not derive the signer is
+  `SDK_LOCAL_TX_PUBKEY_MISMATCH`; a missing account `CHAIN_ACCOUNT_NOT_FOUND`.
+- **Refused locally**: `fee: 'auto'` (`SDK_LOCAL_TX_FEE_AUTO`; node simulates DIRECT only), a fee
+  payer / granter or non-canonical amount (`SDK_LOCAL_TX_FEE_INVALID`), more than one Msg or a
+  non-task Msg (`SDK_LOCAL_TX_MSG_UNSUPPORTED`), a Msg signer other than the wallet
+  (`SDK_LOCAL_TX_SIGNER_MISMATCH`), a `typedDataChainId` outside 1..MaxInt64
+  (`SDK_LOCAL_SIGNATURE_CHAIN_ID_INVALID`), a signature recovering to another address
+  (`SDK_LOCAL_SIGNER_ADDRESS_MISMATCH`).
+
+Broadcast, inclusion polling and failure classification are `CosmjsChainWriter`'s: the Web3
+broadcaster only replaces signing.
 
 ---
 

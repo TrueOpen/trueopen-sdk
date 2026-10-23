@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added: Web3 transactions for EIP-712 wallets
+
+- **Added:** `connectTrueOpenWeb3ChainClient({ rpcUrl, restUrl, wallet, signerAddress,
+  typedDataChainId, fee })` and `createTrueOpenWeb3ChainClient` return the usual `ChainClient`
+  (`createSession(grant?)`, `updateSessionKey`, `cancelOrder`, reads) signed by a
+  `TypedDataSigner`, so MetaMask / EIP-1193 and Keplr users can create sessions, register / update
+  session keys and cancel orders. Transactions use node's Web3 envelope: one critical
+  `ExtensionOptionsWeb3Tx`, `SIGN_MODE_LEGACY_AMINO_JSON`, a 65-byte signature over the "Cosmos
+  Web3" typed data (cosmos-evm v0.6.3 `WrapTxToTypedData` plus TrueOpen's type rename) of the
+  canonical Amino sign doc. One Msg per tx, explicit fee (`'auto'` is `SDK_LOCAL_TX_FEE_AUTO`), no
+  fee delegation; a first transaction's public key is recovered from the signature, a stored key
+  of another account is `SDK_LOCAL_TX_PUBKEY_MISMATCH`, a missing account
+  `CHAIN_ACCOUNT_NOT_FOUND`.
+- **Added:** the building blocks: `Web3TxBroadcaster` (a `TxBroadcaster` for `CosmjsChainWriter`),
+  `signWeb3Tx`, `assembleWeb3TxRaw`, `encodeExtensionOptionsWeb3Tx`, `aminoMsgCreateSession` /
+  `aminoMsgUpdateSessionKey` / `aminoMsgCancelOrder`, `canonicalAminoSignDoc`, `canonicalJson`,
+  `cosmosWeb3TypedData`, `cosmosWeb3Domain`, `AMINO_NAME`, `WEB3_EXTENSION_TYPE_URL`.
+- **Added:** `createTrueOpenChainClient` takes an optional `inclusion` policy.
+- **Changed:** a `MsgUpdateSessionKey` action is checked at runtime on both the protobuf and the
+  Amino encoder: anything but exactly one of `set` (a grant) or `clear: true` is
+  `SDK_LOCAL_SESSION_KEY_INVALID` (wire `session_key_amino_v1.json` negative cases).
+- Tests reproduce `task/session_key_amino_v1.json` (create / set / clear: sign doc bytes, sha256,
+  encode_type, hash_struct, domain_separator, signing_digest, signature_65) and
+  `shared/account_signing_v1.json` `msg_create_session_transaction`; the produced TxRaw bytes were
+  accepted by node's ante handler.
+
 ### Registered session keys sign orders (ADR-0037, wire PR #47, untagged; breaking for ChainClient implementers)
 
 A session can have one registered key (a 20-byte eth-style address on chain). That key, not the

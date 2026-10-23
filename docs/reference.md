@@ -38,8 +38,8 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `feeDenom` | `string` | Optional override; checked against the chain `business_denom` (§3). |
 | `hub` | `FacadeHubReader` | Needed by `openTask` (builder set, order context, pricing). |
 | `taskReader` | `OutputTaskReader` | Needed to derive output trust anchors (§10). |
-| `sessionKeyAnchorWaitMs` / `sessionKeyAnchorPollMs` | `number` | How long `openTask` waits for an anchor at or after a registered key's `set_height` (default `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`, 15000; 0 disables) and the poll interval (default 1000). |
-| `session` | `{ maxGrantBlocks, grantBlocks?, renewBeforeBlocks? }` | Opt-in session grants: the wallet signs one `SessionGrant` for an in-memory session key, which then signs SubscribeOutput / AckOutput / GetTaskEvents / PrepareChallenge / OUTPUT task-data requests. OpenTask is always wallet-signed. The key is never persisted. |
+| `sessionKeyAnchorWaitMs` / `sessionKeyAnchorPollMs` | `number` | How long `openTask` waits for an anchor at or after a registered key's `set_height` (default `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`, 15000; 0 disables; finite and `>= 0`) and the poll interval (default 1000; finite and `> 0`). Anything else throws `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` from the constructor. |
+| `session` | `{ maxGrantBlocks, grantBlocks?, renewBeforeBlocks? }` | Opt-in session grants: the wallet signs one `SessionGrant` for an in-memory session key, which then signs SubscribeOutput / AckOutput / GetTaskEvents / PrepareChallenge / OUTPUT task-data requests. For OpenTask the grant key signs the request envelope; the order itself is signed by the wallet, or by a registered key (§6.1). The key is never persisted. |
 | `nonce` | `() => Uint8Array` | Request nonce (exactly 32 bytes). Defaults to the platform secure RNG. |
 | `expiry` | `() => bigint` | Request expiry (Unix ms). Defaults to now + `requestTtlMs`. |
 | `requestTtlMs` | `number` | Non-OpenTask request expiry (default 5 min). |
@@ -386,7 +386,8 @@ unchanged. The key never signs a transaction.
 
 ```ts
 interface SessionKeyOptions { expiryBlocks?: number; spendCap?: bigint | string }
-type SessionKeyUpdate = { renew: SessionKeyOptions } | { rotate: SessionKeyOptions } | { clear: true }
+interface RegisterSessionKeyOptions extends SessionKeyOptions { key?: SessionKeyMaterial }   // from generateSessionKey()
+type SessionKeyUpdate = { renew: SessionKeyOptions } | { rotate: RegisterSessionKeyOptions } | { clear: true }
 interface SessionKeyHandle { address: string; privateKey: Uint8Array; expiryHeight: bigint; spendCap: string }
 interface SessionHandle { sessionId; /* ... */ sessionKey?: SessionKeyHandle }   // set only by createSession({ sessionKey })
 interface UpdateSessionKeyResult { response: MsgUpdateSessionKeyResponse; newKey?: SessionKeyHandle }
@@ -395,7 +396,7 @@ interface SessionKeyState {
   spendCap: string; spent: string; setHeight: bigint; status: 'ACTIVE' | 'IDLE' | 'CLOSED'
 }
 
-createSession({ label?, sessionKey?: SessionKeyOptions }): Promise<SessionHandle>
+createSession({ label?, sessionKey?: RegisterSessionKeyOptions }): Promise<SessionHandle>
 updateSessionKey(sessionId: string, update: SessionKeyUpdate): Promise<UpdateSessionKeyResult>
 useSessionKey(sessionId: string, privateKey: Uint8Array): Promise<void>
 forgetSessionKey(sessionId: string): void
@@ -404,9 +405,9 @@ sessionKeyState(sessionId: string): Promise<SessionKeyState>
 
 | Method | Behavior |
 |---|---|
-| `createSession({ sessionKey })` | Generates a key from a CSPRNG, registers it in `MsgCreateSession`, loads it and returns it once in `handle.sessionKey`. **Persist `privateKey` now.** |
-| `updateSessionKey(.., { renew })` | `MsgUpdateSessionKey` (wallet-signed) with the loaded key and a new expiry and cap. The key must be loaded and still the chain's key (`SDK_LOCAL_SESSION_KEY_NOT_REGISTERED`); the session must not be CLOSED. |
-| `updateSessionKey(.., { rotate })` | Generates a fresh key (never the old one), registers it, and after the chain applied it loads it; `newKey` is its material, which you persist. Orders the old key signed that were not yet admitted are rejected. |
+| `createSession({ sessionKey })` | Generates a key from a CSPRNG (or takes `sessionKey.key` from `generateSessionKey()`), registers it in `MsgCreateSession`, loads it and returns it once in `handle.sessionKey`. **Persist `privateKey` now**; to persist it before the broadcast (a broadcast that times out may still land), generate it yourself and pass it as `key`. |
+| `updateSessionKey(.., { renew })` | `MsgUpdateSessionKey` (wallet-signed) with the loaded key and a new expiry and cap. The key must be loaded and still the chain's key (`SDK_LOCAL_SESSION_KEY_NOT_REGISTERED`); the session must not be CLOSED. The check and the tx are not atomic: if another device rotates in between, the renew re-registers the old key (there is no compare-and-set on chain), so do not renew on one device while rotating on another. |
+| `updateSessionKey(.., { rotate })` | Generates a fresh key (never the old one; or takes `rotate.key`), registers it, and after the chain applied it loads it; `newKey` is its material, which you persist. Orders the old key signed that were not yet admitted are rejected. When the chain has no key (never set, or cleared) `spendCap` is required (`SDK_LOCAL_SESSION_KEY_INVALID`): there is no cap to keep, and the cleared cap 0 would be unlimited. |
 | `updateSessionKey(.., { clear: true })` | Removes the registration and, on success, the loaded key; the wallet signs the session's orders again. |
 | `useSessionKey` | Loads a persisted key after a restart. The session must belong to this user, not be CLOSED, and have exactly this key registered; else nothing is loaded. |
 | `forgetSessionKey` | Unloads the key; the chain registration is unchanged. |
@@ -421,19 +422,33 @@ is `max_session_key_blocks - 2`, at least 2. The key expires at the latest heigh
 default) is unlimited, so a leaked key can then authorize orders up to the whole balance.
 `renew` and `rotate` default to the chain's current cap. `spent` is never reset; requests never
 consume the cap, only admitted orders do. The key is exactly 20 bytes, not all zero and not the
-owner's address.
+owner's address. Supplied material (`key`) is checked with `sessionKeyFromPrivateKey`: a valid
+32-byte private key whose address is `key.address`, neither the owner's nor the key being rotated
+out; no error ever carries key material.
 
 Custody: the SDK never derives the key from a signature, keeps it in memory only and never logs
 it. The caller persists `privateKey`.
 
 `openTask` with a loaded key reads the session first and checks, before signing: not CLOSED; the
 registered key is the loaded one; `latest_height <= session_key_expiry_height`; the session anchor
-is at or after `session_key_set_height`; and, with a nonzero cap, `spent + max_fee <= cap`. A
-failed check never falls back to the wallet. Right after a registration the fresh anchor is still
+is at or after `session_key_set_height`; `spent + max_fee` fits a u64 even with cap 0 (the chain's
+`AMOUNT_OVERFLOW`, reported as `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` with `details.overflow`);
+and, with a nonzero cap, `spent + max_fee <= cap`. A failed check never falls back to the wallet. Right after a registration the fresh anchor is still
 below `set_height`, so `openTask` polls (up to `sessionKeyAnchorWaitMs`) until one reaches it; a
 caller-supplied `context` is used as is and refused when its anchor is older. Recovery after
 `ASSIGN_REJECTED`: check `sessionKeyState`, fix the cause, and re-sign the same sequence by passing
 `orderSequence` to `openTask`; the SDK never resubmits on its own.
+
+Expiry and requests. The client tracks the loaded key's expiry height: set by `createSession`,
+`rotate`, `renew` and `useSessionKey`, and refreshed by every `openTask` session read and
+`sessionKeyState`. The key signs the session-allowed requests only while `latest_height <=
+expiry`; after that those requests fall back to the configured grant (`session`), else the wallet,
+so the output of the last orders admitted before expiry can still be streamed, acked and fetched.
+The height is the hub's, reused from one of the client's own reads made within about one block
+(`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`) while it is below the expiry, read again otherwise.
+Orders never fall back: `openTask` refuses with `SDK_LOCAL_SESSION_KEY_EXPIRED`. A registered-key
+request the Builder reports expired is not renewed or resent, and a `fetchTaskOutput` range retry
+does not repeat it (the error is marked not retriable).
 
 `StreamStateView` gains `sessionKey?: Uint8Array` (absent = wallet-only), `sessionKeyExpiryHeight:
 bigint` (0 without a key), `sessionKeySpendCap: string`, `sessionKeySpent: string` and
@@ -441,6 +456,7 @@ bigint` (0 without a key), `sessionKeySpendCap: string`, `sessionKeySpent: strin
 
 Exports: `generateSessionKey`, `sessionKeyFromPrivateKey`, `registeredSessionKey`,
 `RegisteredSessionKeys`, `sessionKeyAddressHex`, `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`,
+`DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS`,
 `encodeMsgUpdateSessionKey`, `decodeMsgUpdateSessionKeyResponse` and the types above.
 
 Error codes:
@@ -449,9 +465,10 @@ Error codes:
 |---|---|
 | `SDK_LOCAL_SESSION_KEY_INVALID` | Malformed key, grant or `expiryBlocks` / `spendCap` input. |
 | `SDK_LOCAL_SESSION_KEY_UNSUPPORTED` | No `getMaxSessionKeyBlocks` reader, or the chain's limit is absent, 0 or below 2. |
-| `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED` | No key, or a different key, is registered or loaded for the session. |
+| `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED` | No key, or a different key, is registered or loaded for the session; also `useSessionKey` on a session owned by another user. |
 | `SDK_LOCAL_SESSION_KEY_EXPIRED` | `latest_height` is past the key's expiry; renew. |
-| `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` | `spent + max_fee` would exceed the cap; raise it. |
+| `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` | `spent + max_fee` would exceed the cap (raise it), or overflow a u64 even with cap 0 (`details.overflow`; `spent` is never reset, so sign with the wallet). |
+| `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` | `sessionKeyAnchorWaitMs` is not finite and `>= 0`, or `sessionKeyAnchorPollMs` not finite and `> 0`. |
 | `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT` | The order's anchor is below the key's `set_height`; retriable when the SDK resolved the context. |
 | `SDK_LOCAL_SESSION_CLOSED` | The session is CLOSED. |
 | `SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED` | Nexus refused an order over the cap (family `SDK_AUTH`, category `auth`, not retriable). |

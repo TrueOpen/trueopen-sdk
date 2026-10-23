@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Added: registered session keys sign orders (ADR-0037, wire PR #47, untagged)
+### Registered session keys sign orders (ADR-0037, wire PR #47, untagged; breaking for ChainClient implementers)
 
 A session can have one registered key (a 20-byte eth-style address on chain). That key, not the
 wallet, then signs the session's OpenTask orders and the session-allowed requests, so a browser
@@ -10,8 +10,16 @@ wallet prompts once per registration instead of once per order. **Enable it only
 and the Task Builders support it**: a chain whose `max_session_key_blocks` is absent, 0 or below 2
 is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 
-- **Added:** `createSession(label | { label?, sessionKey?: { expiryBlocks?, spendCap? } })`.
-  With `sessionKey` the SDK generates the key from a CSPRNG, registers it in the same
+- **Breaking (implementers):** `ChainClient.updateSessionKey(input)` is a new required method, and
+  `StreamStateView` gains four required fields: `sessionKeyExpiryHeight`, `sessionKeySpendCap`,
+  `sessionKeySpent` and `sessionKeySetHeight` (plus the optional `sessionKey`). A custom
+  `ChainClient` / `ChainReader`, a test double, a wrapper (like the CLI's read-only chain) or code
+  that builds a `StreamStateView` literal no longer compiles until updated. Migration, for a node
+  without session keys: return `0n` / `"0"` for the four fields and no `sessionKey`, and have
+  `updateSessionKey` throw if unsupported. Callers of the SDK's own clients need no change.
+- **Added:** `createSession(label | { label?, sessionKey?: { expiryBlocks?, spendCap?, key? } })`.
+  With `sessionKey` the SDK generates the key from a CSPRNG (or takes `key`, material from
+  `generateSessionKey()` the caller persisted before the broadcast), registers it in the same
   `MsgCreateSession`, loads it, and returns it once in `SessionHandle.sessionKey`
   (`{ address, privateKey, expiryHeight, spendCap }`). `expiryBlocks` is an integer in
   `[2, max_session_key_blocks]` (default `max_session_key_blocks - 2`, at least 2; one block never
@@ -20,33 +28,45 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 - **Added:** `updateSessionKey(sessionId, { renew } | { rotate } | { clear: true })`, returning
   `{ response, newKey? }`. All three are `MsgUpdateSessionKey`, signed by the wallet; the session
   key never signs a transaction. `renew` keeps the loaded key (it must still be the chain's key);
-  `rotate` generates a fresh key, loads it and returns it as `newKey`; `clear` removes the
-  registration and the loaded key. `renew` and `rotate` default the cap to the chain's current
-  one. `spent` is never reset.
+  `rotate` generates a fresh key (or takes `rotate.key`), loads it and returns it as `newKey`;
+  `clear` removes the registration and the loaded key. `renew` and `rotate` default the cap to the
+  chain's current one; when the chain has no key (after a clear, which zeroes the cap) `rotate`
+  requires an explicit `spendCap`. `spent` is never reset. `renew` checks the chain's key and then
+  sends the tx, which is not atomic: a rotate on another device in between is overwritten.
 - **Added:** `useSessionKey(sessionId, privateKey)`, `forgetSessionKey(sessionId)` and
   `sessionKeyState(sessionId)` (`registered`, `matchesLoadedKey`, `expiryHeight`, `spendCap`,
   `spent`, `setHeight`, `status`). Also exported: `generateSessionKey`, `sessionKeyFromPrivateKey`,
   `registeredSessionKey`, `RegisteredSessionKeys`, `sessionKeyAddressHex`,
-  `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS` and the `SessionKeyOptions` / `SessionKeyUpdate` /
-  `UpdateSessionKeyResult` / `SessionKeyState` / `SessionKeyHandle` types.
+  `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`, `DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS` and the
+  `SessionKeyOptions` / `RegisterSessionKeyOptions` / `SessionKeyUpdate` /
+  `UpdateSessionKeyResult` / `SessionKeyState` / `SessionKeyHandle` /
+  `RegisteredSessionKeysOptions` types.
 - **Key custody:** the SDK generates the key and never derives it from a signature. It keeps keys in
   memory only and never logs them. **The caller persists `privateKey`** and reloads it with
   `useSessionKey` after a restart; it cannot be recovered.
 - **Added:** `openTask` prechecks, before anything is signed, what the chain checks at admission:
   the session is not CLOSED, the registered key is the loaded one, the latest height is at or
-  before the key's expiry, the session anchor is at or after the key's `set_height`, and (with a
-  nonzero cap) `spent + max_fee <= cap`. A failed check never falls back to the wallet: renew or
+  before the key's expiry, the session anchor is at or after the key's `set_height`,
+  `spent + max_fee` fits a u64 (even with an unlimited cap), and (with a nonzero cap)
+  `spent + max_fee <= cap`. A failed check never falls back to the wallet: renew or
   raise the cap, load the current key, or call `forgetSessionKey` to sign with the wallet. Right
   after a registration the anchor can still be below `set_height`, so `openTask` waits up to
   `sessionKeyAnchorWaitMs` (default 15 s; `sessionKeyAnchorPollMs`, default 1 s; 0 disables) for a
-  fresh anchor; a caller-supplied `context` is used as is and refused if too old.
-- **Added:** `StreamStateView` gains `sessionKey?`, `sessionKeyExpiryHeight`, `sessionKeySpendCap`,
-  `sessionKeySpent` and `sessionKeySetHeight`; `HubReader.getMaxSessionKeyBlocks()` reads
-  `params.session.max_session_key_blocks`.
+  fresh anchor; a caller-supplied `context` is used as is and refused if too old. Both settings
+  are validated in the constructor (wait finite and `>= 0`, poll finite and `> 0`, else
+  `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID`).
+- **Added:** requests fall back after the key's expiry. The client tracks the loaded key's expiry
+  height (create, rotate, renew, `useSessionKey`, and every `openTask` / `sessionKeyState` read);
+  past it, the session-allowed requests are signed by the configured grant key, else the wallet,
+  so output of orders admitted just before expiry stays readable. Orders never fall back. A
+  registered-key `FetchTaskData` the Builder reports expired is not retried by `fetchTaskOutput`.
+- **Added:** `HubReader.getMaxSessionKeyBlocks()` reads `params.session.max_session_key_blocks`
+  (the `StreamStateView` fields are listed under Breaking above).
 - **Added:** error codes `SDK_LOCAL_SESSION_KEY_INVALID`, `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`,
   `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED`, `SDK_LOCAL_SESSION_KEY_EXPIRED`,
-  `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED`, `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT`
-  (retriable when the SDK resolved the context) and `SDK_LOCAL_SESSION_CLOSED`, plus the nexus code
+  `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` (also for a u64 overflow, with `details.overflow`),
+  `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT` (retriable when the SDK resolved the context),
+  `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` and `SDK_LOCAL_SESSION_CLOSED`, plus the nexus code
   `SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED` (category `auth`). The chain's
   `ERR_SESSION_KEY_INVALID`, `ERR_SESSION_KEY_EXPIRED` and `ERR_SESSION_KEY_SPEND_CAP_EXCEEDED`
   appear in a Builder's tx result or a tx log.
@@ -58,8 +78,8 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 - **Recovery:** there is no automatic resubmission on `ASSIGN_REJECTED`. Check `sessionKeyState`,
   fix the cause (renew, raise the cap, load the current key), then re-sign the same sequence by
   passing `orderSequence` to `openTask`.
-- Pinned to wire PR #47 @ `88d1238` (untagged, on top of `41af15b`); re-pin to the release tag once
-  it ships.
+- Pinned to wire PR #47 @ `88d1238` (untagged, one commit after `v0.5.0`); re-pin to the release
+  tag once it ships.
 
 ### Lower time to first token
 

@@ -505,8 +505,9 @@ Every signature is recovered and checked against `userAddress` before it is sent
 **Session grants (opt-in).** With `session: { maxGrantBlocks }` in the config, the wallet signs
 one `SessionGrant` for an in-memory session key, and that key signs `SubscribeOutput`,
 `AckOutput`, `GetTaskEvents`, `PrepareChallenge`, and `GetTaskDataMetadata` / `FetchTaskData`
-of an OUTPUT object: one wallet prompt per grant instead of one per request. `OpenTask` and
-everything else is always wallet-signed. `maxGrantBlocks` must be the Builders'
+of an OUTPUT object: one wallet prompt per grant instead of one per request. For `OpenTask` the
+grant key signs the request envelope, and the order is signed by the wallet, or by a registered key
+(below); every other request is wallet-signed. `maxGrantBlocks` must be the Builders'
 `max_session_grant_blocks`; the grant is renewed with a fresh key before it expires, and once
 more when a Builder reports it expired (`SDK_AUTH_SESSION_GRANT_EXPIRED` /
 `DATA_ACCESS_SESSION_GRANT_EXPIRED`). The session key is never persisted and never derived from
@@ -519,25 +520,39 @@ browser wallet prompts once per registration, not once per order. A `SessionGran
 orders; a registered key can, and its requests carry no grant.
 
 ```ts
-const s = await client.createSession({ label: 'chat', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n } });
-saveSecurely(s.sessionId, s.sessionKey!.privateKey);     // you persist it; the SDK never will
+const key = generateSessionKey();                         // or omit `key` and read s.sessionKey!.privateKey
+saveSecurely('chat', key.privateKey);                     // persist before the broadcast; the SDK never will
+const s = await client.createSession({ label: 'chat', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n, key } });
 await client.openTask({ sessionId: s.sessionId, /* ... */ });   // signed by the key, not the wallet
 // after a restart:
-await client.useSessionKey(sessionId, loadSecurely(sessionId));
+await client.useSessionKey(sessionId, loadSecurely('chat'));
 // renew / rotate / clear are wallet-signed MsgUpdateSessionKey transactions:
 const { newKey } = await client.updateSessionKey(sessionId, { rotate: { expiryBlocks: 100 } });
 ```
 
 - **Custody.** The SDK generates the key from a CSPRNG, never derives it from a signature, keeps it
-  in memory only and never logs it. Persist `privateKey` yourself; it cannot be recovered. The key
-  never signs a transaction: every registration change is signed by the wallet.
+  in memory only and never logs it. Persist `privateKey` yourself; it cannot be recovered. To
+  persist it before the transaction is broadcast (a timed-out broadcast may still land), pass
+  material from `generateSessionKey()` as `sessionKey.key` / `rotate.key`. The key never signs a
+  transaction: every registration change is signed by the wallet.
+- **Expiry.** Orders stop at the key's expiry height (`SDK_LOCAL_SESSION_KEY_EXPIRED`, no wallet
+  fallback). Requests do fall back: past the expiry, the session's `SubscribeOutput` /
+  `AckOutput` / `GetTaskEvents` / `PrepareChallenge` / OUTPUT task-data requests are signed by the
+  grant key when `session` is configured, else by the wallet, so the output of the last orders
+  admitted before expiry stays readable. The client tracks the expiry from create / rotate / renew
+  / `useSessionKey` and from every `openTask` and `sessionKeyState` read; renew before expiry to
+  keep the key.
+- **Rotate after clear.** A clear zeroes the cap, so a later `rotate` must pass `spendCap`
+  explicitly (`SDK_LOCAL_SESSION_KEY_INVALID` otherwise). `renew` checks the chain's key, then
+  sends the tx; that is not atomic, so do not renew on one device while rotating on another.
 - **Zero cap is unlimited.** `spendCap` defaults to `"0"`: a leaked key can then authorize orders
   up to the whole account balance. Set a cap where that matters. The cap counts the cumulative
   `max_fee` of admitted orders and is never reset.
 - **No silent wallet fallback.** Before signing, `openTask` checks what the chain will check: not
   CLOSED, the registered key is the loaded one, not expired, the session anchor is at or after the
   key's registration height (it waits up to `sessionKeyAnchorWaitMs` for that), and
-  `spent + max_fee <= cap`. A failed check throws an `SDK_LOCAL_SESSION_*` error. Use
+  `spent + max_fee <= cap` (and fits a u64 even with cap 0). A failed check throws an
+  `SDK_LOCAL_SESSION_*` error. Use
   `sessionKeyState(sessionId)` to see why; `forgetSessionKey` returns the session to wallet signing.
 - **`ASSIGN_REJECTED`.** Nothing is resubmitted automatically. Check `sessionKeyState`, fix the
   cause, then re-sign the same sequence by passing `orderSequence` to `openTask`.

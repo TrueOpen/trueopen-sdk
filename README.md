@@ -698,7 +698,14 @@ option, `SIGN_MODE_LEGACY_AMINO_JSON`, and a 65-byte R||S||V signature over the 
 typed data (cosmos-evm v0.6.3 `WrapTxToTypedData`) of the canonical Amino sign doc.
 `connectTrueOpenWeb3ChainClient` builds and broadcasts exactly that, returning the same
 `ChainClient` (`createSession`, `updateSessionKey`, `cancelOrder` and the reads), so a browser app
-can create a session with a registered session key with one wallet prompt for the transaction:
+can create a session with a registered session key with one wallet prompt for the transaction.
+
+> The transactions this path builds are accepted by node's full ante handler (checked against the
+> deployed node code, with the wire `session_key_amino_v1.json` vectors). It has not yet been tried
+> with a real MetaMask or Keplr: the "Cosmos Web3" domain uses the string fields
+> `verifyingContract: "cosmos"` and `salt: "0"`, and wallet-side acceptance of that domain is
+> unverified. Smoke-test your wallet before relying on it.
+
 
 ```ts
 import {

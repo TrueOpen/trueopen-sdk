@@ -3,7 +3,9 @@ import { createRouterTransport, ConnectError, Code } from '@connectrpc/connect';
 import type { HandlerContext, Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type { GetTaskEventsRequest, OpenTaskHeader, OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
-import { TrueOpenClient, nextRetryIdempotencyKey } from '../../src/client';
+import { TrueOpenClient, nextRetryIdempotencyKey, ABANDONED_REPORT, ORDER_REPLACEMENT_RETRY_ATTEMPTS } from '../../src/client';
+import { DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS } from '../../src/session/registered-session-key';
+import { TaskBuilderAllEndpointsFailedError } from '../../src/transport/fan-out-submit';
 import type { FacadeHubReader, OpenTaskParams, OpenTaskResult, OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
 import type { ChainTaskSnapshot, InferReceiptView, StreamStateView } from '../../src/types/node';
@@ -149,6 +151,14 @@ class Builders {
   /** Refuse a GetTaskEvents not signed by the wallet, as Nexus does once the key changed. */
   refuseKeySigned = false;
   refused = 0;
+  /** Builders whose GetTaskEvents answers NotFound (the task was abandoned). */
+  readonly notFound = new Set<string>();
+  /** What each Builder's GetTaskEvents replays first, before the live events. */
+  readonly journal = new Map<string, string[]>();
+  /** Builder address -> OpenTask headers it received. */
+  readonly headersBy = new Map<string, OpenTaskHeader[]>();
+  /** Builder address -> errors its next OpenTask calls throw, in order (then it accepts). */
+  readonly openTaskErrors = new Map<string, ConnectError[]>();
 
   emit(address: string, code: string): void {
     for (const l of this.listeners.get(address) ?? []) l(code);
@@ -161,11 +171,20 @@ class Builders {
     return createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async openTask(reqs: AsyncIterable<OpenTaskRequest>) {
-          for await (const f of reqs) if (f.frame.case === 'header') self.headers.push(f.frame.value);
+          for await (const f of reqs) {
+            if (f.frame.case !== 'header') continue;
+            self.headers.push(f.frame.value);
+            let list = self.headersBy.get(address);
+            if (list === undefined) self.headersBy.set(address, (list = []));
+            list.push(f.frame.value);
+          }
+          const err = self.openTaskErrors.get(address)?.shift();
+          if (err !== undefined) throw err;
           return { taskId: '', accepted: true, reason: '', sessionId: SESSION };
         },
         async *getTaskEvents(req: GetTaskEventsRequest, ctx: HandlerContext) {
           if (self.failing.has(address)) throw new Error('events unavailable');
+          if (self.notFound.has(address)) throw new ConnectError('task not found', Code.NotFound);
           if (self.refuseKeySigned && envelopeSigner(req.requestEnvelope!) !== USER_ADDRESS_HEX) {
             self.refused += 1;
             throw new ConnectError('SDK_AUTH_INVALID_SIGNATURE', Code.Unauthenticated);
@@ -174,7 +193,7 @@ class Builders {
           // Counted on the signal itself (a stream the client aborts before this ran counts too).
           if (ctx.signal.aborted) self.closed += 1;
           else ctx.signal.addEventListener('abort', () => { self.closed += 1; }, { once: true });
-          const queue: string[] = [];
+          const queue: string[] = [...(self.journal.get(address) ?? [])];
           let notify: (() => void) | undefined;
           const l = (code: string): void => { queue.push(code); notify?.(); };
           let set = self.listeners.get(address);
@@ -211,8 +230,9 @@ function envelopeSigner(env: NonNullable<GetTaskEventsRequest['requestEnvelope']
   return toHex(ethAddressBytes(recoverEip712PubKey(digest, env.signature)));
 }
 
-function setup() {
+function setup(extra: Partial<ConstructorParameters<typeof TrueOpenClient>[0]> = {}) {
   const hubState = { latest: 1_000n };
+  let nonceCounter = 0;
   const chain = new FakeChain();
   const reader = taskReader();
   const builders = new Builders();
@@ -224,8 +244,10 @@ function setup() {
     ingressTransport: builders.transport(ADDRS[0]!), hub: makeHub(hubState),
     ingressTransportFactory: (uri) => builders.transport(uri),
     taskReader: reader,
-    nonce: () => new Uint8Array(32).fill(1),
+    nonce: () => new Uint8Array(32).fill(1 + (nonceCounter++ % 250)),
     signatureChainId: EVM, feeDenom: 'utrueopen',
+    sessionKeyChangeRetryMs: 1, orderReplacementRetryMs: 1,
+    ...extra,
   });
   return { client, chain, hubState, reader, builders, prompts };
 }
@@ -276,11 +298,17 @@ describe('openTask result: sequence, signer, max fee and retry params', () => {
     expect(r.order).toBe(BASE.order);
     expect(r.order.payload).toBe(intent.payload);
     expect(r.pricing).toBe(PRICING);
+    // The window is kept relative to the context's latest height (1000).
+    expect(r.orderWindow).toEqual({ earliestSubmitBlocks: 0n, orderExpireBlocks: 50_000n });
+    expect(res.earliestSubmitHeight).toBe(1_000n);
 
-    // A retry's own retry counts up.
-    const res2 = await s.client.openTask({ ...r, context: context(1_000n, 1_000n) });
+    // A retry's own retry counts up; its window is rebased on its context.
+    const res2 = await s.client.openTask({ ...r, context: context(1_001n, 1_000n) });
     expect(res2.orderSequence).toBe(7n);
     expect(res2.retryParams.idempotencyKey).toBe('k#retry2');
+    expect(res2.earliestSubmitHeight).toBe(1_001n);
+    expect(res2.orderExpireHeight).toBe(51_001n);
+    expect(res2.retryParams.orderWindow).toEqual({ earliestSubmitBlocks: 0n, orderExpireBlocks: 50_000n });
   });
 
   it('nextRetryIdempotencyKey', () => {
@@ -374,14 +402,30 @@ describe('waitForAdmission', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
-  it('WORKER_HANDRAISES_ACCEPTED also triggers a read', async () => {
+  it('ASSIGN_ACCEPTED also triggers a read', async () => {
     const s = setup();
     const res = await s.client.openTask(BASE);
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
     await tick(50);
     s.reader.taskHash = res.taskHash;
-    s.builders.emit(res.builders[0]!.address, 'WORKER_HANDRAISES_ACCEPTED');
+    s.builders.emit(res.builders[0]!.address, 'ASSIGN_ACCEPTED');
     expect(await waiting).toMatchObject({ kind: 'accepted' });
+  });
+
+  it('chain event codes Nexus never emits on GetTaskEvents do not trigger a read', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000, timeoutMs: 300 });
+    await tick(50);
+    expect(s.reader.reads).toBe(1);
+    s.reader.taskHash = res.taskHash;
+    s.builders.emit(res.builders[0]!.address, 'WORKER_HANDRAISES_ACCEPTED');
+    s.builders.emit(res.builders[1]!.address, 'WORKER_ASSIGNMENT_FINALIZED');
+    await tick(50);
+    expect(s.reader.reads).toBe(1);
+    // Found only by the next poll, at the bound.
+    expect(await waiting).toMatchObject({ kind: 'accepted' });
+    expect(s.reader.reads).toBe(2);
   });
 
   it('superseded: the chain task for task_id has another task_hash', async () => {
@@ -733,5 +777,318 @@ describe('waitForAdmission', () => {
     await expect(s.client.waitForAdmission(res, { pollIntervalMs: 5 })).rejects.toMatchObject({ code: 'CHAIN_QUERY_HTTP_500' });
     await tick(10);
     expect(s.builders.closed).toBe(s.builders.opened);
+  });
+});
+
+const nonceHex = (h: OpenTaskHeader): string => toHex(h.requestEnvelope!.requestNonce);
+
+describe('waitForAdmission: a replayed journal (Nexus keeps an abandoned task\'s journal)', () => {
+  it('[ORDER_RECEIVED, ASSIGN_REJECTED, ORDER_RECEIVED]: the old attempt\'s rejection does not count', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    for (const b of res.builders) s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_REJECTED', 'ORDER_RECEIVED']);
+    s.chain.sessionReads = 0;
+    const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 300 });
+    expect(out).toEqual({ kind: 'timeout', taskId: res.taskId });
+    expect(s.chain.sessionReads).toBe(0);
+  });
+
+  it('a rejection after the last ORDER_RECEIVED counts', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    for (const b of res.builders) {
+      s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_TIMEOUT', 'ORDER_RECEIVED', 'ASSIGN_REJECTED']);
+    }
+    const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+    expect(out.kind).toBe('rejected');
+    if (out.kind === 'rejected') expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['ASSIGN_REJECTED', 'ASSIGN_REJECTED', 'ASSIGN_REJECTED']);
+  });
+
+  it('the old rejection replayed, then the new attempt rejected live: rejected', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    for (const b of res.builders) s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_REJECTED', 'ORDER_RECEIVED']);
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+    await tick(50);
+    rejectAll(s.builders, res, 'ASSIGN_TIMEOUT');
+    const out = await waiting;
+    expect(out.kind).toBe('rejected');
+    if (out.kind === 'rejected') expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['ASSIGN_TIMEOUT', 'ASSIGN_TIMEOUT', 'ASSIGN_TIMEOUT']);
+  });
+});
+
+describe('waitForAdmission: GetTaskEvents NotFound from an acked Builder', () => {
+  it('counts as that Builder\'s report: every Builder abandoned the task -> rejected', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    for (const b of res.builders) s.builders.notFound.add(b.address);
+    const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+    expect(out.kind).toBe('rejected');
+    if (out.kind !== 'rejected') return;
+    expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual([ABANDONED_REPORT, ABANDONED_REPORT, ABANDONED_REPORT]);
+  });
+
+  it('mixed with event reports: rejected once every Builder reported', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    s.builders.notFound.add(res.builders[0]!.address);
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
+    await tick(50);
+    s.builders.emit(res.builders[1]!.address, 'ASSIGN_REJECTED');
+    s.builders.emit(res.builders[2]!.address, 'ASSIGN_TIMEOUT');
+    expect(await waiting).toMatchObject({ kind: 'rejected' });
+  });
+
+  it('only some Builders abandoned: not a rejection', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    s.builders.notFound.add(res.builders[0]!.address);
+    expect(await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 200 })).toMatchObject({ kind: 'timeout' });
+  });
+
+  it('the chain still wins: a task on chain is accepted', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    for (const b of res.builders) s.builders.notFound.add(b.address);
+    s.reader.taskHash = res.taskHash;
+    expect(await s.client.waitForAdmission(res, { pollIntervalMs: 5 })).toMatchObject({ kind: 'accepted' });
+  });
+});
+
+describe('openTask: the order window', () => {
+  it('refuses locally an order whose order_expire_height is below the latest height', async () => {
+    const s = setup();
+    await expect(s.client.openTask({ ...BASE, context: context(51_001n, 51_000n) })).rejects.toMatchObject({
+      family: 'SDK_LOCAL', code: 'SDK_LOCAL_ORDER_EXPIRED',
+    });
+    expect(s.builders.headers).toHaveLength(0);
+    // At the height itself it is still sent.
+    await expect(s.client.openTask({ ...BASE, context: context(51_000n, 51_000n) })).resolves.toMatchObject({ orderExpireHeight: 51_000n });
+  });
+
+  it('a retry after the deadline passed is rebased on the fresh context, not expired', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    // Rejected past order_expire_height: the chain is now beyond the old window.
+    s.hubState.latest = intent.orderExpireHeight + 5n;
+    for (const b of res.builders) s.builders.notFound.add(b.address);
+    const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+    expect(out.kind).toBe('rejected');
+    if (out.kind !== 'rejected') return;
+    const latest = s.hubState.latest;
+    const res2 = await s.client.openTask(out.retry);
+    expect(res2.context.latestHeight).toBe(latest);
+    expect(res2.earliestSubmitHeight).toBe(latest);
+    expect(res2.orderExpireHeight).toBe(latest + 50_000n);
+    const order = decodeSignedOrder(s.builders.headers.at(-1)!.orderEnvelope).order!;
+    expect(order.orderExpireHeight).toBe(latest + 50_000n);
+    expect(res2.taskHash).not.toBe(res.taskHash);
+  });
+
+  it('a caller-set orderWindow is applied (and clamped at height 1)', async () => {
+    const s = setup();
+    const res = await s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: -5_000n, orderExpireBlocks: 100n } });
+    expect(res.earliestSubmitHeight).toBe(1n);
+    expect(res.orderExpireHeight).toBe(1_100n);
+    await expect(s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: 0, orderExpireBlocks: 1n } as never }))
+      .rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_WINDOW_INVALID' });
+  });
+});
+
+describe('openTask: a retry identical to the rejected order', () => {
+  it('with the caller\'s context unchanged: SDK_LOCAL_RETRY_ORDER_UNCHANGED, nothing sent', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    const sent = s.builders.headers.length;
+    await expect(s.client.openTask({ ...res.retryParams, context: context(1_000n, 1_000n) })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_RETRY_ORDER_UNCHANGED',
+    });
+    expect(s.builders.headers).toHaveLength(sent);
+  });
+
+  it('resolves one fresh context, bypassing the anchor-reuse cache', async () => {
+    const s = setup();
+    const { context: _c, expiryHeight: _e, ...noContext } = BASE;
+    void _c;
+    void _e;
+    const res = await s.client.openTask(noContext);
+    // Same latest height, same reused anchor: the retry would be identical, until the cache is
+    // invalidated and a block passes.
+    const cache = s.client['contextCache']!;
+    const invalidate = cache.invalidate.bind(cache);
+    let invalidations = 0;
+    cache.invalidate = () => {
+      invalidations += 1;
+      s.hubState.latest += 1n;
+      invalidate();
+    };
+    const res2 = await s.client.openTask(res.retryParams);
+    expect(invalidations).toBe(1);
+    expect(res2.taskHash).not.toBe(res.taskHash);
+    expect(res2.context.latestHeight).toBe(1_001n);
+  });
+
+  it('still identical after the fresh context: SDK_LOCAL_RETRY_ORDER_UNCHANGED', async () => {
+    const s = setup();
+    const { context: _c, expiryHeight: _e, ...noContext } = BASE;
+    void _c;
+    void _e;
+    const res = await s.client.openTask(noContext);
+    const sent = s.builders.headers.length;
+    await expect(s.client.openTask(res.retryParams)).rejects.toMatchObject({ code: 'SDK_LOCAL_RETRY_ORDER_UNCHANGED', retriable: true });
+    expect(s.builders.headers).toHaveLength(sent);
+  });
+
+  it('a changed retry (object spread of the params) is sent', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    const changed = {
+      ...res.retryParams,
+      context: context(1_000n, 1_000n),
+      order: { ...intent, amounts: { ...intent.amounts, maxFee: { atomicUnits: (MAX_FEE + 1n).toString() } } },
+    };
+    await expect(s.client.openTask(changed)).resolves.toMatchObject({ maxFee: MAX_FEE + 1n });
+  });
+});
+
+describe('openTask retry: NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED', () => {
+  const replacement = (): ConnectError =>
+    new ConnectError('NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED: this Builder already tracks another version of the task; do not retry', Code.FailedPrecondition);
+
+  it('a Builder still tracking the old version is retried after about a block, with a fresh nonce', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    const a = res.builders[0]!.address;
+    s.builders.headersBy.clear();
+    s.builders.openTaskErrors.set(a, [replacement(), replacement()]);
+    const res2 = await s.client.openTask({ ...res.retryParams, context: context(1_001n, 1_000n) });
+    const mine = s.builders.headersBy.get(a)!;
+    expect(mine).toHaveLength(3);
+    expect(new Set(mine.map(nonceHex)).size).toBe(3);
+    // The signed order is the same on every attempt.
+    expect(new Set(mine.map((h) => toHex(h.orderEnvelope))).size).toBe(1);
+    expect(res2.builders.find((b) => b.address === a)!.ack?.accepted).toBe(true);
+    for (const b of res2.builders.slice(1)) expect(s.builders.headersBy.get(b.address)).toHaveLength(1);
+  });
+
+  it('bounded: past ORDER_REPLACEMENT_RETRY_ATTEMPTS the refusal is the result', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    const a = res.builders[0]!.address;
+    s.builders.headersBy.clear();
+    s.builders.openTaskErrors.set(a, Array.from({ length: 10 }, replacement));
+    const res2 = await s.client.openTask({ ...res.retryParams, context: context(1_001n, 1_000n) });
+    expect(s.builders.headersBy.get(a)).toHaveLength(1 + ORDER_REPLACEMENT_RETRY_ATTEMPTS);
+    expect(res2.builders.find((b) => b.address === a)!.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });
+  });
+
+  it('not a retry: the refusal is final at once', async () => {
+    const s = setup();
+    s.builders.openTaskErrors.set(ADDRS[0]!, [replacement()]);
+    const res = await s.client.openTask(BASE);
+    const r = res.builders.find((b) => b.address === ADDRS[0]);
+    if (r !== undefined) {
+      expect(s.builders.headersBy.get(ADDRS[0]!)).toHaveLength(1);
+      expect(r.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });
+    }
+  });
+});
+
+describe('openTask: Builders lagging a key change (key-change window)', () => {
+  const invalidSig = (): ConnectError => new ConnectError('SDK_AUTH_INVALID_SIGNATURE: signature does not verify', Code.Unauthenticated);
+
+  /** A key registered at `setHeight` (the key-change height useSessionKey records); latest is 1000. */
+  async function keyAt(s: ReturnType<typeof setup>, setHeight: bigint): Promise<void> {
+    const m = generateSessionKey();
+    s.chain.stream = { ...s.chain.stream, sessionKey: m.address, sessionKeyExpiryHeight: 1_100n, sessionKeySpendCap: '0', sessionKeySetHeight: setHeight };
+    await s.client.useSessionKey(SESSION, m.privateKey);
+  }
+
+  it('inside the window (latest < change + 10): refused key-signed OpenTasks are re-signed and re-sent', async () => {
+    const s = setup();
+    await keyAt(s, 995n);
+    for (const a of ADDRS) s.builders.openTaskErrors.set(a, [invalidSig(), invalidSig()]);
+    const res = await s.client.openTask(BASE);
+    expect(res.orderSignedBy).toBe('session-key');
+    for (const a of ADDRS) {
+      const mine = s.builders.headersBy.get(a)!;
+      expect(mine).toHaveLength(3);
+      expect(new Set(mine.map(nonceHex)).size).toBe(3);
+    }
+    expect(res.builders.every((b) => b.ack?.accepted === true)).toBe(true);
+  });
+
+  it('bounded by DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS', async () => {
+    const s = setup();
+    await keyAt(s, 995n);
+    for (const a of ADDRS) s.builders.openTaskErrors.set(a, Array.from({ length: 50 }, invalidSig));
+    const err = await s.client.openTask(BASE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
+    for (const a of ADDRS) expect(s.builders.headersBy.get(a)).toHaveLength(1 + DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS);
+  });
+
+  it('outside the window the refusal is final', async () => {
+    const s = setup();
+    await keyAt(s, 990n); // 1000 >= 990 + 10
+    for (const a of ADDRS) s.builders.openTaskErrors.set(a, [invalidSig()]);
+    const err = await s.client.openTask(BASE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
+    for (const a of ADDRS) expect(s.builders.headersBy.get(a)).toHaveLength(1);
+    const results = (err as TaskBuilderAllEndpointsFailedError<never, never>).results;
+    expect(results.every((r) => (r.error as TrueOpenError).code === 'SDK_AUTH_INVALID_SIGNATURE')).toBe(true);
+  });
+
+  it('a wallet-signed order is never retried for it', async () => {
+    const s = setup();
+    await keyAt(s, 995n);
+    for (const a of ADDRS) s.builders.openTaskErrors.set(a, [invalidSig()]);
+    await expect(s.client.openTask({ ...BASE, orderSigner: 'wallet', orderSequence: 7n })).rejects.toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
+    for (const a of ADDRS) expect(s.builders.headersBy.get(a)).toHaveLength(1);
+  });
+
+  it('a key-signed OpenTask refused SDK_AUTH_SESSION_GRANT_EXPIRED outside the window is not retriable', async () => {
+    const s = setup();
+    await keyAt(s, 990n);
+    for (const a of ADDRS) {
+      s.builders.openTaskErrors.set(a, [new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: the session\'s registered key has expired', Code.DeadlineExceeded)]);
+    }
+    const err = (await s.client.openTask(BASE).catch((e: unknown) => e)) as TaskBuilderAllEndpointsFailedError<never, never>;
+    for (const r of err.results) expect(r.error).toMatchObject({ code: 'SDK_AUTH_SESSION_GRANT_EXPIRED', retriable: false });
+  });
+});
+
+describe('openTask: the order window against the registered key\'s expiry', () => {
+  it('earliest_submit_height after the key expiry: SDK_LOCAL_SESSION_KEY_EXPIRED before signing', async () => {
+    const s = setup();
+    await withKey(s); // expiry 1100
+    const order = { ...intent, earliestSubmitHeight: 1_101n };
+    await expect(s.client.openTask({ ...BASE, order })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_EXPIRED' });
+    expect(s.builders.headers).toHaveLength(0);
+    await expect(s.client.openTask({ ...BASE, order: { ...intent, earliestSubmitHeight: 1_100n } })).resolves.toBeDefined();
+  });
+
+  it('a window that ends after the expiry is sent, flagged keyExpiresInOrderWindow', async () => {
+    const s = setup();
+    await withKey(s);
+    const res = await s.client.openTask(BASE); // order_expire_height 51000 > 1100
+    expect(res.keyExpiresInOrderWindow).toBe(true);
+    expect(res.sessionKeyExpiryHeight).toBe(1_100n);
+    const inside = await s.client.openTask({ ...BASE, order: { ...intent, orderExpireHeight: 1_100n } });
+    expect(inside.keyExpiresInOrderWindow).toBeUndefined();
+    const wallet = await s.client.openTask({ ...BASE, orderSigner: 'wallet', orderSequence: 7n });
+    expect(wallet.keyExpiresInOrderWindow).toBeUndefined();
+    expect(wallet.sessionKeyExpiryHeight).toBeUndefined();
+  });
+
+  it('diagnosis: expired when the key expires before earliest_submit_height, though not before latest', async () => {
+    const s = setup();
+    await withKey(s);
+    const res = await s.client.openTask({ ...BASE, order: { ...intent, earliestSubmitHeight: 1_050n } });
+    // The chain now shows an expiry between latest (1000) and earliest_submit_height (1050).
+    s.chain.stream = { ...s.chain.stream, sessionKeyExpiryHeight: 1_040n };
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
+    await tick(50);
+    rejectAll(s.builders, res);
+    expect(await waiting).toMatchObject({ kind: 'rejected', diagnosis: { reason: 'expired' } });
   });
 });

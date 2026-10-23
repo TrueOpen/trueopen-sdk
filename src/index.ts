@@ -2,7 +2,7 @@ export const SDK_WIRE_VERSION = 'SDK_WIRE_V1' as const;
 
 export { TrueOpenError, dataError } from './errors/errors';
 export type { ErrorFamily, ErrorCategory, TrueOpenErrorOptions } from './errors/errors';
-export { classifyNexusError, classifyBroadcastError, nexusErrorCode } from './errors/classify';
+export { classifyNexusError, classifyBroadcastError, nexusErrorCode, sessionTxFailureCode } from './errors/classify';
 
 // Task lifecycle enums come straight from the wire contract.
 export { TaskPhase, AssignmentStatus, ReceiptStatus, VerificationStatus, SettlementStatus } from './gen/task/v1/assignment_pb.js';
@@ -105,6 +105,9 @@ export {
   sessionKeyAddressHex,
   DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS,
   DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS,
+  MAX_SESSION_KEY_CACHE_TTL_BLOCKS,
+  DEFAULT_KEY_CHANGE_RETRY_DELAY_MS,
+  DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS,
 } from './session/registered-session-key';
 export type { SessionKeyMaterial, RegisteredSessionKey, RegisteredSessionKeysOptions } from './session/registered-session-key';
 
@@ -347,6 +350,9 @@ export {
   stripChatTemplateEos,
   DEFAULT_ADMISSION_WAIT_MS,
   nextRetryIdempotencyKey,
+  ABANDONED_REPORT,
+  DEFAULT_ORDER_REPLACEMENT_RETRY_MS,
+  ORDER_REPLACEMENT_RETRY_ATTEMPTS,
 } from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
@@ -372,6 +378,7 @@ export type {
   AdmissionOutcome,
   RejectionDiagnosis,
   RejectionReason,
+  OrderWindowOffsets,
 } from './client';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----

@@ -2,7 +2,7 @@ import { Code, ConnectError } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { TypedDataSigner } from './signer/typed-data-signer';
-import { IngressClient } from './transport/ingress-client';
+import { IngressClient, finalSignedError } from './transport/ingress-client';
 import type { OpenTaskAck, TaskStatusView, IngressAuth } from './transport/ingress-client';
 import { SessionKeyManager } from './session/session-grant';
 import { toAccountAddress } from './codec/address';
@@ -30,6 +30,8 @@ import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader, Re
 import { TaskOrderContextCache } from './order/task-order-context-cache';
 import type { TaskOrderContextCacheOptions } from './order/task-order-context-cache';
 import { buildOpenTaskRequest } from './order/build-open-task';
+import { taskOrderHashHex } from './order/task-order';
+import type { TaskOrderV3 } from './order/task-order';
 import { deriveTaskId } from './order/order-signing';
 import { TrueOpenError, dataError } from './errors/errors';
 import { sha256 } from './codec/hash';
@@ -196,6 +198,22 @@ export interface TrueOpenClientConfig {
    * affected: openTask still accepts an order up to the expiry.
    */
   readonly sessionKeyRequestExpiryMarginBlocks?: number;
+  /**
+   * Delay, in milliseconds, before a key-signed request or OpenTask that a Builder refused inside
+   * the key-change window is re-signed and sent again (default DEFAULT_KEY_CHANGE_RETRY_DELAY_MS,
+   * about one block). Builders may lag a key change by up to MAX_SESSION_KEY_CACHE_TTL_BLOCKS
+   * (10) blocks; see IngressAuth.registeredKeys. Must be finite and >= 0 (else the constructor
+   * throws SDK_LOCAL_SESSION_KEY_CONFIG_INVALID).
+   */
+  readonly sessionKeyChangeRetryMs?: number;
+  /**
+   * Delay, in milliseconds, before a retried order (openTask with waitForAdmission's `retry`) is
+   * sent again to a Builder that answered NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED (default
+   * DEFAULT_ORDER_REPLACEMENT_RETRY_MS, about one block), at most
+   * ORDER_REPLACEMENT_RETRY_ATTEMPTS times. Must be finite and >= 0 (else the constructor throws
+   * SDK_LOCAL_CONFIG_INVALID).
+   */
+  readonly orderReplacementRetryMs?: number;
 }
 
 /**
@@ -312,7 +330,29 @@ export interface OpenTaskParams {
    * cleared, expired or ran out of cap, without unloading the key.
    */
   readonly orderSigner?: 'auto' | 'wallet';
+  /**
+   * The order window relative to the latest height of the context the order is built on: when
+   * set, `order.earliestSubmitHeight` and `order.orderExpireHeight` are ignored and replaced by
+   * `context.latestHeight + earliestSubmitBlocks` and `context.latestHeight + orderExpireBlocks`
+   * (each at least 1). retryParams sets it from the original order, so a retry keeps the window's
+   * length instead of its old absolute heights (which may already have passed).
+   */
+  readonly orderWindow?: OrderWindowOffsets;
+  /** Internal: the task_hash of the rejected order these params retry (set by retryParams). */
+  readonly [REJECTED_TASK_HASH]?: string;
 }
+
+/** An order window as offsets from the latest height (OpenTaskParams.orderWindow). May be negative. */
+export interface OrderWindowOffsets {
+  readonly earliestSubmitBlocks: bigint;
+  readonly orderExpireBlocks: bigint;
+}
+
+/**
+ * Carries the rejected order's task_hash in retryParams. A symbol, so an object spread of the
+ * params (`{ ...retry, orderSigner: 'wallet' }`) keeps it while it stays out of the public API.
+ */
+const REJECTED_TASK_HASH: unique symbol = Symbol('trueopen.rejectedTaskHash');
 
 /**
  * The first accepted ack's fields stay at the top level for compatibility; `builders` has
@@ -342,15 +382,30 @@ export interface OpenTaskResult extends OpenTaskAck {
   readonly orderSignerAddress?: Uint8Array;
   /** The order's max_fee in atomic units (what a registered key's spend cap is charged). */
   readonly maxFee: bigint;
+  /** The order's earliest_submit_height: the Keeper cannot admit it at an earlier height. */
+  readonly earliestSubmitHeight: bigint;
   /** The order's order_expire_height: the Keeper cannot admit it at a later height. */
   readonly orderExpireHeight: bigint;
+  /** The signing key's expiry height as the session read showed it (orderSignedBy 'session-key' only). */
+  readonly sessionKeyExpiryHeight?: bigint;
+  /**
+   * Set when a registered key signed the order and the order's window runs past the key's
+   * expiry: the Keeper checks the expiry at the admitting height, so if the Builders admit the
+   * order after sessionKeyExpiryHeight the chain rejects it. Renew the key, or shorten the
+   * window, when that matters.
+   */
+  readonly keyExpiresInOrderWindow?: true;
   /**
    * The parameters of a re-signed order under the same order_sequence, for when the chain
    * rejects this one (see waitForAdmission): these params with `orderSequence` set to this
-   * order's, `context` and `expiryHeight` removed (a retry resolves fresh ones), and a new
-   * idempotency key `<key>#retry<n>` (a re-signed order has a new task_hash, and a key is only
-   * ever reused for the same task_hash). The payload is the same object, not a copy. The SDK
-   * never sends it by itself.
+   * order's, `context` and `expiryHeight` removed (a retry resolves fresh ones), `orderWindow`
+   * holding this order's window relative to its context's latest height (so the retry's window is
+   * rebased on its own context instead of reusing heights that may have passed), and a new
+   * idempotency key `<key>#retry<n>`. `order` is the same object (its two heights are ignored
+   * while `orderWindow` is set), and so is the payload. They also remember this order's task_hash:
+   * a retry that would come out identical (the Builders keep a tombstone for the rejected input)
+   * resolves a fresh context once, then fails with SDK_LOCAL_RETRY_ORDER_UNCHANGED. The SDK never
+   * sends it by itself.
    */
   readonly retryParams: OpenTaskParams;
 }
@@ -383,7 +438,10 @@ export interface RejectionDiagnosis {
    */
   readonly sequenceFree: boolean;
   readonly reason: RejectionReason;
-  /** The ASSIGN_REJECTED / ASSIGN_TIMEOUT events seen, one per Builder. */
+  /**
+   * One report per Builder: the ASSIGN_REJECTED / ASSIGN_TIMEOUT event seen after its last
+   * ORDER_RECEIVED, or ABANDONED_REPORT when its event stream answered NotFound.
+   */
   readonly events: readonly { readonly builderAddress: string; readonly eventCode: string }[];
   /** The session read the reason was derived from. */
   readonly session: StreamStateView;
@@ -682,6 +740,14 @@ export class TrueOpenClient {
         `sessionKeyRequestExpiryMarginBlocks must be a non-negative integer, got ${String(margin)}`,
       );
     }
+    const keyRetryMs = cfg.sessionKeyChangeRetryMs;
+    if (keyRetryMs !== undefined && (!Number.isFinite(keyRetryMs) || keyRetryMs < 0)) {
+      throw local('SDK_LOCAL_SESSION_KEY_CONFIG_INVALID', `sessionKeyChangeRetryMs must be a finite number >= 0, got ${String(keyRetryMs)}`);
+    }
+    const replacementMs = cfg.orderReplacementRetryMs;
+    if (replacementMs !== undefined && (!Number.isFinite(replacementMs) || replacementMs < 0)) {
+      throw local('SDK_LOCAL_CONFIG_INVALID', `orderReplacementRetryMs must be a finite number >= 0, got ${String(replacementMs)}`);
+    }
     this.sessionManager = new SessionManager(cfg.chain);
     // Requests use a registered key only up to a margin before its expiry height; the height comes from the hub,
     // reused from the client's own recent reads (readLatestHeight) where one exists.
@@ -690,6 +756,7 @@ export class TrueOpenClient {
       ...(hub !== undefined ? { latestHeight: () => hub.getLatestHeight() } : {}),
       heightMaxAgeMs: DEFAULT_TRUST_ANCHOR_POLL_MS,
       ...(margin !== undefined ? { expiryMarginBlocks: margin } : {}),
+      ...(keyRetryMs !== undefined ? { keyChangeRetryDelayMs: keyRetryMs } : {}),
     });
     this.sessionGrants =
       cfg.session === undefined
@@ -782,10 +849,42 @@ export class TrueOpenClient {
     const o: CreateSessionOptions = typeof opts === 'string' ? { label: opts } : opts ?? {};
     if (o.sessionKey === undefined) return this.sessionManager.create(o.label);
     const key = this.newSessionKey(o.sessionKey.key);
-    const { expiryHeight, spendCap } = await this.sessionKeyTerms(o.sessionKey, async () => '0');
+    const { expiryHeight, spendCap, latest } = await this.sessionKeyTerms(o.sessionKey, async () => '0');
     const handle = await this.sessionManager.create(o.label, { sessionKey: key.address, expiryHeight, spendCap });
-    this.registeredKeys.set(registeredSessionKey(handle.sessionId, key.privateKey), expiryHeight);
+    this.registeredKeys.set(registeredSessionKey(handle.sessionId, key.privateKey), expiryHeight, await this.keyChangeHeight(latest + 1n));
     return { ...handle, sessionKey: keyHandle(key, expiryHeight, spendCap) };
+  }
+
+  /**
+   * The height a key registration that just landed is taken to have changed at: the latest
+   * height read now, which is at or after the transaction's height (so the key-change window,
+   * see IngressAuth.registeredKeys, is never shorter than the Builders' cache lag), else
+   * `fallback` when that read fails.
+   */
+  private async keyChangeHeight(fallback: bigint): Promise<bigint> {
+    const hub = this.cfg.hub;
+    if (hub === undefined) return fallback;
+    try {
+      const h = await this.readLatestHeight(hub);
+      return h > fallback ? h : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  /**
+   * The session read every MsgUpdateSessionKey action starts with: refuses, before any
+   * transaction, a session that is not this client's user's (SDK_LOCAL_SESSION_NOT_OWNER; the
+   * chain answers sdk ErrUnauthorized) or that is CLOSED (SDK_LOCAL_SESSION_CLOSED; the chain
+   * answers "session cannot update authorization").
+   */
+  private async updatableSession(sid: string): Promise<StreamStateView> {
+    const s = await this.cfg.chain.querySession(sid);
+    if (s.owner !== this.cfg.userAddress) {
+      throw local('SDK_LOCAL_SESSION_NOT_OWNER', `session ${sid} belongs to ${s.owner}, not this client's user ${this.cfg.userAddress}`);
+    }
+    if (s.status === 'CLOSED') throw local('SDK_LOCAL_SESSION_CLOSED', `session ${sid} is CLOSED`);
+    return s;
   }
 
   /**
@@ -809,11 +908,23 @@ export class TrueOpenClient {
    *  - `clear` removes the registration and, after success, the loaded key: the wallet signs
    *    this session's orders again.
    *
-   * `spent` is never reset. `expiryBlocks` is validated as in createSession.
+   * Every action first reads the session and sends nothing when it belongs to another user
+   * (SDK_LOCAL_SESSION_NOT_OWNER) or is CLOSED (SDK_LOCAL_SESSION_CLOSED). `spent` is never reset.
+   * `expiryBlocks` is validated as in createSession. A transaction the chain refuses is
+   * classified (CHAIN_SESSION_KEY_INVALID, CHAIN_SESSION_KEY_EXPIRED,
+   * CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED, CHAIN_SESSION_CLOSED, CHAIN_SESSION_NOT_OWNER; see
+   * CosmjsChainWriter).
+   *
+   * Builders may lag a rotate or renew by up to MAX_SESSION_KEY_CACHE_TTL_BLOCKS (10) blocks: their
+   * cached session state can still hold the old key or expiry. Within that window a key-signed
+   * request or OpenTask they refuse is re-sent after about a block (see IngressAuth.registeredKeys).
+   * Renew at least 10 blocks before the expiry, so no Builder still holding the old expiry sees it
+   * pass.
    */
   async updateSessionKey(sessionId: string, update: SessionKeyUpdate): Promise<UpdateSessionKeyResult> {
     const sid = sessionIdText(sessionId);
     if ('clear' in update) {
+      await this.updatableSession(sid);
       const response = await this.cfg.chain.updateSessionKey({ sessionId: sid, action: { clear: true } });
       this.registeredKeys.delete(sid);
       return { response };
@@ -825,8 +936,7 @@ export class TrueOpenClient {
       }
       // Renew only the chain's current key: re-registering a key that was rotated out or cleared
       // (perhaps on another device, perhaps because it leaked) would make it current again.
-      const s = await this.cfg.chain.querySession(sid);
-      if (s.status === 'CLOSED') throw local('SDK_LOCAL_SESSION_CLOSED', `session ${sid} is CLOSED`);
+      const s = await this.updatableSession(sid);
       if (s.sessionKey === undefined || !bytesEqual(s.sessionKey, loaded.address)) {
         throw local(
           'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
@@ -834,18 +944,20 @@ export class TrueOpenClient {
             '(rotated or cleared): rotate to a fresh key, or load the current one with useSessionKey',
         );
       }
-      const { expiryHeight, spendCap } = await this.sessionKeyTerms(update.renew, async () => s.sessionKeySpendCap);
+      const { expiryHeight, spendCap, latest } = await this.sessionKeyTerms(update.renew, async () => s.sessionKeySpendCap);
       const response = await this.cfg.chain.updateSessionKey({
         sessionId: sid,
         action: { set: { sessionKey: loaded.address, expiryHeight, spendCap } },
       });
       this.registeredKeys.refreshExpiry(sid, loaded.address, expiryHeight);
+      // A renew keeps set_height, so the change height is the transaction's.
+      this.registeredKeys.noteKeyChange(sid, await this.keyChangeHeight(latest + 1n));
       return { response };
     }
     const old = this.registeredKeys.get(sid);
     const key = this.newSessionKey(update.rotate.key, old?.address);
-    const { expiryHeight, spendCap } = await this.sessionKeyTerms(update.rotate, async () => {
-      const s = await this.cfg.chain.querySession(sid);
+    const s = await this.updatableSession(sid);
+    const { expiryHeight, spendCap, latest } = await this.sessionKeyTerms(update.rotate, async () => {
       // A cleared (or never set) key has cap 0, which would register this one unlimited.
       if (s.sessionKey === undefined) {
         throw local(
@@ -859,7 +971,9 @@ export class TrueOpenClient {
       sessionId: sid,
       action: { set: { sessionKey: key.address, expiryHeight, spendCap } },
     });
-    this.registeredKeys.set(registeredSessionKey(sid, key.privateKey), expiryHeight);
+    // A new key's set_height is the height the transaction executed at.
+    const changed = response.setHeight > 0n ? response.setHeight : await this.keyChangeHeight(latest + 1n);
+    this.registeredKeys.set(registeredSessionKey(sid, key.privateKey), expiryHeight, changed);
     return { response, newKey: keyHandle(key, expiryHeight, spendCap) };
   }
 
@@ -886,7 +1000,8 @@ export class TrueOpenClient {
           (s.sessionKey === undefined ? ' (it has none)' : ` (it has ${sessionKeyAddressHex(s.sessionKey)})`),
       );
     }
-    this.registeredKeys.set(key, s.sessionKeyExpiryHeight);
+    // The registration's set_height opens the key-change window (a renew elsewhere is not visible).
+    this.registeredKeys.set(key, s.sessionKeyExpiryHeight, s.sessionKeySetHeight);
   }
 
   /** Unloads a session's registered key; the wallet signs that session's orders again. The registration on chain is unchanged. */
@@ -898,7 +1013,7 @@ export class TrueOpenClient {
   async sessionKeyState(sessionId: string): Promise<SessionKeyState> {
     const s = await this.cfg.chain.querySession(sessionIdText(sessionId));
     const loaded = this.registeredKeys.get(s.sessionId);
-    this.registeredKeys.refreshExpiry(s.sessionId, s.sessionKey, s.sessionKeyExpiryHeight);
+    this.registeredKeys.refreshExpiry(s.sessionId, s.sessionKey, s.sessionKeyExpiryHeight, s.sessionKeySetHeight);
     return {
       registered: s.sessionKey !== undefined,
       matchesLoadedKey: loaded !== undefined && s.sessionKey !== undefined && bytesEqual(s.sessionKey, loaded.address),
@@ -917,7 +1032,7 @@ export class TrueOpenClient {
   private async sessionKeyTerms(
     o: SessionKeyOptions,
     defaultCap: () => Promise<string>,
-  ): Promise<{ expiryHeight: bigint; spendCap: string }> {
+  ): Promise<{ expiryHeight: bigint; spendCap: string; latest: bigint }> {
     const hub = this.cfg.hub;
     if (hub?.getMaxSessionKeyBlocks === undefined) {
       throw local(
@@ -942,9 +1057,16 @@ export class TrueOpenClient {
       );
     }
     // The default stays in bigint: max_session_key_blocks may exceed 2^53.
+    const terms = (blocks: bigint): { expiryHeight: bigint; spendCap: string; latest: bigint } => {
+      const expiryHeight = latest + blocks;
+      // The chain's heights live in [0, 2^63 - 1] (node CheckedHeightAddV1).
+      if (expiryHeight > MAX_BLOCK_HEIGHT) {
+        throw local('SDK_LOCAL_SESSION_KEY_INVALID', `expiry height ${expiryHeight} exceeds the chain's maximum height ${MAX_BLOCK_HEIGHT}`);
+      }
+      return { expiryHeight, spendCap: cap, latest };
+    };
     if (o.expiryBlocks === undefined) {
-      const blocks = max - 2n > MIN_SESSION_KEY_EXPIRY_BLOCKS ? max - 2n : MIN_SESSION_KEY_EXPIRY_BLOCKS;
-      return { expiryHeight: latest + blocks, spendCap: cap };
+      return terms(max - 2n > MIN_SESSION_KEY_EXPIRY_BLOCKS ? max - 2n : MIN_SESSION_KEY_EXPIRY_BLOCKS);
     }
     const blocks = o.expiryBlocks;
     if (!Number.isSafeInteger(blocks) || BigInt(blocks) < MIN_SESSION_KEY_EXPIRY_BLOCKS || BigInt(blocks) > max) {
@@ -953,7 +1075,7 @@ export class TrueOpenClient {
         `expiryBlocks must be an integer in [${MIN_SESSION_KEY_EXPIRY_BLOCKS}, ${max}], got ${String(blocks)}`,
       );
     }
-    return { expiryHeight: latest + BigInt(blocks), spendCap: cap };
+    return terms(BigInt(blocks));
   }
 
   /**
@@ -1014,6 +1136,25 @@ export class TrueOpenClient {
    * current key, or forgetSessionKey to sign with the wallet. The session read also refreshes the
    * loaded key's expiry for the request-side fallback (see IngressAuth.registeredKeys).
    *
+   * The Keeper checks a registered key's expiry at the height that admits the order, which lies
+   * in [earliest_submit_height, order_expire_height]: an order whose earliest_submit_height is
+   * after the key's expiry is refused (SDK_LOCAL_SESSION_KEY_EXPIRED); one whose window only ends
+   * after it is sent, with `keyExpiresInOrderWindow` set on the result (the chain rejects it if it
+   * is admitted after the expiry).
+   *
+   * An order whose order_expire_height is below the context's latest height is refused before
+   * signing (SDK_LOCAL_ORDER_EXPIRED): every Builder would answer NEXUS_INGRESS_ORDER_EXPIRED.
+   * With `orderWindow` (as in retryParams) the window is rebased on the context's latest height.
+   *
+   * Re-sends to one Builder, each with the envelope re-signed under a fresh nonce (the Builder
+   * consumed the previous one; the signed order is unchanged): a key-signed OpenTask refused
+   * inside the key-change window (Builders may lag a key change by up to
+   * MAX_SESSION_KEY_CACHE_TTL_BLOCKS blocks; see IngressAuth.registeredKeys); and a retry (params
+   * from retryParams) refused with NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED, by a Builder still
+   * tracking the rejected version until its next reconcile, after orderReplacementRetryMs (about a
+   * block), at most ORDER_REPLACEMENT_RETRY_ATTEMPTS times. A wallet-signed envelope prompts the
+   * wallet on each such re-send. openTask returns once every Builder settled.
+   *
    * Hard rule unchanged: an ingress ack is only local acceptance; the on-chain query/event is the
    * source of truth for final state.
    */
@@ -1051,24 +1192,66 @@ export class TrueOpenClient {
       sessionRead,
     ]);
     if (registered !== undefined && stream !== undefined) {
-      this.registeredKeys.refreshExpiry(params.sessionId, stream.sessionKey, stream.sessionKeyExpiryHeight);
+      this.registeredKeys.refreshExpiry(params.sessionId, stream.sessionKey, stream.sessionKeyExpiryHeight, stream.sessionKeySetHeight);
     }
-    let resolved: ResolvedTaskOrderContext | { context: TaskOrderChainContext } = firstResolved;
-    if (registered !== undefined && stream !== undefined && !checkSessionKeyAdmission(registered, stream, resolved.context)) {
-      // Only the anchor failed: it predates the key's registration (set or rotated after it).
-      resolved = await this.anchorAfterSetHeight(registered, stream, resolved.context, params.context !== undefined);
+    const callerContext = params.context !== undefined;
+    const windowOffsets = params.orderWindow !== undefined ? checkOrderWindow(params.orderWindow) : undefined;
+    // The context (with the key's anchor check) and the order built on it. A retry whose order
+    // would come out identical to the rejected one resolves one fresh context (see below).
+    const orderOn = async (
+      first: ResolvedTaskOrderContext | { context: TaskOrderChainContext },
+    ): Promise<{ resolved: ResolvedTaskOrderContext | { context: TaskOrderChainContext }; order: TaskOrderV3 }> => {
+      let resolved = first;
+      if (registered !== undefined && stream !== undefined && !checkSessionKeyAdmission(registered, stream, resolved.context)) {
+        // Only the anchor failed: it predates the key's registration (set or rotated after it).
+        resolved = await this.anchorAfterSetHeight(registered, stream, resolved.context, callerContext);
+      }
+      const c = resolved.context;
+      // A relative window (retryParams) is rebased on this context's latest height.
+      const window =
+        windowOffsets === undefined
+          ? {}
+          : {
+              earliestSubmitHeight: rebaseHeight(c.latestHeight, windowOffsets.earliestSubmitBlocks),
+              orderExpireHeight: rebaseHeight(c.latestHeight, windowOffsets.orderExpireBlocks),
+            };
+      const built = buildTaskOrder(
+        c,
+        { ...params.order, ...window, userAddress: this.cfg.userAddress, sessionId: params.sessionId, orderSequence },
+        pricing,
+      );
+      // Every Builder refuses an order past its order_expire_height (NEXUS_INGRESS_ORDER_EXPIRED).
+      if (c.latestHeight > built.orderExpireHeight) {
+        throw local(
+          'SDK_LOCAL_ORDER_EXPIRED',
+          `the order's order_expire_height ${built.orderExpireHeight} is below the latest height ${c.latestHeight}: ` +
+            'no Builder accepts it and the chain cannot admit it; choose a later order_expire_height',
+          { details: { orderExpireHeight: built.orderExpireHeight, latestHeight: c.latestHeight } },
+        );
+      }
+      if (registered !== undefined && stream !== undefined) checkSessionKeyOrderWindow(stream, built);
+      return { resolved, order: built };
+    };
+    let { resolved, order } = await orderOn(firstResolved);
+    const rejectedTaskHash = params[REJECTED_TASK_HASH];
+    if (rejectedTaskHash !== undefined && taskOrderHashHex(order) === rejectedTaskHash) {
+      // The Builders deleted the rejected order's input and keep a tombstone for it, so the very
+      // same order would be refused (NEXUS_DATA_CONFLICT). A fresh anchor, or a later latest
+      // height under a relative window, changes it.
+      if (!callerContext) {
+        this.contextCache?.invalidate();
+        ({ resolved, order } = await orderOn(await this.resolveOrderContext()));
+      }
+      if (taskOrderHashHex(order) === rejectedTaskHash) {
+        throw local(
+          'SDK_LOCAL_RETRY_ORDER_UNCHANGED',
+          `the retried order has the same task_hash ${rejectedTaskHash} as the rejected one, which the Builders refuse: ` +
+            'change the order (for example its order_expire_height or fees) or retry a block later',
+          { retriable: true },
+        );
+      }
     }
     const ctx = resolved.context;
-    const order = buildTaskOrder(
-      ctx,
-      {
-        ...params.order,
-        userAddress: this.cfg.userAddress,
-        sessionId: params.sessionId,
-        orderSequence,
-      },
-      pricing,
-    );
     if (registered !== undefined && stream !== undefined) checkSessionKeySpendCap(stream, order.maxFee.atomicUnits);
     const taskId = deriveTaskId(params.sessionId, orderSequence);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
@@ -1124,21 +1307,54 @@ export class TrueOpenClient {
 
     // Where each Builder was actually reached: a certificate re-read can move it.
     const usedEndpoint = new Map<string, { uri: string; tlsPubkeyHash: string }>();
-    const fan = await fanOutToEndpoints(built.input, endpoints, async (endpoint: TaskBuilderEndpoint, req) => {
-      const submit = (serviceEndpoint: string, tlsPubkeyHash: string): Promise<OpenTaskAck> => {
-        usedEndpoint.set(endpoint.address, { uri: serviceEndpoint, tlsPubkeyHash });
-        return new IngressClient(ingressTransportFactory(serviceEndpoint, tlsPubkeyHash)).openTask(req);
+    const isRetry = rejectedTaskHash !== undefined;
+    const replacementMs = this.cfg.orderReplacementRetryMs ?? DEFAULT_ORDER_REPLACEMENT_RETRY_MS;
+    const signedWith = { ...(built.input.requestEnvelope.sessionGrant !== undefined ? { grant: built.input.requestEnvelope.sessionGrant } : {}),
+      ...(registered !== undefined ? { keySession: registered.sessionId } : {}) };
+    const fan = await fanOutToEndpoints(built.input, endpoints, async (endpoint: TaskBuilderEndpoint, first) => {
+      let at = { uri: endpoint.serviceEndpoint, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' };
+      const submit = (req: typeof first): Promise<OpenTaskAck> => {
+        usedEndpoint.set(endpoint.address, at);
+        return new IngressClient(ingressTransportFactory(at.uri, at.tlsPubkeyHash)).openTask(req);
       };
-      try {
-        return await submit(endpoint.serviceEndpoint, endpoint.tlsPubkeyHash ?? '');
-      } catch (err) {
-        // The Builder rotated its certificate and the locally cached fingerprint is
-        // stale -> re-read that Builder's descriptor; if the fingerprint changed, retry with the
-        // new fingerprint, otherwise the peer certificate really is wrong, so return the original error.
-        if (!isTLSPubkeyMismatch(err)) throw err;
-        const fresh = await rereadNexusEndpoint(hub, endpoint.address);
-        if (!fresh || fresh.tlsPubkeyHash === (endpoint.tlsPubkeyHash ?? '')) throw err;
-        return await submit(fresh.uri, fresh.tlsPubkeyHash);
+      let req = first;
+      let keyRetries = 0;
+      let replacementRetries = 0;
+      for (;;) {
+        try {
+          try {
+            return await submit(req);
+          } catch (err) {
+            // The Builder rotated its certificate and the locally cached fingerprint is
+            // stale -> re-read that Builder's descriptor; if the fingerprint changed, retry with the
+            // new fingerprint, otherwise the peer certificate really is wrong, so return the original error.
+            if (!isTLSPubkeyMismatch(err)) throw err;
+            const fresh = await rereadNexusEndpoint(hub, endpoint.address);
+            if (!fresh || fresh.tlsPubkeyHash === at.tlsPubkeyHash) throw err;
+            at = { uri: fresh.uri, tlsPubkeyHash: fresh.tlsPubkeyHash };
+            return await submit(req);
+          }
+        } catch (err) {
+          // A Builder still caching the session's state from before a key change refuses the
+          // key-signed order or envelope for up to MAX_SESSION_KEY_CACHE_TTL_BLOCKS blocks.
+          if (registered !== undefined && (await this.registeredKeys.retryAfterKeyChange(registered.sessionId, err, keyRetries))) {
+            keyRetries += 1;
+          } else if (
+            isRetry &&
+            err instanceof TrueOpenError &&
+            err.code === 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' &&
+            replacementRetries < ORDER_REPLACEMENT_RETRY_ATTEMPTS
+          ) {
+            // A Builder whose FSM for the rejected order is still pending abandons it on its next
+            // reconcile, about a block after the order's deadline; then it takes the new version.
+            replacementRetries += 1;
+            await new Promise((r) => setTimeout(r, replacementMs));
+          } else {
+            throw finalSignedError(err, signedWith, false);
+          }
+          // The Builder consumed the previous nonce: sign the envelope again with a fresh one.
+          req = await built.resign(this.nextNonce());
+        }
       }
     });
     const ack = fan.ack as OpenTaskAck;
@@ -1166,8 +1382,15 @@ export class TrueOpenClient {
       orderSignedBy: registered !== undefined ? 'session-key' : 'wallet',
       ...(registered !== undefined ? { orderSignerAddress: Uint8Array.from(registered.address) } : {}),
       maxFee: BigInt(order.maxFee.atomicUnits),
+      earliestSubmitHeight: order.earliestSubmitHeight,
       orderExpireHeight: order.orderExpireHeight,
-      retryParams: retryParamsOf(params, orderSequence),
+      ...(registered !== undefined && stream !== undefined
+        ? {
+            sessionKeyExpiryHeight: stream.sessionKeyExpiryHeight,
+            ...(order.orderExpireHeight > stream.sessionKeyExpiryHeight ? { keyExpiresInOrderWindow: true as const } : {}),
+          }
+        : {}),
+      retryParams: retryParamsOf(params, orderSequence, order, ctx.latestHeight, built.taskHash),
     };
   }
 
@@ -1182,9 +1405,13 @@ export class TrueOpenClient {
    * The chain is the truth. It is read (QueryTask on config.taskReader) straight away and then
    * every `pollIntervalMs`: a task with this order's task_hash is `accepted`; a task for the
    * task_id with another task_hash is `superseded`. Meanwhile the task event stream of every
-   * Builder that acked the order is watched, as hints only: ASSIGNMENT_FINALIZED (or
-   * WORKER_ASSIGNMENT_FINALIZED / WORKER_HANDRAISES_ACCEPTED) triggers an immediate chain read;
-   * ASSIGN_REJECTED / ASSIGN_TIMEOUT is recorded. A failing event stream is ignored. One
+   * Builder that acked the order is watched, as hints only: ASSIGN_ACCEPTED or
+   * ASSIGNMENT_FINALIZED triggers an immediate chain read; ASSIGN_REJECTED / ASSIGN_TIMEOUT is
+   * recorded as that Builder's report. A Builder keeps an abandoned task's journal and appends a
+   * retry's events to it, and the stream replays it from the start, so only a report after the
+   * last ORDER_RECEIVED counts (an ORDER_RECEIVED clears the Builder's report). A stream that
+   * fails NotFound counts as the report ABANDONED_REPORT (the Builder no longer tracks a task it
+   * acked); any other stream failure is ignored. One
    * Builder's rejection does not prove another did not get the order admitted, so the result is
    * `rejected` only once every acked Builder has reported a rejection or a timeout and a chain
    * read started after the last report still finds no task; or, whatever the Builders
@@ -1194,16 +1421,19 @@ export class TrueOpenClient {
    * Builder refuses them once that key was rotated or cleared or the session closed, and such a
    * Builder never reports. A task with no valid accepted task_hash decides nothing yet. The
    * session is then read
-   * (QuerySession) to diagnose the reason (`expired` is judged against the latest height at
-   * diagnosis time) and whether the sequence is still free; `retry` is
+   * (QuerySession) to diagnose the reason (`expired` is judged against the later of the latest
+   * height at diagnosis time and the order's earliest_submit_height) and whether the sequence is
+   * still free; `retry` is
    * `res.retryParams`, without `orderSequence` when the sequence moved on (then openTask reads
    * the next free one).
    *
    * The SDK never re-signs, renews, raises a cap or switches to the wallet by itself: the caller
    * decides (renew or rotate with updateSessionKey, `orderSigner: 'wallet'`, ...) and calls
    * openTask with `retry`. A re-signed order has a new task_hash, which is why the retry carries
-   * a new idempotency key. Re-sending to a Builder that already holds this task_id as a terminal
-   * task needs Nexus local terminal-task retry support, which is a separate Nexus requirement.
+   * a new idempotency key; its window is rebased (retryParams.orderWindow). Builders that
+   * abandoned the rejected order accept the new version; one still tracking it answers
+   * NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED until it reconciles, which openTask retries (see
+   * openTask). A task that reached the chain and finished is refused (NEXUS_INGRESS_TASK_TERMINAL).
    *
    * Running out of `timeoutMs` resolves `{ kind: 'timeout' }`; aborting `signal` throws
    * ORDER_ADMISSION_WAIT_ABORTED. `timeoutMs` takes effect between reads. Every event stream is
@@ -1253,11 +1483,17 @@ export class TrueOpenClient {
       wakeNow();
     };
 
-    // The Builders that accepted the order; each one's first rejection report, and a counter
-    // of reports so a read can tell whether one landed after it started.
+    // The Builders that accepted the order; each one's rejection report for this attempt, and a
+    // counter of report changes so a read can tell whether one landed after it started.
     const acked = res.builders.filter((b) => b.ack?.accepted === true);
     const reports = new Map<string, { readonly builderAddress: string; readonly eventCode: string }>();
     let reportGen = 0;
+    const report = (address: string, eventCode: string): void => {
+      if (reports.has(address)) return;
+      reports.set(address, { builderAddress: address, eventCode });
+      reportGen += 1;
+      wake();
+    };
     // Each read records reportGen when it starts. The first one starts before the event streams
     // are set up (their requests are signed).
     rearm();
@@ -1272,18 +1508,22 @@ export class TrueOpenClient {
         try {
           const events = new IngressClient(ingressTransportFactory(b.serviceEndpoint, b.tlsPubkeyHash), this.ingressAuth());
           for await (const ev of events.getTaskEvents({ sessionId, taskId, signal: ac.signal })) {
-            if (ADMISSION_REJECT_EVENTS.has(ev.eventCode)) {
-              if (!reports.has(b.address)) {
-                reports.set(b.address, { builderAddress: b.address, eventCode: ev.eventCode });
-                reportGen += 1;
-                wake();
-              }
+            if (ev.eventCode === ORDER_RECEIVED_EVENT) {
+              // A Builder keeps an abandoned task's journal and appends a retry's events to it, and
+              // the stream replays it from the start: only reports after the last ORDER_RECEIVED
+              // (this order's, appended before its ack) are about this order.
+              if (reports.delete(b.address)) reportGen += 1;
+            } else if (ADMISSION_REJECT_EVENTS.has(ev.eventCode)) {
+              report(b.address, ev.eventCode);
             } else if (ADMISSION_HINT_EVENTS.has(ev.eventCode)) {
               wake();
             }
           }
-        } catch {
-          // A hint only: polling does not depend on it.
+        } catch (e) {
+          // NotFound from a Builder that acked the order: it no longer tracks the task, so it
+          // abandoned it (rejected or timed out). Any other failure is ignored: polling does not
+          // depend on the streams.
+          if (isNotFoundError(e)) report(b.address, ABANDONED_REPORT);
         }
       })();
     }
@@ -1364,6 +1604,10 @@ export class TrueOpenClient {
             clearTimeout(timer);
           }
         }
+        // Let the event streams drain what has already arrived first: a replayed journal comes in
+        // one burst, and a read decided between its ASSIGN_REJECTED and the ORDER_RECEIVED after it
+        // would count the previous attempt's rejection.
+        await race(new Promise<void>((r) => setTimeout(r, 0)));
         rearm();
         genAtRead = reportGen;
         deadlineAtRead = pastDeadline;
@@ -1392,7 +1636,10 @@ export class TrueOpenClient {
     if (res.orderSignedBy !== 'session-key' || res.orderSignerAddress === undefined) return 'unrelated';
     if (s.sessionKey === undefined) return 'cleared';
     if (!bytesEqual(s.sessionKey, res.orderSignerAddress)) return 'rotated';
-    if ((await this.latestHeight('the session key expiry')) > s.sessionKeyExpiryHeight) return 'expired';
+    // The Keeper checks the expiry at the admitting height, which is at least earliest_submit_height.
+    const latest = await this.latestHeight('the session key expiry');
+    const admission = latest > res.earliestSubmitHeight ? latest : res.earliestSubmitHeight;
+    if (admission > s.sessionKeyExpiryHeight) return 'expired';
     if (res.context.sessionAnchorHeight < s.sessionKeySetHeight) return 'anchor-before-set-height';
     const cap = BigInt(s.sessionKeySpendCap);
     const total = BigInt(s.sessionKeySpent) + res.maxFee;
@@ -2451,12 +2698,28 @@ export const DEFAULT_ADMISSION_WAIT_MS = 60_000;
 /** Builder task events that report the order was not admitted (recorded by waitForAdmission). */
 const ADMISSION_REJECT_EVENTS: ReadonlySet<string> = new Set(['ASSIGN_REJECTED', 'ASSIGN_TIMEOUT']);
 
-/** Builder task events after which the chain likely has the task: waitForAdmission reads it at once. */
-const ADMISSION_HINT_EVENTS: ReadonlySet<string> = new Set([
-  ASSIGNMENT_FINALIZED_EVENT,
-  'WORKER_ASSIGNMENT_FINALIZED',
-  'WORKER_HANDRAISES_ACCEPTED',
-]);
+/**
+ * Builder task events after which the chain likely has the task: waitForAdmission reads it at
+ * once. ASSIGN_ACCEPTED is emitted once the AssignTx landed and the task exists on chain (nexus
+ * taskfsm.go), ASSIGNMENT_FINALIZED once the winner settled.
+ */
+const ADMISSION_HINT_EVENTS: ReadonlySet<string> = new Set(['ASSIGN_ACCEPTED', ASSIGNMENT_FINALIZED_EVENT]);
+
+/** The first event of every order attempt in a Builder's task journal (nexus onOrder). */
+const ORDER_RECEIVED_EVENT = 'ORDER_RECEIVED';
+
+/**
+ * The report waitForAdmission records for an acked Builder whose GetTaskEvents answered NotFound:
+ * the Builder no longer tracks the task, which for a task it acked means it abandoned it (rejected
+ * or timed out). Not a nexus event code.
+ */
+export const ABANDONED_REPORT = 'ABANDONED';
+
+/** Default of TrueOpenClientConfig.orderReplacementRetryMs: about one block. */
+export const DEFAULT_ORDER_REPLACEMENT_RETRY_MS = 1000;
+
+/** Most re-sends of a retried order to one Builder answering NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED. */
+export const ORDER_REPLACEMENT_RETRY_ATTEMPTS = 3;
 
 const RETRY_SUFFIX = /^(.*)#retry([1-9][0-9]*)$/s;
 
@@ -2467,11 +2730,40 @@ export function nextRetryIdempotencyKey(key: string): string {
 }
 
 /** An order's params for a re-signed retry under the same sequence (OpenTaskResult.retryParams). */
-function retryParamsOf(params: OpenTaskParams, orderSequence: bigint): OpenTaskParams {
+function retryParamsOf(
+  params: OpenTaskParams,
+  orderSequence: bigint,
+  order: TaskOrderV3,
+  latestHeight: bigint,
+  taskHash: string,
+): OpenTaskParams {
   const { context: _c, expiryHeight: _e, ...rest } = params;
   void _c;
   void _e;
-  return { ...rest, orderSequence, idempotencyKey: nextRetryIdempotencyKey(params.idempotencyKey) };
+  return {
+    ...rest,
+    orderSequence,
+    idempotencyKey: nextRetryIdempotencyKey(params.idempotencyKey),
+    orderWindow: {
+      earliestSubmitBlocks: order.earliestSubmitHeight - latestHeight,
+      orderExpireBlocks: order.orderExpireHeight - latestHeight,
+    },
+    [REJECTED_TASK_HASH]: taskHash,
+  };
+}
+
+/** OpenTaskParams.orderWindow, checked: two bigint offsets. */
+function checkOrderWindow(w: OrderWindowOffsets): OrderWindowOffsets {
+  if (typeof w !== 'object' || w === null || typeof w.earliestSubmitBlocks !== 'bigint' || typeof w.orderExpireBlocks !== 'bigint') {
+    throw local('SDK_LOCAL_ORDER_WINDOW_INVALID', 'orderWindow must hold bigint earliestSubmitBlocks and orderExpireBlocks');
+  }
+  return w;
+}
+
+/** `latest + offset`, at least 1 (a window height is never 0). */
+function rebaseHeight(latest: bigint, offset: bigint): bigint {
+  const h = latest + offset;
+  return h < 1n ? 1n : h;
 }
 
 /**
@@ -2487,6 +2779,12 @@ export const MAX_OVERFLOW_RESUBSCRIBES = 64;
 /** Carries an error out of streamOutput's per-attempt handling: it ends the stream instead of the attempt. */
 class StreamFatal {
   constructor(readonly error: unknown) {}
+}
+
+/** Whether a nexus call failed with Connect NotFound (classified or not). */
+function isNotFoundError(err: unknown): boolean {
+  if (err instanceof ConnectError) return err.code === Code.NotFound;
+  return err instanceof TrueOpenError && err.details?.['connectCode'] === Code[Code.NotFound];
 }
 
 /** Whether a stream ended with Connect ResourceExhausted (nexus's slow-subscriber overflow), anywhere in the cause chain. */
@@ -2589,13 +2887,19 @@ const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
 function canonicalSpendCap(cap: bigint | string): string {
   if (typeof cap === 'bigint') {
     if (cap < 0n) throw local('SDK_LOCAL_SESSION_KEY_INVALID', `spendCap must not be negative, got ${cap}`);
+    if (cap > U64_MAX) throw local('SDK_LOCAL_SESSION_KEY_INVALID', `spendCap must fit a u64 (at most ${U64_MAX}), got ${cap}`);
     return cap.toString();
   }
   if (typeof cap !== 'string' || !CANONICAL_DECIMAL.test(cap)) {
     throw local('SDK_LOCAL_SESSION_KEY_INVALID', `spendCap must be a canonical decimal (0 or [1-9][0-9]*), got ${JSON.stringify(cap)}`);
   }
+  // The chain parses the cap as a u64 (node ParseAmount) and refuses a larger one, after the fee.
+  if (BigInt(cap) > U64_MAX) throw local('SDK_LOCAL_SESSION_KEY_INVALID', `spendCap must fit a u64 (at most ${U64_MAX}), got ${cap}`);
   return cap;
 }
+
+/** The highest block height the chain accepts (node MaxBlockHeightV1 = MaxInt64). */
+const MAX_BLOCK_HEIGHT = (1n << 63n) - 1n;
 
 function keyHandle(key: SessionKeyMaterial, expiryHeight: bigint, spendCap: string): SessionKeyHandle {
   return { address: sessionKeyAddressHex(key.address), privateKey: key.privateKey, expiryHeight, spendCap };
@@ -2630,6 +2934,23 @@ function checkSessionKeyAdmission(key: RegisteredSessionKey, s: StreamStateView,
 }
 
 const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * The Keeper checks a registered key's expiry at the height that admits the order, which is at
+ * or after earliest_submit_height: an order whose window starts after the expiry can never be
+ * admitted (SDK_LOCAL_SESSION_KEY_EXPIRED). A window that only ends after it is allowed and
+ * reported through OpenTaskResult.keyExpiresInOrderWindow.
+ */
+function checkSessionKeyOrderWindow(s: StreamStateView, order: TaskOrderV3): void {
+  if (order.earliestSubmitHeight > s.sessionKeyExpiryHeight) {
+    throw local(
+      'SDK_LOCAL_SESSION_KEY_EXPIRED',
+      `the order's earliest_submit_height ${order.earliestSubmitHeight} is after the session key's expiry ` +
+        `${s.sessionKeyExpiryHeight}, so the chain can never admit it: renew the key via updateSessionKey or start the window earlier`,
+      { details: { earliestSubmitHeight: order.earliestSubmitHeight, expiryHeight: s.sessionKeyExpiryHeight } },
+    );
+  }
+}
 
 /**
  * spent + max_fee must fit a u64 whatever the cap (the chain refuses with AMOUNT_OVERFLOW, wire

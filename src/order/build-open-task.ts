@@ -76,6 +76,13 @@ export interface BuildOpenTaskResult {
   readonly taskHash: string;
   /** Hex of the SignedOrderV2 bytes sent as order_envelope. */
   readonly orderEnvelopeHex: string;
+  /**
+   * The same OpenTask input with the request envelope signed again under `requestNonce`, by the
+   * same signer; the signed order is unchanged. A Builder consumes an OpenTask nonce before it
+   * checks the order, so a re-send needs a fresh one. With a wallet-signed envelope this prompts
+   * the wallet again.
+   */
+  readonly resign: (requestNonce: Uint8Array) => Promise<OpenTaskInput>;
 }
 
 /**
@@ -176,28 +183,27 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
 
   // (2) Request envelope: EIP-712 SDKRequest as the order user -- by the wallet, by a session
   // key under a grant for that user, or by the session's registered key.
-  const requestEnvelope = await signSdkRequestEnvelope(
-    {
-      chainId: input.order.chainId,
-      method: 'OpenTask',
-      sessionId: input.sessionId,
-      taskId: input.taskId,
-      requestNonce: input.requestNonce,
-      expiryHeightOrTime: input.expiryHeight,
-      bodyDigest,
-    },
-    {
-      signerAddress: input.order.userAddress,
-      signer: input.wallet,
-      signatureChainId: signatureChainIdBigInt(input.orderEip712.signatureChainId),
-      ...(input.chainId !== undefined ? { chainId: input.chainId } : {}),
-      ...(input.session !== undefined ? { session: input.session } : {}),
-      ...(rk !== undefined ? { registeredKey: rk } : {}),
-    },
-  );
-
-  return {
-    input: {
+  const withEnvelope = async (requestNonce: Uint8Array): Promise<OpenTaskInput> => {
+    const requestEnvelope = await signSdkRequestEnvelope(
+      {
+        chainId: input.order.chainId,
+        method: 'OpenTask',
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        requestNonce,
+        expiryHeightOrTime: input.expiryHeight,
+        bodyDigest,
+      },
+      {
+        signerAddress: input.order.userAddress,
+        signer: input.wallet,
+        signatureChainId: signatureChainIdBigInt(input.orderEip712.signatureChainId),
+        ...(input.chainId !== undefined ? { chainId: input.chainId } : {}),
+        ...(input.session !== undefined ? { session: input.session } : {}),
+        ...(rk !== undefined ? { registeredKey: rk } : {}),
+      },
+    );
+    return {
       orderEnvelope: signed.bytes,
       payloadRef,
       requestEnvelope,
@@ -209,9 +215,14 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       idempotencyKey: input.idempotencyKey,
       payload: input.payload,
       ...(input.chunkSizeBytes !== undefined ? { chunkSizeBytes: input.chunkSizeBytes } : {}),
-    },
+    };
+  };
+
+  return {
+    input: await withEnvelope(input.requestNonce),
     taskHash: hash32Text(signed.taskHash),
     orderEnvelopeHex,
+    resign: withEnvelope,
   };
 }
 

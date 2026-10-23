@@ -642,6 +642,62 @@ describe('TrueOpenClient.useSessionKey / updateSessionKey / forgetSessionKey', (
     expect((await client.sessionKeyState(SESSION)).matchesLoadedKey).toBe(true);
   });
 
+  it('clear and rotate refuse a CLOSED session or one of another user before any transaction; renew too', async () => {
+    const { client, chain } = setup();
+    await client.createSession({ sessionKey: { spendCap: 5n } });
+    const live = chain.stream;
+    for (const [mutate, code] of [
+      [{ status: 'CLOSED' as const }, 'SDK_LOCAL_SESSION_CLOSED'],
+      [{ owner: ADDRS[0]! }, 'SDK_LOCAL_SESSION_NOT_OWNER'],
+    ] as const) {
+      chain.stream = { ...live, ...mutate };
+      for (const update of [{ clear: true as const }, { rotate: {} }, { renew: {} }]) {
+        await expect(client.updateSessionKey(SESSION, update)).rejects.toMatchObject({ family: 'SDK_LOCAL', code });
+      }
+    }
+    expect(chain.updates).toHaveLength(0);
+    chain.stream = { ...live, status: 'IDLE' };
+    await client.updateSessionKey(SESSION, { clear: true });
+    expect(chain.updates).toHaveLength(1);
+  });
+
+  it('records the key-change height: rotate the new set_height; createSession and renew the latest height after the tx (at least latest + 1); useSessionKey the set_height', async () => {
+    const { client, chain, hubState } = setup();
+    const keys = client['registeredKeys'];
+    await client.createSession({ sessionKey: {} });
+    expect(keys.keyChangeHeight(SESSION)).toBe(1_001n); // latest 1000 + 1: no later height read yet
+    hubState.latest = 1_200n;
+    await client.updateSessionKey(SESSION, { rotate: { expiryBlocks: 50 } });
+    expect(keys.keyChangeHeight(SESSION)).toBe(1_200n);
+    hubState.latest = 1_230n;
+    await client.updateSessionKey(SESSION, { renew: { expiryBlocks: 50 } });
+    expect(keys.keyChangeHeight(SESSION)).toBe(1_231n); // the fake chain does not advance
+    hubState.advance = true; // a real chain moves on while the tx lands
+    await client.updateSessionKey(SESSION, { renew: { expiryBlocks: 50 } });
+    expect(keys.keyChangeHeight(SESSION)).toBe(hubState.latest);
+    client.forgetSessionKey(SESSION);
+    chain.stream = { ...chain.stream, sessionKey: skAddress('session_key'), sessionKeyExpiryHeight: 2_000n, sessionKeySetHeight: 1_111n };
+    await client.useSessionKey(SESSION, skKey('session_key'));
+    expect(keys.keyChangeHeight(SESSION)).toBe(1_111n);
+  });
+
+  it('a spend cap above u64 is refused before any transaction', async () => {
+    const { client, chain } = setup();
+    const over = (1n << 64n).toString();
+    await expect(client.createSession({ sessionKey: { spendCap: over } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
+    await expect(client.createSession({ sessionKey: { spendCap: 1n << 64n } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
+    expect(chain.creates).toHaveLength(0);
+    const max = ((1n << 64n) - 1n).toString();
+    const h = await client.createSession({ sessionKey: { spendCap: max } });
+    expect(h.sessionKey!.spendCap).toBe(max);
+  });
+
+  it('an expiry height above 2^63 - 1 is refused before any transaction', async () => {
+    const { client, chain } = setup({ latest: (1n << 63n) - 10n, maxKeyBlocks: 100n });
+    await expect(client.createSession({ sessionKey: { expiryBlocks: 50 } })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' });
+    expect(chain.creates).toHaveLength(0);
+  });
+
   it('forgetSessionKey unloads the key locally only', async () => {
     const { client, chain, headers } = setup();
     await client.createSession({ sessionKey: {} });

@@ -573,15 +573,21 @@ const res = await client.openTask(params);
 const out = await client.waitForAdmission(res);           // { timeoutMs?, pollIntervalMs?, signal? }
 if (out.kind === 'rejected') {
   // out.diagnosis: { reason, sequenceFree, events, session }
-  if (out.diagnosis.reason === 'expired') await client.updateSessionKey(sid, { renew: {} });
-  const again = await client.openTask(out.retry);         // or { ...out.retry, orderSigner: 'wallet' }
+  if (out.diagnosis.reason === 'cleared') {
+    await client.openTask({ ...out.retry, orderSigner: 'wallet' });   // the chain has no key now
+  } else {
+    if (out.diagnosis.reason === 'expired') await client.updateSessionKey(sid, { renew: {} });
+    await client.openTask(out.retry);
+  }
 }
 ```
 
 - `accepted` / `superseded` come from the chain task (same or another `task_hash`). `rejected`
   needs **every** acking Builder to report `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` and a later chain
   read to still show no task: one Builder's rejection does not prove another did not get the
-  order admitted. Otherwise the wait ends as `timeout`.
+  order admitted. A Builder may refuse the key-signed event stream once the key changed, so
+  `rejected` also follows, without any report, once the latest height is past the order's
+  `orderExpireHeight` and the chain still has no task. Otherwise the wait ends as `timeout`.
 - `reason` comes from the session read after the rejection: `session-closed`, `cleared`,
   `rotated`, `expired`, `anchor-before-set-height`, `spend-cap` or `unrelated` (always
   `unrelated` for a wallet-signed order).

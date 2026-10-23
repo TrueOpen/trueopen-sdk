@@ -342,6 +342,8 @@ export interface OpenTaskResult extends OpenTaskAck {
   readonly orderSignerAddress?: Uint8Array;
   /** The order's max_fee in atomic units (what a registered key's spend cap is charged). */
   readonly maxFee: bigint;
+  /** The order's order_expire_height: the Keeper cannot admit it at a later height. */
+  readonly orderExpireHeight: bigint;
   /**
    * The parameters of a re-signed order under the same order_sequence, for when the chain
    * rejects this one (see waitForAdmission): these params with `orderSequence` set to this
@@ -394,8 +396,8 @@ export type AdmissionOutcome =
   /** The chain has a task for this task_id with a different task_hash: another order took the sequence. */
   | { readonly kind: 'superseded'; readonly taskId: string; readonly chainTaskHash: string }
   /**
-   * Every Builder that acked the order reported it rejected (or timed out), and the chain has
-   * no task for it. `retry` is the order's retryParams, without `orderSequence` when the
+   * Every Builder that acked the order reported it rejected (or timed out), or the latest
+   * height passed the order's order_expire_height, and the chain has no task for it. `retry` is the order's retryParams, without `orderSequence` when the
    * sequence is no longer free. The caller decides what to change and calls openTask again.
    */
   | { readonly kind: 'rejected'; readonly taskId: string; readonly diagnosis: RejectionDiagnosis; readonly retry: OpenTaskParams }
@@ -1164,6 +1166,7 @@ export class TrueOpenClient {
       orderSignedBy: registered !== undefined ? 'session-key' : 'wallet',
       ...(registered !== undefined ? { orderSignerAddress: Uint8Array.from(registered.address) } : {}),
       maxFee: BigInt(order.maxFee.atomicUnits),
+      orderExpireHeight: order.orderExpireHeight,
       retryParams: retryParamsOf(params, orderSequence),
     };
   }
@@ -1184,8 +1187,15 @@ export class TrueOpenClient {
    * ASSIGN_REJECTED / ASSIGN_TIMEOUT is recorded. A failing event stream is ignored. One
    * Builder's rejection does not prove another did not get the order admitted, so the result is
    * `rejected` only once every acked Builder has reported a rejection or a timeout and a chain
-   * read started after the last report still finds no task. The session is then read
-   * (QuerySession) to diagnose the reason and whether the sequence is still free; `retry` is
+   * read started after the last report still finds no task; or, whatever the Builders
+   * reported, once the latest height is past the order's order_expire_height (the Keeper can no
+   * longer admit it) and a read made after that finds no task. The second rule matters because
+   * the event streams are signed with this client's ingressAuth(), so with the loaded key: a
+   * Builder refuses them once that key was rotated or cleared or the session closed, and such a
+   * Builder never reports. A task with no valid accepted task_hash decides nothing yet. The
+   * session is then read
+   * (QuerySession) to diagnose the reason (`expired` is judged against the latest height at
+   * diagnosis time) and whether the sequence is still free; `retry` is
    * `res.retryParams`, without `orderSequence` when the sequence moved on (then openTask reads
    * the next free one).
    *
@@ -1197,14 +1207,15 @@ export class TrueOpenClient {
    *
    * Running out of `timeoutMs` resolves `{ kind: 'timeout' }`; aborting `signal` throws
    * ORDER_ADMISSION_WAIT_ABORTED. `timeoutMs` takes effect between reads. Every event stream is
-   * closed when the wait ends. Needs config.taskReader and config.ingressTransportFactory.
+   * closed when the wait ends. Needs config.taskReader, config.ingressTransportFactory and
+   * config.hub (the latest height).
    */
   async waitForAdmission(res: OpenTaskResult, opts: WaitForAdmissionOptions = {}): Promise<AdmissionOutcome> {
-    const { taskReader, ingressTransportFactory } = this.cfg;
-    if (taskReader === undefined || ingressTransportFactory === undefined) {
+    const { taskReader, ingressTransportFactory, hub } = this.cfg;
+    if (taskReader === undefined || ingressTransportFactory === undefined || hub === undefined) {
       throw local(
         'SDK_LOCAL_ADMISSION_UNCONFIGURED',
-        'waitForAdmission needs config.taskReader (RestChainReader) and config.ingressTransportFactory',
+        'waitForAdmission needs config.taskReader (RestChainReader), config.ingressTransportFactory and config.hub',
       );
     }
     const pollMs = opts.pollIntervalMs ?? DEFAULT_TRUST_ANCHOR_POLL_MS;
@@ -1282,32 +1293,60 @@ export class TrueOpenClient {
       if (r === 'abort') throw aborted();
       return r as T;
     };
-    const decided = (task: ChainTaskSnapshot): AdmissionOutcome =>
-      task.acceptedTaskHash === res.taskHash
-        ? { kind: 'accepted', taskId }
-        : { kind: 'superseded', taskId, chainTaskHash: task.acceptedTaskHash };
+    // A task without a valid accepted task_hash decides nothing yet (keep polling).
+    const decided = (task: ChainTaskSnapshot): AdmissionOutcome | undefined =>
+      !isHash32Text(task.acceptedTaskHash)
+        ? undefined
+        : task.acceptedTaskHash === res.taskHash
+          ? { kind: 'accepted', taskId }
+          : { kind: 'superseded', taskId, chainTaskHash: task.acceptedTaskHash };
+    // No task for task_id, and either every acked Builder reported or the order's deadline has
+    // passed: read the session and diagnose. Undefined when a re-read finds a task with no
+    // valid hash yet (keep polling).
+    const rejected = async (): Promise<AdmissionOutcome | undefined> => {
+      const session = await race(this.cfg.chain.querySession(sessionId));
+      const sequenceFree = session.nextExpectedSequence === res.orderSequence;
+      if (!sequenceFree) {
+        // The sequence moved on: perhaps this very order was admitted after the read above.
+        const again = await race(this.readAdmittedTask(taskReader, taskId));
+        if (again !== undefined) return decided(again);
+      }
+      const reason = await race(this.rejectionReason(res, session));
+      const diagnosis: RejectionDiagnosis = { sequenceFree, reason, events: [...reports.values()], session };
+      let retry: OpenTaskParams = res.retryParams;
+      if (!sequenceFree) {
+        const { orderSequence: _, ...rest } = retry;
+        void _;
+        retry = rest;
+      }
+      return { kind: 'rejected', taskId, diagnosis, retry };
+    };
+
+    // The Keeper cannot admit the order once the latest height is past its order_expire_height.
+    // `pastDeadline` is set from a height read; a read that starts after that and finds no task
+    // is a rejection whatever the Builders reported (a Builder may refuse the event stream, for
+    // example when the key that signs it was rotated or cleared). `deadlineAtRead` is the flag
+    // when the current read started.
+    let pastDeadline = false;
+    let deadlineAtRead = false;
 
     try {
       for (;;) {
         const task = await race(read);
-        if (task !== undefined) return decided(task);
-        if (acked.length > 0 && reports.size === acked.length && genAtRead === reportGen) {
-          const session = await race(this.cfg.chain.querySession(sessionId));
-          const sequenceFree = session.nextExpectedSequence === res.orderSequence;
-          if (!sequenceFree) {
-            // The sequence moved on: perhaps this very order was admitted after the read above.
-            const again = await race(this.readAdmittedTask(taskReader, taskId));
-            if (again !== undefined) return decided(again);
-          }
-          const reason = await race(this.rejectionReason(res, session));
-          const diagnosis: RejectionDiagnosis = { sequenceFree, reason, events: [...reports.values()], session };
-          let retry: OpenTaskParams = res.retryParams;
-          if (!sequenceFree) {
-            const { orderSequence: _, ...rest } = retry;
-            void _;
-            retry = rest;
-          }
-          return { kind: 'rejected', taskId, diagnosis, retry };
+        if (task !== undefined) {
+          const out = decided(task);
+          if (out !== undefined) return out;
+        } else if (deadlineAtRead || (acked.length > 0 && reports.size === acked.length && genAtRead === reportGen)) {
+          const out = await rejected();
+          if (out !== undefined) return out;
+        } else if (!pastDeadline && (await race(this.readLatestHeight(hub))) > res.orderExpireHeight) {
+          // Confirm with one more read, straight away.
+          pastDeadline = true;
+          rearm();
+          genAtRead = reportGen;
+          deadlineAtRead = true;
+          read = this.readAdmittedTask(taskReader, taskId);
+          continue;
         }
         const left = deadline - Date.now();
         if (left <= 0) return { kind: 'timeout', taskId };
@@ -1324,6 +1363,7 @@ export class TrueOpenClient {
         }
         rearm();
         genAtRead = reportGen;
+        deadlineAtRead = pastDeadline;
         read = this.readAdmittedTask(taskReader, taskId);
       }
     } finally {

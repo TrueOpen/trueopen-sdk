@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { createRouterTransport } from '@connectrpc/connect';
+import { createRouterTransport, ConnectError, Code } from '@connectrpc/connect';
 import type { HandlerContext, Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
-import type { OpenTaskHeader, OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
+import type { GetTaskEventsRequest, OpenTaskHeader, OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenClient, nextRetryIdempotencyKey } from '../../src/client';
 import type { FacadeHubReader, OpenTaskParams, OpenTaskResult, OutputTaskReader } from '../../src/client';
 import type { ChainClient } from '../../src/transport/chain-client';
@@ -96,8 +96,11 @@ class FakeChain implements ChainClient {
     sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
   };
   sessionReads = 0;
+  /** Runs on each session read (e.g. the order landing between the task read and this one). */
+  onSessionRead: (() => void) | undefined;
   async querySession(id: string): Promise<StreamStateView> {
     this.sessionReads += 1;
+    this.onSessionRead?.();
     return { ...this.stream, sessionId: id };
   }
   async querySessionNonce() { return { nextSessionNonce: 0n }; }
@@ -111,8 +114,15 @@ function taskReader() {
   const r = {
     reads: 0,
     taskHash: undefined as string | undefined,
+    /** When true, each read waits until the test calls release(). */
+    hold: false,
+    held: [] as Array<() => void>,
+    release(): void {
+      r.held.shift()?.();
+    },
     async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
       r.reads += 1;
+      if (r.hold) await new Promise<void>((resolve) => r.held.push(resolve));
       if (r.taskHash === undefined) throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_NOT_FOUND', `task ${taskId}: HTTP 404`);
       return {
         view: 'active', taskId, acceptedTaskHash: r.taskHash, winnerWorker: '',
@@ -136,6 +146,9 @@ class Builders {
   private readonly listeners = new Map<string, Set<(code: string) => void>>();
   /** Builders whose event stream fails at once. */
   readonly failing = new Set<string>();
+  /** Refuse a GetTaskEvents not signed by the wallet, as Nexus does once the key changed. */
+  refuseKeySigned = false;
+  refused = 0;
 
   emit(address: string, code: string): void {
     for (const l of this.listeners.get(address) ?? []) l(code);
@@ -151,8 +164,12 @@ class Builders {
           for await (const f of reqs) if (f.frame.case === 'header') self.headers.push(f.frame.value);
           return { taskId: '', accepted: true, reason: '', sessionId: SESSION };
         },
-        async *getTaskEvents(_req: unknown, ctx: HandlerContext) {
+        async *getTaskEvents(req: GetTaskEventsRequest, ctx: HandlerContext) {
           if (self.failing.has(address)) throw new Error('events unavailable');
+          if (self.refuseKeySigned && envelopeSigner(req.requestEnvelope!) !== USER_ADDRESS_HEX) {
+            self.refused += 1;
+            throw new ConnectError('SDK_AUTH_INVALID_SIGNATURE', Code.Unauthenticated);
+          }
           self.opened += 1;
           // Counted on the signal itself (a stream the client aborts before this ran counts too).
           if (ctx.signal.aborted) self.closed += 1;
@@ -183,6 +200,15 @@ class Builders {
       } as any);
     });
   }
+}
+
+/** What a request envelope's signature recovers to (no grant is configured in these tests). */
+function envelopeSigner(env: NonNullable<GetTaskEventsRequest['requestEnvelope']>): string {
+  const digest = sdkRequestEip712Digest(
+    { chainId: env.chainId, method: env.method, sessionId: env.sessionId, taskId: env.taskId, requestNonce: env.requestNonce, expiryHeightOrTime: env.expiryHeightOrTime, bodyDigest: env.bodyDigest },
+    EVM,
+  );
+  return toHex(ethAddressBytes(recoverEip712PubKey(digest, env.signature)));
 }
 
 function setup() {
@@ -512,6 +538,122 @@ describe('waitForAdmission', () => {
     });
   });
 
+  describe('the order deadline decides when Builders cannot report', () => {
+    const clear = (s: ReturnType<typeof setup>): void => {
+      const { sessionKey: _, ...rest } = s.chain.stream;
+      void _;
+      s.chain.stream = { ...rest, sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySetHeight: 0n };
+    };
+    const cases: Array<{ reason: string; mutate: (s: ReturnType<typeof setup>) => void }> = [
+      { reason: 'cleared', mutate: clear },
+      { reason: 'rotated', mutate: (s) => { s.chain.stream = { ...s.chain.stream, sessionKey: generateSessionKey().address }; } },
+      { reason: 'session-closed', mutate: (s) => { s.chain.stream = { ...s.chain.stream, status: 'CLOSED' }; } },
+    ];
+    for (const c of cases) {
+      it(`key-signed event streams refused, chain past order_expire_height with no task -> rejected (${c.reason})`, async () => {
+        const s = setup();
+        await withKey(s);
+        const res = await s.client.openTask(BASE);
+        expect(res.orderExpireHeight).toBe(intent.orderExpireHeight);
+        c.mutate(s);
+        s.builders.refuseKeySigned = true;
+        const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+        await tick(50);
+        // Every stream was refused (key-signed), so no Builder can report.
+        expect(s.builders.refused).toBe(3);
+        expect(s.builders.opened).toBe(0);
+        const readsBefore = s.reader.reads;
+        s.hubState.latest = intent.orderExpireHeight + 1n;
+        const out = await waiting;
+        expect(out).toMatchObject({ kind: 'rejected', diagnosis: { reason: c.reason, sequenceFree: true, events: [] } });
+        // Decided by a read made after the deadline was seen.
+        expect(s.reader.reads).toBeGreaterThan(readsBefore);
+        if (out.kind === 'rejected') expect(out.retry.orderSequence).toBe(7n);
+      });
+    }
+
+    it('not past the deadline yet: still waiting, and the bound ends it as timeout', async () => {
+      const s = setup();
+      await withKey(s);
+      const res = await s.client.openTask(BASE);
+      clear(s);
+      s.builders.refuseKeySigned = true;
+      s.hubState.latest = intent.orderExpireHeight; // at, not past
+      s.chain.sessionReads = 0;
+      expect(await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 200 })).toEqual({ kind: 'timeout', taskId: res.taskId });
+      expect(s.chain.sessionReads).toBe(0);
+    });
+
+    it('past the deadline but the task is on chain: accepted', async () => {
+      const s = setup();
+      const res = await s.client.openTask(BASE);
+      s.hubState.latest = intent.orderExpireHeight + 5n;
+      s.reader.hold = true;
+      const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
+      // The first read finds nothing; the confirming read after the height check finds the task.
+      await tick(30);
+      s.reader.release();
+      await tick(30);
+      expect(s.reader.reads).toBe(2);
+      s.reader.taskHash = res.taskHash;
+      s.reader.hold = false;
+      s.reader.release();
+      expect(await waiting).toMatchObject({ kind: 'accepted' });
+    });
+  });
+
+  it('a task with no valid accepted task_hash decides nothing: polling continues', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    s.reader.taskHash = '';
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
+    await tick(50);
+    // Even all Builders reporting is not a rejection while a task exists.
+    rejectAll(s.builders, res);
+    await tick(50);
+    const readsBefore = s.reader.reads;
+    expect(readsBefore).toBeGreaterThan(1);
+    s.reader.taskHash = res.taskHash;
+    expect(await waiting).toMatchObject({ kind: 'accepted' });
+    expect(s.chain.sessionReads).toBe(1); // openTask's sequence read only
+  });
+
+  it('a report landing while a read is in flight forces a further read before rejected', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    s.reader.hold = true;
+    let settled = false;
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 }).then((o) => { settled = true; return o; });
+    await tick(50);
+    expect(s.reader.reads).toBe(1);
+    // All reports land while read #1 is still in flight.
+    rejectAll(s.builders, res);
+    await tick(30);
+    s.reader.release(); // read #1: not found, but it started before the last report
+    await tick(30);
+    expect(settled).toBe(false);
+    expect(s.reader.reads).toBe(2);
+    s.reader.hold = false;
+    s.reader.release(); // read #2: not found, started after every report
+    expect(await waiting).toMatchObject({ kind: 'rejected' });
+    expect(s.reader.reads).toBe(2);
+  });
+
+  for (const same of [true, false]) {
+    it(`sequence moved on, then the task appears on the re-read: ${same ? 'accepted' : 'superseded'}`, async () => {
+      const s = setup();
+      const res = await s.client.openTask(BASE);
+      s.chain.stream = { ...s.chain.stream, nextExpectedSequence: 8n };
+      s.chain.onSessionRead = () => { s.reader.taskHash = same ? res.taskHash : hexOf(0x55); };
+      const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
+      await tick(50);
+      rejectAll(s.builders, res);
+      expect(await waiting).toEqual(
+        same ? { kind: 'accepted', taskId: res.taskId } : { kind: 'superseded', taskId: res.taskId, chainTaskHash: hexOf(0x55) },
+      );
+    });
+  }
+
   it('abort throws ORDER_ADMISSION_WAIT_ABORTED and closes every event stream', async () => {
     const s = setup();
     const res = await s.client.openTask(BASE);
@@ -544,6 +686,22 @@ describe('waitForAdmission', () => {
     }
     for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       await expect(s.client.waitForAdmission(res, { timeoutMs })).rejects.toMatchObject({ code: 'SDK_LOCAL_TIMEOUT_INVALID' });
+    }
+    expect(s.builders.opened).toBe(0);
+  });
+
+  it('needs taskReader, ingressTransportFactory and hub up front', async () => {
+    const s = setup();
+    const res = await s.client.openTask(BASE);
+    const base = {
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet: privateKeyTypedDataSigner(PRIV), chain: s.chain,
+      ingressTransport: s.builders.transport(ADDRS[0]!), signatureChainId: EVM,
+    };
+    const parts = { hub: makeHub({ latest: 1n }), taskReader: s.reader, ingressTransportFactory: (u: string) => s.builders.transport(u) };
+    for (const missing of ['hub', 'taskReader', 'ingressTransportFactory'] as const) {
+      const { [missing]: _, ...rest } = parts;
+      void _;
+      await expect(new TrueOpenClient({ ...base, ...rest }).waitForAdmission(res)).rejects.toMatchObject({ code: 'SDK_LOCAL_ADMISSION_UNCONFIGURED' });
     }
     expect(s.builders.opened).toBe(0);
   });

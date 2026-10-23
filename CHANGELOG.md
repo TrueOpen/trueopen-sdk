@@ -86,16 +86,20 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
   acking Builder's task events are hints (finalized/handraise events trigger a read;
   `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are recorded). `rejected` needs every acked Builder to have
   reported and a later chain read to show no task, since one Builder's rejection does not prove
-  another did not get the order admitted. It carries `diagnosis` (`reason`: `session-closed`,
+  another did not get the order admitted; or, with no reports needed, the latest height past the
+  order's `orderExpireHeight` and a later read with no task (a Builder may refuse the key-signed
+  event stream once the key was rotated or cleared or the session closed). A task without a valid
+  accepted task_hash decides nothing yet. It carries `diagnosis` (`reason`: `session-closed`,
   `cleared`, `rotated`, `expired`, `anchor-before-set-height`, `spend-cap` or `unrelated`;
   `sequenceFree`; the events; the session read) and `retry`. Abort throws
   `ORDER_ADMISSION_WAIT_ABORTED`; bad options are `SDK_LOCAL_POLL_INTERVAL_INVALID` /
-  `SDK_LOCAL_TIMEOUT_INVALID`; a client without `taskReader` / `ingressTransportFactory` is
+  `SDK_LOCAL_TIMEOUT_INVALID`; a client without `taskReader` / `ingressTransportFactory` / `hub` is
   `SDK_LOCAL_ADMISSION_UNCONFIGURED`. Exported with `DEFAULT_ADMISSION_WAIT_MS`,
   `nextRetryIdempotencyKey` and the `WaitForAdmissionOptions` / `AdmissionOutcome` /
   `RejectionDiagnosis` / `RejectionReason` types.
 - **Added:** `OpenTaskResult` gains `orderSequence`, `orderSignedBy` (`'wallet' | 'session-key'`),
-  `orderSignerAddress` (the key's 20-byte address, never its private key), `maxFee` and
+  `orderSignerAddress` (the key's 20-byte address, never its private key), `maxFee`,
+  `orderExpireHeight` and
   `retryParams`: the same params under the same sequence, without `context` / `expiryHeight`,
   with the idempotency key `<key>#retry<n>`. The re-signed order has a new `task_hash`, and an
   idempotency key only repeats the same one, so the retry needs a new key. `rejected.retry` drops

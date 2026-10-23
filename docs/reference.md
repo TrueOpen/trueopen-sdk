@@ -118,6 +118,7 @@ and never rejects (no-op without `ingressPrewarm`). Under Node, set
 | `orderSignedBy` | `'wallet' \| 'session-key'`. |
 | `orderSignerAddress?` | 20-byte address of the registered key that signed (session-key orders only; never the private key). |
 | `maxFee` | The order's `max_fee` (bigint, atomic units). The anchor height is `context.sessionAnchorHeight`. |
+| `orderExpireHeight` | The order's `order_expire_height`: the Keeper cannot admit it at a later height (`waitForAdmission`'s deadline rule). |
 | `retryParams` | `OpenTaskParams` for a re-signed order under the same sequence: these params with `orderSequence` set, `context` / `expiryHeight` removed, and `idempotencyKey` = `<key>#retry1` (`<key>#retryK` becomes `#retry(K+1)`, see `nextRetryIdempotencyKey`). The payload is the same object. Never sent by the SDK itself. |
 
 ```ts
@@ -136,29 +137,38 @@ interface RejectionDiagnosis {
 }
 ```
 
-Waits for the chain to decide an order (acks are only local acceptance). Needs `taskReader` and
-`ingressTransportFactory` (`SDK_LOCAL_ADMISSION_UNCONFIGURED`).
+Waits for the chain to decide an order (acks are only local acceptance). Needs `taskReader`,
+`ingressTransportFactory` and `hub` (`SDK_LOCAL_ADMISSION_UNCONFIGURED`).
 
 | Option | Notes |
 |---|---|
-| `timeoutMs?` | Bound on the wait (default `DEFAULT_ADMISSION_WAIT_MS`, 60000); finite `> 0` else `SDK_LOCAL_TIMEOUT_INVALID`. Running out resolves `{ kind: 'timeout' }`. |
+| `timeoutMs?` | Bound on the wait (default `DEFAULT_ADMISSION_WAIT_MS`, 60000); finite `> 0` else `SDK_LOCAL_TIMEOUT_INVALID`. Running out resolves `{ kind: 'timeout' }`. Checked between reads: a chain read that hangs can overrun it (bounded only by the reader's own limits, as in `waitForOutputTrustAnchors`). |
 | `pollIntervalMs?` | Chain read interval (default `DEFAULT_TRUST_ANCHOR_POLL_MS`, 1000); finite `> 0` else `SDK_LOCAL_POLL_INTERVAL_INVALID`. |
 | `signal?` | Aborts at once: throws `ORDER_ADMISSION_WAIT_ABORTED` (family `SDK_LOCAL`). |
 
 - The chain is the truth: `taskReader.queryTask(taskId)` at once and every `pollIntervalMs`; a 404
-  is "not on chain yet", any other read error is thrown.
+  is "not on chain yet", any other read error is thrown. A task whose `acceptedTaskHash` is empty
+  or not Hash32 text decides nothing yet (polling continues).
 - The task event stream of every Builder whose ack was `accepted` is opened (signed with this
   client's `ingressAuth()`) and closed when the wait ends. `ASSIGNMENT_FINALIZED`,
   `WORKER_ASSIGNMENT_FINALIZED` and `WORKER_HANDRAISES_ACCEPTED` trigger an immediate read;
   `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are recorded (first per Builder). A failing stream is
-  ignored, so that Builder never reports and the wait can only end on chain or by timeout.
-- `rejected` only when every acked Builder reported and a chain read started after the last
-  report shows no task. Then `chain.querySession` is read: `sequenceFree` compares
+  ignored, and that Builder never reports. With a registered key loaded the streams are signed by
+  that key, so a Builder refuses them (`SDK_AUTH_INVALID_SIGNATURE`) once the key was rotated or
+  cleared or the session closed: exactly the cases being diagnosed. The deadline rule below then
+  decides.
+- `rejected` when the chain has no task for `task_id` and either (fast path) every acked Builder
+  reported and a chain read started after the last report shows no task, or (deadline rule,
+  whatever the Builders reported) the hub's latest height is past the order's
+  `orderExpireHeight` (on `OpenTaskResult`; the Keeper cannot admit it after that) and a chain
+  read made after that shows no task. Then `chain.querySession` is read: `sequenceFree` compares
   `nextExpectedSequence`; if it moved on, the task is read once more (this order may have just
   been admitted). The reason, in order: CLOSED → `session-closed`; for a key-signed order, no key
   → `cleared`, another key → `rotated`, latest height > expiry → `expired`, anchor <
   `set_height` → `anchor-before-set-height`, `spent + maxFee` over a nonzero cap (or past u64)
-  → `spend-cap`; else (and always for a wallet order) `unrelated`.
+  → `spend-cap`; else (and always for a wallet order) `unrelated`. `expired` is judged against
+  the latest height at diagnosis time, not at the rejection: a key that expired since then
+  reads as `expired` even if the order failed for another reason.
 - `retry` is `res.retryParams`, without `orderSequence` when `sequenceFree` is false.
 - The SDK never re-signs, renews, raises a cap or switches to the wallet by itself; the caller
   decides and calls `openTask(retry)` (optionally with `orderSigner: 'wallet'`). The retry uses a
@@ -523,7 +533,7 @@ Error codes:
 |---|---|
 | `SDK_LOCAL_SESSION_KEY_INVALID` | Malformed key, grant or `expiryBlocks` / `spendCap` input. |
 | `SDK_LOCAL_ORDER_SIGNER_INVALID` | `openTask` `orderSigner` is not `'auto'` or `'wallet'`. |
-| `SDK_LOCAL_ADMISSION_UNCONFIGURED` | `waitForAdmission` without `taskReader` or `ingressTransportFactory`. |
+| `SDK_LOCAL_ADMISSION_UNCONFIGURED` | `waitForAdmission` without `taskReader`, `ingressTransportFactory` or `hub`. |
 | `ORDER_ADMISSION_WAIT_ABORTED` | `waitForAdmission`'s `signal` was aborted (family `SDK_LOCAL`). |
 | `SDK_LOCAL_SESSION_KEY_UNSUPPORTED` | No `getMaxSessionKeyBlocks` reader, or the chain's limit is absent, 0 or below 2. |
 | `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED` | No key, or a different key, is registered or loaded for the session; also `useSessionKey` on a session owned by another user. |

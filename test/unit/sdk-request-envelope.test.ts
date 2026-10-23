@@ -14,6 +14,8 @@ import { recoverEip712PubKey, ethAddressBytes } from '../../src/signer/eth-secp2
 import { fromHex, toHex } from '../../src/util/bytes';
 import { TrueOpenError } from '../../src/errors/errors';
 import { ACCOUNT_SIGNING, fixtureKey, fixtureTypedData, section } from '../helpers/account-signing';
+import { registeredSessionKey } from '../../src/session/registered-session-key';
+import type { ActiveSession } from '../../src/session/session-grant';
 
 const V = section('sdk_request');
 const EVM = BigInt(V.domain.chain_id);
@@ -148,5 +150,36 @@ describe('request_auth_negative_cases on sdk_request', () => {
   it('method and endpoint cannot disagree: the endpoint is derived', () => {
     expect(sdkRequestTypedData({ ...fields, method: 'AckOutput' }, EVM).message['endpoint']).toBe('/nexus.v1.IngressAPI/AckOutput');
     expect(() => sdkRequestTypedData({ ...fields, method: '/nexus.v1.IngressAPI/OpenTask' }, EVM)).toThrow(TrueOpenError);
+  });
+});
+
+describe('signSdkRequestEnvelope with a registered session key (ADR-0037)', () => {
+  const key = registeredSessionKey(fields.sessionId, fixtureKey('session_key'));
+  const opts = { signerAddress: USER, signer: wallet, signatureChainId: EVM, registeredKey: key };
+
+  it('signs with the key and a zero grant hash: signer_address is the user, no grant', async () => {
+    const env = await signSdkRequestEnvelope(fields, opts);
+    expect(recover(toHex(sdkRequestEip712Digest(fields, EVM)), toHex(env.signature))).toBe(toHex(key.address));
+    expect(toHex(key.address)).not.toBe(V.recovered_address);
+    expect(env.signerAddress).toBe(USER);
+    expect('sessionGrant' in env).toBe(false);
+  });
+
+  it('refuses a method outside the session-allowed set', async () => {
+    await expect(signSdkRequestEnvelope({ ...fields, method: 'GetTaskDataMetadata' }, opts)).rejects.toMatchObject({
+      code: 'SDK_LOCAL_REQUEST_MALFORMED',
+    });
+  });
+
+  it("refuses a key loaded for another session than the request's", async () => {
+    const other = registeredSessionKey(`0x${'77'.repeat(32)}`, fixtureKey('session_key'));
+    await expect(signSdkRequestEnvelope(fields, { ...opts, registeredKey: other })).rejects.toMatchObject({
+      code: 'SDK_LOCAL_REQUEST_MALFORMED',
+    });
+  });
+
+  it('refuses a session grant and a registered key together', async () => {
+    const session = { grant: {}, grantHash: new Uint8Array(32), key: wallet } as unknown as ActiveSession;
+    await expect(signSdkRequestEnvelope(fields, { ...opts, session })).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
   });
 });

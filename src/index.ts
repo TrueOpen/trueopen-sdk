@@ -97,6 +97,14 @@ export type {
   SessionAuthority,
   SessionKeyManagerOptions,
 } from './session/session-grant';
+export {
+  generateSessionKey,
+  sessionKeyFromPrivateKey,
+  registeredSessionKey,
+  RegisteredSessionKeys,
+  sessionKeyAddressHex,
+} from './session/registered-session-key';
+export type { SessionKeyMaterial, RegisteredSessionKey } from './session/registered-session-key';
 
 export {
   validateModelId,

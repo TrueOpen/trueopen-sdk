@@ -25,6 +25,8 @@ import { taskOrderEip712Digest } from '../../src/order/signed-order';
 import { sha256 } from '../../src/codec/hash';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { hash32Text, strictHash32 } from '../../src/codec/hash32';
+import { registeredSessionKey } from '../../src/session/registered-session-key';
+import type { ActiveSession } from '../../src/session/session-grant';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const wallet = privateKeyTypedDataSigner(PRIV);
@@ -183,6 +185,36 @@ describe('buildOpenTaskRequest', () => {
     await expect(buildOpenTaskRequest({ ...base, idempotencyKey: '' })).rejects.toMatchObject({
       code: 'SDK_LOCAL_IDEMPOTENCY_KEY_REQUIRED',
     });
+  });
+});
+
+describe('buildOpenTaskRequest with a registered session key (ADR-0037)', () => {
+  const KEY_PRIV = rep(0x03, 32);
+  const key = registeredSessionKey(SESSION, KEY_PRIV);
+  const refusingWallet = { signTypedData: () => Promise.reject(new Error('the wallet must not sign')) };
+
+  it('the key signs both the order and the envelope; no wallet prompt and no grant', async () => {
+    const r = await buildOpenTaskRequest({ ...base, wallet: refusingWallet, registeredKey: key });
+    const sig = decodeSignedOrder(r.input.orderEnvelope).userSignature;
+    const keyPub = secp256k1PublicKey(KEY_PRIV);
+    expect(toHex(recoverEip712PubKey(taskOrderEip712Digest(order, ORDER_EIP712), sig))).toBe(toHex(keyPub));
+    const env = r.input.requestEnvelope;
+    expect(toHex(recoverEip712PubKey(sdkRequestEip712Digest(env, ORDER_EIP712.signatureChainId), env.signature))).toBe(toHex(keyPub));
+    expect(env.signerAddress).toBe(USER);
+    expect(env.sessionGrant).toBeUndefined();
+    expect(r.input.userAddress).toBe(USER);
+  });
+
+  it("refuses a key for another session than the order's", async () => {
+    const other = registeredSessionKey(hexOf(0x13), KEY_PRIV);
+    await expect(buildOpenTaskRequest({ ...base, registeredKey: other })).rejects.toMatchObject({ code: 'SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH' });
+  });
+
+  it('refuses a session grant and a registered key together, before anything is signed', async () => {
+    const session = { grant: {}, grantHash: new Uint8Array(32), key: refusingWallet } as unknown as ActiveSession;
+    await expect(
+      buildOpenTaskRequest({ ...base, wallet: refusingWallet, registeredKey: key, session }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_REQUEST_MALFORMED' });
   });
 });
 

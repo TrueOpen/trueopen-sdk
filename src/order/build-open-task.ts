@@ -13,6 +13,7 @@ import type { TaskOrderV3 } from './task-order';
 import type { OpenTaskInput } from '../transport/ingress-client';
 import type { TypedDataSigner } from '../signer/typed-data-signer';
 import type { ActiveSession } from '../session/session-grant';
+import type { RegisteredSessionKey } from '../session/registered-session-key';
 
 /** OpenTask's Connect procedure path (goes into the SDKRequestEnvelope's endpoint field). */
 export const OPEN_TASK_ENDPOINT = ingressEndpoint('OpenTask');
@@ -43,8 +44,9 @@ export interface BuildOpenTaskInput {
   readonly idempotencyKey: string;
   readonly inputMediaType?: string;
   /**
-   * The user's wallet. Always signs the order's EIP-712 digest as order.userAddress (the Keeper
-   * recovers the address from it), and signs the request envelope unless `session` is given.
+   * The user's wallet. Signs the order's EIP-712 digest as order.userAddress (the Keeper
+   * recovers the address from it) unless `registeredKey` is given, and signs the request
+   * envelope unless `session` or `registeredKey` is given.
    */
   readonly wallet: TypedDataSigner;
   /**
@@ -53,6 +55,13 @@ export interface BuildOpenTaskInput {
    * this saves one wallet prompt per order.
    */
   readonly session?: ActiveSession;
+  /**
+   * The session's registered key (ADR-0037) signs both the order and the request envelope
+   * instead of the wallet, so the order needs no wallet prompt at all. Its sessionId must be the
+   * order's; exclusive with `session`. The order must also pass the on-chain key checks (the
+   * key is the current one, not expired, within its spend cap), which this function does not see.
+   */
+  readonly registeredKey?: RegisteredSessionKey;
   readonly chunkSizeBytes?: number;
   /**
    * The configured chain ID. When given, an order (and so an envelope) for another chain is
@@ -73,14 +82,17 @@ export interface BuildOpenTaskResult {
  * End-to-end assembly of a single OpenTask order submission, producing input that can be
  * passed directly to IngressClient.openTask.
  *
- * Two EIP-712 signatures, both as the order user:
+ * Two EIP-712 signatures, both on behalf of the order user:
  *
  *  1. SignedOrderV2.user_signature -- the "TrueOpen Task Order" v3 digest, with task_hash as one
- *     bytes32 field, always by the wallet. This alone authorizes the order; the Keeper verifies it.
+ *     bytes32 field, by the wallet or by the session's registered key (`registeredKey`,
+ *     ADR-0037). This alone authorizes the order; the Keeper verifies it, recovering the wallet's
+ *     address or the session's registered key.
  *  2. The request envelope -- the "TrueOpen SDK Request" SDKRequest, whose bodyDigest is
  *     TRUEOPEN_SDK_BODY_OPEN_TASK_V1(task_hash, session_id, order_sequence, user_address,
- *     input_size_bytes, input_hash, input_media_type, idempotency_key). By the wallet, or by a
- *     session key when `session` is given, so the wallet prompts once per order instead of twice.
+ *     input_size_bytes, input_hash, input_media_type, idempotency_key). By the wallet, by a
+ *     granted session key (`session`), or by the registered key (`registeredKey`, zero grant hash
+ *     and no grant). With `session` the wallet prompts once per order; with `registeredKey`, not at all.
  *
  * There is no outer order signature: OpenTaskHeader.signature and signature_scheme stay
  * empty. payload_ref is not signed but must be "nexus://sha256/" || lowercase_hex(input_hash).
@@ -128,13 +140,24 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
   if (orderSessionId !== input.sessionId) {
     throw local('SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH', `session_id ${input.sessionId} is not the order's ${orderSessionId}`);
   }
+  const rk = input.registeredKey;
+  if (rk !== undefined && input.session !== undefined) {
+    throw local('SDK_LOCAL_REQUEST_MALFORMED', 'a session grant and a registered session key are exclusive');
+  }
+  if (rk !== undefined && rk.sessionId !== input.sessionId) {
+    throw local('SDK_LOCAL_OPEN_TASK_SESSION_MISMATCH', `the registered session key is for session ${rk.sessionId}, not ${input.sessionId}`);
+  }
   const derived = deriveTaskId(input.sessionId, input.order.orderSequence);
   if (input.taskId !== derived) {
     throw local('SDK_LOCAL_OPEN_TASK_ID_NOT_DERIVED', `task_id ${input.taskId} is not TRUEOPEN_TASK_ID_V1(session_id, order_sequence) = ${derived}`);
   }
 
-  // (1) The order's EIP-712 signature (task_hash is one of its fields), encoded as SignedOrderV2.
-  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.wallet);
+  // (1) The order's EIP-712 signature (task_hash is one of its fields), encoded as SignedOrderV2:
+  // by the wallet, or by the registered key, recovering to the key's address.
+  const signed =
+    rk === undefined
+      ? await signAndEncodeOrder(input.order, input.orderEip712, input.wallet)
+      : await signAndEncodeOrder(input.order, input.orderEip712, rk.signer, { expectedSigner: rk.address });
   const orderEnvelopeHex = toHex(signed.bytes);
 
   const payloadRef = openTaskPayloadRef(payloadHashHex);
@@ -151,8 +174,8 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
     idempotencyKey: input.idempotencyKey,
   });
 
-  // (2) Request envelope: EIP-712 SDKRequest as the order user -- by the wallet, or by a session
-  // key under a grant for that user.
+  // (2) Request envelope: EIP-712 SDKRequest as the order user -- by the wallet, by a session
+  // key under a grant for that user, or by the session's registered key.
   const requestEnvelope = await signSdkRequestEnvelope(
     {
       chainId: input.order.chainId,
@@ -169,6 +192,7 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       signatureChainId: signatureChainIdBigInt(input.orderEip712.signatureChainId),
       ...(input.chainId !== undefined ? { chainId: input.chainId } : {}),
       ...(input.session !== undefined ? { session: input.session } : {}),
+      ...(rk !== undefined ? { registeredKey: rk } : {}),
     },
   );
 

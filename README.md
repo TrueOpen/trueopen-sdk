@@ -556,13 +556,44 @@ const { newKey } = await client.updateSessionKey(sessionId, { rotate: { expiryBl
   `spent + max_fee <= cap` (and fits a u64 even with cap 0). A failed check throws an
   `SDK_LOCAL_SESSION_*` error. Use
   `sessionKeyState(sessionId)` to see why; `forgetSessionKey` returns the session to wallet signing.
-- **`ASSIGN_REJECTED`.** Nothing is resubmitted automatically. Check `sessionKeyState`, fix the
-  cause, then re-sign the same sequence by passing `orderSequence` to `openTask`.
+- **If the chain rejects an order.** See below; nothing is resubmitted automatically.
 - **Rollout.** Enable it only after the chain (`max_session_key_blocks` of at least 2) and the Task
   Builders support it; otherwise registration is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 
 A client built by hand for another Builder should share the signing context:
 `new IngressClient(transport, client.ingressAuth())`.
+
+**If the chain rejects an order.** `openTask`'s acks are only local acceptance; the chain's Keeper
+can still refuse the order (key rotated or cleared elsewhere, expired, cap used up by concurrent
+orders, session closed). A refused order does not consume its sequence. `waitForAdmission` reads
+the chain until it decides, watching every acking Builder's task events as hints:
+
+```ts
+const res = await client.openTask(params);
+const out = await client.waitForAdmission(res);           // { timeoutMs?, pollIntervalMs?, signal? }
+if (out.kind === 'rejected') {
+  // out.diagnosis: { reason, sequenceFree, events, session }
+  if (out.diagnosis.reason === 'expired') await client.updateSessionKey(sid, { renew: {} });
+  const again = await client.openTask(out.retry);         // or { ...out.retry, orderSigner: 'wallet' }
+}
+```
+
+- `accepted` / `superseded` come from the chain task (same or another `task_hash`). `rejected`
+  needs **every** acking Builder to report `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` and a later chain
+  read to still show no task: one Builder's rejection does not prove another did not get the
+  order admitted. Otherwise the wait ends as `timeout`.
+- `reason` comes from the session read after the rejection: `session-closed`, `cleared`,
+  `rotated`, `expired`, `anchor-before-set-height`, `spend-cap` or `unrelated` (always
+  `unrelated` for a wallet-signed order).
+- `retry` is `res.retryParams`: the same params and sequence, without `context` / `expiryHeight`,
+  and a new idempotency key `<key>#retry<n>`, because the re-signed order has a new `task_hash`
+  and a key only repeats the same one. When the sequence was used up meanwhile (another order, or
+  `cancelOrder`), `sequenceFree` is false and `retry` has no `orderSequence`.
+- **The SDK never re-signs, renews, raises a cap or switches to the wallet by itself.** You decide,
+  then call `openTask(retry)`. `orderSigner: 'wallet'` signs one order with the wallet while a key
+  stays loaded (no key prechecks).
+- Re-sending the same `task_id` to a Builder that already holds it as a terminal task needs Nexus
+  local terminal-task retry support, a separate Nexus requirement not available yet.
 
 ### ✅ On-chain writes: direct ethsecp256k1 signing (`EthSecp256k1DirectSigner`)
 

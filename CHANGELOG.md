@@ -77,9 +77,35 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
   `sessionGrantHash`, and is allowed only for the session-allowed requests (OUTPUT task data
   included). A `SessionGrant` key (the opt-in `session` config) still cannot sign orders. Requests
   never consume the cap; only admitted orders do.
-- **Recovery:** there is no automatic resubmission on `ASSIGN_REJECTED`. Check `sessionKeyState`,
-  fix the cause (renew, raise the cap, load the current key), then re-sign the same sequence by
-  passing `orderSequence` to `openTask`.
+- **Recovery:** there is no automatic resubmission on `ASSIGN_REJECTED`. `waitForAdmission`
+  (below) diagnoses it; fix the cause (renew, raise the cap, load the current key, or sign with
+  the wallet) and call `openTask(retry)`.
+- **Added:** `waitForAdmission(res, { timeoutMs?, pollIntervalMs?, signal? })` waits for the chain
+  to decide an order and resolves `accepted` (chain task has this `task_hash`), `superseded`
+  (another `task_hash` for the `task_id`), `rejected` or `timeout`. The chain is the truth; every
+  acking Builder's task events are hints (finalized/handraise events trigger a read;
+  `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are recorded). `rejected` needs every acked Builder to have
+  reported and a later chain read to show no task, since one Builder's rejection does not prove
+  another did not get the order admitted. It carries `diagnosis` (`reason`: `session-closed`,
+  `cleared`, `rotated`, `expired`, `anchor-before-set-height`, `spend-cap` or `unrelated`;
+  `sequenceFree`; the events; the session read) and `retry`. Abort throws
+  `ORDER_ADMISSION_WAIT_ABORTED`; bad options are `SDK_LOCAL_POLL_INTERVAL_INVALID` /
+  `SDK_LOCAL_TIMEOUT_INVALID`; a client without `taskReader` / `ingressTransportFactory` is
+  `SDK_LOCAL_ADMISSION_UNCONFIGURED`. Exported with `DEFAULT_ADMISSION_WAIT_MS`,
+  `nextRetryIdempotencyKey` and the `WaitForAdmissionOptions` / `AdmissionOutcome` /
+  `RejectionDiagnosis` / `RejectionReason` types.
+- **Added:** `OpenTaskResult` gains `orderSequence`, `orderSignedBy` (`'wallet' | 'session-key'`),
+  `orderSignerAddress` (the key's 20-byte address, never its private key), `maxFee` and
+  `retryParams`: the same params under the same sequence, without `context` / `expiryHeight`,
+  with the idempotency key `<key>#retry<n>`. The re-signed order has a new `task_hash`, and an
+  idempotency key only repeats the same one, so the retry needs a new key. `rejected.retry` drops
+  `orderSequence` when the sequence was used up meanwhile (`sequenceFree: false`).
+- **Added:** `openTask({ orderSigner: 'wallet' })` signs the order with the wallet while a key is
+  loaded, skipping the key prechecks; the envelope is signed as without a key (grant, else
+  wallet). The default `'auto'` is unchanged. An unknown value is `SDK_LOCAL_ORDER_SIGNER_INVALID`.
+- The SDK never re-signs, renews, raises a cap or switches to the wallet by itself. Re-sending
+  the same `task_id` to a Builder that holds it as a terminal task needs Nexus local
+  terminal-task retry support, a separate Nexus requirement not available yet.
 - Pinned to wire PR #47 @ `88d1238` (untagged, one commit after `v0.5.0`); re-pin to the release
   tag once it ships.
 

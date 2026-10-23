@@ -83,6 +83,7 @@ async openTask(params: OpenTaskParams): Promise<OpenTaskResult>
 | `expiryHeight?` | Block height (default `latestHeight + requestTtlBlocks`). |
 | `inputMediaType?` / `chunkSizeBytes?` | OpenTask transport tuning. |
 | `pricing?` | Defaults to `hub.getProfile(...).pricing`; pass to skip the read. |
+| `orderSigner?` | `'auto'` (default): a loaded registered key signs the order, after its prechecks, else the wallet. `'wallet'`: the wallet signs even with a key loaded; no key prechecks run and the envelope is signed as without a key (grant when `session` is configured, else the wallet). Anything else is `SDK_LOCAL_ORDER_SIGNER_INVALID`. |
 
 `openTask` resolves the fee denom, pricing, order sequence and context concurrently (fails
 closed with `SDK_LOCAL_PRICING_UNAVAILABLE` / `SDK_LOCAL_FEE_DENOM_MISMATCH` if unavailable),
@@ -113,6 +114,57 @@ and never rejects (no-op without `ingressPrewarm`). Under Node, set
 | `feeDenom` | The denom signed into the order. |
 | `builders` | `OpenTaskBuilderResult[]` — `{ address, rank, serviceEndpoint, tlsPubkeyHash, ack?, error? }`. |
 | `unresolvedBuilders` | `{ address, error }[]` — selected builders whose nexus endpoint could not be resolved. |
+| `orderSequence` | The sequence signed into the order. |
+| `orderSignedBy` | `'wallet' \| 'session-key'`. |
+| `orderSignerAddress?` | 20-byte address of the registered key that signed (session-key orders only; never the private key). |
+| `maxFee` | The order's `max_fee` (bigint, atomic units). The anchor height is `context.sessionAnchorHeight`. |
+| `retryParams` | `OpenTaskParams` for a re-signed order under the same sequence: these params with `orderSequence` set, `context` / `expiryHeight` removed, and `idempotencyKey` = `<key>#retry1` (`<key>#retryK` becomes `#retry(K+1)`, see `nextRetryIdempotencyKey`). The payload is the same object. Never sent by the SDK itself. |
+
+```ts
+async waitForAdmission(res: OpenTaskResult, opts?: WaitForAdmissionOptions): Promise<AdmissionOutcome>
+
+type AdmissionOutcome =
+  | { kind: 'accepted'; taskId }                          // chain task has this task_hash
+  | { kind: 'superseded'; taskId; chainTaskHash }         // chain task for task_id has another task_hash
+  | { kind: 'rejected'; taskId; diagnosis: RejectionDiagnosis; retry: OpenTaskParams }
+  | { kind: 'timeout'; taskId };
+interface RejectionDiagnosis {
+  sequenceFree: boolean;   // chain next_expected_sequence == res.orderSequence
+  reason: RejectionReason; // 'session-closed' | 'cleared' | 'rotated' | 'expired' | 'anchor-before-set-height' | 'spend-cap' | 'unrelated'
+  events: readonly { builderAddress: string; eventCode: string }[];
+  session: StreamStateView;
+}
+```
+
+Waits for the chain to decide an order (acks are only local acceptance). Needs `taskReader` and
+`ingressTransportFactory` (`SDK_LOCAL_ADMISSION_UNCONFIGURED`).
+
+| Option | Notes |
+|---|---|
+| `timeoutMs?` | Bound on the wait (default `DEFAULT_ADMISSION_WAIT_MS`, 60000); finite `> 0` else `SDK_LOCAL_TIMEOUT_INVALID`. Running out resolves `{ kind: 'timeout' }`. |
+| `pollIntervalMs?` | Chain read interval (default `DEFAULT_TRUST_ANCHOR_POLL_MS`, 1000); finite `> 0` else `SDK_LOCAL_POLL_INTERVAL_INVALID`. |
+| `signal?` | Aborts at once: throws `ORDER_ADMISSION_WAIT_ABORTED` (family `SDK_LOCAL`). |
+
+- The chain is the truth: `taskReader.queryTask(taskId)` at once and every `pollIntervalMs`; a 404
+  is "not on chain yet", any other read error is thrown.
+- The task event stream of every Builder whose ack was `accepted` is opened (signed with this
+  client's `ingressAuth()`) and closed when the wait ends. `ASSIGNMENT_FINALIZED`,
+  `WORKER_ASSIGNMENT_FINALIZED` and `WORKER_HANDRAISES_ACCEPTED` trigger an immediate read;
+  `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` are recorded (first per Builder). A failing stream is
+  ignored, so that Builder never reports and the wait can only end on chain or by timeout.
+- `rejected` only when every acked Builder reported and a chain read started after the last
+  report shows no task. Then `chain.querySession` is read: `sequenceFree` compares
+  `nextExpectedSequence`; if it moved on, the task is read once more (this order may have just
+  been admitted). The reason, in order: CLOSED → `session-closed`; for a key-signed order, no key
+  → `cleared`, another key → `rotated`, latest height > expiry → `expired`, anchor <
+  `set_height` → `anchor-before-set-height`, `spent + maxFee` over a nonzero cap (or past u64)
+  → `spend-cap`; else (and always for a wallet order) `unrelated`.
+- `retry` is `res.retryParams`, without `orderSequence` when `sequenceFree` is false.
+- The SDK never re-signs, renews, raises a cap or switches to the wallet by itself; the caller
+  decides and calls `openTask(retry)` (optionally with `orderSigner: 'wallet'`). The retry uses a
+  new idempotency key because the re-signed order's `task_hash` differs. Re-sending the same
+  `task_id` to a Builder that holds it as a terminal task needs Nexus local terminal-task retry
+  support, a separate Nexus requirement not yet available.
 
 ### 1.4 Task status and events
 
@@ -437,8 +489,9 @@ is at or after `session_key_set_height`; `spent + max_fee` fits a u64 even with 
 and, with a nonzero cap, `spent + max_fee <= cap`. A failed check never falls back to the wallet. Right after a registration the fresh anchor is still
 below `set_height`, so `openTask` polls (up to `sessionKeyAnchorWaitMs`) until one reaches it; a
 caller-supplied `context` is used as is and refused when its anchor is older. Recovery after
-`ASSIGN_REJECTED`: check `sessionKeyState`, fix the cause, and re-sign the same sequence by passing
-`orderSequence` to `openTask`; the SDK never resubmits on its own.
+`ASSIGN_REJECTED`: `waitForAdmission` (§1.3) diagnoses the rejection from chain state and returns
+`retry`, the same-sequence params; fix the cause and call `openTask(retry)`. The SDK never
+resubmits on its own. `orderSigner: 'wallet'` signs one order with the wallet without unloading the key.
 
 Expiry and requests. The client tracks the loaded key's expiry height: set by `createSession`,
 `rotate`, `renew` and `useSessionKey`, and refreshed by every `openTask` session read and
@@ -469,6 +522,9 @@ Error codes:
 | Code | Meaning |
 |---|---|
 | `SDK_LOCAL_SESSION_KEY_INVALID` | Malformed key, grant or `expiryBlocks` / `spendCap` input. |
+| `SDK_LOCAL_ORDER_SIGNER_INVALID` | `openTask` `orderSigner` is not `'auto'` or `'wallet'`. |
+| `SDK_LOCAL_ADMISSION_UNCONFIGURED` | `waitForAdmission` without `taskReader` or `ingressTransportFactory`. |
+| `ORDER_ADMISSION_WAIT_ABORTED` | `waitForAdmission`'s `signal` was aborted (family `SDK_LOCAL`). |
 | `SDK_LOCAL_SESSION_KEY_UNSUPPORTED` | No `getMaxSessionKeyBlocks` reader, or the chain's limit is absent, 0 or below 2. |
 | `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED` | No key, or a different key, is registered or loaded for the session; also `useSessionKey` on a session owned by another user. |
 | `SDK_LOCAL_SESSION_KEY_EXPIRED` | `latest_height` is past the key's expiry; renew. |

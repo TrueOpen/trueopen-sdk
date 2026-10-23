@@ -801,7 +801,7 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to wire PR #47 (`88d1238`, untagged), carrying the
+pinned as a submodule at `third_party/wire` to wire PR #47 (`602cb18`, untagged), carrying the
 signer-chosen `signature_chain_id`, the `0x`-prefixed Hash32 text form (wire #44) and registered session keys (ADR-0037). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
@@ -816,8 +816,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (wire PR #47 @ `88d1238`, untagged) |
-| `task.v1` / `shared.v1` | `third_party/wire` (wire PR #47 @ `88d1238`, untagged) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (wire PR #47 @ `602cb18`, untagged) |
+| `task.v1` / `shared.v1` | `third_party/wire` (wire PR #47 @ `602cb18`, untagged) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

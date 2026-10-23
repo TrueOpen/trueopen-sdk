@@ -110,7 +110,8 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
 - The SDK never re-signs, renews, raises a cap or switches to the wallet by itself. Re-sending
   the same `task_id` to a Builder that holds it as a terminal task needs Nexus local
   terminal-task retry support, a separate Nexus requirement not available yet.
-- Pinned to wire PR #47 @ `88d1238` (untagged, one commit after `v0.5.0`); re-pin to the release
+- Pinned to wire PR #47 @ `602cb18` (untagged, two commits after `v0.5.0`; proto identical to `88d1238`,
+  which adds server-side request vectors and the session key Amino vectors); re-pin to the release
   tag once it ships.
 
 ### Lower time to first token
@@ -189,7 +190,7 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   stay raw 32 bytes. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. Bech32 and EVM
   addresses, signatures, the 33-byte service key, nonces and the beacon `randomness_hex` keep
   their spelling. No digest changes.
-- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `88d1238` pin (see the registered session keys entry above).
+- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `602cb18` pin (see the registered session keys entry above).
 
 ### Breaking: session-signed OpenTask
 

@@ -141,4 +141,20 @@ describe('HubReader (REST field mapping)', () => {
     const empty = readerFor({ '/hub/v1/params': { params: { phase0: { business_denom: '' } } } });
     await expect(empty.getBusinessDenom()).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
   });
+
+  it('getMaxSessionKeyBlocks reads task params.session.max_session_key_blocks; absent reads as 0', async () => {
+    const r = readerFor({ '/task/v1/params': { params: { session: { max_session_key_blocks: '432000' } } } });
+    expect(await r.getMaxSessionKeyBlocks()).toBe(432_000n);
+    const absent = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '10000' } } } });
+    expect(await absent.getMaxSessionKeyBlocks()).toBe(0n);
+    const zero = readerFor({ '/task/v1/params': { params: { session: { max_session_key_blocks: '0' } } } });
+    expect(await zero.getMaxSessionKeyBlocks()).toBe(0n);
+  });
+
+  it('getAnchorFreshnessWindowBlocks reads task params.session.anchor_freshness_window_blocks', async () => {
+    const r = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '10000' } } } });
+    expect(await r.getAnchorFreshnessWindowBlocks()).toBe(10_000n);
+    const zero = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '0' } } } });
+    await expect(zero.getAnchorFreshnessWindowBlocks()).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
+  });
 });

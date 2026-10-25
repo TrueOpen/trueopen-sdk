@@ -21,7 +21,7 @@ describe('SessionManager', () => {
     await sm.create();
     chain.sessions.set('sess-1', {
       sessionId: 'sess-1', owner: 'trueopen1owner', nextExpectedSequence: 5n,
-      lastActiveHeight: 99n, openPendingCount: 2n, status: 'ACTIVE',
+      lastActiveHeight: 99n, openPendingCount: 2n, status: 'ACTIVE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
     });
     const h = await sm.rebuild('sess-1');
     expect(h.nextExpectedSequence).toBe(5n);
@@ -31,7 +31,7 @@ describe('SessionManager', () => {
     const chain = new MockChainClient();
     chain.sessions.set('sess-x', {
       sessionId: 'sess-x', owner: 'trueopen1o', nextExpectedSequence: 1n,
-      lastActiveHeight: 1n, openPendingCount: 0n, status: 'IDLE',
+      lastActiveHeight: 1n, openPendingCount: 0n, status: 'IDLE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
     });
     const sm = new SessionManager(chain);
     const h = await sm.get('sess-x');

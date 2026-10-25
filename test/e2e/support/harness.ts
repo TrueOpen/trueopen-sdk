@@ -54,6 +54,7 @@ export async function startWorld(): Promise<World> {
     querySessionNonce: (a) => taskReader.querySessionNonce(a),
     createSession: async () => { throw new Error('this client has no chain writer'); },
     cancelOrder: async () => { throw new Error('this client has no chain writer'); },
+    updateSessionKey: async () => { throw new Error('this client has no chain writer'); },
   };
 
   let nonce = 0;

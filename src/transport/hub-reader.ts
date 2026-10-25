@@ -214,6 +214,28 @@ export class HubReader {
     };
   }
 
+  /**
+   * The task module's `params.session.anchor_freshness_window_blocks`: the chain rejects an
+   * order whose session_anchor_height is more than this many blocks below the admitting
+   * height. TaskOrderContextCache uses it to decide how long an anchor can be reused.
+   */
+  async getAnchorFreshnessWindowBlocks(): Promise<bigint> {
+    const body = await this.getJson('/TrueOpen/task/v1/params');
+    const w = u64(asObject(asObject(body['params'])['session']), 'anchor_freshness_window_blocks');
+    if (w === 0n) throw malformed('field anchor_freshness_window_blocks (zero)');
+    return w;
+  }
+
+  /**
+   * The task module's `params.session.max_session_key_blocks`: the furthest a session key's
+   * expiry may lie beyond the current height. Absent or 0 means the chain does not support
+   * session keys.
+   */
+  async getMaxSessionKeyBlocks(): Promise<bigint> {
+    const body = await this.getJson('/TrueOpen/task/v1/params');
+    return u64opt(asObject(asObject(body['params'])['session']), 'max_session_key_blocks');
+  }
+
   /** Latest block height (for choosing a session anchor and computing the order height window). */
   async getLatestHeight(): Promise<bigint> {
     const latest = await this.getJson('/cosmos/base/tendermint/v1beta1/blocks/latest');

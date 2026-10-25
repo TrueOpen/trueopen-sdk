@@ -33,6 +33,12 @@ export interface ResolveTaskBuilderInput {
   readonly sessionAnchorHeight: bigint;
   /** Defaults to the active_builders of the BuilderSet at sessionAnchorHeight. */
   readonly members?: readonly BuilderSetMember[];
+  /**
+   * The BuilderSet at sessionAnchorHeight, when the caller already read it (the order context
+   * resolution reads the same set); saves reading it again. It is checked against
+   * builderSetHash exactly like a fresh read.
+   */
+  readonly builderSet?: BuilderSetSnapshot;
   readonly buildersPerTask?: number;
 }
 
@@ -60,13 +66,13 @@ export interface ResolveTaskBuilderResult {
  * **uniquely determined by the order the user signed**.
  *
  * Best-effort per builder: if a single descriptor cannot be fetched it is recorded in
- * errors without blocking the rest.
+ * errors without blocking the rest. The descriptor reads run concurrently.
  */
 export async function resolveTaskBuilderEndpoints(
   reader: TaskBuilderReader,
   input: ResolveTaskBuilderInput,
 ): Promise<ResolveTaskBuilderResult> {
-  const snapshot = await reader.getBuilderSetAtHeight(input.sessionAnchorHeight);
+  const snapshot = input.builderSet ?? (await reader.getBuilderSetAtHeight(input.sessionAnchorHeight));
   // The signed set and the set whose members get contacted must be the same one; if the chain
   // disagrees at the anchor height, the order would be sent to Builders that were never selected.
   // Both sides must already be canonical Hash32 text: TaskBuilderReader is an injection point,
@@ -104,23 +110,30 @@ export async function resolveTaskBuilderEndpoints(
     ...(input.buildersPerTask !== undefined ? { buildersPerTask: input.buildersPerTask } : {}),
   });
 
+  // The descriptor reads are independent, so they run concurrently; results keep selection order.
+  const outcomes = await Promise.all(
+    selected.map(async (s): Promise<{ endpoint: TaskBuilderEndpoint } | { error: unknown }> => {
+      try {
+        const ref = await reader.getServiceDescriptor(s.address);
+        const endpoint = nexusGrpcEndpoint(ref);
+        if (!endpoint || endpoint.uri === '') {
+          throw new TrueOpenError(
+            'CHAIN_REJECT',
+            'TASK_BUILDER_NO_NEXUS_ENDPOINT',
+            `builder ${s.address} descriptor has no SERVICE_ENDPOINT_KIND_NEXUS_GRPC endpoint`,
+          );
+        }
+        return { endpoint: { address: s.address, rank: s.rank, serviceEndpoint: endpoint.uri, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' } };
+      } catch (error) {
+        return { error };
+      }
+    }),
+  );
   const endpoints: TaskBuilderEndpoint[] = [];
   const errors: { address: string; error: unknown }[] = [];
-  for (const s of selected) {
-    try {
-      const ref = await reader.getServiceDescriptor(s.address);
-      const endpoint = nexusGrpcEndpoint(ref);
-      if (!endpoint || endpoint.uri === '') {
-        throw new TrueOpenError(
-          'CHAIN_REJECT',
-          'TASK_BUILDER_NO_NEXUS_ENDPOINT',
-          `builder ${s.address} descriptor has no SERVICE_ENDPOINT_KIND_NEXUS_GRPC endpoint`,
-        );
-      }
-      endpoints.push({ address: s.address, rank: s.rank, serviceEndpoint: endpoint.uri, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' });
-    } catch (error) {
-      errors.push({ address: s.address, error });
-    }
-  }
+  outcomes.forEach((o, i) => {
+    if ('endpoint' in o) endpoints.push(o.endpoint);
+    else errors.push({ address: selected[i]!.address, error: o.error });
+  });
   return { builderSetId: snapshot.builderSetId, endpoints, errors };
 }

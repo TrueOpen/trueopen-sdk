@@ -1,18 +1,21 @@
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { TrueOpenError } from '../errors/errors';
-import { classifyBroadcastError } from '../errors/classify';
+import { classifyBroadcastError, sessionTxFailureCode } from '../errors/classify';
 import {
   TYPE_URL,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
+  decodeMsgUpdateSessionKeyResponse,
 } from './task-msgs';
+import type { SessionKeyGrant, MsgUpdateSessionKeyResponse } from './task-msgs';
 import type {
   ChainReader,
   ChainClient,
   CreateSessionResult,
   CancelOrderInput,
   CancelOrderResult,
+  UpdateSessionKeyInput,
 } from './chain-client';
 
 /**
@@ -104,12 +107,18 @@ export class CosmjsChainWriter {
     const tx = await this.awaitInclusion(hash);
     if (tx.code !== 0) {
       // Included but rejected by the state machine. Not retriable: the same bytes will be
-      // rejected the same way, and the sequence has already advanced.
+      // rejected the same way, and the sequence has already advanced. A session-key
+      // registration failure gets its own code (CHAIN_SESSION_KEY_INVALID, ...; see
+      // sessionTxFailureCode), with details.txFailure 'CHAIN_TX_FAILED'.
+      const session = sessionTxFailureCode(tx.code, tx.rawLog);
       throw new TrueOpenError(
         'CHAIN_REJECT',
-        'CHAIN_TX_FAILED',
+        session ?? 'CHAIN_TX_FAILED',
         `tx ${hash} failed on chain with code ${tx.code}: ${tx.rawLog}`,
-        { category: 'chain-rejected', details: { txHash: hash, code: tx.code, log: tx.rawLog } },
+        {
+          category: 'chain-rejected',
+          details: { txHash: hash, code: tx.code, log: tx.rawLog, ...(session !== undefined ? { txFailure: 'CHAIN_TX_FAILED' } : {}) },
+        },
       );
     }
     return tx;
@@ -141,9 +150,15 @@ export class CosmjsChainWriter {
     );
   }
 
-  async createSession(): Promise<CreateSessionResult> {
+  async createSession(input?: { readonly sessionKey?: SessionKeyGrant }): Promise<CreateSessionResult> {
     const res = await this.broadcast([
-      { typeUrl: TYPE_URL.createSession, value: { signer: this.opts.signerAddress } },
+      {
+        typeUrl: TYPE_URL.createSession,
+        value: {
+          signer: this.opts.signerAddress,
+          ...(input?.sessionKey !== undefined ? { sessionKey: input.sessionKey } : {}),
+        },
+      },
     ]);
     const r = decodeMsgCreateSessionResponse(firstResponse(res, TYPE_URL.createSession));
     // The node response has no owner field; MsgCreateSession.signer_address is the session
@@ -162,6 +177,12 @@ export class CosmjsChainWriter {
     const res = await this.broadcast([{ typeUrl: TYPE_URL.cancelOrder, value }]);
     return decodeMsgCancelOrderResponse(firstResponse(res, TYPE_URL.cancelOrder));
   }
+
+  async updateSessionKey(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse> {
+    const value = { signer: this.opts.signerAddress, sessionId: input.sessionId, action: input.action };
+    const res = await this.broadcast([{ typeUrl: TYPE_URL.updateSessionKey, value }]);
+    return decodeMsgUpdateSessionKeyResponse(firstResponse(res, TYPE_URL.updateSessionKey));
+  }
 }
 
 function firstResponse(res: IndexedTx, typeUrl: string): Uint8Array {
@@ -177,7 +198,8 @@ export function composeChainClient(reader: ChainReader, writer: CosmjsChainWrite
   return {
     querySession: (id) => reader.querySession(id),
     querySessionNonce: (a) => reader.querySessionNonce(a),
-    createSession: () => writer.createSession(),
+    createSession: (i) => writer.createSession(i),
     cancelOrder: (i) => writer.cancelOrder(i),
+    updateSessionKey: (i) => writer.updateSessionKey(i),
   };
 }

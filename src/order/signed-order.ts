@@ -160,7 +160,7 @@ function toProtoTaskOrder(order: TaskOrderV3): ProtoTaskOrderV3 {
 export interface EncodedSignedOrder {
   /** SignedOrderV2's protobuf-serialized bytes, submitted directly as the order_envelope. */
   readonly bytes: Uint8Array;
-  /** The user's 65-byte signature over the EIP-712 digest (SignedOrderV2.user_signature). */
+  /** The 65-byte signature over the EIP-712 digest, by the wallet or the registered key (SignedOrderV2.user_signature). */
   readonly userSignature: Uint8Array;
   /** The canonical task_hash (raw 32 bytes). */
   readonly taskHash: Uint8Array;
@@ -178,19 +178,25 @@ export interface EncodedSignedOrder {
  * recoverable signature and no longer needs the public key passed in.
  *
  * This signature alone authorizes the order: OpenTask has no outer order signature. The
- * OpenTask request envelope is a second EIP-712 signature by the same wallet, under the SDK
- * Request domain.
+ * OpenTask request envelope is a second EIP-712 signature, under the SDK Request domain.
+ *
+ * The signer is the user's wallet, or the session's registered key (ADR-0037): the domain,
+ * types and digest are the same, only the recovered address differs. `opts.expectedSigner` is
+ * the 20-byte address the signature must recover to; it defaults to the order user's.
  */
 export async function signAndEncodeOrder(
   order: TaskOrderV3,
   ctx: OrderEip712Context,
   signer: TypedDataSigner,
+  opts: { readonly expectedSigner?: Uint8Array } = {},
 ): Promise<EncodedSignedOrder> {
   const taskHash = taskOrderHash(order);
   const data = taskOrderTypedData(order, ctx);
   const signingDigest = typedDataDigest(data);
-  // The Keeper recovers the order user from this signature; check it here, not on chain.
-  const userSignature = await signTypedDataAs(signer, data, canonicalAccountAddressBytes('user_address', order.userAddress));
+  // The Keeper recovers the signer from this signature (the user, or the session's registered
+  // key); check it here, not on chain.
+  const expected = opts.expectedSigner ?? canonicalAccountAddressBytes('user_address', order.userAddress);
+  const userSignature = await signTypedDataAs(signer, data, expected);
   const signed = create(SignedOrderV2Schema, {
     order: toProtoTaskOrder(order),
     signatureScheme: SIGNATURE_SCHEME,

@@ -7,6 +7,7 @@ export { strictHash32 };
 import { TrueOpenError } from '../errors/errors';
 import { signatureChainIdBigInt } from '../signature-chain-id';
 import type { ActiveSession, SignedSessionGrant } from '../session/session-grant';
+import type { RegisteredSessionKey } from '../session/registered-session-key';
 
 /**
  * SDKRequestEnvelopeV2: how a user request to Builder Ingress is authenticated (OpenTask,
@@ -20,7 +21,8 @@ import type { ActiveSession, SignedSessionGrant } from '../session/session-grant
  *     bytes32 requestNonce,uint64 expiryHeightOrTime,bytes32 bodyDigest,bytes32 sessionGrantHash)
  * and is 65 bytes R||S||V (V 27/28, low S). The verifier recovers the signer; no public key
  * travels with the request. request_domain, signer_address and the signature itself are not
- * typed fields. sessionGrantHash is 32 zero bytes for a request the wallet signs directly.
+ * typed fields. sessionGrantHash is 32 zero bytes for a request the wallet signs directly, and
+ * for one a registered session key signs (ADR-0037).
  *
  * Vectors: wire testdata/v1/shared/account_signing_v1.json sdk_request.
  */
@@ -37,7 +39,8 @@ export const INGRESS_SERVICE_PATH = '/nexus.v1.IngressAPI';
  * Bare method names a session key may sign on SDKRequestEnvelopeV2 (wire's session-allowed set).
  *
  * OpenTask joined it in wire PR #43: a session key may sign the OpenTask request envelope, under
- * a grant whose user is the order's user. The order itself is always signed by the wallet.
+ * a grant whose user is the order's user. The same set is what a registered session key
+ * (ADR-0037) may sign, without a grant.
  */
 export const SESSION_SDK_METHODS: readonly string[] = ['OpenTask', 'SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 
@@ -141,7 +144,7 @@ export interface SignedSdkRequestEnvelope extends SdkRequestFields {
   readonly signerAddress: string;
   /** 65 bytes R||S||V. */
   readonly signature: Uint8Array;
-  /** Present when a session key signed: the grant that authorizes it. */
+  /** Present when a granted session key signed: the grant that authorizes it. Never for a registered key. */
   readonly sessionGrant?: SignedSessionGrant;
 }
 
@@ -152,6 +155,11 @@ export interface SignedSdkRequestEnvelope extends SdkRequestFields {
  * must recover to `signerAddress`. With `session`, the session key signs with
  * sessionGrantHash = hashStruct(grant), the signature must recover to grant.sessionKey, and the
  * grant travels in the envelope; only the session-allowed methods accept that.
+ *
+ * With `registeredKey` (ADR-0037), the session's registered key signs with sessionGrantHash =
+ * 32 zero bytes, the signature must recover to the key's address, signerAddress stays the user
+ * and no grant travels: the on-chain registration authorizes it. Only the session-allowed
+ * methods of that key's own session accept it. `session` and `registeredKey` are exclusive.
  */
 export async function signSdkRequestEnvelope(
   fields: SdkRequestFields,
@@ -160,6 +168,8 @@ export async function signSdkRequestEnvelope(
     readonly signer: TypedDataSigner;
     readonly signatureChainId: bigint;
     readonly session?: ActiveSession;
+    /** The session's registered key signs instead of the wallet; exclusive with `session`. */
+    readonly registeredKey?: RegisteredSessionKey;
     /**
      * The configured chain. The envelope chain_id must be the chain's own ID; a request built
      * for another chain is refused here rather than failing as a bad signature at the Builder.
@@ -177,6 +187,14 @@ export async function signSdkRequestEnvelope(
   // signer_address: canonical lowercase Bech32, account prefix, 20 bytes; checked on both paths.
   canonicalAccountAddressBytes('signer_address', opts.signerAddress);
   const s = opts.session;
+  const rk = opts.registeredKey;
+  if (s !== undefined && rk !== undefined) throw malformed('a session grant and a registered session key are exclusive');
+  if (rk !== undefined && !SESSION_SDK_METHODS.includes(fields.method)) {
+    throw malformed(`${fields.method} must be signed by the wallet; a registered session key may not sign it`);
+  }
+  if (rk !== undefined && rk.sessionId !== fields.sessionId) {
+    throw malformed(`the registered session key is for session ${rk.sessionId}, not ${fields.sessionId}`);
+  }
   if (s !== undefined && !SESSION_SDK_METHODS.includes(fields.method)) {
     throw malformed(`${fields.method} must be signed by the wallet; a session key may not sign it`);
   }
@@ -188,9 +206,11 @@ export async function signSdkRequestEnvelope(
   }
   const data = sdkRequestTypedData(fields, opts.signatureChainId, s?.grantHash);
   const signature =
-    s === undefined
-      ? await signTypedDataAs(opts.signer, data, canonicalAccountAddressBytes('signer_address', opts.signerAddress))
-      : await signTypedDataAs(s.key, data, s.grant.sessionKey);
+    s !== undefined
+      ? await signTypedDataAs(s.key, data, s.grant.sessionKey)
+      : rk !== undefined
+        ? await signTypedDataAs(rk.signer, data, rk.address)
+        : await signTypedDataAs(opts.signer, data, canonicalAccountAddressBytes('signer_address', opts.signerAddress));
   return {
     requestDomain: SDK_REQUEST_DOMAIN,
     ...fields,

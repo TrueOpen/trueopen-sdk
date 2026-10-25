@@ -30,7 +30,9 @@ import {
   recoverEip712PubKey,
   verifyEip712,
   ethSecp256k1Address,
+  ethAddressBytes,
 } from '../../src/signer/eth-secp256k1';
+import { sessionKeyFromPrivateKey } from '../../src/session/registered-session-key';
 import { fromHex, toHex } from '../../src/util/bytes';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
@@ -187,6 +189,20 @@ describe('SignedOrderV2 encoding', () => {
     // The signature does end up in the envelope.
     expect(toHex(decodeSignedOrder(r.bytes).userSignature)).toBe(toHex(r.userSignature));
     expect(decodeSignedOrder(r.bytes).signatureChainId).toBe(ORDER_EIP712.signatureChainId);
+  });
+
+  it('expectedSigner: a registered session key signs, and the order recovers to the key, not the user', async () => {
+    const key = sessionKeyFromPrivateKey(fromHex('0303030303030303030303030303030303030303030303030303030303030303'));
+    const order = ownOrder();
+    const enc = await signAndEncodeOrder(order, ORDER_EIP712, privateKeyTypedDataSigner(key.privateKey), { expectedSigner: key.address });
+    const recovered = ethAddressBytes(recoverEip712PubKey(enc.signingDigest, enc.userSignature));
+    expect(toHex(recovered)).toBe(toHex(key.address));
+    expect(toHex(recovered)).not.toBe(toHex(ethAddressBytes(pub)));
+    // Same digest as the wallet's: only the signer differs.
+    expect(toHex(enc.signingDigest)).toBe(toHex((await signAndEncodeOrder(order, ORDER_EIP712, wallet)).signingDigest));
+    await expect(
+      signAndEncodeOrder(order, ORDER_EIP712, wallet, { expectedSigner: key.address }),
+    ).rejects.toMatchObject({ code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH' });
   });
 
   it('signAndEncodeOrder refuses a wallet that is not the order user', async () => {

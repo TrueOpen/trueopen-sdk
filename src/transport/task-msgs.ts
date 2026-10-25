@@ -1,5 +1,6 @@
 import { ProtoWriter, ProtoReader } from '../codec/protobuf';
 import { hash32Text, strictHash32 } from '../codec/hash32';
+import { TrueOpenError } from '../errors/errors';
 
 /**
  * Hand-written proto encoding + response decoding for the task.v1 user Msgs (no codegen
@@ -31,14 +32,72 @@ function mutationStatus(value: bigint): string {
 export const TYPE_URL = {
   createSession: '/task.v1.MsgCreateSession',
   cancelOrder: '/task.v1.MsgCancelOrder',
+  updateSessionKey: '/task.v1.MsgUpdateSessionKey',
 } as const;
 
-// ---- MsgCreateSession (signer=1) ----
+/**
+ * task.v1.SessionKeyGrantV1 (msg_session.proto):
+ *   bytes session_key = 1; uint64 expiry_height = 2; shared.v1.Amount spend_cap = 3;
+ * (Amount { string atomic_units = 1; }). A registered session key signs delegated orders and
+ * SDK requests on the owner's behalf (ADR-0037).
+ */
+export interface SessionKeyGrant {
+  /** The key's 20-byte address (not the public key). */
+  readonly sessionKey: Uint8Array;
+  /** Block height after which the key is no longer valid. */
+  readonly expiryHeight: bigint;
+  /** Canonical decimal in atomic units; "0" means unlimited. */
+  readonly spendCap: string;
+}
+
+function invalidGrant(why: string): TrueOpenError {
+  return new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_KEY_INVALID', `invalid session key grant: ${why}`);
+}
+
+/**
+ * Checks what an encoder can know without the chain height: key length and non-zero, the cap
+ * form, and a non-zero expiry. The owner-address and height-window checks belong to the client.
+ */
+export function validateGrant(g: SessionKeyGrant): void {
+  if (g.sessionKey.length !== 20) throw invalidGrant(`session_key must be 20 bytes, got ${g.sessionKey.length}`);
+  if (g.sessionKey.every((b) => b === 0)) throw invalidGrant('session_key must not be all zero');
+  if (!/^(0|[1-9][0-9]*)$/.test(g.spendCap)) {
+    throw invalidGrant(`spend_cap must be a canonical decimal (0 or [1-9][0-9]*), got ${JSON.stringify(g.spendCap)}`);
+  }
+  // The chain parses the cap as a u64 (node ParseAmount) and heights live in [0, 2^63 - 1]
+  // (node IsBlockHeightV1); anything larger is ERR_SESSION_KEY_INVALID on chain, after the fee.
+  if (BigInt(g.spendCap) > U64_MAX) throw invalidGrant(`spend_cap must fit a u64 (at most ${U64_MAX}), got ${g.spendCap}`);
+  if (g.expiryHeight <= 0n) throw invalidGrant('expiry_height must be non-zero');
+  if (g.expiryHeight > MAX_BLOCK_HEIGHT) throw invalidGrant(`expiry_height must be at most ${MAX_BLOCK_HEIGHT}, got ${g.expiryHeight}`);
+}
+
+const U64_MAX = (1n << 64n) - 1n;
+const MAX_BLOCK_HEIGHT = (1n << 63n) - 1n;
+
+/** Amount { atomic_units = 1 }; written even for "0" so an unlimited cap is explicit. */
+function encodeAmount(atomicUnits: string): Uint8Array {
+  return new ProtoWriter().string(1, atomicUnits).finish();
+}
+
+function encodeGrant(g: SessionKeyGrant): Uint8Array {
+  validateGrant(g);
+  return new ProtoWriter()
+    .bytes(1, g.sessionKey)
+    .uint64(2, g.expiryHeight)
+    .message(3, encodeAmount(g.spendCap))
+    .finish();
+}
+
+// ---- MsgCreateSession (signer_address=1, session_key=2) ----
 export interface MsgCreateSession {
   readonly signer: string;
+  /** Optional session key registered together with the session. */
+  readonly sessionKey?: SessionKeyGrant;
 }
 export function encodeMsgCreateSession(m: MsgCreateSession): Uint8Array {
-  return new ProtoWriter().string(1, m.signer).finish();
+  const w = new ProtoWriter().string(1, m.signer);
+  if (m.sessionKey !== undefined) w.message(2, encodeGrant(m.sessionKey));
+  return w.finish();
 }
 /**
  * MsgCreateSessionResponse (node msg_session.proto):
@@ -121,4 +180,118 @@ export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderR
     }
   }
   return { taskId, cancelledSequence, nextExpectedSequence, status };
+}
+
+/**
+ * MsgUpdateSessionKey (node msg_session.proto):
+ *   string signer_address = 1; bytes session_id = 2;
+ *   oneof action { SessionKeyGrantV1 set = 3; ClearSessionKeyV1 clear = 4; }
+ * ClearSessionKeyV1 is an empty message, so CLEAR is a length-0 field 4.
+ */
+export interface MsgUpdateSessionKey {
+  readonly signer: string;
+  /** Hash32 text, `0x` + 64 lowercase hex; decoded to 32 bytes before writing to the wire. */
+  readonly sessionId: string;
+  readonly action: { readonly set: SessionKeyGrant } | { readonly clear: true };
+}
+export function encodeMsgUpdateSessionKey(m: MsgUpdateSessionKey): Uint8Array {
+  const action = sessionKeyAction(m.action);
+  const w = new ProtoWriter().string(1, m.signer).bytes(2, strictHash32('session_id', m.sessionId));
+  if (action.set !== undefined) w.message(3, encodeGrant(action.set));
+  else w.message(4, new Uint8Array(0));
+  return w.finish();
+}
+
+/**
+ * Checks a MsgUpdateSessionKey action at runtime, as the node's UnmarshalAmino does for the
+ * signed JSON: exactly one of `set` (a grant object) and `clear` (the boolean true). A missing
+ * action, both, a null arm, `clear: false` and `clear: {}` are refused (wire
+ * session_key_amino_v1.json negative_cases), so no encoder can commit an ambiguous action.
+ */
+export function sessionKeyAction(action: unknown): { readonly set?: SessionKeyGrant; readonly clear?: true } {
+  if (typeof action !== 'object' || action === null || Array.isArray(action)) {
+    throw invalidAction('the action must be an object');
+  }
+  const keys = Object.keys(action);
+  const a = action as Record<string, unknown>;
+  if (keys.length !== 1 || (keys[0] !== 'set' && keys[0] !== 'clear')) {
+    throw invalidAction(`exactly one of set or clear is required, got ${JSON.stringify(keys)}`);
+  }
+  if (keys[0] === 'clear') {
+    if (a.clear !== true) throw invalidAction(`clear must be the boolean true, got ${JSON.stringify(a.clear)}`);
+    return { clear: true };
+  }
+  const set = a.set;
+  if (typeof set !== 'object' || set === null || Array.isArray(set) || !((set as SessionKeyGrant).sessionKey instanceof Uint8Array)) {
+    throw invalidAction('set must be a session key grant');
+  }
+  return { set: set as SessionKeyGrant };
+}
+
+function invalidAction(why: string): TrueOpenError {
+  return new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_KEY_INVALID', `invalid session key update: ${why}`);
+}
+
+/**
+ * MsgUpdateSessionKeyResponse (node msg_session.proto):
+ *   optional bytes session_key_or_empty = 1; uint64 expiry_height = 2; Amount spend_cap = 3;
+ *   Amount spent = 4; uint64 set_height = 5; MutationStatusV1 status = 6;
+ * The state after the update. An absent key means the session has no key; a present key
+ * that is empty or not 20 bytes is a malformed response.
+ */
+export interface MsgUpdateSessionKeyResponse {
+  readonly sessionKey?: Uint8Array;
+  readonly expiryHeight: bigint;
+  readonly spendCap: string;
+  readonly spent: string;
+  readonly setHeight: bigint;
+  readonly status: string;
+}
+
+function decodeAmount(bytes: Uint8Array): string {
+  const r = new ProtoReader(bytes);
+  let atomicUnits = '';
+  while (!r.eof) {
+    const { field, wire } = r.tag();
+    if (field === 1) atomicUnits = r.string();
+    else r.skip(wire);
+  }
+  // An unset atomic_units is the proto3 default, i.e. zero.
+  return atomicUnits === '' ? '0' : atomicUnits;
+}
+
+export function decodeMsgUpdateSessionKeyResponse(bytes: Uint8Array): MsgUpdateSessionKeyResponse {
+  const r = new ProtoReader(bytes);
+  let sessionKey: Uint8Array | undefined;
+  let expiryHeight = 0n;
+  let spendCap = '0';
+  let spent = '0';
+  let setHeight = 0n;
+  let status = mutationStatus(0n);
+  while (!r.eof) {
+    const { field, wire } = r.tag();
+    switch (field) {
+      case 1: {
+        // Field 1 is `optional`, so presence is observable: absent = no key, but a key that
+        // is present must be exactly 20 bytes (an empty one is malformed, not "no key").
+        const k = r.bytes();
+        if (k.length !== 20) {
+          throw new TrueOpenError(
+            'CHAIN_REJECT',
+            'CHAIN_QUERY_MALFORMED',
+            `chain response returned malformed session_key_or_empty (${k.length} bytes, want 20)`,
+          );
+        }
+        sessionKey = k;
+        break;
+      }
+      case 2: expiryHeight = r.uint64(); break;
+      case 3: spendCap = decodeAmount(r.bytes()); break;
+      case 4: spent = decodeAmount(r.bytes()); break;
+      case 5: setHeight = r.uint64(); break;
+      case 6: status = mutationStatus(r.uint64()); break;
+      default: r.skip(wire);
+    }
+  }
+  return { ...(sessionKey !== undefined ? { sessionKey } : {}), expiryHeight, spendCap, spent, setHeight, status };
 }

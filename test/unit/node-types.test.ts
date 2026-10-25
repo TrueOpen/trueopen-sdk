@@ -6,7 +6,7 @@ describe('node view types', () => {
   it('StreamStateView shape can be constructed', () => {
     const s: StreamStateView = {
       sessionId: 's1', owner: 'trueopen1abc', nextExpectedSequence: 3n,
-      lastActiveHeight: 100n, openPendingCount: 1n, status: 'ACTIVE',
+      lastActiveHeight: 100n, openPendingCount: 1n, status: 'ACTIVE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
     };
     expect(s.nextExpectedSequence).toBe(3n);
   });

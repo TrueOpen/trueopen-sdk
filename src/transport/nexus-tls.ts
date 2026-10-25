@@ -13,8 +13,10 @@
  *
  * Only available under the Node runtime (depends on node:https / node:tls).
  */
-import { Agent as HttpsAgent } from 'node:https';
+import { Agent as HttpsAgent, globalAgent as httpsGlobalAgent, request as httpsRequest } from 'node:https';
 import type { AgentOptions } from 'node:https';
+import { globalAgent as httpGlobalAgent, request as httpRequest } from 'node:http';
+import type { Agent as HttpAgent, IncomingMessage } from 'node:http';
 import { connect as tlsConnect } from 'node:tls';
 import type { ConnectionOptions, TLSSocket } from 'node:tls';
 import { isIP } from 'node:net';
@@ -142,6 +144,45 @@ export interface NexusTransportPolicy {
   readonly allowInsecureHttp?: boolean;
   /** Where the insecure-http warning goes; defaults to console.warn. */
   readonly warn?: (message: string) => void;
+  /**
+   * Share keep-alive connections with every other transport for the same pinned certificate
+   * key (default true). A transport is typically built per Builder per call (openTask's
+   * ingressTransportFactory, an output source, a prewarm), and without sharing each one opens
+   * its own TCP + TLS connection. With sharing, an idle connection that OpenTask, a prewarm
+   * or an earlier stream left in the pool is reused. Requests on a shared connection are
+   * still signed one by one; a connection only carries one request at a time (HTTP/1.1), and
+   * aborting a stream closes only the connection that stream was on. Pass false for a
+   * private agent per transport (the old behaviour).
+   */
+  readonly shareConnections?: boolean;
+}
+
+/**
+ * Upper bound on the shared pinned agents kept. Past it the oldest is evicted and destroyed,
+ * closing its connections; a transport still holding it fails over like on any dropped
+ * connection. 64 distinct Builder certificates in one process is far beyond normal use.
+ */
+const SHARED_AGENT_LIMIT = 64;
+const sharedPinnedAgents = new Map<string, PinnedHttpsAgent>();
+
+/**
+ * The process-wide keep-alive agent for one pinned certificate key. Every transport built for
+ * that key (with shareConnections, the default) uses it, so connections are pooled per
+ * Builder rather than per transport.
+ */
+export function sharedPinnedHttpsAgent(tlsPubkeyHash: string): PinnedHttpsAgent {
+  const hash = requireHash(tlsPubkeyHash);
+  let agent = sharedPinnedAgents.get(hash);
+  if (agent === undefined) {
+    agent = new PinnedHttpsAgent(hash);
+    sharedPinnedAgents.set(hash, agent);
+    while (sharedPinnedAgents.size > SHARED_AGENT_LIMIT) {
+      const oldest = sharedPinnedAgents.keys().next().value as string;
+      sharedPinnedAgents.get(oldest)?.destroy();
+      sharedPinnedAgents.delete(oldest);
+    }
+  }
+  return agent;
 }
 
 /** When the NEXUS_TLS_PUBKEY_HASH_REQUIRED env var is 1/true/yes, any https endpoint without a registered fingerprint is rejected. */
@@ -223,7 +264,8 @@ export function nexusTransportOptions(uri: string, tlsPubkeyHash = '', policy: N
   const hash = tlsPubkeyHash.trim() === '' ? '' : requireHash(tlsPubkeyHash);
   if (baseUrl.startsWith('https://')) {
     if (hash !== '') {
-      return { baseUrl, httpVersion: '1.1', nodeOptions: { agent: new PinnedHttpsAgent(hash) } };
+      const agent = policy.shareConnections === false ? new PinnedHttpsAgent(hash) : sharedPinnedHttpsAgent(hash);
+      return { baseUrl, httpVersion: '1.1', nodeOptions: { agent } };
     }
     const unpinned = policy.unpinnedHttps ?? (tlsPubkeyHashRequiredByEnv() ? 'reject' : 'certificate-authority');
     switch (unpinned) {
@@ -257,4 +299,71 @@ export function nexusTransportOptions(uri: string, tlsPubkeyHash = '', policy: N
 /** Connect transport for the nexus IngressAPI; usable directly as TrueOpenClient.ingressTransportFactory. */
 export function nexusIngressTransport(uri: string, tlsPubkeyHash = '', policy: NexusTransportPolicy = {}): Transport {
   return createConnectTransport(nexusTransportOptions(uri, tlsPubkeyHash, policy));
+}
+
+/** Options for prewarmNexusConnections. */
+export interface PrewarmNexusOptions extends NexusTransportPolicy {
+  /**
+   * How many idle connections to leave in the pool (default DEFAULT_PREWARM_CONNECTIONS, at
+   * most MAX_PREWARM_CONNECTIONS). An order uses up to three at once on one Builder: OpenTask,
+   * then the task event stream and SubscribeOutput side by side (HTTP/1.1 runs one request
+   * per connection), so two leaves one spare after OpenTask returns its own.
+   */
+  readonly connections?: number;
+  /** Per-connection time limit in milliseconds (default 5000). */
+  readonly timeoutMs?: number;
+}
+
+/** Default idle connections a prewarm leaves per Builder. */
+export const DEFAULT_PREWARM_CONNECTIONS = 2;
+/** Upper bound on prewarmed connections per call. */
+export const MAX_PREWARM_CONNECTIONS = 8;
+
+/**
+ * Opens connections to a nexus ahead of use, so that a later OpenTask or stream on the same
+ * endpoint skips the TCP + TLS handshake.
+ *
+ * Sends `connections` concurrent `GET /healthz` requests through the agent that
+ * nexusIngressTransport uses for this endpoint (the shared pinned agent, or Node's global agent
+ * for an unpinned endpoint), reads each answer to the end, and leaves the keep-alive
+ * connections in that agent's idle pool. The same TLS rules apply as for the transport: a
+ * pinned certificate is checked before any byte is sent, and https is never downgraded.
+ * Node's global agent keeps connections alive only on Node 19 and later, so an unpinned
+ * endpoint gains nothing on Node 18. Idle pooled connections do not keep the process alive.
+ *
+ * Best effort: resolves with how many connections completed and never rejects for a network
+ * failure (the real request will fail and report it). It does reject when the endpoint itself
+ * is refused by policy (plaintext http without opt-in, a malformed fingerprint).
+ */
+export async function prewarmNexusConnections(uri: string, tlsPubkeyHash = '', opts: PrewarmNexusOptions = {}): Promise<number> {
+  const options = nexusTransportOptions(uri, tlsPubkeyHash, opts);
+  const n = Math.min(MAX_PREWARM_CONNECTIONS, Math.max(1, Math.floor(opts.connections ?? DEFAULT_PREWARM_CONNECTIONS)));
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const url = new URL('/healthz', options.baseUrl);
+  const https = url.protocol === 'https:';
+  const agent: HttpAgent = options.nodeOptions?.agent ?? (https ? httpsGlobalAgent : httpGlobalAgent);
+  const once = (): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      // The promise settles once: whichever of these comes first decides.
+      let ended = false;
+      const onResponse = (res: IncomingMessage): void => {
+        // Reading the body to the end is what returns the connection to the idle pool.
+        res.on('end', () => {
+          ended = true;
+          resolve(true);
+        });
+        res.on('error', () => resolve(false));
+        res.on('close', () => resolve(ended));
+        res.resume();
+      };
+      const req = (https ? httpsRequest : httpRequest)(url, { method: 'GET', agent }, onResponse);
+      req.setTimeout(timeoutMs, () => req.destroy());
+      req.on('error', () => resolve(false));
+      // A destroyed request does not always emit 'error' (older Node, headers already in), but
+      // it always closes: without this a timed-out prewarm could hang.
+      req.on('close', () => resolve(ended));
+      req.end();
+    });
+  const done = await Promise.all(Array.from({ length: n }, once));
+  return done.filter(Boolean).length;
 }

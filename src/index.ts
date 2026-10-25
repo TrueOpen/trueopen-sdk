@@ -454,6 +454,7 @@ export {
   type ReasoningRegistry,
   type ReasoningRegistryEntry,
   type ReasoningSplit,
+  type ReasoningStartMarkerClass,
   type ReasoningStreamEvent,
   type ReasoningStreamState,
   type ReasoningSupport,

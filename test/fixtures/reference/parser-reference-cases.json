@@ -1198,13 +1198,13 @@
         "content": "This is the rest"
       },
       "note": "Non-streaming: the reference joins the token strings back into the original output, so the input is exact. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is a reasoning section</think>This is the rest",
-        "reasoning_content": "",
+        "content": "This is the rest",
+        "reasoning_content": "This is a reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): qwen3@1 deems <think> at offset 0, so reasoning runs from the start of the output to the first </think>, as vLLM qwen3 (which starts in the REASONING state) reads it. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-without-start-token-stream",
@@ -1272,13 +1272,13 @@
         "content": "This is the rest"
       },
       "note": "Deltas substituted: the reference streams tokenizer.tokenize() pieces of Qwen3-0.6B / Qwen3.5-397B-A17B / Qwen3-4B-Thinking-2507 (not executed here); the corpus feeds 1-character deltas and the runner also checks every fixed width 1..8. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is a reasoning section</think>This is the rest",
-        "reasoning_content": "",
+        "content": "This is the rest",
+        "reasoning_content": "This is a reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): qwen3@1 deems <think> at offset 0, so reasoning runs from the start of the output to the first </think>, as vLLM qwen3 (which starts in the REASONING state) reads it. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-without-start-token-complete-reasoning",
@@ -1293,13 +1293,13 @@
         "content": ""
       },
       "note": "Non-streaming: the reference joins the token strings back into the original output, so the input is exact. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is a reasoning section</think>",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is a reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): qwen3@1 deems <think> at offset 0, so reasoning runs from the start of the output to the first </think>, as vLLM qwen3 (which starts in the REASONING state) reads it. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-without-start-token-complete-reasoning-stream",
@@ -1351,13 +1351,13 @@
         "content": ""
       },
       "note": "Deltas substituted: the reference streams tokenizer.tokenize() pieces of Qwen3-0.6B / Qwen3.5-397B-A17B / Qwen3-4B-Thinking-2507 (not executed here); the corpus feeds 1-character deltas and the runner also checks every fixed width 1..8. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is a reasoning section</think>",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is a reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): qwen3@1 deems <think> at offset 0, so reasoning runs from the start of the output to the first </think>, as vLLM qwen3 (which starts in the REASONING state) reads it. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-with-think",
@@ -1474,13 +1474,13 @@
         "content": ""
       },
       "note": "Non-streaming: the reference joins the token strings back into the original output, so the input is exact. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is the rest",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is the rest",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rules 6 and 8: no marker means no reasoning; the whole output is the remainder. vLLM qwen3 with thinking enabled starts in REASONING state and treats tag-less output as truncated reasoning."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty, as vLLM qwen3 (which starts in the REASONING state) reads tag-less output. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-without-think-stream",
@@ -1513,13 +1513,13 @@
         "content": ""
       },
       "note": "Deltas substituted: the reference streams tokenizer.tokenize() pieces of Qwen3-0.6B / Qwen3.5-397B-A17B / Qwen3-4B-Thinking-2507 (not executed here); the corpus feeds 1-character deltas and the runner also checks every fixed width 1..8. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is the rest",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is the rest",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rules 6 and 8: no marker means no reasoning; the whole output is the remainder. vLLM qwen3 with thinking enabled starts in REASONING state and treats tag-less output as truncated reasoning."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty, as vLLM qwen3 (which starts in the REASONING state) reads tag-less output. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-complete-reasoning",
@@ -1805,13 +1805,13 @@
         "content": ""
       },
       "note": "Non-streaming: the reference joins the token strings back into the original output, so the input is exact. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is a reasoning section",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is a reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rules 6 and 8: no marker means no reasoning; the whole output is the remainder. vLLM qwen3 with thinking enabled starts in REASONING state and treats tag-less output as truncated reasoning."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty, as vLLM qwen3 (which starts in the REASONING state) reads tag-less output. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-truncated-no-start-token-stream",
@@ -1855,13 +1855,13 @@
         "content": ""
       },
       "note": "Deltas substituted: the reference streams tokenizer.tokenize() pieces of Qwen3-0.6B / Qwen3.5-397B-A17B / Qwen3-4B-Thinking-2507 (not executed here); the corpus feeds 1-character deltas and the runner also checks every fixed width 1..8. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "This is a reasoning section",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is a reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rules 6 and 8: no marker means no reasoning; the whole output is the remainder. vLLM qwen3 with thinking enabled starts in REASONING state and treats tag-less output as truncated reasoning."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty, as vLLM qwen3 (which starts in the REASONING state) reads tag-less output. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-tool-call-no-think-end",
@@ -1878,11 +1878,11 @@
       "note": "Non-streaming: the reference joins the token strings back into the original output, so the input is exact. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6: no opening <think>, so no reasoning; the whole output (including the <tool_call> block) is the remainder. vLLM treats the text before <tool_call> as reasoning (implicit start, implicit end)."
+      "reason": "Manifest S7.3 rules 6-8 (implicit start marker): reasoning runs from offset 0 to the first </think>; a <tool_call> inside reasoning never ends it (rule 7), and with no </think> the whole output is reasoning_content with no tool parsing (rule 8). vLLM qwen3 instead treats <tool_call> as an implicit end of reasoning."
     },
     {
       "id": "vllm-qwen3-tool-call-no-think-end-stream",
@@ -2027,11 +2027,11 @@
       "note": "Deltas substituted: the reference streams tokenizer.tokenize() pieces of Qwen3-0.6B / Qwen3.5-397B-A17B / Qwen3-4B-Thinking-2507 (not executed here); the corpus feeds 1-character deltas and the runner also checks every fixed width 1..8. Reference None normalised to \"\". vLLM qwen3 runs with thinking enabled (initial state REASONING).",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6: no opening <think>, so no reasoning; the whole output (including the <tool_call> block) is the remainder. vLLM treats the text before <tool_call> as reasoning (implicit start, implicit end)."
+      "reason": "Manifest S7.3 rules 6-8 (implicit start marker): reasoning runs from offset 0 to the first </think>; a <tool_call> inside reasoning never ends it (rule 7), and with no </think> the whole output is reasoning_content with no tool parsing (rule 8). vLLM qwen3 instead treats <tool_call> as an implicit end of reasoning."
     },
     {
       "id": "vllm-qwen3-tool-call-with-think-no-end",
@@ -2251,13 +2251,13 @@
         "content": "This is the rest"
       },
       "note": "Exact deltas from the reference. Reference None normalised to \"\". vLLM has no end-of-stream hook; the SDK's finish() is called as the stream end.",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "reasoning section</think>This is the rest",
-        "reasoning_content": "",
+        "content": "This is the rest",
+        "reasoning_content": "reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): qwen3@1 deems <think> at offset 0, so reasoning runs from the start of the output to the first </think>, as vLLM qwen3 (which starts in the REASONING state) reads it. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-multi-delta-start-and-end-in-one-delta-no-content",
@@ -2298,13 +2298,13 @@
         "content": "content"
       },
       "note": "Exact deltas from the reference. Reference None normalised to \"\". vLLM has no end-of-stream hook; the SDK's finish() is called as the stream end.",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "reasoning section</think>content",
-        "reasoning_content": "",
+        "content": "content",
+        "reasoning_content": "reasoning section",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): qwen3@1 deems <think> at offset 0, so reasoning runs from the start of the output to the first </think>, as vLLM qwen3 (which starts in the REASONING state) reads it. The SDK output matches every field the reference asserts."
     },
     {
       "id": "vllm-qwen3-multi-delta-tool-call-implicit-reasoning-end",
@@ -2324,11 +2324,11 @@
       "note": "Exact deltas from the reference. Reference None normalised to \"\". vLLM has no end-of-stream hook; the SDK's finish() is called as the stream end.",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "I need to read the file.\n\n<tool_call>\n<function=bash>",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "I need to read the file.\n\n<tool_call>\n<function=bash>",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6: no opening <think>, so no reasoning; the whole output (including the <tool_call> block) is the remainder. vLLM treats the text before <tool_call> as reasoning (implicit start, implicit end)."
+      "reason": "Manifest S7.3 rules 6-8 (implicit start marker): reasoning runs from offset 0 to the first </think>; a <tool_call> inside reasoning never ends it (rule 7), and with no </think> the whole output is reasoning_content with no tool parsing (rule 8). vLLM qwen3 instead treats <tool_call> as an implicit end of reasoning."
     },
     {
       "id": "vllm-qwen3-thinking-disabled-plain-content",
@@ -2343,13 +2343,13 @@
         "content": "This is plain content"
       },
       "note": "Reference runs with chat_template_kwargs enable_thinking=False, which has no SDK analogue (qwen3@1 has one behaviour). Reference None normalised to \"\".",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "This is plain content",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is plain content",
         "tool_calls": []
       },
-      "reason": "qwen3@1 has a single behaviour, which coincides with vLLM's enable_thinking=False mode."
+      "reason": "Manifest S7.3 rules 6 and 8: qwen3@1 declares an implicit start marker and never switches by request, so output with no </think> is all reasoning_content. vLLM reproduces its request-time enable_thinking=False mode here; in TrueOpen a profile whose template does not think pins reasoning_parsing {} instead (rule 6)."
     },
     {
       "id": "vllm-qwen3-thinking-disabled-no-think-tokens",
@@ -2364,13 +2364,13 @@
         "content": "Some output without think tokens"
       },
       "note": "Reference runs with chat_template_kwargs enable_thinking=False, which has no SDK analogue (qwen3@1 has one behaviour). Reference None normalised to \"\".",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "Some output without think tokens",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "Some output without think tokens",
         "tool_calls": []
       },
-      "reason": "qwen3@1 has a single behaviour, which coincides with vLLM's enable_thinking=False mode."
+      "reason": "Manifest S7.3 rules 6 and 8: qwen3@1 declares an implicit start marker and never switches by request, so output with no </think> is all reasoning_content. vLLM reproduces its request-time enable_thinking=False mode here; in TrueOpen a profile whose template does not think pins reasoning_parsing {} instead (rule 6)."
     },
     {
       "id": "vllm-qwen3-thinking-disabled-with-tool-call",
@@ -2385,13 +2385,13 @@
         "content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>"
       },
       "note": "Reference runs with chat_template_kwargs enable_thinking=False, which has no SDK analogue (qwen3@1 has one behaviour). Reference None normalised to \"\".",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "I need to read the file.\n\n<tool_call>\n<function=bash>\n<parameter=command>\ncat /etc/hosts\n</parameter>\n</function>\n</tool_call>",
         "tool_calls": []
       },
-      "reason": "qwen3@1 has a single behaviour, which coincides with vLLM's enable_thinking=False mode."
+      "reason": "Manifest S7.3 rules 6 and 8: qwen3@1 declares an implicit start marker and never switches by request, so output with no </think> is all reasoning_content. vLLM reproduces its request-time enable_thinking=False mode here; in TrueOpen a profile whose template does not think pins reasoning_parsing {} instead (rule 6)."
     },
     {
       "id": "dynamo-hermes-qwq-32b-simple",
@@ -3438,13 +3438,13 @@
         "content": "This is a test without reasoning."
       },
       "note": "detect_and_parse_reasoning; BasicReasoningParser(\"<think>\", \"</think>\", force_reasoning=false, stream_reasoning=true) -- exactly what reasoning/mod.rs registers for \"qwen3\". The batch path trims both outputs with str::trim().",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "This is a test without reasoning.",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "This is a test without reasoning.",
         "tool_calls": []
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty. Dynamo qwen3 starts in content (force_reasoning off) and reads tag-less text as content."
     },
     {
       "id": "dynamo-qwen3-batch-detect-and-parse-reasoning-reasoning-truncated-reasoning",
@@ -3545,11 +3545,11 @@
       "note": "detect_and_parse_reasoning; BasicReasoningParser(\"<think>\", \"</think>\", force_reasoning=false, stream_reasoning=true) -- exactly what reasoning/mod.rs registers for \"qwen3\". The batch path trims both outputs with str::trim().",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "normal text</think> more normal",
-        "reasoning_content": "",
+        "content": " more normal",
+        "reasoning_content": "normal text",
         "tool_calls": []
       },
-      "reason": "Manifest S7.3 rule 6 (src/toolcall/reasoning.ts): the reasoning span must open with the start marker at the very start of the output (only whitespace before it). With no opening <think> the SDK finds no reasoning and the whole output is the remainder. vLLM qwen3 (thinking enabled) starts in REASONING state and Dynamo batch does dangling-end recovery, so both treat text before a bare </think> as reasoning."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): the text before the first </think> is reasoning, which now agrees with Dynamo; the remaining difference is layout: qwen3@1 (design S10.2) drops only the layout NEWLINES around the markers, so the leading space of the content is kept, while Dynamo's batch path str::trim()s normal_text."
     },
     {
       "id": "dynamo-qwen3-batch-malformed-multiple-opening-tags",
@@ -4620,21 +4620,21 @@
       "note": "parse_reasoning_streaming_incremental; BasicReasoningParser(\"<think>\", \"</think>\", force_reasoning=false, stream_reasoning=true) -- exactly what reasoning/mod.rs registers for \"qwen3\". The reference never calls finish_reasoning_stream(); per-push results are asserted, so the runner does not call finish(). reference_expected is the sum of the asserted per-push values.",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "Hello world <think>reasoning content</think> answer",
-        "reasoning_content": "",
+        "content": " answer",
+        "reasoning_content": "Hello world <think>reasoning content",
         "tool_calls": []
       },
       "sdk_steps": [
         {
-          "content": "Hello world <th",
-          "reasoning_content": ""
+          "content": "",
+          "reasoning_content": "Hello world <th"
         },
         {
-          "content": "ink>reasoning content</think> answer",
-          "reasoning_content": ""
+          "content": " answer",
+          "reasoning_content": "ink>reasoning content"
         }
       ],
-      "reason": "Manifest S7.3 rule 6: non-whitespace before <think> means there is no reasoning; the <think> block in the middle of the text is content. Dynamo enters reasoning at any <think>."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): reasoning runs from offset 0 to the first </think>, and only one <think> at the head (after leading whitespace) is absorbed, so the text before a mid-output <think> and that <think> itself are reasoning text. Dynamo enters reasoning at any <think> and keeps the text before it as content."
     },
     {
       "id": "dynamo-qwen3-stream-batched-tag-boundary-split",
@@ -4665,21 +4665,21 @@
       "note": "parse_reasoning_streaming_incremental; BasicReasoningParser(\"<think>\", \"</think>\", force_reasoning=false, stream_reasoning=true) -- exactly what reasoning/mod.rs registers for \"qwen3\". The reference never calls finish_reasoning_stream(); per-push results are asserted, so the runner does not call finish(). reference_expected is the sum of the asserted per-push values.",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "The answer is <think>let me think</think>42",
-        "reasoning_content": "",
+        "content": "42",
+        "reasoning_content": "The answer is <think>let me think",
         "tool_calls": []
       },
       "sdk_steps": [
         {
-          "content": "The answer is <thi",
-          "reasoning_content": ""
+          "content": "",
+          "reasoning_content": "The answer is <thi"
         },
         {
-          "content": "nk>let me think</think>42",
-          "reasoning_content": ""
+          "content": "42",
+          "reasoning_content": "nk>let me think"
         }
       ],
-      "reason": "Manifest S7.3 rule 6: non-whitespace before <think> means there is no reasoning; the <think> block in the middle of the text is content. Dynamo enters reasoning at any <think>."
+      "reason": "Manifest S7.3 rule 6 (implicit start marker): reasoning runs from offset 0 to the first </think>, and only one <think> at the head (after leading whitespace) is absorbed, so the text before a mid-output <think> and that <think> itself are reasoning text. Dynamo enters reasoning at any <think> and keeps the text before it as content."
     },
     {
       "id": "dynamo-qwen3-stream-mid-string-partial-closing-tag-stream-reasoning-true",
@@ -4850,23 +4850,23 @@
         }
       ],
       "note": "BasicReasoningParser(\"<think>\", \"</think>\", force_reasoning=false, stream_reasoning=true) -- exactly what reasoning/mod.rs registers for \"qwen3\". The reference never calls finish_reasoning_stream(); per-push results are asserted, so the runner does not call finish(). The reference asserts the concatenated normal text.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "value <thesis on AI> is great",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "value <thesis on AI> is great",
         "tool_calls": []
       },
       "sdk_steps": [
         {
-          "content": "value <thesis on",
-          "reasoning_content": ""
+          "content": "",
+          "reasoning_content": "value <thesis on"
         },
         {
-          "content": " AI> is great",
-          "reasoning_content": ""
+          "content": "",
+          "reasoning_content": " AI> is great"
         }
       ],
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty. Dynamo qwen3 starts in content (force_reasoning off) and reads tag-less text as content."
     },
     {
       "id": "dynamo-qwen3-stream-ff-streaming-multiple-reasoning-blocks",
@@ -5097,19 +5097,19 @@
         }
       ],
       "note": "OpenAIPreprocessor::parse_reasoning_content_from_stream with reasoning_parser \"basic\" -- the same BasicReasoningParser config as \"qwen3\" (reasoning/mod.rs). Per-chunk assert_choice; None content means none-or-empty.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "Just normal text without reasoning tags.",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "Just normal text without reasoning tags.",
         "tool_calls": []
       },
       "sdk_steps": [
         {
-          "content": "Just normal text without reasoning tags.",
-          "reasoning_content": ""
+          "content": "",
+          "reasoning_content": "Just normal text without reasoning tags."
         }
       ],
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty. Dynamo qwen3 starts in content (force_reasoning off) and reads tag-less text as content."
     },
     {
       "id": "dynamo-qwen3-preprocessor-invalid-name-fallback",
@@ -5132,19 +5132,19 @@
         }
       ],
       "note": "An unknown reasoning parser name falls back to Basic (same config as \"qwen3\"); the input has no markers.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "Hello world!",
-        "reasoning_content": "",
+        "content": "",
+        "reasoning_content": "Hello world!",
         "tool_calls": []
       },
       "sdk_steps": [
         {
-          "content": "Hello world!",
-          "reasoning_content": ""
+          "content": "",
+          "reasoning_content": "Hello world!"
         }
       ],
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Manifest S7.3 rules 6 and 8 (implicit start marker): with no </think> (no marker at all included) the whole output is reasoning_content and content is empty. Dynamo qwen3 starts in content (force_reasoning off) and reads tag-less text as content."
     },
     {
       "id": "dynamo-e2e-qwen-no-tools-vllm",

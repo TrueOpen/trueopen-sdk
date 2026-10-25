@@ -45,9 +45,22 @@ describe('qwen3 reasoning split (Manifest S7.3)', () => {
     expect(q.split('<think>\na\n\nb\n</think>\n\nx\n\ny\n')).toEqual({ reasoningContent: 'a\n\nb', remainder: 'x\n\ny\n' });
   });
 
-  it('allows whitespace before the start marker, and nothing else (rule 6)', () => {
+  it('declares an implicit start marker (rule 6)', () => {
+    expect(q.startMarkerClass).toBe('implicit');
+  });
+
+  it('absorbs one explicit <think> after leading whitespace (rule 6, implicit)', () => {
     expect(q.split('  \n<think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
-    expect(q.split('Sure. <think>r</think>c')).toEqual({ reasoningContent: '', remainder: 'Sure. <think>r</think>c' });
+    // Only one is absorbed: a second <think> is reasoning text.
+    expect(q.split('<think><think>r</think>c')).toEqual({ reasoningContent: '<think>r', remainder: 'c' });
+  });
+
+  it('without <think> the output still opens in reasoning, up to the first </think> (rule 6, implicit)', () => {
+    expect(q.split('Let me check.\n</think>\n\nIt is sunny.')).toEqual({ reasoningContent: 'Let me check.', remainder: 'It is sunny.' });
+    // Text before a mid-output <think> is reasoning too; the <think> is not a marker there.
+    expect(q.split('Sure. <think>r</think>c')).toEqual({ reasoningContent: 'Sure. <think>r', remainder: 'c' });
+    expect(q.split('a</think>b</think>c')).toEqual({ reasoningContent: 'a', remainder: 'b</think>c' });
+    expect(q.split('</think>answer')).toEqual({ reasoningContent: '', remainder: 'answer' });
   });
 
   it('takes only the leading span: a later <think> is content', () => {
@@ -61,24 +74,57 @@ describe('qwen3 reasoning split (Manifest S7.3)', () => {
     expect(q.split('<think>\ncut off by max tokens')).toEqual({ reasoningContent: 'cut off by max tokens', remainder: '' });
   });
 
-  it('no marker leaves the output whole (rule 8)', () => {
-    expect(q.split('Just an answer.')).toEqual({ reasoningContent: '', remainder: 'Just an answer.' });
+  it('no closing marker, no marker at all included, makes the whole output reasoning (rule 8, implicit)', () => {
+    expect(q.split('Just an answer.')).toEqual({ reasoningContent: 'Just an answer.', remainder: '' });
+    expect(q.split('  <thin')).toEqual({ reasoningContent: '  <thin', remainder: '' });
     expect(q.split('')).toEqual({ reasoningContent: '', remainder: '' });
   });
 
   it('streaming gives the same split as split(), whatever the frame boundaries (rule 11)', () => {
     for (const text of [
       '<think>\nLet me check.\n</think>\n\nIt is sunny.',
+      'Let me check.\n</think>\n\nIt is sunny.',
       '<think>\na\n\nb\n</think>\n\nx\n\ny\n',
       '  \n<think>r</think>c',
+      '  \nr</think>c',
+      '<think><think>r</think>c',
       'Sure. <think>r</think>c',
       '<think>r</think>c <think>not reasoning</think>',
       '<think>\ncut off by max tokens',
       '<thin',
+      '  <thi',
+      '\n\n',
+      '</think>answer',
       'Just an answer.',
       `<think>\nI could call ${TOOL} but no.\n</think>\n\n${TOOL}`,
+      `I could call ${TOOL} but no.\n</think>\n\n${TOOL}`,
     ]) {
       for (const frames of everySplit(text)) expect(streamSplit(q, frames)).toEqual(q.split(text));
+    }
+  });
+});
+
+describe('an explicit start marker parser (Manifest S7.3 rules 6 and 8)', () => {
+  const e = createMarkerReasoningParser(
+    { name: 'explicit_think', version: 1 },
+    { startMarker: '<think>', endMarker: '</think>', startMarkerClass: 'explicit', trimNewlines: true },
+  );
+
+  it('allows whitespace before the start marker, and nothing else', () => {
+    expect(e.startMarkerClass).toBe('explicit');
+    expect(e.split('  \n<think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
+    expect(e.split('Sure. <think>r</think>c')).toEqual({ reasoningContent: '', remainder: 'Sure. <think>r</think>c' });
+  });
+
+  it('no marker leaves the output whole; unclosed is all reasoning', () => {
+    expect(e.split('Just an answer.')).toEqual({ reasoningContent: '', remainder: 'Just an answer.' });
+    expect(e.split('a</think>b')).toEqual({ reasoningContent: '', remainder: 'a</think>b' });
+    expect(e.split('<think>\ncut off')).toEqual({ reasoningContent: 'cut off', remainder: '' });
+  });
+
+  it('streaming agrees with split()', () => {
+    for (const text of ['  \n<think>r</think>c', 'Sure. <think>r</think>c', 'Just an answer.', '<thin', '<think>\ncut off', 'a</think>b']) {
+      for (const frames of everySplit(text)) expect(streamSplit(e, frames)).toEqual(e.split(text));
     }
   });
 });
@@ -96,10 +142,10 @@ describe('the reasoning registry', () => {
   });
 
   it('refuses version 0, duplicates and empty markers', () => {
-    const p = (version: number) => createMarkerReasoningParser({ name: 'x', version }, { startMarker: '<a>', endMarker: '</a>' });
+    const p = (version: number) => createMarkerReasoningParser({ name: 'x', version }, { startMarker: '<a>', endMarker: '</a>', startMarkerClass: 'explicit' });
     expect(() => createReasoningRegistry([{ parser: p(0), conformance: 'unverified' }])).toThrow(/version/);
     expect(() => createReasoningRegistry([{ parser: p(1), conformance: 'unverified' }, { parser: p(1), conformance: 'unverified' }])).toThrow(/two/);
-    expect(() => createMarkerReasoningParser({ name: 'x', version: 1 }, { startMarker: '', endMarker: '</a>' })).toThrow(/non-empty/);
+    expect(() => createMarkerReasoningParser({ name: 'x', version: 1 }, { startMarker: '', endMarker: '</a>', startMarkerClass: 'explicit' })).toThrow(/non-empty/);
   });
 });
 
@@ -127,8 +173,15 @@ describe('reasoning before tool calls (S7.3 rules 5 and 7)', () => {
     expect(m.content).toBe('');
   });
 
-  it('no reasoning found: the message carries no reasoningContent and parses the whole output', () => {
+  it('no closing marker: the whole output is reasoning and no call is parsed (rule 8, implicit)', () => {
     const m = deriveAssistantMessage(TOOL, opts);
+    expect(m.reasoningContent).toBe(TOOL);
+    expect(m.toolCalls).toEqual([]);
+    expect(m.content).toBe('');
+  });
+
+  it('an empty reasoning span: the message carries no reasoningContent and parses the remainder', () => {
+    const m = deriveAssistantMessage(`</think>\n\n${TOOL}`, opts);
     expect('reasoningContent' in m).toBe(false);
     expect(m.toolCalls).toHaveLength(1);
   });

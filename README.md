@@ -444,7 +444,7 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
 - `AbortSignal` aborts consumption of the upstream events; in the browser, `reader.cancel()`
   propagates to `iterator.return`. The `ReadableStream` uses `highWaterMark=0` and does not
   prefetch upstream events without consumer demand.
-- EOS / STOP_SEQUENCE -> OpenAI `stop`; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION -> `length`;
+- EOS / STOP_SEQUENCE / STOP_TOKEN / USER_STOP -> OpenAI `stop`; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION -> `length`;
   UNSPECIFIED and unknown values fail closed.
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.

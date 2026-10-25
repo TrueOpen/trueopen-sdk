@@ -8,13 +8,34 @@
   (`<tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>`)
   as specified in `docs/qwen3-coder-parser-v1.md`. It is built in, `unverified`
   (pass `allowUnverified`), like `hermes@1`.
-- Argument values are typed by the request's tool schema: pass `tools` (the chat
-  input's `tools`) to `streamAssistantMessage`, `confirmAssistantMessage`,
-  `fetchAssistantMessage` or `assistantTurn`. Without it every value is a string.
-- `ToolCallParser.createStreamState` takes an optional `ToolCallContext`;
-  `MarkerStreamOptions` gains `quoteAware` and `parseCall` may return several calls.
-- The testnet profile pins `qwen3_xml@1`, which is not a canonical name; it
-  resolves to `parser-unknown` until re-registered as `qwen3_coder@1`.
+- Every argument value is a JSON string: the raw text, less one wrapping newline each
+  side, verbatim (wire #46). No value is coerced and no tool schema is read, so the
+  parser takes no `tools`: its result depends on the committed output alone.
+- It defines no unclosed-call recovery: a final block without `</tool_call>` is
+  content, whatever the finish reason.
+- `MarkerStreamOptions` gains `quoteAware`, and `parseCall` may return several calls.
+
+### Changed: qwen3@1 has an implicit start marker
+
+- **Breaking:** a reasoning parser declares the class of its start marker,
+  `ReasoningParser.startMarkerClass: 'explicit' | 'implicit'` (Manifest S7.3 rule 6);
+  `createMarkerReasoningParser` requires `startMarkerClass` in its `ReasoningMarkers`.
+- **Breaking:** `qwen3@1` is implicit. The output opens in reasoning whether or not it
+  starts with `<think>` (one `<think>` at the head is absorbed), and reasoning runs to the
+  first `</think>`. With no `</think>`, no marker at all included, the whole output is
+  `reasoningContent`, `content` is empty and no tool call is parsed (rule 8). Before, output
+  without a leading `<think>` had no reasoning. A `<tool_call>` inside reasoning still never
+  ends it (rule 7). This also covers forced-thinking Qwen3 output whose `<think>` is in the
+  prompt. A profile whose template does not think pins no reasoning parser.
+
+### Changed: unclosed-call recovery is per parser, and STOP_TOKEN opens the gate
+
+- **Changed:** an unclosed final call may be recovered when the verified Fin says
+  `EOS_TOKEN`, `STOP_SEQUENCE` or `STOP_TOKEN` (`STOP_TOKEN` is new), and only if the parser
+  defines recovery (Manifest S7.2 rule 6). `hermes@1` does (a complete JSON object with a
+  string `name`); `qwen3_coder@1` does not. The body is judged on its raw committed bytes.
+- **Added:** `MarkerStreamOptions.recoverUnclosed`, a parser's recovery rule; the shared
+  state machine never recovers without one.
 
 ### Added: Web3 transactions for EIP-712 wallets
 
@@ -300,9 +321,9 @@ so the SDK's temporary tolerance is gone and the committed text is taken as is.
 ### Changed: a final call missing its closing marker is recovered after a natural stop
 
 - **Changed:** when the Worker-signed Fin says the model stopped by itself (`EOS_TOKEN` /
-  `STOP_SEQUENCE`) and the output ends inside a tool call whose body parses, the call is
-  recovered instead of flushed as text, as vLLM and Dynamo do for Hermes (design S7 requirement
-  6). A truncated (`MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION`), user-stopped or
+  `STOP_SEQUENCE`; `STOP_TOKEN` too since the per-parser recovery change above) and the output
+  ends inside a tool call whose body parses, the call is recovered instead of flushed as text, as
+  vLLM and Dynamo do for Hermes (design S7 requirement 6). A truncated (`MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION`), user-stopped or
   reason-unavailable output, or a body that does not parse, still flushes as plain text.
   `confirmAssistantMessage`, `assistantTurn`, `fetchAssistantMessage` and the provisional
   stream all follow the Fin.

@@ -1,6 +1,6 @@
 # Tool Call Support in the SDK (Design)
 
-> Version: v0.6 / 2026-10-09 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
+> Version: v0.7 / 2026-10-25 (v0.1 2026-09-23). v0.2 corrected S9's claim about who owns
 > the V3 manifest vectors, and refreshed S12.1 and S12.4, which predated wire v0.2.1. v0.3
 > recorded P1 as delivered and added S10.1, the standing decision to wait for the undefined
 > encodings rather than invent them. v0.4 follows Manifest S7, whose write-back HAS landed:
@@ -9,7 +9,11 @@
 > that leaves open. v0.5 corrects the manifest target from V3 to **V4** throughout -- ADR-0022
 > named V3, but ADR-0028 and ADR-0023 were folded into a single freeze to 4 before V3 shipped
 > -- and removes the claim that `trailingEosMarkers` would ever come from the manifest. v0.6
-> implements `reasoning_parsing` (S10.2, unverified pending wire's vectors).
+> implements `reasoning_parsing` (S10.2, unverified pending wire's vectors). v0.7 follows
+> Manifest S7.2 rule 6 and S7.3 rules 6-8 (monorepo #64): unclosed-call recovery is gated on
+> EOS_TOKEN / STOP_SEQUENCE / STOP_TOKEN and defined per parser (S7 item 6), reasoning parsers
+> declare an explicit or implicit start marker and `qwen3@1` is implicit (S10.2), and no parser
+> takes the request's `tools` (`qwen3_coder@1` values are strings, wire #46).
 > Scope: **How the TypeScript SDK turns committed output text into an OpenAI-compatible
 > `content` + `tool_calls` view** -- module layout, public API, the execution gate,
 > failure semantics, and what is blocked upstream.
@@ -331,7 +335,8 @@ text. Enabling tool calling can never lose data.
    +--------+  start marker   +-----------+    | closing marker
    |  Text  |---------------->| Buffering |----+ -> emit one tool call
    +--------+                 +-----------+
-        | ordinary bytes            | Fin, still unclosed (recovered if the model stopped itself)
+        | ordinary bytes            | Fin, still unclosed (recovered only if the model stopped
+        |                           |  itself and the parser defines recovery)
         v emit as content           v flush buffer as plain text
 ```
 
@@ -367,26 +372,35 @@ buffer for the next chunk.
    marker stays in `Text` and flows through as content -- a decided and covered case, not a
    by-product of the state machine.
 
-6. **Fin with an unclosed buffer: recover the call only if the model stopped by itself,
-   otherwise flush as plain text.** A model can end a turn after a complete call body without
-   writing the closing marker. When the Worker-signed Fin says the model stopped by itself
-   (`EOS_TOKEN` / `STOP_SEQUENCE`) and the body parses, the segment is that call: it is
-   recovered, and a closing marker the stop cut short (`</tool_`) is dropped with it. This is
-   what both references do for Hermes -- vLLM's `<tool_call>(.*)` regex alternative and
-   streaming "valid JSON without closing tag = complete body", Dynamo's `allow_eof_recovery`
-   (checked against vLLM 77154ca and dynamo-parsers 10.0.2, 2026-10-14; an earlier revision of
-   this item wrongly said vLLM returns an error).
+6. **Fin with an unclosed buffer: recover the call only if the model stopped by itself and the
+   parser defines recovery, otherwise flush as plain text** (Manifest S7.2 rule 6). A model can
+   end a turn after a complete call body without writing the closing marker. Rule 6 fixes the
+   gate and the input and leaves the rest to each parser:
+   - **Gate.** The Worker-signed Fin says the model stopped by itself: `EOS_TOKEN`,
+     `STOP_SEQUENCE` or `STOP_TOKEN`. `MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION` (truncated),
+     `USER_STOP` (interrupted), or no signed Fin kept means no recovery. A body that happens to
+     parse at a cut is not evidence of the call the model meant, and the reason is never guessed.
+   - **Input.** The finish reason is the only input besides the committed output, and the body
+     is judged on its raw committed bytes: no order stop string is stripped from it (the SDK
+     strips nothing from committed output anywhere).
+   - **Per parser.** What body may be recovered, how many calls it yields and what happens to a
+     partial closing marker at the end are the parser specification's; a parser that defines no
+     recovery never recovers. `hermes@1` defines it: a complete, valid JSON object with a string
+     `name` is that call, after a closing marker the stop cut short (`</tool_`) is dropped. This is
+     what both references do for Hermes -- vLLM's `<tool_call>(.*)` regex alternative and
+     streaming "valid JSON without closing tag = complete body", Dynamo's `allow_eof_recovery`
+     (checked against vLLM 77154ca and dynamo-parsers 10.0.2, 2026-10-14). wire is to fix the
+     exact rule; this is the SDK's until then. `qwen3_coder@1` defines none: its unclosed final
+     block is always content.
 
-   Everything else flushes as plain text, start marker included, neither dropped nor an error:
-   a body that does not parse, and any output that was cut off or whose reason is unknown --
-   `MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION` (truncated), `USER_STOP` (interrupted), or no
-   signed Fin kept. A body that happens to parse at a cut is not evidence of the call the model
-   meant, and the reason is never guessed. Here TrueOpen diverges from Dynamo, whose
-   "never-leak gate" drops unparseable partial markup: the bytes are the very bytes
-   `output_hash` covers, and suppressing committed bytes would make what the application sees
-   diverge from what the chain committed, undetectably (S6). The parser takes the decision as
-   `ToolCallParseOptions.recoverUnclosedAtEnd`; the views set it from the verified finish
-   reason (`unclosedCallRecovery`).
+   Everything else flushes as plain text, start marker included, neither dropped nor an error.
+   Here TrueOpen diverges from Dynamo, whose "never-leak gate" drops unparseable partial markup:
+   the bytes are the very bytes `output_hash` covers, and suppressing committed bytes would make
+   what the application sees diverge from what the chain committed, undetectably (S6). The views
+   set the gate from the verified finish reason (`unclosedCallRecovery`) and pass it as
+   `ToolCallParseOptions.recoverUnclosedAtEnd`; a parser declares its recovery to the shared
+   state machine as `MarkerStreamOptions.recoverUnclosed`, and the machine never recovers
+   without one.
 
 The return edge to `Text` is load-bearing: the chat path has no stop conditions (S13.3),
 so generation continues past a closing marker. Content can follow a completed tool call,
@@ -515,11 +529,7 @@ This posture is already what the code does; it costs nothing to hold.
 |---|---|---|
 | **payload canonical encoding** (`monorepo#30`) | **Cleared (2026-10-14): the SDK's encoder is the rule.** `chatInferInputBytes` encodes `ChatInferInput` once with canonical_json_v1 (snake_case keys) and the bytes are reused on every retry. No other component re-encodes the payload, so no `chat_infer_input_canonical_v1` vector is awaited. | -- |
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
-| **parser vectors** (`monorepo#11`, `monorepo#61`) | `hermes@1`, `qwen3_coder@1` and `qwen3@1` ship in the built-in registries as `'unverified'`, so callers pass `allowUnverified`. wire has no parser vectors (main `41af15b`); a 160-case corpus from vLLM and Dynamo tests, 39 of them for qwen3_coder (`test/fixtures/reference/`), pins today's behaviour as a reference, not an authority. `qwen3_coder@1` also depends on the request's `tools`, which are committed through `input_hash` (spec `docs/qwen3-coder-parser-v1.md` §2). | Run the parsers against the vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
-
-Follow-up: `tools` is caller-supplied and is not checked against the committed input (`input_hash`);
-`ChatInferInput` is opaque bytes until typed chat input (`cortex.v1`) exists. Once it does, verify `tools`
-against the committed input, so `qwen3_coder@1` is a function of committed data in fact, not by trust.
+| **parser vectors** (`monorepo#11`, `monorepo#61`) | `hermes@1`, `qwen3_coder@1` and `qwen3@1` ship in the built-in registries as `'unverified'`, so callers pass `allowUnverified`. wire has no parser vectors (main `41af15b`); a 160-case corpus from vLLM and Dynamo tests, 39 of them for qwen3_coder (`test/fixtures/reference/`), pins today's behaviour as a reference, not an authority. Every parser's result is a function of the committed output, `(name, version)` and the verified finish reason only; `qwen3_coder@1` reads no tool schema, its values are JSON strings (wire #46, spec `docs/qwen3-coder-parser-v1.md` §2, §5). | Run the parsers against the vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
 
 The **V4 manifest vectors** row has cleared rather than been updated: wire shipped the V4
 manifest vector in v0.3.0-rc.1, the SDK vendored it as `test/fixtures/wire/model_manifest_v4.json`
@@ -555,21 +565,32 @@ one. The live devnet profile pins `reasoning_parser = qwen3@1`, and its chat out
 
 What is implemented:
 
-- Rules 5-10: leading span only; whitespace allowed before the start marker and nothing else; an
-  unclosed span is all reasoning with no remainder and no tool parsing; no marker, an unknown
-  parser, or an unverified one without the caller's opt-in means no reasoning. Reasoning and tool
-  state machines are chained, not parallel, and streaming agrees with the full parse under every
-  frame split.
-- `qwen3@1`: `<think>` / `</think>`, with the template's layout newlines around the markers
-  dropped. Qwen3 writes the opening `<think>` itself, so it sits at the start of the output as
-  rule 6 requires.
+- Rules 5-10: leading span only. Every parser declares the class of its start marker
+  (`ReasoningParser.startMarkerClass`, rule 6), and the class never switches by template, request
+  or output:
+  - *explicit*: whitespace allowed before the start marker and nothing else; a start marker with
+    no closing marker is all reasoning with no remainder and no tool parsing; no marker or a
+    malformed one means no reasoning;
+  - *implicit*: the start marker is deemed at offset 0, one explicit start marker at the head
+    (after leading whitespace) is absorbed, and reasoning runs to the first closing marker; with
+    no closing marker (no marker at all included) the whole output is reasoning, with no
+    remainder and no tool parsing.
+
+  An unknown parser, or an unverified one without the caller's opt-in, means no reasoning.
+  Reasoning and tool state machines are chained, not parallel, and streaming agrees with the
+  full parse under every frame split.
+- `qwen3@1`: implicit, `<think>` / `</think>`, with the template's layout newlines around the
+  markers dropped. A Qwen3 thinking template may inject `<think>` into the prompt (forced
+  thinking), so the output may or may not open with it; either way it opens in reasoning. A
+  `<tool_call>` inside the reasoning never ends it (rule 7), unlike vLLM's qwen3 parser. A profile
+  whose template does not think pins `reasoning_parsing {}`.
 - Resolution mirrors tool calling: `ProfileInfo.reasoningParser` is read from the chain, and a
   registry (`BUILTIN_REASONING_PARSERS`) maps it to an implementation.
 
 **Unverified.** Rule 11 requires shared cross-language vectors, published by wire. None exist
 yet, so `qwen3@1` is registered `unverified` and is used only with `allowUnverified`. Whether the
-layout newlines are trimmed, and exactly which, is the most likely point of disagreement with the
-vectors when they ship.
+layout newlines are trimmed, and exactly which, is still open in wire (#46) and the most likely
+point of disagreement with the vectors when they ship.
 
 ### 10.3 P3 prerequisites found while building P1
 

@@ -818,16 +818,22 @@ reasoningContent?, confirmation, finishReason? }`: only its calls may be execute
 built-in parsers (`hermes@1`, `qwen3_coder@1`, `qwen3@1`) are unverified until their vectors exist, so pass
 `allowUnverified: true` to use them.
 
-`streamAssistantMessage`, `confirmAssistantMessage`, `fetchAssistantMessage` and `assistantTurn`
-take an optional `tools` (the chat input's `tools` array). `qwen3_coder@1` types each argument
-value from the matching tool's JSON schema, so pass the same `tools` that were sent in the chat
-input. Without them every qwen3_coder value is a string. `hermes@1` ignores `tools`. The stream and
-the confirmation must be given the same `tools` (spec: `docs/qwen3-coder-parser-v1.md`). The SDK does
-not check `tools` against the committed input (`input_hash`), so pass exactly the list you sent.
+A parser's result depends only on the committed output, the parser `(name, version)` and the
+verified finish reason; the request's `tools` are not an input. `qwen3_coder@1` keeps every
+argument value as a JSON string, verbatim, and reads no tool schema (spec:
+`docs/qwen3-coder-parser-v1.md`); convert values against your own schema if you need numbers or
+objects.
+
+`qwen3@1` (reasoning) has an implicit start marker: the output opens in reasoning whether or not it
+starts with `<think>`, and reasoning runs to the first `</think>`. With no `</think>` the whole
+output is `reasoningContent`, `content` is empty and no tool call is parsed. A profile whose chat
+template does not think pins no reasoning parser.
 
 A final call whose closing marker never came is a call only if the Fin says the model stopped by
-itself (`EOS_TOKEN` / `STOP_SEQUENCE`) and its body parses; after a truncation, a user stop, or
-with no signed Fin, it stays in `content` as text.
+itself (`EOS_TOKEN` / `STOP_SEQUENCE` / `STOP_TOKEN`) and the parser defines recovery: `hermes@1`
+recovers a body that is a complete JSON object with a string `name`, `qwen3_coder@1` recovers
+nothing. Otherwise -- a truncation, a user stop, no signed Fin, or no recovery defined -- it stays in
+`content` as text. The body is judged on the raw committed bytes; no stop string is stripped.
 
 Division of work (sdk_详细设计 §5.5): the SDK supplies the finish_reason mapping and ids in the
 manifest's `call_id_format` (read with `toolCallIdFormat`; needs `config.manifestSource`); the

@@ -124,7 +124,6 @@ const {
   taskOrderHashHex, deriveTaskId,
   decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, prewarmNexusConnections, RestChainReader,
   TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom, chatInferInputBytes,
-  createToolCallRegistry, hermesParser,
 } = await import(SDK);
 
 // ---- args ----
@@ -968,8 +967,8 @@ if (streamInfo?.frame_count > 0 && streamCheckpoint !== null) {
             taskId, taskHash: built.taskHash, checkpoint: streamCheckpoint, receipt,
             toolCallParser: profile.toolCallParser,
             reasoningParser: profile.reasoningParser,
-            // hermes ships unregistered until its vectors exist; the built-in reasoning registry has qwen3.
-            registry: createToolCallRegistry([{ parser: hermesParser, conformance: 'unverified' }]),
+            // The built-in registries (hermes@1 / qwen3_coder@1, qwen3@1) are unverified until wire
+            // publishes their vectors, so this opts in.
             allowUnverified: true,
           });
           streamConfirmation.assistant = {

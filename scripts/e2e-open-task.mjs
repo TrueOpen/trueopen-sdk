@@ -74,22 +74,24 @@
  *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
  *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
  *                         into task_hash, and the profile's task_types must list it.
- *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
- *                         winner_confirm lands on chain, verify signatures and the MMR
- *                         root frame by frame as output is generated, without waiting
- *                         for the receipt. Once frames arrive, skip the full-output fetch.
- *   --fast-stream         with --stream: wait for the winner with
- *                         waitForOutputTrustAnchors (chain poll plus the
- *                         ASSIGNMENT_FINALIZED event) on the connection OpenTask used, then
- *                         subscribe on that same connection. Reports ttft_client_ms, from
- *                         just before OpenTask to the first verified frame
- *   --early-subscribe     with --fast-stream: open SubscribeOutput right after OpenTask,
- *                         in parallel with the anchor wait (streamOutput pendingAnchors);
- *                         frames are held unverified until the anchors arrive
+ *   --stream              streaming retrieval: verify signatures and the MMR root frame by
+ *                         frame as output is generated, without waiting for the receipt.
+ *                         Once frames arrive, skip the full-output fetch. By default this is
+ *                         early subscribe on the connection OpenTask used: SubscribeOutput
+ *                         opens right after OpenTask while waitForOutputTrustAnchors (chain
+ *                         poll plus the ASSIGNMENT_FINALIZED event) runs, and frames are held
+ *                         unverified until the anchors arrive (streamOutput pendingAnchors).
+ *                         Reports ttft_client_ms, from just before OpenTask to the first
+ *                         verified frame
+ *   --fast-stream / --early-subscribe  accepted and ignored: both are the default now
+ *   --no-early-subscribe  with --stream: wait for the anchors first, then subscribe on the
+ *                         OpenTask connection (the former --fast-stream alone)
+ *   --legacy-stream       with --stream: the script's own poll loop waits for winner_worker,
+ *                         then subscribes on a new connection (the former default)
  *   --prewarm             open two TLS connections to every selected Builder before the
  *                         TTFT clock starts (prewarmNexusConnections), so OpenTask and the
  *                         stream reuse warm connections
- *   --anchor-poll-ms <n>  chain poll interval for --fast-stream (default: the SDK default)
+ *   --anchor-poll-ms <n>  chain poll interval for the anchor wait (default: the SDK default)
  *   --stream-idle <s>     idle timeout for a single stream, in seconds (default 20);
  *                         on timeout, resubscribe to another endpoint carrying the
  *                         verifier checkpoint
@@ -184,12 +186,14 @@ const STREAM = has('--stream');
 // Wait for the winner with waitForOutputTrustAnchors on the OpenTask connection (chain poll
 // plus the ASSIGNMENT_FINALIZED event), then subscribe on that same connection, instead of
 // waiting for the script's own poll loop to see winner_worker.
-const FAST_STREAM = has('--fast-stream');
-// With --fast-stream: subscribe right after OpenTask, while the anchors are still pending.
-const EARLY_SUBSCRIBE = has('--early-subscribe');
+// The default for --stream; --legacy-stream restores the script's own poll loop.
+const FAST_STREAM = !has('--legacy-stream');
+// Subscribe right after OpenTask, while the anchors are still pending (default);
+// --no-early-subscribe waits for the anchors first.
+const EARLY_SUBSCRIBE = !has('--no-early-subscribe');
 // Prewarm TLS connections to every selected Builder before the TTFT clock starts.
 const PREWARM = has('--prewarm');
-// Chain poll interval for --fast-stream; unset means the SDK default.
+// Chain poll interval for the anchor wait; unset means the SDK default.
 const ANCHOR_POLL_MS = has('--anchor-poll-ms') ? Number(flag('--anchor-poll-ms', '')) : undefined;
 // Idle cap for a single stream. If the subscription starts before the Worker begins
 // producing output, nexus will keep the stream open without pushing data, so this is
@@ -754,7 +758,7 @@ async function startStream(winnerWorker) {
 
 const chainReader = new RestChainReader({ baseUrl: REST, fetch: (u) => fetch(u) });
 
-/** --fast-stream: wait for the winner on the OpenTask connection, then subscribe on it. */
+/** Default --stream path: wait for the winner on the OpenTask connection and subscribe on it (early by default). */
 async function startClientStream() {
   const mode = 'fast';
   const t0 = Date.now();

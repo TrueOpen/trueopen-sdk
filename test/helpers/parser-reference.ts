@@ -58,7 +58,10 @@ export interface ReferenceCase {
   readonly parser: ReferenceParser;
   readonly mode: 'complete' | 'stream';
   readonly input: string | readonly string[];
-  /** The request's tools, for a schema-typed parser (qwen3_coder@1). */
+  /**
+   * The request tools the reference passed, recorded because vLLM / Dynamo type qwen3_coder
+   * values by them. Not an SDK input: qwen3_coder@1 values are JSON strings (wire #46).
+   */
   readonly tools?: readonly ChatTool[];
   /** Stream only: whether end-of-stream (`finish`) is signalled after the last push. Default true. */
   readonly finish?: boolean;
@@ -104,23 +107,21 @@ const inputFrames = (input: string | readonly string[]): readonly string[] =>
  */
 const ENDED_BY_MODEL = { recoverUnclosedAtEnd: true } as const;
 
-/** Full-text run of the SDK parser the case names; `tools` reaches a schema-typed parser. */
-export function runComplete(parser: ReferenceParser, text: string, tools?: readonly ChatTool[]): SdkActual {
+/** Full-text run of the SDK parser the case names. */
+export function runComplete(parser: ReferenceParser, text: string): SdkActual {
   if (parser === 'qwen3@1') {
     const { reasoningContent, remainder } = qwen3ReasoningParser.split(text);
     return { content: remainder, reasoning_content: reasoningContent, tool_calls: [] };
   }
-  const withTools = tools ? { tools } : {};
   const message =
     parser === 'hermes@1'
       ? hermesParser.parseComplete(text, ENDED_BY_MODEL)
       : parser === 'qwen3_coder@1'
-        ? qwen3CoderParser.parseComplete(text, { ...ENDED_BY_MODEL, ...withTools })
+        ? qwen3CoderParser.parseComplete(text, ENDED_BY_MODEL)
         : deriveAssistantMessage(text, {
             parser: parser === 'qwen3+qwen3_coder' ? qwen3CoderParser : hermesParser,
             reasoning: qwen3ReasoningParser,
             finishReason: FinishReasonV1.EOS_TOKEN,
-            ...withTools,
           });
   return {
     content: message.content,
@@ -148,7 +149,6 @@ export async function runStream(
   parser: ReferenceParser,
   frames: readonly string[],
   finish: boolean,
-  tools?: readonly ChatTool[],
 ): Promise<SdkRun> {
   const total: Acc = { content: '', reasoning: '', calls: [] };
   const steps: StepOutput[] = [];
@@ -163,7 +163,6 @@ export async function runStream(
     for await (const e of deriveAssistantStream(source(), {
       parser: parser === 'qwen3+qwen3_coder' ? qwen3CoderParser : hermesParser,
       reasoning: qwen3ReasoningParser,
-      ...(tools ? { tools } : {}),
     })) {
       absorb(total, [e]);
     }
@@ -185,7 +184,7 @@ export async function runStream(
   } else {
     const state =
       parser === 'qwen3_coder@1'
-        ? qwen3CoderParser.createStreamState(tools ? { tools } : undefined)
+        ? qwen3CoderParser.createStreamState()
         : hermesParser.createStreamState();
     for (const frame of frames) {
       const step: Acc = { content: '', reasoning: '', calls: [] };
@@ -203,8 +202,8 @@ export async function runStream(
 }
 
 export async function runCase(c: ReferenceCase): Promise<SdkRun> {
-  if (c.mode === 'complete') return { actual: runComplete(c.parser, inputText(c.input), c.tools) };
-  return runStream(c.parser, inputFrames(c.input), c.finish !== false, c.tools);
+  if (c.mode === 'complete') return { actual: runComplete(c.parser, inputText(c.input)) };
+  return runStream(c.parser, inputFrames(c.input), c.finish !== false);
 }
 
 /** Splits `text` into fixed-width frames (by UTF-16 code unit; the corpus inputs are BMP-only). */

@@ -465,7 +465,6 @@ export type {
   DerivedAssistantMessage,
   DerivedToolCall,
   ParserRef,
-  ToolCallContext,
   ToolCallParseOptions,
   ToolCallFinishOptions,
   ToolCallParser,

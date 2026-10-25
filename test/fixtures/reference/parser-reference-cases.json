@@ -6200,18 +6200,18 @@
       },
       "args_compare": "json",
       "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value. The dimensions value spans two lines with a trailing space after the comma; transcribed exactly. Reference None content normalised to \"\".",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "calculate_area",
-            "arguments": "{\"shape\":\"rectangle\",\"dimensions\":{\"width\": 10, \n \"height\": 20},\"precision\":2}"
+            "arguments": "{\"shape\":\"rectangle\",\"dimensions\":\"{\\\"width\\\": 10, \\n \\\"height\\\": 20}\",\"precision\":\"2\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. vLLM qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK."
     },
     {
       "id": "vllm-qwen3coder-complete-parallel-tools",
@@ -6380,18 +6380,18 @@
       },
       "args_compare": "json",
       "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "Let me calculate that area for you.",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "calculate_area",
-            "arguments": "{\"shape\":\"circle\",\"dimensions\":{\"radius\": 15.5},\"precision\":3}"
+            "arguments": "{\"shape\":\"circle\",\"dimensions\":\"{\\\"radius\\\": 15.5}\",\"precision\":\"3\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. vLLM qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK."
     },
     {
       "id": "vllm-qwen3coder-complete-fallback-no-tags",
@@ -6518,18 +6518,18 @@
       "tool_calls_match": "first",
       "args_compare": "json",
       "note": "Parser and request both carry the test's tools (test_types). Only tool_calls[0]'s arguments are asserted, key by key; the arguments hold exactly those keys, so this is compared as JSON-value equality. Count, name and content are not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "test_types",
-            "arguments": "{\"int_param\":42,\"float_param\":3.14,\"bool_param\":true,\"str_param\":\"hello world\",\"obj_param\":{\"key\": \"value\"}}"
+            "arguments": "{\"int_param\":\"42\",\"float_param\":\"3.14\",\"bool_param\":\"true\",\"str_param\":\"hello world\",\"obj_param\":\"{\\\"key\\\": \\\"value\\\"}\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. vLLM qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK."
     },
     {
       "id": "vllm-qwen3coder-complete-anyof-type-conversion",
@@ -6625,18 +6625,18 @@
       "tool_calls_match": "first",
       "args_compare": "json",
       "note": "Parser and request both carry the test's tools (test_anyof). Only tool_calls[0]'s arguments are asserted, key by key with isinstance checks; the arguments hold exactly those keys, so this is compared as JSON-value equality (which distinguishes 5 from \"5\"). Count, name and content are not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "test_anyof",
-            "arguments": "{\"anyof_int\":5,\"anyof_str\":\"hello\",\"anyof_array\":[\"a\", \"b\", \"c\"],\"anyof_obj\":{\"key\": \"value\"},\"type_as_array\":42,\"multi_non_null\":\"some text\"}"
+            "arguments": "{\"anyof_int\":\"5\",\"anyof_str\":\"hello\",\"anyof_array\":\"[\\\"a\\\", \\\"b\\\", \\\"c\\\"]\",\"anyof_obj\":\"{\\\"key\\\": \\\"value\\\"}\",\"type_as_array\":\"42\",\"multi_non_null\":\"some text\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. vLLM qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK."
     },
     {
       "id": "vllm-qwen3coder-complete-missing-closing-parameter-tag",
@@ -6928,18 +6928,18 @@
       },
       "args_compare": "json",
       "note": "Regression test (PR #36032). Parser and request both carry the test's tools (update_record, data: anyOf[object, null]). tools_called, exactly one call and args[\"data\"] (a dict, by value) are asserted; the arguments hold exactly that key. Name and content are not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "update_record",
-            "arguments": "{\"data\":{\"key\": \"value\", \"count\": 42}}"
+            "arguments": "{\"data\":\"{\\\"key\\\": \\\"value\\\", \\\"count\\\": 42}\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. vLLM qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK."
     },
     {
       "id": "vllm-qwen3coder-complete-no-double-serialization-string-args",
@@ -7262,18 +7262,18 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), Some(&tools)). Tools: process_data, config: object. Exactly one call; args[\"config\"] is an object whose \"setting\" / \"count\" are asserted (it holds exactly those keys, and the arguments exactly that key), compared as JSON-value equality. Name and content not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "process_data",
-            "arguments": "{\"config\":{\"setting\": \"value\", \"count\": 42}}"
+            "arguments": "{\"config\":\"{\\\"setting\\\": \\\"value\\\", \\\"count\\\": 42}\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. Dynamo qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK."
     },
     {
       "id": "dynamo-qwen3coder-no-tool-calls",
@@ -7574,11 +7574,11 @@
         "tool_calls": [
           {
             "name": "multi_param_func",
-            "arguments": "{\"param1\":\"42\",\"param2\":41.9,\"param3\":42,\"param4\":true,\"param5\":{\"key\": \"value\"},\"param6\":[1, 2, 3],\"param7\":null,\"param8\":\"{'arg1': 3, 'arg2': [1, 2]}\"}"
+            "arguments": "{\"param1\":\"42\",\"param2\":\"41.9\",\"param3\":\"42\",\"param4\":\"true\",\"param5\":\"{\\\"key\\\": \\\"value\\\"}\",\"param6\":\"[1, 2, 3]\",\"param7\":\"null\",\"param8\":\"{'arg1': 3, 'arg2': [1, 2]}\"}"
           }
         ]
       },
-      "reason": "spec §8: a parameter whose schema type is unknown. for type \"other_type\" Dynamo falls back to Python literal_eval and returns an object; the SDK keeps the string."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. Dynamo qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK. (Its Python literal_eval fallback for the unknown type \"other_type\" is likewise a string.)"
     },
     {
       "id": "dynamo-qwen3coder-schema-aware-type-conversion-fallback",
@@ -7630,7 +7630,7 @@
           }
         ]
       },
-      "reason": "spec §8: a boolean value that is neither true/1 nor false/0. Dynamo returns false; the SDK keeps the raw string."
+      "reason": "qwen3_coder@1 spec §5 (wire #46): every VALUE is a JSON string, verbatim after one wrapping newline is stripped each side; no value is coerced and no tool schema is read. Dynamo qwen3_coder types values by the request's tool schema, so its numbers / booleans / objects / arrays / null are strings in the SDK. (Its false for a boolean that is neither true/1 nor false/0 is likewise the raw string.)"
     },
     {
       "id": "dynamo-qwen3coder-no-schema-fallback-behavior",

@@ -54,12 +54,12 @@ describe('parser reference corpus (vLLM / Dynamo)', () => {
         // the parse. Streaming with the reference's deltas must equal the full-text parse.
         it('streaming agrees with the full-text parse', async () => {
           const frames = c.input as readonly string[];
-          const full = runComplete(c.parser, frames.join(''), c.tools);
-          expect((await runStream(c.parser, frames, true, c.tools)).actual).toEqual(full);
+          const full = runComplete(c.parser, frames.join(''));
+          expect((await runStream(c.parser, frames, true)).actual).toEqual(full);
           if (c.substituted_deltas === true) {
             // The reference's tokenizer deltas are substituted, so every fixed width must agree.
             for (let w = 1; w <= 8; w += 1) {
-              expect((await runStream(c.parser, splitFixed(frames.join(''), w), true, c.tools)).actual).toEqual(full);
+              expect((await runStream(c.parser, splitFixed(frames.join(''), w), true)).actual).toEqual(full);
             }
           }
         });

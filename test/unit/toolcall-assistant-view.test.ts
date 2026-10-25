@@ -22,7 +22,6 @@ import { TrueOpenError } from '../../src/errors/errors';
 import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 import { qwen3ReasoningParser } from '../../src/toolcall/reasoning';
 import { qwen3CoderParser } from '../../src/toolcall/parsers/qwen3-coder';
-import type { ChatTool } from '../../src/order/chat-input';
 
 const CHAIN_ID = 'trueopen-localnet-1';
 const TASK_ID = `0x${'aa'.repeat(32)}`;
@@ -278,17 +277,14 @@ describe('deriveAssistantMessage', () => {
   });
 });
 
-describe('the request tools reach a schema-typed parser on every path', () => {
-  const tools: readonly ChatTool[] = [
-    { type: 'function', function: { name: 'f', parameters: { type: 'object', properties: { n: { type: 'integer' } } } } },
-  ];
+describe('qwen3_coder@1 values are JSON strings on every path (wire #46)', () => {
   const text = '<think>\nplan\n</think>\n\n<tool_call>\n<function=f>\n<parameter=n>\n5\n</parameter>\n</function>\n</tool_call>';
-  const typed = [{ name: 'f', arguments: '{"n":5}' }];
-  const opts = { parser: qwen3CoderParser, reasoning: qwen3ReasoningParser, tools };
+  const strings = [{ name: 'f', arguments: '{"n":"5"}' }];
+  const opts = { parser: qwen3CoderParser, reasoning: qwen3ReasoningParser };
 
   it('streaming', async () => {
     const events = await collect(deriveAssistantStream(frames(text.slice(0, 40), text.slice(40)), opts));
-    expect(events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call] : []))).toEqual(typed);
+    expect(events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call] : []))).toEqual(strings);
   });
 
   it('confirmation', () => {
@@ -297,12 +293,11 @@ describe('the request tools reach a schema-typed parser on every path', () => {
       { chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: checkpointOver(chunks), receipt: receiptFor(chunks) },
       opts,
     );
-    expect(message.toolCalls).toEqual(typed);
+    expect(message.toolCalls).toEqual(strings);
     expect(message.reasoningContent).toBe('plan');
   });
 
   it('non-streaming', () => {
-    expect(deriveAssistantMessage(text, opts).toolCalls).toEqual(typed);
-    expect(deriveAssistantMessage(text, { parser: qwen3CoderParser }).toolCalls).toEqual([{ name: 'f', arguments: '{"n":"5"}' }]);
+    expect(deriveAssistantMessage(text, opts).toolCalls).toEqual(strings);
   });
 });

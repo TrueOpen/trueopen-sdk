@@ -1,9 +1,7 @@
-import type { ChatJsonValue, ChatTool } from '../../order/chat-input';
 import { createMarkerStreamState } from '../stream-state';
 import type {
   DerivedAssistantMessage,
   DerivedToolCall,
-  ToolCallContext,
   ToolCallParseOptions,
   ToolCallParser,
   ToolCallStreamState,
@@ -15,9 +13,6 @@ const FUNCTION_OPEN = '<function=';
 const FUNCTION_CLOSE = '</function>';
 const PARAMETER_OPEN = '<parameter=';
 const PARAMETER_CLOSE = '</parameter>';
-
-/** A tool's `parameters.properties`: parameter name to its JSON Schema. */
-type SchemaProperties = Readonly<Record<string, ChatJsonValue>>;
 
 function isWhitespace(ch: string | undefined): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
@@ -59,147 +54,17 @@ function trimWrappingNewlines(value: string): string {
   return out;
 }
 
-const TYPE_ALIASES: ReadonlyMap<string, string> = new Map(Object.entries({
-  str: 'string',
-  text: 'string',
-  varchar: 'string',
-  char: 'string',
-  enum: 'string',
-  int: 'integer',
-  int32: 'integer',
-  int64: 'integer',
-  uint: 'integer',
-  uint32: 'integer',
-  uint64: 'integer',
-  long: 'integer',
-  short: 'integer',
-  unsigned: 'integer',
-  float: 'number',
-  float32: 'number',
-  float64: 'number',
-  double: 'number',
-  bool: 'boolean',
-  dict: 'object',
-  arr: 'array',
-  list: 'array',
-  sequence: 'array',
-}));
-
-function isJsonObject(v: unknown): v is Readonly<Record<string, ChatJsonValue>> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
-
-function jsonValueType(v: unknown): string | undefined {
-  if (v === null) return 'null';
-  if (typeof v === 'boolean') return 'boolean';
-  if (typeof v === 'bigint') return 'integer';
-  if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'number';
-  if (typeof v === 'string') return 'string';
-  if (Array.isArray(v)) return 'array';
-  if (typeof v === 'object') return 'object';
-  return undefined;
-}
-
-/**
- * The JSON Schema types a parameter admits: `type` (a string or a list), the types of `enum`
- * values, and recursively `anyOf` / `oneOf` / `allOf`, normalized through `TYPE_ALIASES`.
- * `string` when the schema says nothing usable.
- */
-function schemaTypes(schema: unknown): Set<string> {
-  const types = new Set<string>();
-  const collect = (s: unknown): void => {
-    if (!isJsonObject(s)) return;
-    const type = s['type'];
-    for (const t of typeof type === 'string' ? [type] : Array.isArray(type) ? type : []) {
-      if (typeof t !== 'string') continue;
-      const key = t.trim().toLowerCase();
-      types.add(TYPE_ALIASES.get(key) ?? key);
-    }
-    const values = s['enum'];
-    if (Array.isArray(values)) {
-      for (const v of values) {
-        const t = jsonValueType(v);
-        if (t !== undefined) types.add(t);
-      }
-    }
-    for (const field of ['anyOf', 'oneOf', 'allOf']) {
-      const choices = s[field];
-      if (Array.isArray(choices)) for (const choice of choices) collect(choice);
-    }
-  };
-  collect(schema);
-  if (types.size === 0) types.add('string');
-  return types;
-}
-
-const INTEGER_LITERAL = /^-?(?:0|[1-9][0-9]*)$/;
-const NUMBER_LITERAL = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
-
-function parsesAs(text: string, want: 'object' | 'array'): boolean {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return false;
-  }
-  return want === 'array' ? Array.isArray(value) : isJsonObject(value);
-}
-
-/**
- * One parameter value as JSON text, typed by the parameter's schema.
- *
- * The model writes every value as plain text; the schema decides what it becomes. Candidate
- * types are tried in a fixed priority -- null, integer, number, boolean, object, array, string
- * -- and the first the text satisfies wins. A value that satisfies none of its types, or whose
- * parameter has no schema, stays a string. Numbers, objects and arrays keep the model's own
- * bytes (whitespace-trimmed) rather than a re-serialization, so no precision or key order is lost.
- */
-function valueJson(raw: string, schema: ChatJsonValue | undefined): string {
-  const types = schema === undefined ? new Set(['string']) : schemaTypes(schema);
-  const text = raw.slice(skipWhitespace(raw, 0)).replace(/[ \t\n\r]+$/, '');
-  for (const type of ['null', 'integer', 'number', 'boolean', 'object', 'array', 'string']) {
-    if (!types.has(type)) continue;
-    switch (type) {
-      case 'null':
-        if (text.toLowerCase() === 'null') return 'null';
-        break;
-      case 'integer':
-        if (INTEGER_LITERAL.test(text)) return text;
-        break;
-      case 'number':
-        if (NUMBER_LITERAL.test(text)) return text;
-        break;
-      case 'boolean': {
-        const lower = text.toLowerCase();
-        if (lower === 'true' || lower === '1') return 'true';
-        if (lower === 'false' || lower === '0') return 'false';
-        break;
-      }
-      case 'object':
-      case 'array':
-        if (parsesAs(text, type)) return text;
-        break;
-      case 'string':
-        return JSON.stringify(raw);
-    }
-  }
-  return JSON.stringify(raw);
-}
-
-/** `parameters.properties` of the tool named `name`, if the request declared one. */
-function schemaProperties(tools: readonly ChatTool[] | undefined, name: string): SchemaProperties | undefined {
-  const tool = tools?.find((t) => t.type === 'function' && t.function.name === name);
-  const properties = tool?.function.parameters?.['properties'];
-  return isJsonObject(properties) ? properties : undefined;
-}
-
 /**
  * The arguments JSON of one function body: each `<parameter=KEY>VALUE</parameter>` in order of
  * appearance. A missing `</parameter>` ends the value at the next `<parameter=` or at the end of
  * the body. A repeated key keeps its first position and its last value. Anything but whitespace
  * between parameters means the body is not a call.
+ *
+ * Every value is a JSON string: the raw text, less one wrapping newline each side, verbatim. No
+ * value is coerced to a number, boolean, object or array, and no tool schema is consulted, so
+ * the result depends on the committed output alone (wire #46).
  */
-function parseParameters(body: string, properties: SchemaProperties | undefined): string | undefined {
+function parseParameters(body: string): string | undefined {
   const entries = new Map<string, string>();
   let i = 0;
   for (;;) {
@@ -209,9 +74,7 @@ function parseParameters(body: string, properties: SchemaProperties | undefined)
     const key = readTagValue(body, i + PARAMETER_OPEN.length);
     if (key === undefined) return undefined;
     const valueEnd = indexOfFirst(body, [PARAMETER_CLOSE, PARAMETER_OPEN], key.end);
-    const raw = trimWrappingNewlines(body.slice(key.end, valueEnd));
-    const schema = properties !== undefined && Object.prototype.hasOwnProperty.call(properties, key.value) ? properties[key.value] : undefined;
-    entries.set(key.value, valueJson(raw, schema));
+    entries.set(key.value, JSON.stringify(trimWrappingNewlines(body.slice(key.end, valueEnd))));
     i = body.startsWith(PARAMETER_CLOSE, valueEnd) ? valueEnd + PARAMETER_CLOSE.length : valueEnd;
   }
   return `{${[...entries].map(([k, v]) => `${JSON.stringify(k)}:${v}`).join(',')}}`;
@@ -225,7 +88,7 @@ function parseParameters(body: string, properties: SchemaProperties | undefined)
  * Returns `undefined` when the block is not a call after all -- no function, an unfinished tag,
  * or stray text -- and the raw block then flows on as content (design S6 row one).
  */
-function parseQwen3CoderBlock(inner: string, tools: readonly ChatTool[] | undefined): DerivedToolCall[] | undefined {
+function parseQwen3CoderBlock(inner: string): DerivedToolCall[] | undefined {
   const calls: DerivedToolCall[] = [];
   let i = 0;
   for (;;) {
@@ -235,7 +98,7 @@ function parseQwen3CoderBlock(inner: string, tools: readonly ChatTool[] | undefi
     const name = readTagValue(inner, i + FUNCTION_OPEN.length);
     if (name === undefined) return undefined;
     const bodyEnd = indexOfFirst(inner, [FUNCTION_CLOSE, FUNCTION_OPEN], name.end);
-    const args = parseParameters(inner.slice(name.end, bodyEnd), schemaProperties(tools, name.value));
+    const args = parseParameters(inner.slice(name.end, bodyEnd));
     if (args === undefined) return undefined;
     calls.push({ name: name.value, arguments: args });
     i = inner.startsWith(FUNCTION_CLOSE, bodyEnd) ? bodyEnd + FUNCTION_CLOSE.length : bodyEnd;
@@ -243,12 +106,11 @@ function parseQwen3CoderBlock(inner: string, tools: readonly ChatTool[] | undefi
   return calls.length === 0 ? undefined : calls;
 }
 
-function createQwen3CoderStreamState(ctx?: ToolCallContext): ToolCallStreamState {
-  const tools = ctx?.tools;
+function createQwen3CoderStreamState(): ToolCallStreamState {
   return createMarkerStreamState({
     startMarker: START_MARKER,
     endMarker: END_MARKER,
-    parseCall: (inner) => parseQwen3CoderBlock(inner, tools),
+    parseCall: parseQwen3CoderBlock,
     // Values are free text, not JSON: a lone quote in one must not hide `</tool_call>`.
     quoteAware: false,
   });
@@ -268,10 +130,9 @@ function createQwen3CoderStreamState(ctx?: ToolCallContext): ToolCallStreamState
  * ```
  *
  * Unlike hermes@1 the model writes no JSON: each value is plain text, and the arguments object
- * is assembled here. A value's JSON type comes from the request's tool schema (`tools` in the
- * context), the way vLLM's `qwen3_xml` / `qwen3_coder` parsers read it; without a schema for the
- * parameter the value is a string. So unlike hermes@1 the result depends on the request's
- * `tools` as well as the committed output -- both committed, the tools through `input_hash`.
+ * is assembled here with every value a JSON string, verbatim (wire #46). vLLM's `qwen3_xml` /
+ * `qwen3_coder` and Dynamo coerce values by the request's tool schema; qwen3_coder@1 does not,
+ * so its result depends on the committed output alone, like hermes@1.
  *
  * Conformance is `'unverified'`: no shared vectors exist (monorepo#11).
  */
@@ -281,7 +142,7 @@ export const qwen3CoderParser: ToolCallParser = {
   parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage {
     // The streaming machine, so the full-text and streaming paths cannot diverge (design S7
     // requirement 1).
-    const state = createQwen3CoderStreamState(opts);
+    const state = createQwen3CoderStreamState();
     const events = [...state.push(text), ...state.finish(opts)];
     let content = '';
     const toolCalls: DerivedToolCall[] = [];

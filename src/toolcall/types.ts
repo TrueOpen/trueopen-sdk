@@ -1,5 +1,4 @@
 import type { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
-import type { ChatTool } from '../order/chat-input';
 import type { ConfirmedOutputEvent } from '../output/output-confirmation';
 
 /**
@@ -68,21 +67,6 @@ export type ToolCallStreamEvent =
 export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reasoning'; readonly text: string };
 
 /**
- * What a parser may know besides the committed output.
- *
- * `tools` is the request's tool list, i.e. the `tools` of the committed chat input
- * (`input_hash` covers it). A parser whose format writes argument values as plain text
- * (qwen3_coder@1) reads each parameter's JSON Schema type from it; a parser that receives JSON
- * arguments (hermes@1) ignores it. The stream and the confirmation must be given the same list.
- *
- * A stream state reads `tools` only when it is created (`createStreamState(ctx)`); passing it to
- * `finish` has no effect, which is why `finish` takes `ToolCallFinishOptions`, not this.
- */
-export interface ToolCallContext {
-  readonly tools?: readonly ChatTool[];
-}
-
-/**
  * How the end of the output is to be read. Given only by a caller that knows the verified
  * protocol finish reason (design S7 requirement 6).
  */
@@ -96,8 +80,11 @@ export interface ToolCallFinishOptions {
   readonly recoverUnclosedAtEnd?: boolean;
 }
 
-/** Options of `parseComplete`: how the end is read, plus the context a stream state takes at creation. */
-export interface ToolCallParseOptions extends ToolCallFinishOptions, ToolCallContext {}
+/**
+ * Options of `parseComplete`: how the end is read. The committed output and the verified finish
+ * reason are a parser's only inputs (Manifest S7.2 rules 3, 6).
+ */
+export type ToolCallParseOptions = ToolCallFinishOptions;
 
 /** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
 export interface ToolCallStreamState {
@@ -108,7 +95,7 @@ export interface ToolCallStreamState {
 
 export interface ToolCallParser extends ParserRef {
   parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage;
-  createStreamState(ctx?: ToolCallContext): ToolCallStreamState;
+  createStreamState(): ToolCallStreamState;
 }
 
 /** Only reachable through `confirmAssistantMessageWithReceipt`, i.e. only after reconciliation. */

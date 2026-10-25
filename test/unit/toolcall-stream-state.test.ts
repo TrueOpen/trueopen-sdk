@@ -211,7 +211,7 @@ describe('createMarkerStreamState', () => {
       return calls.every((c) => c !== undefined) ? (calls as DerivedToolCall[]) : undefined;
     };
     const runMany = (frames: readonly string[], recover = false): AssistantStreamEvent[] => {
-      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall: many });
+      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall: many, recoverUnclosed: many });
       const events: AssistantStreamEvent[] = [];
       for (const frame of frames) events.push(...state.push(frame));
       events.push(...state.finish({ recoverUnclosedAtEnd: recover }));
@@ -236,6 +236,39 @@ describe('createMarkerStreamState', () => {
         { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
         { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
       ]);
+    });
+  });
+
+  describe('unclosed-call recovery is the parser\'s own (Manifest S7.2 rule 6)', () => {
+    const finishWith = (opts: { recoverUnclosed?: (body: string) => DerivedToolCall | undefined }, recover: boolean) => {
+      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, ...opts });
+      return [...state.push('x<tc>f|1</t'), ...state.finish({ recoverUnclosedAtEnd: recover })];
+    };
+
+    it('a parser that defines no recovery flushes the unclosed segment as text, even after a natural stop', () => {
+      expect(finishWith({}, true)).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'content', text: '<tc>f|1</t' },
+      ]);
+    });
+
+    it('a parser that defines recovery gets the raw body, partial end marker included', () => {
+      const seen: string[] = [];
+      const events = finishWith({ recoverUnclosed: (body) => (seen.push(body), parseCall(body)) }, true);
+      expect(seen).toEqual(['f|1</t']);
+      expect(events).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: '1</t' } },
+      ]);
+    });
+
+    it('is not consulted without the finish-reason gate', () => {
+      const seen: string[] = [];
+      expect(finishWith({ recoverUnclosed: (body) => (seen.push(body), parseCall(body)) }, false)).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'content', text: '<tc>f|1</t' },
+      ]);
+      expect(seen).toEqual([]);
     });
   });
 });

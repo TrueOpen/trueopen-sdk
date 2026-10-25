@@ -102,8 +102,9 @@ const inputFrames = (input: string | readonly string[]): readonly string[] =>
 
 /**
  * The references' finalize paths stand for a generation that ended by itself (EOS), so the SDK
- * runs as after a signed Fin of EOS_TOKEN: an unclosed final call whose body parses is recovered
- * (design S7 requirement 6).
+ * runs as after a signed Fin of EOS_TOKEN: a parser that defines unclosed-call recovery (hermes@1)
+ * may recover an unclosed final call; one that defines none (qwen3_coder@1) does not (Manifest
+ * S7.2 rule 6).
  */
 const ENDED_BY_MODEL = { recoverUnclosedAtEnd: true } as const;
 

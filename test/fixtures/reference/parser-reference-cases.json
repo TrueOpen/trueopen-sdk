@@ -1129,7 +1129,7 @@
           }
         ]
       },
-      "reason": "Design S7 requirement 6: when the signed Fin says the model stopped by itself (EOS_TOKEN / STOP_SEQUENCE), a final call whose body parses is recovered although its closing marker never came -- as vLLM (the `<tool_call>(.*)` regex alternative) and Dynamo (allow_eof_recovery) do. The harness runs as after an EOS Fin."
+      "reason": "Manifest S7.2 rule 6, hermes@1 recovery: when the verified Fin says the model stopped by itself (EOS_TOKEN / STOP_SEQUENCE / STOP_TOKEN), a final call whose body is a complete JSON object with a string name is recovered although its closing marker never came -- as vLLM (the `<tool_call>(.*)` regex alternative) and Dynamo (allow_eof_recovery) do. The harness runs as after an EOS Fin."
     },
     {
       "id": "vllm-hermes-complete-invalid-json",
@@ -2788,7 +2788,7 @@
         "reasoning_content": "",
         "tool_calls": []
       },
-      "reason": "Design S7 requirement 6: an unclosed <tool_call> whose body does not parse flushes as plain text, start marker included, even after a natural stop -- committed bytes are never dropped. Dynamo's never-leak gate drops the partial markup instead."
+      "reason": "Manifest S7.2 rule 6, hermes@1 recovery: an unclosed <tool_call> whose body does not parse flushes as plain text, start marker included, even after a natural stop -- committed bytes are never dropped. Dynamo's never-leak gate drops the partial markup instead."
     },
     {
       "id": "dynamo-hermes-without-new-line",
@@ -3005,7 +3005,7 @@
         "reasoning_content": "",
         "tool_calls": []
       },
-      "reason": "Design S7 requirement 6: an unclosed <tool_call> whose body does not parse flushes as plain text, start marker included, even after a natural stop -- committed bytes are never dropped. Dynamo's never-leak gate drops the partial markup instead."
+      "reason": "Manifest S7.2 rule 6, hermes@1 recovery: an unclosed <tool_call> whose body does not parse flushes as plain text, start marker included, even after a natural stop -- committed bytes are never dropped. Dynamo's never-leak gate drops the partial markup instead."
     },
     {
       "id": "dynamo-hermes-jail-truncated-no-prose",
@@ -3034,7 +3034,7 @@
         "reasoning_content": "",
         "tool_calls": []
       },
-      "reason": "Design S7 requirement 6: an unclosed <tool_call> whose body does not parse flushes as plain text, start marker included, even after a natural stop -- committed bytes are never dropped. Dynamo's never-leak gate drops the partial markup instead."
+      "reason": "Manifest S7.2 rule 6, hermes@1 recovery: an unclosed <tool_call> whose body does not parse flushes as plain text, start marker included, even after a natural stop -- committed bytes are never dropped. Dynamo's never-leak gate drops the partial markup instead."
     },
     {
       "id": "dynamo-hermes-jail-orphan-close",
@@ -7463,18 +7463,13 @@
       },
       "args_compare": "json",
       "note": "XmlParserConfig { allow_eof_recovery: true, ..default } (the finalize path), tools None; the runner runs the SDK as after an EOS_TOKEN Fin. The reference asserts args[\"city\"] only; the arguments hold exactly that key. Content not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call>\n<function=get_weather>\n<parameter=city>\nNYC\n</parameter>\n</function>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "get_weather",
-            "arguments": "{\"city\":\"NYC\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Manifest S7.2 rule 6: recovery of an unclosed call is defined per parser, and qwen3_coder@1 defines none, so its unclosed final block is content whatever the finish reason (the runner runs as after an EOS_TOKEN Fin). Dynamo's allow_eof_recovery recovers it as a call."
     },
     {
       "id": "dynamo-qwen3coder-bare-function-complete-value-recovers",

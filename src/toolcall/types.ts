@@ -72,10 +72,10 @@ export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reaso
  */
 export interface ToolCallFinishOptions {
   /**
-   * The model stopped by itself (the signed Fin says EOS_TOKEN or STOP_SEQUENCE), so a final
-   * call whose closing marker never came is complete if its body parses: recover it as a call,
-   * as vLLM and Dynamo do. Without it -- truncated, stopped by the user, or the reason
-   * unavailable -- an unclosed segment flushes as plain text.
+   * The model stopped by itself (the signed Fin says EOS_TOKEN, STOP_SEQUENCE or STOP_TOKEN), so
+   * a final call whose closing marker never came may be recovered, if the parser defines recovery
+   * (Manifest S7.2 rule 6; hermes@1 does, qwen3_coder@1 does not). Without it -- truncated,
+   * stopped by the user, or the reason unavailable -- an unclosed segment flushes as plain text.
    */
   readonly recoverUnclosedAtEnd?: boolean;
 }
@@ -89,7 +89,7 @@ export type ToolCallParseOptions = ToolCallFinishOptions;
 /** Incremental parse state. `push` is fed decoded text as it arrives; `finish` ends the stream. */
 export interface ToolCallStreamState {
   push(text: string): readonly ToolCallStreamEvent[];
-  /** End of stream. An unclosed segment flushes as plain text unless recovered (design S7 requirement 6). */
+  /** End of stream. An unclosed segment flushes as plain text unless recovered (Manifest S7.2 rule 6). */
   finish(opts?: ToolCallFinishOptions): readonly ToolCallStreamEvent[];
 }
 

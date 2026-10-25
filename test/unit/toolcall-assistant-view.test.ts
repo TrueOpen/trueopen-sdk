@@ -36,7 +36,7 @@ const parseCall = (inner: string): DerivedToolCall | undefined => {
   return { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
 };
 
-const newState = () => createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall });
+const newState = () => createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, recoverUnclosed: parseCall });
 
 /** The same marker grammar in both directions, so streaming and one-shot agree. */
 const parser: ToolCallParser = {
@@ -147,6 +147,7 @@ describe('an unclosed final call is recovered only when the model stopped by its
   it.each([
     ['EOS_TOKEN', FinishReasonV1.EOS_TOKEN],
     ['STOP_SEQUENCE', FinishReasonV1.STOP_SEQUENCE],
+    ['STOP_TOKEN', FinishReasonV1.STOP_TOKEN],
   ])('stream: recovered after a Fin of %s', async (_label, reason) => {
     const events = await collect(deriveAssistantStream(framesEndingWith(reason, ...UNCLOSED), { parser }));
     expect(events).toEqual([
@@ -169,8 +170,20 @@ describe('an unclosed final call is recovered only when the model stopped by its
   it('non-streaming: follows the finish reason it is given', () => {
     const text = UNCLOSED.join('');
     expect(deriveAssistantMessage(text, { parser, finishReason: FinishReasonV1.EOS_TOKEN }).toolCalls).toHaveLength(1);
+    expect(deriveAssistantMessage(text, { parser, finishReason: FinishReasonV1.STOP_TOKEN }).toolCalls).toHaveLength(1);
     expect(deriveAssistantMessage(text, { parser, finishReason: FinishReasonV1.MAX_OUTPUT_TOKENS }).toolCalls).toEqual([]);
+    expect(deriveAssistantMessage(text, { parser, finishReason: FinishReasonV1.USER_STOP }).toolCalls).toEqual([]);
     expect(deriveAssistantMessage(text, { parser }).toolCalls).toEqual([]);
+  });
+
+  it('a parser that defines no recovery never recovers (qwen3_coder@1), whatever the finish reason', async () => {
+    const text = 'ok<tool_call>\n<function=f>\n<parameter=a>\n1\n</parameter>\n</function>\n';
+    for (const finishReason of [FinishReasonV1.EOS_TOKEN, FinishReasonV1.STOP_SEQUENCE, FinishReasonV1.STOP_TOKEN]) {
+      expect(deriveAssistantMessage(text, { parser: qwen3CoderParser, finishReason })).toEqual({ role: 'assistant', content: text, toolCalls: [] });
+      const events = await collect(deriveAssistantStream(framesEndingWith(finishReason, text.slice(0, 9), text.slice(9)), { parser: qwen3CoderParser }));
+      expect(calls(events)).toEqual([]);
+      expect(events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join('')).toBe(text);
+    }
   });
 
   it('an unclosed reasoning span still runs no tool parsing (S7.3 rule 8)', () => {

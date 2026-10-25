@@ -43,9 +43,9 @@ describe('spec §7 examples, verbatim', () => {
     expect(parse(text)).toEqual({ content: text, toolCalls: [] });
   });
 
-  it('unclosed final block: a call with recover, content without', () => {
+  it('unclosed final block: always content, with or without recover (no recovery defined)', () => {
     const text = 'ok<tool_call>\n<function=f>\n</function>\n';
-    expect(parse(text, { recoverUnclosedAtEnd: true })).toEqual({ content: 'ok', toolCalls: [{ name: 'f', arguments: '{}' }] });
+    expect(parse(text, { recoverUnclosedAtEnd: true })).toEqual({ content: text, toolCalls: [] });
     expect(parse(text)).toEqual({ content: text, toolCalls: [] });
   });
 
@@ -160,11 +160,10 @@ describe('streaming', () => {
     ]);
   });
 
-  it('drops a partial end marker before recovering', () => {
-    expect(parse('<tool_call><function=f></function></tool_c', { recoverUnclosedAtEnd: true })).toEqual({
-      content: '',
-      toolCalls: [{ name: 'f', arguments: '{}' }],
-    });
+  it('flushes an unclosed block cut inside its end marker as content, even with recover', () => {
+    const text = '<tool_call><function=f></function></tool_c';
+    expect(parse(text, { recoverUnclosedAtEnd: true })).toEqual({ content: text, toolCalls: [] });
+    expect(run([...text], { recoverUnclosedAtEnd: true })).toEqual([{ kind: 'content', text }]);
   });
 });
 

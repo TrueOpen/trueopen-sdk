@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { hermesParser } from '../../src/toolcall/parsers/hermes';
 import type { ToolCallStreamEvent } from '../../src/toolcall/types';
+import { deriveAssistantMessage } from '../../src/toolcall/assistant-view';
+import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 
 const call = (name: string, args: string): string =>
   `<tool_call>{"name":"${name}","arguments":${args}}</tool_call>`;
@@ -170,7 +172,7 @@ describe('hermesParser.parseComplete', () => {
   });
 });
 
-describe('hermesParser: a final call missing its closing marker (design S7 requirement 6)', () => {
+describe('hermesParser: a final call missing its closing marker (Manifest S7.2 rule 6)', () => {
   const RECOVER = { recoverUnclosedAtEnd: true } as const;
   // vLLM tests/tool_parsers/test_hermes_tool_parser.py::test_hermes_parser_non_streaming_tool_call_until_eos
   const UNTIL_EOS = '<tool_call>\n{"name": "final_answer", "arguments": {"trigger": true}}';
@@ -204,6 +206,22 @@ describe('hermesParser: a final call missing its closing marker (design S7 requi
     const m = hermesParser.parseComplete(`${call('a', '{"x":1}')} and ${UNTIL_EOS}`, RECOVER);
     expect(m.content).toBe(' and ');
     expect(m.toolCalls.map((c) => c.name)).toEqual(['a', 'final_answer']);
+  });
+
+  it('is gated by the verified finish reason: EOS_TOKEN / STOP_SEQUENCE / STOP_TOKEN only', () => {
+    const calls = (finishReason?: FinishReasonV1) =>
+      deriveAssistantMessage(UNTIL_EOS, { parser: hermesParser, ...(finishReason !== undefined ? { finishReason } : {}) }).toolCalls.length;
+    expect([FinishReasonV1.EOS_TOKEN, FinishReasonV1.STOP_SEQUENCE, FinishReasonV1.STOP_TOKEN].map(calls)).toEqual([1, 1, 1]);
+    expect([FinishReasonV1.MAX_OUTPUT_TOKENS, FinishReasonV1.MAX_OUTPUT_DURATION, FinishReasonV1.USER_STOP, undefined].map(calls)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('judges the raw committed bytes: an order stop string the output ends with is not stripped', () => {
+    const text = `${UNTIL_EOS}\nEND`;
+    expect(deriveAssistantMessage(text, { parser: hermesParser, finishReason: FinishReasonV1.STOP_SEQUENCE })).toEqual({
+      role: 'assistant',
+      content: text,
+      toolCalls: [],
+    });
   });
 
   it('recovers at the end of a stream too, whatever the frame boundaries', () => {

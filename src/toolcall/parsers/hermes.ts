@@ -1,6 +1,6 @@
-import { skipJsonString } from '../marker-scan';
+import { partialMarkerSuffix, skipJsonString } from '../marker-scan';
 import { createMarkerStreamState } from '../stream-state';
-import type { DerivedAssistantMessage, DerivedToolCall, ToolCallParseOptions, ToolCallParser } from '../types';
+import type { DerivedAssistantMessage, DerivedToolCall, ToolCallParseOptions, ToolCallParser, ToolCallStreamState } from '../types';
 
 const START_MARKER = '<tool_call>';
 const END_MARKER = '</tool_call>';
@@ -39,6 +39,17 @@ function parseHermesCall(inner: string): DerivedToolCall | undefined {
 
   const args = extractRawArguments(inner);
   return { name, arguments: args ?? '{}' };
+}
+
+/**
+ * hermes@1's recovery of an unclosed final call (Manifest S7.2 rule 6), used only when the model
+ * stopped by itself: the body must be a complete call by the rules of `parseHermesCall` -- a
+ * valid JSON object with a string `name` -- once a partial end marker at the very end
+ * (`</tool_c`, cut short by the stop) is dropped. One call at most. The exact rule is for wire to
+ * fix; this is the SDK's until then.
+ */
+function recoverHermesCall(body: string): DerivedToolCall | undefined {
+  return parseHermesCall(body.slice(0, body.length - partialMarkerSuffix(body, [END_MARKER])));
 }
 
 function isJsonWhitespace(ch: string | undefined): boolean {
@@ -117,6 +128,15 @@ function extractRawArguments(inner: string): string | undefined {
   }
 }
 
+function createHermesStreamState(): ToolCallStreamState {
+  return createMarkerStreamState({
+    startMarker: START_MARKER,
+    endMarker: END_MARKER,
+    parseCall: parseHermesCall,
+    recoverUnclosed: recoverHermesCall,
+  });
+}
+
 /**
  * The Hermes tool-call parser: `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`.
  *
@@ -133,11 +153,7 @@ export const hermesParser: ToolCallParser = {
   parseComplete(text: string, opts?: ToolCallParseOptions): DerivedAssistantMessage {
     // Reuse the streaming machine so the full-text and streaming paths cannot diverge: a chunk
     // boundary is the Worker's choice and must not change the parse (design S7 requirement 1).
-    const state = createMarkerStreamState({
-      startMarker: START_MARKER,
-      endMarker: END_MARKER,
-      parseCall: parseHermesCall,
-    });
+    const state = createHermesStreamState();
     const events = [...state.push(text), ...state.finish(opts)];
     let content = '';
     const toolCalls: DerivedToolCall[] = [];
@@ -147,11 +163,5 @@ export const hermesParser: ToolCallParser = {
     }
     return { role: 'assistant', content, toolCalls };
   },
-  createStreamState() {
-    return createMarkerStreamState({
-      startMarker: START_MARKER,
-      endMarker: END_MARKER,
-      parseCall: parseHermesCall,
-    });
-  },
+  createStreamState: createHermesStreamState,
 };

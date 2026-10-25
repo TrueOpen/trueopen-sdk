@@ -20,6 +20,14 @@ export interface MarkerStreamOptions {
    * there a quote means nothing, and honouring it would let a stray quote hide the end marker.
    */
   readonly quoteAware?: boolean;
+  /**
+   * The parser's recovery of an unclosed final call (Manifest S7.2 rule 6), given everything after
+   * the start marker, raw, as committed. It decides what may be recovered and how a partial end
+   * marker at the very end is handled, and returns the call(s), or `undefined` / an empty array
+   * for none. Consulted only when `finish` is told the model stopped by itself. A parser that
+   * leaves it out defines no recovery: its unclosed final segment is always content.
+   */
+  readonly recoverUnclosed?: (body: string) => DerivedToolCall | readonly DerivedToolCall[] | undefined;
 }
 
 /**
@@ -32,8 +40,9 @@ export interface MarkerStreamOptions {
  *    |  Text  |---------------->| Buffering |----+ -> emit its tool call(s)
  *    +--------+                 +-----------+
  *         | ordinary bytes            | end of stream, still unclosed
- *         v emit as content           v flush buffer as plain text, or recover
- *                                       the call when the model stopped by itself
+ *         v emit as content           v flush buffer as plain text, or recover the call
+ *                                       when the model stopped by itself and the
+ *                                       parser defines recovery
  * ```
  *
  * The edge back to `Text` is load-bearing: the chat path has no stop conditions (design S13.3),
@@ -53,9 +62,9 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
   const quoteAware = opts.quoteAware !== false;
   const find = (text: string, marker: string): number =>
     quoteAware ? indexOfOutsideQuotes(text, marker) : text.indexOf(marker);
-  /** Pushes the call(s) of a segment, or returns false when it is not a call after all. */
-  function emitCalls(events: ToolCallStreamEvent[], inner: string): boolean {
-    const parsed = parseCall(inner);
+  /** Pushes the call(s) `parse` finds, or returns false when there are none. */
+  function emitCalls(events: ToolCallStreamEvent[], inner: string, parse = parseCall): boolean {
+    const parsed = parse(inner);
     const calls: readonly DerivedToolCall[] =
       parsed === undefined ? [] : Array.isArray(parsed) ? parsed : [parsed as DerivedToolCall];
     if (calls.length === 0) return false;
@@ -100,18 +109,15 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
         // early. No bound is imposed because capping overflow requires choosing what
         // happens on excess (drop output? error?), a policy decision design S7 leaves open.
         if (!atEnd) return events;
-        // Design S7 requirement 6. When the model stopped by itself, a body that parses is a
-        // complete call whose closing marker was simply never written (an end marker cut short
-        // by the stop is dropped with it), as vLLM and Dynamo read it. Otherwise -- truncated,
-        // or a body that does not parse -- the unclosed segment flushes as plain text, start
-        // marker included: neither dropped nor an error.
-        if (recover) {
-          const inner = buffer.slice(0, buffer.length - partialMarkerSuffix(buffer, [endMarker]));
-          if (emitCalls(events, inner)) {
-            buffer = '';
-            buffering = false;
-            return events;
-          }
+        // Manifest S7.2 rule 6. When the model stopped by itself and the parser defines
+        // recovery, the parser may read the unclosed body as a complete call whose closing marker
+        // was never written. Otherwise -- truncated, no recovery defined, or nothing recovered --
+        // the unclosed segment flushes as plain text, start marker included: neither dropped nor
+        // an error.
+        if (recover && opts.recoverUnclosed !== undefined && emitCalls(events, buffer, opts.recoverUnclosed)) {
+          buffer = '';
+          buffering = false;
+          return events;
         }
         events.push({ kind: 'content', text: startMarker + buffer });
         buffer = '';

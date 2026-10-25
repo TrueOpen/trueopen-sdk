@@ -34,12 +34,12 @@ scope; a stream split never changes the result).
 | Input | Source | Committed by |
 |---|---|---|
 | `text` | the committed output (or the reasoning remainder) | `output_hash` in the `InferReceipt` |
-| `recover` | true iff the Worker-signed Fin's finish reason is `EOS_TOKEN` or `STOP_SEQUENCE` | the Fin, held to the receipt |
 
-These are the only inputs, as for hermes@1 (Manifest §7.2 rules 3 and 6): the result is a function
-of the committed output, `(name, version)` and the verified finish reason. The request's `tools`
-are **not** an input. The model writes each argument value as plain text and qwen3_coder@1 keeps
-it as a JSON string (§5, wire#46); no tool schema is read.
+This is the only input. The result is a function of the committed output and `(name, version)`
+(Manifest §7.2 rule 3). The verified finish reason, which Manifest §7.2 rule 6 allows as a
+further input for unclosed-call recovery, does not change it, because qwen3_coder@1 defines no
+recovery (§3). The request's `tools` are **not** an input: the model writes each argument value
+as plain text and qwen3_coder@1 keeps it as a JSON string (§5, wire#46); no tool schema is read.
 
 ## 3. Framing
 
@@ -48,10 +48,9 @@ it as a JSON string (§5, wire#46); no tool schema is read.
   unlike hermes@1, whose payload is JSON (design §5.3).
 - Text outside blocks is content, concatenated in order. Zero or more blocks.
 - A block whose body (§4) is not a call is emitted as content verbatim, markers included.
-- **Unclosed final block** (start marker, no end marker by end of text):
-  - when `recover` is true and the body parses as a call, it is a call; a partial end marker at
-    the very end (`</tool_c`) is dropped first;
-  - otherwise the start marker and everything after it are content.
+- **Unclosed final block** (start marker, no end marker by end of text): the start marker and
+  everything after it are content, whatever the finish reason. qwen3_coder@1 defines no
+  unclosed-call recovery (Manifest §7.2 rule 6: a parser that defines none does not recover).
 - A `<function=` with no `<tool_call>` before it is content. There is no bare-function
   fallback.
 
@@ -137,9 +136,8 @@ entry     := json_string(KEY) ":" json_string(VALUE)
 | `<tool_call><function=f><parameter=s>a<parameter=k>b</parameter></function></tool_call>` | `""` | `f`, `{"s":"a","k":"b"}` |
 | `<tool_call><function=f><parameter=s>a</tool_call>b</parameter></function></tool_call>` | `b</parameter></function></tool_call>` | `f`, `{"s":"a"}` |
 
-The unclosed final block `ok<tool_call>\n<function=f>\n</function>\n` gives:
-- with `recover`: content `ok`, one call `f`, `{}`;
-- without `recover`: the input, verbatim, as content.
+The unclosed final block `ok<tool_call>\n<function=f>\n</function>\n` is the input, verbatim, as
+content, whatever the finish reason.
 
 Values are strings whatever they look like:
 
@@ -164,16 +162,16 @@ picks one rule:
 | `<function=` with no `<tool_call>` | parsed as a call | parsed as a call | content |
 | stray text in a block | ignored | ignored | block is content |
 | malformed call next to good ones in one block | bad one dropped | varies | whole block is content |
-| unclosed final block | recovered | recovered (`allow_eof_recovery`) | recovered only on `EOS_TOKEN` / `STOP_SEQUENCE` |
+| unclosed final block | recovered | recovered (`allow_eof_recovery`) | content: no recovery defined (§3) |
 | arguments spacing | `json.dumps` (`", "`, `": "`) | compact | compact |
 | text outside blocks (whitespace between blocks, prose after a call, whitespace-only output) | content `None` when there are only calls and whitespace | normal text is trimmed and text after the first call is dropped | kept verbatim (§3) |
 | a value missing its closing tag | ends at the next `<parameter=` | runs on past `<parameter=` and `</tool_call>` (SGLang-style) | ends at the next `<parameter=` or the end of the function (§4) |
 
-The reference corpus (`test/fixtures/reference/`) holds 39 qwen3_coder cases: 22 agree and 17 diverge
+The reference corpus (`test/fixtures/reference/`) holds 39 qwen3_coder cases: 21 agree and 18 diverge
 by spec, each citing a row above.
 
 Each choice favours a rule that is exact in every language. For the unclosed final block it never
-invents a call from bytes the model did not finish: without `recover` the block is content.
+invents a call from bytes the model did not finish: the block is content.
 
 ## 9. Open items
 

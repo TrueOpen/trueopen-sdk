@@ -113,6 +113,8 @@ function createQwen3CoderStreamState(): ToolCallStreamState {
     parseCall: parseQwen3CoderBlock,
     // Values are free text, not JSON: a lone quote in one must not hide `</tool_call>`.
     quoteAware: false,
+    // No `recoverUnclosed`: qwen3_coder@1 defines no recovery (Manifest S7.2 rule 6), so an
+    // unclosed final block is always content, whatever the finish reason.
   });
 }
 
@@ -133,6 +135,8 @@ function createQwen3CoderStreamState(): ToolCallStreamState {
  * is assembled here with every value a JSON string, verbatim (wire #46). vLLM's `qwen3_xml` /
  * `qwen3_coder` and Dynamo coerce values by the request's tool schema; qwen3_coder@1 does not,
  * so its result depends on the committed output alone, like hermes@1.
+ *
+ * It defines no unclosed-call recovery: a final block without `</tool_call>` is content.
  *
  * Conformance is `'unverified'`: no shared vectors exist (monorepo#11).
  */

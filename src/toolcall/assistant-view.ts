@@ -34,16 +34,19 @@ export interface DerivedViewOptions {
 }
 
 /**
- * Whether a final call missing its closing marker is recovered (design S7 requirement 6): only
- * when the signed Fin says the model stopped by itself. EOS_TOKEN and STOP_SEQUENCE end where the
- * model chose to; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION cut it off and USER_STOP interrupts it,
- * so a body that happens to parse there may not be the call the model meant. Unavailable means
- * no recovery: the reason is never guessed.
+ * Whether a final call missing its closing marker may be recovered (Manifest S7.2 rule 6): only
+ * when the signed Fin says the model stopped by itself. EOS_TOKEN, STOP_SEQUENCE and STOP_TOKEN end
+ * where the model chose to; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION cut it off and USER_STOP
+ * interrupts it, so a body that happens to parse there may not be the call the model meant.
+ * Unavailable means no recovery: the reason is never guessed. This is the gate only; whether and
+ * what to recover is the parser's own rule, and a parser that defines none never recovers.
  */
 export function unclosedCallRecovery(finishReason: FinishReasonV1 | undefined): ToolCallParseOptions {
   return {
     recoverUnclosedAtEnd:
-      finishReason === FinishReasonV1.EOS_TOKEN || finishReason === FinishReasonV1.STOP_SEQUENCE,
+      finishReason === FinishReasonV1.EOS_TOKEN ||
+      finishReason === FinishReasonV1.STOP_SEQUENCE ||
+      finishReason === FinishReasonV1.STOP_TOKEN,
   };
 }
 

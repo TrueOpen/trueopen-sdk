@@ -1,10 +1,9 @@
 // OpenTask example: read the on-chain context, assemble the frozen TaskOrderV3, sign it in three
 // layers, pick the Task Builders by task_builder_seed and submit to each of them.
 //
-// What the SDK reads from chain rather than taking on trust: the EVM chain ID and the fee denom
-// (params.phase0), the anchor, Builder set and timeout bucket, the generation limits, the profile
-// pricing (an order the chain would reject is refused before signing), and the next order
-// sequence (0 for a new session).
+// What the SDK reads from chain rather than taking on trust: the fee denom (params.phase0), the
+// anchor, Builder set and timeout bucket, the generation limits, the profile pricing (an order the
+// chain would reject is refused before signing), and the next order sequence (0 for a new session).
 //
 // Run:
 //   TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..." \

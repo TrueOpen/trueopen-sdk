@@ -81,7 +81,8 @@ const noDefaultNexus = {
  * Everything the examples need, built once:
  * - chain reads (task, session) and hub reads (params, Builders, profiles) over REST;
  * - optionally chain writes over RPC, with fees in the chain business_denom;
- * - a TrueOpenClient whose EVM chain ID and fee denom come from the chain, never from constants.
+ * - a TrueOpenClient whose fee denom comes from the chain, never from a constant, and whose
+ *   signature chainId is the signer's choice (TRUEOPEN_SIGNATURE_CHAIN_ID, default 1).
  * @param {{ write?: boolean }} [opts]
  */
 export async function setup(opts = {}) {
@@ -92,9 +93,10 @@ export async function setup(opts = {}) {
   const hub = new HubReader({ baseUrl: restUrl, fetch: fetchLike });
   const taskReader = new RestChainReader({ baseUrl: restUrl, fetch: fetchLike });
 
-  // Both go into signatures and are read from chain params.phase0.
-  const evmChainId = await hub.getEvmChainId();
+  // business_denom is signed into orders and read from chain params.phase0. The EIP-712 domain
+  // chainId is the signer's choice (ADR-0033), not a chain param: the SDK defaults it to 1.
   const businessDenom = await hub.getBusinessDenom();
+  const signatureChainId = env('TRUEOPEN_SIGNATURE_CHAIN_ID', '1');
 
   /** @type {import('../dist/index.js').ChainClient} */
   let chain = {
@@ -102,6 +104,7 @@ export async function setup(opts = {}) {
     querySessionNonce: (address) => taskReader.querySessionNonce(address),
     createSession: async () => { throw new Error('chain writes need setup({ write: true })'); },
     cancelOrder: async () => { throw new Error('chain writes need setup({ write: true })'); },
+    updateSessionKey: async () => { throw new Error('chain writes need setup({ write: true })'); },
   };
   let disconnect = () => {};
   if (opts.write) {
@@ -128,7 +131,7 @@ export async function setup(opts = {}) {
       chainId: env('TRUEOPEN_CHAIN_ID'),
       userAddress: id.address,
       wallet: id.wallet,
-      evmChainId,
+      signatureChainId,
       // No feeDenom: openTask signs the chain business_denom read through the hub.
       chain,
       ingressTransport,
@@ -147,7 +150,7 @@ export async function setup(opts = {}) {
    * @param {string} [tlsPubkeyHash]
    */
   const clientFor = (serviceEndpoint, tlsPubkeyHash = '') => makeClient(nexusTransport(serviceEndpoint, tlsPubkeyHash));
-  return { id, hub, taskReader, client, clientFor, businessDenom, evmChainId, disconnect };
+  return { id, hub, taskReader, client, clientFor, businessDenom, signatureChainId, disconnect };
 }
 
 /**

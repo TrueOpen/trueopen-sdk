@@ -21,13 +21,15 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | `TRUEOPEN_CHAIN_ID` | Cosmos chain ID | `trueopen-localnet-1` |
 | `TRUEOPEN_MNEMONIC` | mnemonic of a funded test account | `"flee cover ..."` |
 | `TRUEOPEN_ADDR_PREFIX` | bech32 prefix (default `trueopen`) | `trueopen` |
+| `TRUEOPEN_SIGNATURE_CHAIN_ID` | EIP-712 domain chainId the wallet signs under (ADR-0033; default `1`) | `1` |
 | `TRUEOPEN_ALLOW_INSECURE_HTTP` | `1` allows plain `http://` / `grpc://` nexus endpoints. **Localnet only.** | `1` |
 | `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
 | `TRUEOPEN_MODEL_ID` | Hash32 model ID, `0x` + 64 lowercase hex (open-task) | - |
 | `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
 
-Nothing chain-specific is hard-coded: the EVM chain ID and the fee denom (`business_denom`, used
-for the order signature and for tx fees) are read from `params.phase0` on chain.
+Nothing chain-specific is hard-coded: the fee denom (`business_denom`, used for the order signature
+and for tx fees) is read from `params.phase0` on chain. The EIP-712 domain chainId is not a chain
+parameter but the signer's choice (ADR-0033): `TRUEOPEN_SIGNATURE_CHAIN_ID`, default `1`.
 
 nexus endpoints come from the Builders' on-chain descriptors. An https endpoint is checked against
 the certificate fingerprint registered on chain and is never downgraded to http. A localnet whose
@@ -47,7 +49,7 @@ node examples/fetch-output.mjs    # 3. wait for the receipt, fetch and verify th
 ```
 
 ### read.mjs -- read-only, costs nothing
-Prints the chain's EVM chain ID and business denom, the nexus endpoint of each active Builder, and,
+Prints the chain's business denom, the nexus endpoint of each active Builder, and,
 when set, the session, task and infer receipt.
 
 ### create-session.mjs -- spends gas

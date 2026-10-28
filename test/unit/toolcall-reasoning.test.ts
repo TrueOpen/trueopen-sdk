@@ -80,6 +80,37 @@ describe('qwen3 reasoning split (Manifest S7.3)', () => {
     expect(q.split('')).toEqual({ reasoningContent: '', remainder: '' });
   });
 
+  // REASONING_PARSER_V1 qwen3@1 worked examples (wire #46 @ 5760ab7); each row is a shared vector.
+  const WORKED_EXAMPLES: readonly [string, string, string][] = [
+    ['<think>\nabc\n</think>\n\nok', 'abc', 'ok'],
+    ['abc\n</think>\n\nok', 'abc', 'ok'],
+    ['<think>\n\n</think>\n\nok', '', 'ok'],
+    ['abc', 'abc', ''],
+    ['<think>\nabc', 'abc', ''],
+    ['abc<think>x</think>ok', 'abc<think>x', 'ok'],
+    ['<think><think>abc</think>ok', '<think>abc', 'ok'],
+    ['  <think>abc</think>ok', 'abc', 'ok'],
+    ['  abc</think>ok', '  abc', 'ok'],
+    ['\n\nabc</think>ok', 'abc', 'ok'],
+    ['\uFEFF<think>abc</think>ok', '\uFEFF<think>abc', 'ok'],
+    ['<think>\r\nabc\r\n</think>\r\nok', '\r\nabc\r', '\r\nok'],
+    ['<think>a</think>b</think>c', 'a', 'b</think>c'],
+  ];
+
+  it('matches the wire worked examples, whole and streamed', () => {
+    for (const [text, reasoningContent, remainder] of WORKED_EXAMPLES) {
+      expect(q.split(text)).toEqual({ reasoningContent, remainder });
+      for (const frames of everySplit(text)) expect(streamSplit(q, frames)).toEqual({ reasoningContent, remainder });
+    }
+  });
+
+  it('leading whitespace is ASCII SP, HT, LF and CR only', () => {
+    expect(q.split('\t\r <think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
+    for (const space of ['\uFEFF', '\u00A0', '\u2028', '\u3000']) {
+      expect(q.split(`${space}<think>r</think>c`)).toEqual({ reasoningContent: `${space}<think>r`, remainder: 'c' });
+    }
+  });
+
   it('streaming gives the same split as split(), whatever the frame boundaries (rule 11)', () => {
     for (const text of [
       '<think>\nLet me check.\n</think>\n\nIt is sunny.',
@@ -114,6 +145,7 @@ describe('an explicit start marker parser (Manifest S7.3 rules 6 and 8)', () => 
     expect(e.startMarkerClass).toBe('explicit');
     expect(e.split('  \n<think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
     expect(e.split('Sure. <think>r</think>c')).toEqual({ reasoningContent: '', remainder: 'Sure. <think>r</think>c' });
+    expect(e.split('\uFEFF<think>r</think>c')).toEqual({ reasoningContent: '', remainder: '\uFEFF<think>r</think>c' });
   });
 
   it('no marker leaves the output whole; unclosed is all reasoning', () => {

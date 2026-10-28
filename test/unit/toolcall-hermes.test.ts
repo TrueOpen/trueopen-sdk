@@ -196,10 +196,9 @@ describe('hermesParser: a final call missing its closing marker (Manifest S7.2 r
     expect(hermesParser.parseComplete(text, RECOVER)).toEqual({ role: 'assistant', content: text, toolCalls: [] });
   });
 
-  it('drops a closing marker the stop cut short', () => {
-    expect(hermesParser.parseComplete(`${UNTIL_EOS}\n</tool_`, RECOVER).toolCalls).toEqual([
-      { name: 'final_answer', arguments: '{"trigger": true}' },
-    ]);
+  it('keeps a closing marker the stop cut short, so the block is content (TOOL_CALL_PARSER_V1 recover)', () => {
+    const text = `${UNTIL_EOS}\n</tool_`;
+    expect(hermesParser.parseComplete(text, RECOVER)).toEqual({ role: 'assistant', content: text, toolCalls: [] });
   });
 
   it('leaves the closed calls before it as they were', () => {

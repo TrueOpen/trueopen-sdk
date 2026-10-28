@@ -385,13 +385,15 @@ buffer for the next chunk.
      strips nothing from committed output anywhere).
    - **Per parser.** What body may be recovered, how many calls it yields and what happens to a
      partial closing marker at the end are the parser specification's; a parser that defines no
-     recovery never recovers. `hermes@1` defines it: a complete, valid JSON object with a string
-     `name` is that call, after a closing marker the stop cut short (`</tool_`) is dropped. This is
-     what both references do for Hermes -- vLLM's `<tool_call>(.*)` regex alternative and
-     streaming "valid JSON without closing tag = complete body", Dynamo's `allow_eof_recovery`
-     (checked against vLLM 77154ca and dynamo-parsers 10.0.2, 2026-10-14). wire is to fix the
-     exact rule; this is the SDK's until then. `qwen3_coder@1` defines none: its unclosed final
-     block is always content.
+     recovery never recovers. `hermes@1` defines it (wire #46 TOOL_CALL_PARSER_V1 `recover`): a
+     complete, valid JSON object with a string `name` is that call. A closing marker the stop cut
+     short (`</tool_`) is not dropped: it leaves the JSON invalid, so the block is content. A later
+     `<tool_call>` inside the open block is body bytes. `qwen3_coder@1` defines none: its unclosed
+     final block is always content.
+   - **Support.** A profile's tool-call parser is supported only if its reasoning parser, when
+     one is pinned, is supported too (TOOL_CALL_PARSER_V1, Support). Otherwise the whole output
+     is content with no calls: without the reasoning split, a call drafted while reasoning would
+     be parsed.
 
    Everything else flushes as plain text, start marker included, neither dropped nor an error.
    Here TrueOpen diverges from Dynamo, whose "never-leak gate" drops unparseable partial markup:
@@ -568,6 +570,8 @@ What is implemented:
 - Rules 5-10: leading span only. Every parser declares the class of its start marker
   (`ReasoningParser.startMarkerClass`, rule 6), and the class never switches by template, request
   or output:
+  Whitespace is exactly the ASCII bytes SP, HT, LF and CR; U+FEFF and other Unicode spaces are
+  not (REASONING_PARSER_V1).
   - *explicit*: whitespace allowed before the start marker and nothing else; a start marker with
     no closing marker is all reasoning with no remainder and no tool parsing; no marker or a
     malformed one means no reasoning;
@@ -579,18 +583,19 @@ What is implemented:
   An unknown parser, or an unverified one without the caller's opt-in, means no reasoning.
   Reasoning and tool state machines are chained, not parallel, and streaming agrees with the
   full parse under every frame split.
-- `qwen3@1`: implicit, `<think>` / `</think>`, with the template's layout newlines around the
-  markers dropped. A Qwen3 thinking template may inject `<think>` into the prompt (forced
+- `qwen3@1`: implicit, `<think>` / `</think>`. Leading whitespace before an absorbed `<think>` goes
+  with it; without one it stays. Only LF is trimmed as layout: at both ends of the reasoning and
+  at the head of the remainder (CR, SP and HT are kept). A Qwen3 thinking template may inject `<think>` into the prompt (forced
   thinking), so the output may or may not open with it; either way it opens in reasoning. A
   `<tool_call>` inside the reasoning never ends it (rule 7), unlike vLLM's qwen3 parser. A profile
   whose template does not think pins `reasoning_parsing {}`.
 - Resolution mirrors tool calling: `ProfileInfo.reasoningParser` is read from the chain, and a
   registry (`BUILTIN_REASONING_PARSERS`) maps it to an implementation.
 
-**Unverified.** Rule 11 requires shared cross-language vectors, published by wire. None exist
-yet, so `qwen3@1` is registered `unverified` and is used only with `allowUnverified`. Whether the
-layout newlines are trimmed, and exactly which, is still open in wire (#46) and the most likely
-point of disagreement with the vectors when they ship.
+**Unverified.** Rule 11 requires shared cross-language vectors, published by wire. wire #46
+(5760ab7) now fixes the `qwen3@1` rules and lists worked examples, which the unit tests run; the
+vector files are not published yet, so `qwen3@1` stays registered `unverified` and is used only
+with `allowUnverified`.
 
 ### 10.3 P3 prerequisites found while building P1
 

@@ -1,4 +1,4 @@
-import { partialMarkerSuffix, skipJsonString } from '../marker-scan';
+import { skipJsonString } from '../marker-scan';
 import { createMarkerStreamState } from '../stream-state';
 import type { DerivedAssistantMessage, DerivedToolCall, ToolCallParseOptions, ToolCallParser, ToolCallStreamState } from '../types';
 
@@ -42,14 +42,14 @@ function parseHermesCall(inner: string): DerivedToolCall | undefined {
 }
 
 /**
- * hermes@1's recovery of an unclosed final call (Manifest S7.2 rule 6), used only when the model
- * stopped by itself: the body must be a complete call by the rules of `parseHermesCall` -- a
- * valid JSON object with a string `name` -- once a partial end marker at the very end
- * (`</tool_c`, cut short by the stop) is dropped. One call at most. The exact rule is for wire to
- * fix; this is the SDK's until then.
+ * hermes@1's recovery of an unclosed final call (Manifest S7.2 rule 6, TOOL_CALL_PARSER_V1
+ * `recover`), used only when the model stopped by itself: the body must be a complete call by the
+ * rules of `parseHermesCall` -- a valid JSON object with a string `name`. One call at most. A
+ * trailing partial end marker (`</tool_`) is not stripped: it leaves the JSON invalid, so the
+ * block stays content.
  */
 function recoverHermesCall(body: string): DerivedToolCall | undefined {
-  return parseHermesCall(body.slice(0, body.length - partialMarkerSuffix(body, [END_MARKER])));
+  return parseHermesCall(body);
 }
 
 function isJsonWhitespace(ch: string | undefined): boolean {

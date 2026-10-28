@@ -718,6 +718,20 @@ describe('TrueOpenClient tool-call views', () => {
       expect(m.confirmation.type).toBe('confirmed');
     });
 
+    it('a pinned reasoning parser that does not resolve takes the tool parser with it (TOOL_CALL_PARSER_V1, Support)', () => {
+      for (const extra of [{ reasoningParser: { name: 'unknown', version: 1 }, allowUnverified: true }, { reasoningParser: { name: 'qwen3', version: 1 } }]) {
+        const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, ...extra });
+        expect(m.toolCalls).toEqual([]);
+        expect(m.content).toBe(OUTPUT);
+        expect(m.reasoningContent).toBeUndefined();
+      }
+    });
+
+    it('no reasoning parser pinned leaves the tool parser in use', () => {
+      const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: '', version: 0 } });
+      expect(m.toolCalls.map((c) => c.name)).toEqual(['rm', 'get_weather']);
+    });
+
     it('a tool parser that does not resolve yields no executable calls', () => {
       const m = confirm({ toolCallParser: { name: 'unknown', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true });
       expect(m.toolCalls).toEqual([]);

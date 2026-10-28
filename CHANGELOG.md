@@ -28,6 +28,17 @@
   ends it (rule 7). This also covers forced-thinking Qwen3 output whose `<think>` is in the
   prompt. A profile whose template does not think pins no reasoning parser.
 
+### Changed: align the parsers with wire #46 @ 5760ab7
+
+- **Changed:** reasoning parsers treat only ASCII SP, HT, LF and CR as leading whitespace.
+  `\uFEFF<think>abc</think>ok` now gives `qwen3@1` reasoning `\uFEFF<think>abc` (the marker is not
+  absorbed); before, `\s` let a BOM or other Unicode space pass as whitespace.
+- **Changed:** `hermes@1` no longer drops a partial closing marker (`</tool_`) before recovering
+  an unclosed final call: the JSON is then invalid and the block is content.
+- **Changed:** when a profile pins a reasoning parser this SDK does not use (unknown, or
+  unverified without `allowUnverified`), its tool-call parser is not used either: the whole
+  output is content with no tool calls (TOOL_CALL_PARSER_V1, Support).
+
 ### Changed: unclosed-call recovery is per parser, and STOP_TOKEN opens the gate
 
 - **Changed:** an unclosed final call may be recovered when the verified Fin says

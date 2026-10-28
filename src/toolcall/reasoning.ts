@@ -72,8 +72,12 @@ export interface ReasoningMarkers {
   readonly trimNewlines?: boolean;
 }
 
-/** Leading whitespace allowed before an explicit start marker (rule 6 only forbids non-whitespace). */
-const LEADING_WS = /^\s*/;
+/**
+ * Leading whitespace before a start marker (rule 6 only forbids non-whitespace). Exactly the ASCII
+ * bytes SP, HT, LF and CR (REASONING_PARSER_V1, Whitespace): U+FEFF, U+00A0 and other Unicode
+ * spaces are not whitespace, so `\s` would split differently from the Go and Rust parsers.
+ */
+const LEADING_WS = /^[ \t\n\r]*/;
 
 function trimLeadingNewlines(s: string): string {
   return s.replace(/^\n+/, '');

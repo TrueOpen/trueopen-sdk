@@ -818,6 +818,10 @@ const NO_TOOL_CALLS: ToolCallParser = {
  * Resolves both parsers the profile pins. A parser that does not resolve -- not pinned, unknown
  * to this build, or unverified without the caller's opt-in -- is simply not used (S7.3 rule 8,
  * design S6): the output still arrives, without that view.
+ *
+ * A pinned reasoning parser that does not resolve takes the tool-call parser with it
+ * (TOOL_CALL_PARSER_V1, Support): without the reasoning split, a call the model wrote while
+ * reasoning would be parsed, so the whole output is content with no calls.
  */
 function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser } {
   const allow = p.allowUnverified === true ? { allowUnverified: true } : undefined;
@@ -827,8 +831,9 @@ function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?
     ...(allow ?? {}),
   });
   const reasoning = (p.reasoningRegistry ?? BUILTIN_REASONING_PARSERS).lookup(p.reasoningParser ?? { name: '', version: 0 }, allow);
+  const reasoningUsable = reasoning.supported || reasoning.reason === 'parser-not-pinned';
   return {
-    parser: tool.supported ? tool.parser : NO_TOOL_CALLS,
+    parser: tool.supported && reasoningUsable ? tool.parser : NO_TOOL_CALLS,
     ...(reasoning.supported ? { reasoning: reasoning.parser } : {}),
   };
 }

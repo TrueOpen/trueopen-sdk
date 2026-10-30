@@ -53,7 +53,7 @@ const order: TaskOrderIntent = {
 function fakeChain(): ChainClient {
   return {
     async querySession(id) {
-      return { sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
+      return { boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
     async createSession() { return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
@@ -138,9 +138,10 @@ describe('openTask: re-reads the descriptor and retries once on a fingerprint mi
 
     expect(res.accepted).toBe(true);
     // 3 endpoints: one stale failure plus one fresh success each.
-    expect(seen.pins.filter((p) => p === STALE)).toHaveLength(3);
-    expect(seen.pins.filter((p) => p === FRESH)).toHaveLength(3);
-    for (const address of ADDRS) expect(reads[address]).toBe(2);
+    expect(seen.pins.filter((p) => p === STALE)).toHaveLength(1);
+    expect(seen.pins.filter((p) => p === FRESH)).toHaveLength(1);
+    expect(reads[ADDRS[0]!]).toBe(2);
+    for (const address of ADDRS.slice(1)) expect(reads[address]).toBe(1);
   });
 
   it('when the fingerprint did not change after re-reading, does not retry again, and the original error stays in the details', async () => {
@@ -149,7 +150,8 @@ describe('openTask: re-reads the descriptor and retries once on a fingerprint mi
     await expect(
       makeClient(hub, seen).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
     ).rejects.toMatchObject({ code: 'TASK_BUILDER_ALL_ENDPOINTS_FAILED' });
-    expect(seen.pins).toHaveLength(3); // no second connection
-    for (const address of ADDRS) expect(reads[address]).toBe(2); // re-read once
+    expect(seen.pins).toHaveLength(1); // no second connection
+    expect(reads[ADDRS[0]!]).toBe(2);
+    for (const address of ADDRS.slice(1)) expect(reads[address]).toBe(1); // re-read once
   });
 });

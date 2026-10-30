@@ -1,10 +1,10 @@
+import type { SDKRequestEnvelopeV2 as GenSDKEnvelope } from '../../src/gen/nexus/v1/sdk_auth_pb.js';
 import { describe, it, expect } from 'vitest';
 import { createRouterTransport } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type {
   OpenTaskRequest as GenOpenTaskRequest,
-  SDKRequestEnvelopeV2 as GenSDKEnvelope,
   PrepareChallengeRequest,
   GetTaskEventsRequest,
   SubscribeOutputRequest,
@@ -103,7 +103,7 @@ const OUTPUT_HASH = sha256(new TextEncoder().encode(OUTPUT_TEXT));
 function fakeChain(cap: ChainCap): ChainClient {
   return {
     async querySession(id) {
-      return { sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
+      return { sessionId: id, owner: USER, boundBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
     async createSession() { return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
@@ -172,7 +172,7 @@ describe('end-to-end smoke: the full user journey against a fake backend', () =>
     const taskId = deriveTaskId(SESSION, 3n);
     expect(submit.taskId).toBe(taskId);
     expect(submit.taskHash).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(submit.context.sessionAnchorBlockHash).toBe(ANCHOR);
+    expect(submit.context.sessionAnchorBlockHash).toBeUndefined();
 
     // 2b) the request envelope signature the facade produces verifies
     const env = ingressCap.openHeader?.requestEnvelope;

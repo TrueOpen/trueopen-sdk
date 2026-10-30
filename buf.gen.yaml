@@ -6,33 +6,29 @@ plugins:
       - target=ts
       - import_extension=js
 inputs:
-  # The wire contract (submodule, main @ 41af15b, pre-v0.5.0; see README). Only the transitive closure the SDK needs is generated,
-  # which deliberately excludes cortex.v1: wire withholds that package, so its fields are not frozen
-  # and generating types from it now would bake in a shape wire has already said it will break.
-  # not all of wire's files. The first 13 are the import closure computed from two roots (ingress /
-  # msg_assignment): drop one and an internal src/gen import dangles. Recompute the closure before
-  # changing this list.
-  #   Roots:
-  #     - ingress.proto         the nexus IngressAPI (every SDK RPC)
-  #     - msg_assignment.proto  TaskOrderV3 / SignedOrderV2, the only message that goes on chain
+  # wire PR #49, 495ea3e: transitive SDK protocol closure.
   - directory: third_party/wire/proto
     paths:
+      - third_party/wire/proto/task/v1/msg_session.proto
+      - third_party/wire/proto/task/v1/params.proto
+      - third_party/wire/proto/task/v1/session.proto
+      - third_party/wire/proto/nexus/v1/dispatch.proto
       - third_party/wire/proto/nexus/v1/ingress.proto
-      - third_party/wire/proto/task/v1/msg_assignment.proto
-      - third_party/wire/proto/task/v1/assignment.proto
-      - third_party/wire/proto/task/v1/open_verify.proto
-      - third_party/wire/proto/task/v1/commit.proto
-      - third_party/wire/proto/task/v1/evidence.proto
-      - third_party/wire/proto/task/v1/infer_receipt.proto
-      - third_party/wire/proto/task/v1/result.proto
-      # settlement.proto is not in the closure of the two roots; it is generated for the
-      # TaskVerdict / TaskFailureClass enums the SDK re-exports. Its imports are all above.
-      - third_party/wire/proto/task/v1/settlement.proto
+      - third_party/wire/proto/nexus/v1/sdk_auth.proto
       - third_party/wire/proto/shared/v1/amount.proto
       - third_party/wire/proto/shared/v1/common.proto
       - third_party/wire/proto/shared/v1/evidence.proto
       - third_party/wire/proto/shared/v1/model_profile.proto
       - third_party/wire/proto/shared/v1/rest_encoding.proto
+      - third_party/wire/proto/task/v1/assignment.proto
+      - third_party/wire/proto/task/v1/commit.proto
+      - third_party/wire/proto/task/v1/dispatch.proto
+      - third_party/wire/proto/task/v1/evidence.proto
+      - third_party/wire/proto/task/v1/infer_receipt.proto
+      - third_party/wire/proto/task/v1/msg_assignment.proto
+      - third_party/wire/proto/task/v1/open_verify.proto
+      - third_party/wire/proto/task/v1/result.proto
+      - third_party/wire/proto/task/v1/settlement.proto
   # wire's on-chain protos carry cosmos / gogo annotations, and protoc-gen-es also generates an
   # import for the annotation files themselves, so these must be generated too or the internal
   # src/gen imports dangle. Taken file by file rather than pulling in the whole cosmos-sdk /

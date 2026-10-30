@@ -169,7 +169,11 @@ export class HubReader {
     // The status field name varies by participant type (cortex_service_key_status /
     // builder_service_key_status), so look it up by suffix instead of a fixed key name.
     const statusKey = Object.keys(b).find((k) => k.endsWith('service_key_status'));
+    const previousFields = ['previous_service_pubkey', 'previous_service_authorization_nonce', 'previous_retired_height'];
+    const previousCount = previousFields.filter(k => b[k] !== undefined && b[k] !== null).length;
+    if (previousCount !== 0 && previousCount !== 3) throw malformed('previous service key fields must have paired presence');
     return {
+      ...(previousCount === 3 ? { previousServicePubKey: pubKeyBytes(b, 'previous_service_pubkey'), previousServiceAuthorizationNonce: u64opt(b, 'previous_service_authorization_nonce'), previousRetiredHeight: u64opt(b, 'previous_retired_height') } : {}),
       participantType: str(b, 'participant_type'),
       operatorAddress: str(b, 'operator_address'),
       serviceAddress: str(b, 'service_address'),

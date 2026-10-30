@@ -52,7 +52,7 @@ function taskReader(over: { task?: Partial<ChainTaskSnapshot>; receipt?: InferRe
     receiptReads: 0,
     async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
       return {
-        view: 'active', taskId, acceptedTaskHash: TASK_HASH, acceptedInputHash: `0x${'a'.repeat(64)}`, winnerWorker: WINNER,
+        view: 'active', taskId, dispatchTicketHash: `0x${'33'.repeat(32)}`, acceptedTaskHash: TASK_HASH, acceptedInputHash: `0x${'a'.repeat(64)}`, winnerWorker: WINNER,
         receiptStatus: 'RECEIPT_ACCEPTED', assignmentStatus: 'ASSIGNED', modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
         ...over.task,
       };
@@ -301,14 +301,14 @@ describe('streamOutput trust anchors', () => {
   it('verifies frames against the chain-derived task_hash and winner key when none are passed', async () => {
     const frames = CHUNKS.map((text, i) => {
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
-      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, dispatchTicketHash: new Uint8Array(32).fill(0x33), taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
       return {
-        seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(),
+        dispatchTicketHash: new Uint8Array(32).fill(0x33), seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(),
         attachment: new Uint8Array(), attachmentSignature: new Uint8Array(),
       };
     });
     const last = frames[frames.length - 1]!;
-    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, dispatchTicketHash: new Uint8Array(32).fill(0x33), taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
     const transport = createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async *subscribeOutput(_req: SubscribeOutputRequest) {
@@ -316,7 +316,7 @@ describe('streamOutput trust anchors', () => {
           yield {
             frame: {
               case: 'fin' as const,
-              value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() },
+              value: { dispatchTicketHash: new Uint8Array(32).fill(0x33), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() },
             },
           };
         },

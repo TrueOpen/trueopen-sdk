@@ -17,7 +17,7 @@ const tryShow = async (label, fn) => {
 };
 
 // Both go into signatures; the SDK reads them, never assumes them.
-await tryShow('chain params', async () => ({ evmChainId: await hub.getEvmChainId(), businessDenom: await hub.getBusinessDenom() }));
+await tryShow('chain params', async () => ({ businessDenom: await hub.getBusinessDenom() }));
 
 const addr = env('TRUEOPEN_QUERY_ADDR', '');
 if (addr) await tryShow('querySessionNonce', () => reader.querySessionNonce(addr));

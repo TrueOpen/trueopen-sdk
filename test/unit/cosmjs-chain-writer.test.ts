@@ -57,7 +57,7 @@ describe('CosmjsChainWriter', () => {
       .finish();
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, respBytes));
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    const r = await w.createSession();
+    const r = await w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(r).toEqual({
       sessionId: SESSION_ID, owner: 'trueopen1me', nonce: 7n, status: 'MUTATION_STATUS_V1_APPLIED',
     });
@@ -81,7 +81,7 @@ describe('CosmjsChainWriter', () => {
   it('throws when the tx was included but the state machine rejected it (code != 0)', async () => {
     const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), 5);
     const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
-    await expect(w.createSession()).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
+    await expect(w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
   });
 
   // ---- the point of splitting broadcast from wait ----
@@ -94,7 +94,7 @@ describe('CosmjsChainWriter', () => {
   it('broadcasts exactly once no matter how long inclusion takes', async () => {
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, new ProtoWriter().bytes(1, fromHex(SESSION_HEX)).uint64(2, 7n).uint64(3, 1n).finish()), 5);
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    await w.createSession();
+    await w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(bc.broadcasts).toBe(1);
     expect(bc.lookups).toBe(6); // five "not yet", then found
   });
@@ -108,7 +108,7 @@ describe('CosmjsChainWriter', () => {
       3,
     );
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    const r = await w.createSession();
+    const r = await w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(r.sessionId).toBe(SESSION_ID);
     expect(bc.broadcasts).toBe(1);
     expect(bc.lookups).toBe(4); // three throws, then found
@@ -122,11 +122,11 @@ describe('CosmjsChainWriter', () => {
       broadcaster: bc, signerAddress: 'trueopen1me', fee,
       inclusion: { attempts: 3, intervalMs: 0, sleep: async () => {} },
     });
-    await expect(w.createSession()).rejects.toMatchObject({
+    await expect(w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toMatchObject({
       code: 'CHAIN_TX_INCLUSION_UNKNOWN',
       retriable: false,
     });
-    await expect(w.createSession()).rejects.toThrow(/TXHASH/);
+    await expect(w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toThrow(/TXHASH/);
     expect(bc.broadcasts).toBe(2); // one per call, never more
     expect(bc.lookups).toBe(6); // three per call
   });

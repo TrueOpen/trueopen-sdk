@@ -1,3 +1,4 @@
+import { OpenTaskResponseSchema } from '../gen/nexus/v1/ingress_pb.js';
 import { ConnectError, Code } from '@connectrpc/connect';
 import { TrueOpenError } from './errors';
 import type { ErrorCategory, ErrorFamily } from './errors';
@@ -15,6 +16,18 @@ const rule = (category: ErrorCategory, retriable: boolean, switchSource: boolean
  * That code is more precise than the Connect code, so it wins when present.
  */
 const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
+  NEXUS_INGRESS_BUILDER_SET_STALE: rule('expired', true, false),
+  NEXUS_INGRESS_ORDER_FUTURE: rule('expired', true, false),
+  NEXUS_INGRESS_SESSION_BALANCE_INSUFFICIENT: rule('invalid', false, false),
+  NEXUS_INGRESS_SESSION_CLOSING: rule('conflict', false, false),
+  NEXUS_INGRESS_INFLIGHT_LIMIT: rule('capacity', true, false),
+  NEXUS_INGRESS_ORDER_LOCKED: rule('conflict', false, false),
+  NEXUS_INGRESS_NO_CAPACITY: rule('capacity', true, true),
+  NEXUS_OUTPUT_REPLICA_NOT_READY: rule('data-unavailable', true, true),
+  NEXUS_INGRESS_ORDER_STALE: rule('expired', true, false),
+  NEXUS_INGRESS_DISPATCH_NOT_READY: rule('data-unavailable', true, false),
+  NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE: rule('conflict', true, false),
+  NEXUS_INGRESS_TAKEOVER_PENDING: rule('data-unavailable', true, false),
   SDK_AUTH_INVALID_SIGNATURE: rule('auth', false, false),
   SDK_AUTH_EXPIRED: rule('expired', true, false),
   // A replayed nonce: a new request with a fresh nonce is fine.
@@ -170,7 +183,7 @@ export function classifyNexusError(err: unknown): unknown {
     retriable: r.retriable,
     switchSource: r.switchSource,
     category: r.category,
-    details: { connectCode: Code[err.code] ?? err.code },
+    details: { connectCode: Code[err.code] ?? err.code, ...dispatchDetails(err) },
     cause: err,
   });
 }
@@ -219,4 +232,16 @@ export function classifyBroadcastError(err: unknown): unknown {
       cause: err,
     },
   );
+}
+
+function dispatchDetails(error: ConnectError): Record<string, unknown> {
+  const details = error.findDetails(OpenTaskResponseSchema);
+  if (details.length !== 1) return {};
+  const d = details[0]!;
+  return {
+    taskId: d.taskId, status: d.status,
+    ...(d.boundBuilder === undefined ? {} : { boundBuilder: d.boundBuilder }),
+    ...(d.takeoverActivationHeight === undefined ? {} : { takeoverActivationHeight: d.takeoverActivationHeight }),
+    ...(d.dispatchAvailableHeight === undefined ? {} : { dispatchAvailableHeight: d.dispatchAvailableHeight }),
+  };
 }

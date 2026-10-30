@@ -30,7 +30,7 @@ export const ORDER_EIP712_DOMAIN_VERSION = '3';
  * **not** a full-field mirror of TaskOrderV3, but a "human-readable summary + taskHash":
  * the wallet prompt shows the first 10 fields, and the 11th field, taskHash, binds the
  * canonical hash of the full order into the same signature. So the signature effectively
- * covers all 28 fields. Domain version 3 binds modelId as a raw bytes32.
+ * covers all 27 active fields. Domain version 3 binds modelId as a raw bytes32.
  */
 export const ORDER_EIP712_TYPES: Eip712Types = {
   EIP712Domain: [
@@ -147,7 +147,6 @@ function toProtoTaskOrder(order: TaskOrderV3): ProtoTaskOrderV3 {
     deadlinePolicy: { latencyClass: order.deadlinePolicy.latencyClass as ProtoLatencyClass },
     timeoutBucketVersion: order.timeoutBucketVersion,
     sessionAnchorHeight: order.sessionAnchorHeight,
-    sessionAnchorBlockHash: order.sessionAnchorBlockHash,
     builderSetId: order.builderSetId,
     builderSetHash: order.builderSetHash,
     payloadMode: order.payloadMode as ProtoPayloadMode,
@@ -185,12 +184,13 @@ export async function signAndEncodeOrder(
   order: TaskOrderV3,
   ctx: OrderEip712Context,
   signer: TypedDataSigner,
+  expectedSigner?: Uint8Array,
 ): Promise<EncodedSignedOrder> {
   const taskHash = taskOrderHash(order);
   const data = taskOrderTypedData(order, ctx);
   const signingDigest = typedDataDigest(data);
   // The Keeper recovers the order user from this signature; check it here, not on chain.
-  const userSignature = await signTypedDataAs(signer, data, canonicalAccountAddressBytes('user_address', order.userAddress));
+  const userSignature = await signTypedDataAs(signer, data, expectedSigner ?? canonicalAccountAddressBytes('user_address', order.userAddress));
   const signed = create(SignedOrderV2Schema, {
     order: toProtoTaskOrder(order),
     signatureScheme: SIGNATURE_SCHEME,

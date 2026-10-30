@@ -92,8 +92,8 @@ export async function setup(opts = {}) {
   const hub = new HubReader({ baseUrl: restUrl, fetch: fetchLike });
   const taskReader = new RestChainReader({ baseUrl: restUrl, fetch: fetchLike });
 
-  // Both go into signatures and are read from chain params.phase0.
-  const evmChainId = await hub.getEvmChainId();
+  // The EIP-712 domain is signer-chosen; the denomination comes from chain.
+  const signatureChainId = BigInt(env('TRUEOPEN_SIGNATURE_CHAIN_ID', '1'));
   const businessDenom = await hub.getBusinessDenom();
 
   /** @type {import('../dist/index.js').ChainClient} */
@@ -128,7 +128,7 @@ export async function setup(opts = {}) {
       chainId: env('TRUEOPEN_CHAIN_ID'),
       userAddress: id.address,
       wallet: id.wallet,
-      evmChainId,
+      signatureChainId,
       // No feeDenom: openTask signs the chain business_denom read through the hub.
       chain,
       ingressTransport,
@@ -147,7 +147,7 @@ export async function setup(opts = {}) {
    * @param {string} [tlsPubkeyHash]
    */
   const clientFor = (serviceEndpoint, tlsPubkeyHash = '') => makeClient(nexusTransport(serviceEndpoint, tlsPubkeyHash));
-  return { id, hub, taskReader, client, clientFor, businessDenom, evmChainId, disconnect };
+  return { id, hub, taskReader, client, clientFor, businessDenom, signatureChainId, disconnect };
 }
 
 /**

@@ -91,7 +91,7 @@ describe('e2e: SDK readers accept the wire REST shape bodies verbatim', () => {
     const model = `0x${'ab'.repeat(32)}`;
     world.node.verbatim.set(`/TrueOpen/hub/v1/profile/${model}/1`, shapeBody('hub_v1_queryprofileresponse'));
     try {
-      expect(await world.hub.getBusinessDenom()).toBe('uusdc');
+      expect(await world.hub.getBusinessDenom()).toBe('utrueopen');
       expect((await world.hub.getTaskGenerationLimits()).maxOutputTokens).toBe(131072n);
       expect((await world.hub.getProfile(model, 1n)).pricing).toEqual({ minOrderValue: 1n, verifyRatioBps: 1n, initialOutputPrice: 1n });
     } finally {
@@ -111,7 +111,7 @@ describe('e2e: SDK readers accept the wire REST shape bodies verbatim', () => {
       expect(await world.taskReader.queryTask(id)).toMatchObject({ view: 'active', acceptedTaskHash: `0x${'ab'.repeat(32)}`, winnerWorker: '' });
 
       world.node.verbatim.set(path, shapeBody('task_v1_querytaskresponse_terminal'));
-      expect(await world.taskReader.queryTask(id)).toMatchObject({ view: 'terminal', terminalPhase: 'WORKER_ASSIGNMENT_PENDING', winnerWorker: '' });
+      expect(await world.taskReader.queryTask(id)).toMatchObject({ view: 'terminal', terminalPhase: 'SETTLED', winnerWorker: '' });
     } finally {
       world.node.verbatim.clear();
     }

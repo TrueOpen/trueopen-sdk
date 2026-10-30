@@ -1,3 +1,4 @@
+const dispatchTicketHash = new Uint8Array(32).fill(3);
 import { describe, expect, it } from 'vitest';
 import { confirmOutputWithReceipt } from '../../src/output/output-confirmation';
 import {
@@ -23,7 +24,7 @@ const CHUNKS = [utf8('hello '), utf8('Zürich'), utf8('!')];
 
 async function checkpoint() {
   const sign = privKeySecp256k1DigestSigner(PRIV);
-  const verifier = new OutputStreamVerifier({
+  const verifier = new OutputStreamVerifier({ dispatchTicketHash,
     chainId: CHAIN_ID,
     taskHash: fromHex(TASK_HASH.slice(2)),
     workerServicePubKey: WORKER_PUB,
@@ -31,11 +32,11 @@ async function checkpoint() {
   for (let i = 0; i < CHUNKS.length; i += 1) {
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
     const seq = BigInt(i);
-    verifier.accept({
+    verifier.accept({ dispatchTicketHash,
       seq,
       text: CHUNKS[i]!,
       mmrRoot,
-      signature: await sign(outputChunkSigningDigest({
+      signature: await sign(outputChunkSigningDigest({ dispatchTicketHash,
         chainId: CHAIN_ID,
         taskHash: fromHex(TASK_HASH.slice(2)),
         seq,
@@ -59,7 +60,7 @@ function receipt(overrides: Partial<InferReceiptView> = {}): InferReceiptView {
 }
 
 function confirm(cp: Awaited<ReturnType<typeof checkpoint>>, r = receipt()) {
-  return confirmOutputWithReceipt({
+  return confirmOutputWithReceipt({ dispatchTicketHash: hash32Text(dispatchTicketHash),
     chainId: CHAIN_ID,
     taskId: TASK_ID,
     taskHash: TASK_HASH,
@@ -96,17 +97,17 @@ describe('confirmOutputWithReceipt', () => {
 
   it('rejects if any of chain / task hash / task id context mismatches', async () => {
     const cp = await checkpoint();
-    expectCode(() => confirmOutputWithReceipt({
+    expectCode(() => confirmOutputWithReceipt({ dispatchTicketHash: hash32Text(dispatchTicketHash),
       chainId: 'other', taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: cp, receipt: receipt(),
     }), 'DATA_OUTPUT_CONFIRMATION_CHAIN_MISMATCH');
-    expectCode(() => confirmOutputWithReceipt({
+    expectCode(() => confirmOutputWithReceipt({ dispatchTicketHash: hash32Text(dispatchTicketHash),
       chainId: CHAIN_ID, taskId: TASK_ID, taskHash: `0x${'dd'.repeat(32)}`, checkpoint: cp, receipt: receipt(),
     }), 'DATA_OUTPUT_CONFIRMATION_TASK_HASH_MISMATCH');
     expectCode(() => confirm(cp, receipt({ taskId: `0x${'ee'.repeat(32)}` })), 'DATA_OUTPUT_CONFIRMATION_TASK_ID_MISMATCH');
   });
 
   it('an empty checkpoint is not the same as empty output: cannot be confirmed with no verified chunks', async () => {
-    const empty = new OutputStreamVerifier({
+    const empty = new OutputStreamVerifier({ dispatchTicketHash,
       chainId: CHAIN_ID,
       taskHash: fromHex(TASK_HASH.slice(2)),
       workerServicePubKey: WORKER_PUB,
@@ -178,4 +179,9 @@ describe('confirmOutputWithReceipt', () => {
       'DATA_OUTPUT_CONFIRMATION_SIZE_MISMATCH',
     );
   });
+});
+
+it('a valid output for a different dispatch attempt cannot be confirmed', async () => {
+  const cp = await checkpoint();
+  expect(() => confirmOutputWithReceipt({ chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: cp, receipt: receipt(), dispatchTicketHash: `0x${'44'.repeat(32)}` })).toThrowError(expect.objectContaining({ code: 'DATA_OUTPUT_ATTEMPT_MISMATCH' }));
 });

@@ -11,7 +11,7 @@ describe('SessionManager', () => {
     expect(h.owner).toBe('trueopen1owner');
     expect(h.nextExpectedSequence).toBe(0n);
     expect(h.label).toBe('my-label');
-    // Cache hit -- no chain query needed.
+    // Reads refresh mutable chain state while preserving the local label.
     expect((await sm.get('sess-1')).sessionId).toBe('sess-1');
   });
 
@@ -38,4 +38,12 @@ describe('SessionManager', () => {
     expect(h.status).toBe('IDLE');
     expect(h.nextExpectedSequence).toBe(1n);
   });
+});
+
+it('get refreshes balance and pending close after creation', async () => {
+  const chain = new MockChainClient();
+  const manager = new SessionManager(chain);
+  await manager.create('label');
+  chain.sessions.set('sess-1', { ...chain.sessions.get('sess-1')!, balance: '42', pendingWithdrawKind: 'CLOSE' });
+  expect(await manager.get('sess-1')).toMatchObject({ balance: '42', pendingWithdrawKind: 'CLOSE', label: 'label' });
 });

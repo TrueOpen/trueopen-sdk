@@ -47,7 +47,7 @@ node examples/fetch-output.mjs    # 3. wait for the receipt, fetch and verify th
 ```
 
 ### read.mjs -- read-only, costs nothing
-Prints the chain's EVM chain ID and business denom, the nexus endpoint of each active Builder, and,
+Prints the chain's business denom, the nexus endpoint of each active Builder, and,
 when set, the session, task and infer receipt.
 
 ### create-session.mjs -- spends gas
@@ -56,9 +56,9 @@ first order sequence is 0.
 
 ### open-task.mjs -- places an order
 Reads the next order sequence from chain (0 for a new session), builds and signs the order, and
-sends it to every Task Builder selected by `task_builder_seed`. Before signing, the SDK checks the
+sends it to the Session-bound Builder. Before signing, the SDK checks the
 order against the chain's generation limits and the model profile's pricing, and refuses one the
-chain would reject. It prints each selected Builder's outcome.
+chain would reject. It prints the bound Builder's outcome.
 
 > An `accepted` ack is local acceptance by nexus. The chain decides whether the task exists; once
 > it is assigned, funds up to `max_fee` are frozen.
@@ -84,3 +84,10 @@ redirect and timeout limits, and the 4 MiB cap. It returns the bytes unchanged. 
 ```bash
 npm run build && PORT=8787 node examples/manifest-proxy.mjs
 ```
+
+Phase 1: before creating a Session, set `TRUEOPEN_INITIAL_BUILDER` to a current Builder
+operator address and `TRUEOPEN_INITIAL_DEPOSIT` to a canonical atomic-unit amount.
+Creation funds Session escrow in addition to paying transaction gas. Orders spend Session
+balance. Existing Sessions must belong to the same fresh Phase 1 chain as this SDK.
+
+`TRUEOPEN_SIGNATURE_CHAIN_ID` selects the EIP-712 signing domain (default `1`); it is not queried from Hub.

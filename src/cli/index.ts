@@ -3,7 +3,7 @@ import { resolveConfig, loadMnemonic } from './config';
 import type { CliOptions, CliConfig } from './config';
 import { printResult, printError, toJsonSafe } from './output';
 import { cmdAddress, cmdBuilders } from './commands/misc';
-import { cmdSessionCreate, cmdSessionGet } from './commands/session';
+import { cmdSessionCreate, cmdSessionGet, cmdSessionFunds } from './commands/session';
 import { cmdOrderSubmit, cmdOrderCancel } from './commands/order';
 import { cmdTaskStatus, cmdTaskWatch } from './commands/task';
 import { cmdOutputStream, cmdOutputGet } from './commands/output';
@@ -48,7 +48,12 @@ program.command('address').description('mnemonic -> address').action(() => run((
 program.command('builders').description('discover nexus endpoints on chain').action(() => run((cfg) => cmdBuilders(cfg), false));
 
 const session = program.command('session');
-session.command('create').argument('[label]').description('create a session (gas)').action((label?: string) => run((cfg, m) => cmdSessionCreate(cfg, m, label)));
+session.command('create').argument('[label]').requiredOption('--builder <address>', 'initial bound Builder operator').option('--deposit <amount>', 'initial native atomic units', '0').description('create a funded, bound session').action((label: string | undefined, options: { builder: string; deposit: string }) => run((cfg, m) => cmdSessionCreate(cfg, m, label, { initialBuilder: options.builder, initialDeposit: options.deposit })));
+for (const action of ['deposit', 'withdraw'] as const) {
+  session.command(action).argument('<sessionId>').argument('<amount>').description(`${action} native atomic units`).action((id: string, amount: string) => run((cfg, m) => cmdSessionFunds(cfg, m, action, id, amount)));
+}
+session.command('close').argument('<sessionId>').description('register delayed session close').action((id: string) => run((cfg, m) => cmdSessionFunds(cfg, m, 'close', id)));
+
 session.command('get').argument('<sessionId>').description('query a session').action((id: string) => run((cfg) => cmdSessionGet(cfg, id), false));
 
 const order = program.command('order');

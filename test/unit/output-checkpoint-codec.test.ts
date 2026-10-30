@@ -1,3 +1,4 @@
+const dispatchTicketHash = new Uint8Array(32).fill(3);
 import { describe, expect, it } from 'vitest';
 import {
   deserializeOutputStreamCheckpoint,
@@ -23,7 +24,7 @@ const CHUNKS = [utf8('a'), utf8('Zürich'), new Uint8Array(0)];
 
 async function checkpoint() {
   const sign = privKeySecp256k1DigestSigner(PRIV);
-  const verifier = new OutputStreamVerifier({
+  const verifier = new OutputStreamVerifier({ dispatchTicketHash,
     chainId: CHAIN_ID,
     taskHash: fromHex(TASK_HASH),
     workerServicePubKey: PUB,
@@ -31,11 +32,11 @@ async function checkpoint() {
   for (let i = 0; i < CHUNKS.length; i += 1) {
     const seq = BigInt(i);
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
-    verifier.accept({
+    verifier.accept({ dispatchTicketHash,
       seq,
       text: CHUNKS[i]!,
       mmrRoot,
-      signature: await sign(outputChunkSigningDigest({
+      signature: await sign(outputChunkSigningDigest({ dispatchTicketHash,
         chainId: CHAIN_ID,
         taskHash: fromHex(TASK_HASH),
         seq,
@@ -73,18 +74,18 @@ describe('output checkpoint JSON codec', () => {
 
     const restored = deserializeOutputStreamCheckpoint(json);
     expect(serializeOutputStreamCheckpoint(restored)).toBe(json);
-    const verifier = new OutputStreamVerifier({
+    const verifier = new OutputStreamVerifier({ dispatchTicketHash,
       chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), workerServicePubKey: PUB,
     }, restored);
     expect(verifier.resumeAfterSeq).toBe(2n);
     expect(verifier.text()).toBe('aZürich');
-    expect(toHex(verifier.root())).toBe(toHex(new OutputStreamVerifier({
+    expect(toHex(verifier.root())).toBe(toHex(new OutputStreamVerifier({ dispatchTicketHash,
       chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), workerServicePubKey: PUB,
     }, original).root()));
   });
 
   it('an empty checkpoint also round-trips, for persisting before the first chunk', () => {
-    const empty = new OutputStreamVerifier({
+    const empty = new OutputStreamVerifier({ dispatchTicketHash,
       chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH), workerServicePubKey: PUB,
     }).checkpoint();
     const restored = deserializeOutputStreamCheckpoint(serializeOutputStreamCheckpoint(empty));

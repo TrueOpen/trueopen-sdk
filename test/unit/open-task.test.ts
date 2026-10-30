@@ -119,9 +119,9 @@ describe('buildOpenTaskRequest', () => {
       } as any);
     });
     await new IngressClient(transport).openTask((await buildOpenTaskRequest(base)).input);
-    const h = seen.frames[0]?.frame.value as { signature: Uint8Array; signatureScheme: string; requestEnvelope?: { sessionGrant?: unknown } };
-    expect(h.signature).toHaveLength(0);
-    expect(h.signatureScheme).toBe('');
+    const h = seen.frames[0]?.frame.value as { signature?: Uint8Array; signatureScheme?: string; requestEnvelope?: { sessionGrant?: unknown } };
+    expect(h.signature).toBeUndefined();
+    expect(h.signatureScheme).toBeUndefined();
     expect(h.requestEnvelope?.sessionGrant).toBeUndefined();
   });
 

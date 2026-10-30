@@ -1,3 +1,6 @@
+import { recoverDispatch, type DispatchRecoveryPolicy } from './transport/dispatch-recovery';
+import type { UpdateSessionKeyInput } from './transport/session-funding';
+import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } from './transport/session-funding';
 import type { Transport } from '@connectrpc/connect';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { TypedDataSigner } from './signer/typed-data-signer';
@@ -14,7 +17,7 @@ import { SessionManager } from './session/session-manager';
 import type { SessionHandle } from './session/session-manager';
 import { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 import type { TaskBuilderReader } from './hub/stage1-routing';
-import { fanOutToEndpoints } from './transport/fan-out-submit';
+import { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from './transport/fan-out-submit';
 import { nexusGrpcEndpoint } from './types/hub';
 import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
@@ -121,7 +124,7 @@ export interface TrueOpenClientConfig {
   readonly feeDenom?: string;
   /**
    * Hub reader (needed by openTask): must be able to fetch both the builder set /
-   * descriptors needed for Task Builder routing, and the order context (anchor beacon /
+   * descriptors needed for Task Builder routing, and the order context (current BuilderSet /
    * param bucket version). HubReader satisfies both, plus the optional reads below.
    */
   readonly hub?: FacadeHubReader;
@@ -171,6 +174,7 @@ export interface OutputTaskReader {
  * accepted InferReceipt -> output_hash (the MMR root), size and leaf count.
  */
 export interface OutputTrustAnchors {
+  readonly dispatchTicketHash?: string;
   readonly taskId: string;
   /** Hash32 text (`0x` + 64 lowercase hex), the on-chain accepted task_hash. */
   readonly taskHash: string;
@@ -188,7 +192,7 @@ export interface OutputTrustAnchors {
 export interface OpenTaskBuilderResult {
   /** Builder operator address; this is the builderAddress for task-data requests to it. */
   readonly address: string;
-  /** Rank in the task_builder_seed selection, 1-based (1 = first). */
+  /** Position in cyclic snapshot order, 1-based (1 = dispatching Builder). */
   readonly rank: number;
   /** The nexus endpoint the order was actually sent to (after any certificate re-read). */
   readonly serviceEndpoint: string;
@@ -200,6 +204,12 @@ export interface OpenTaskBuilderResult {
 }
 
 export interface OpenTaskParams {
+  /** Opt in to an on-chain registered key for the order; request grants remain separate. */
+  readonly delegatedOrderSigner?: { readonly signer: TypedDataSigner; readonly address: Uint8Array };
+  /** Abort an in-flight submission. */
+  readonly signal?: AbortSignal;
+  /** Per-attempt acknowledgement timeout; defaults to 30 seconds. */
+  readonly ackTimeoutMs?: number;
   readonly sessionId: string;
   /**
    * Defaults to reading `StreamState.next_expected_sequence` from chain (the sole source of truth).
@@ -253,10 +263,12 @@ export interface OutputStreamSource {
   /** Used only for error and diagnostic messages; not part of the signature. */
   readonly id: string;
   /** Must already be configured with the same SDK request signing identity as the current TrueOpenClient. */
-  readonly ingress: Pick<IngressClient, 'subscribeOutput' | 'ackOutput'>;
+  readonly ingress: Pick<IngressClient, 'subscribeOutput' | 'ackOutput'> & Partial<Pick<IngressClient, 'resumeOutput'>>;
 }
 
 export interface StreamOutputParams {
+  /** Trusted dispatch attempt Hash32; required by the Phase 1 verifier. */
+  readonly dispatchTicketHash?: string;
   readonly sessionId: string;
   readonly taskId: string;
   /**
@@ -356,6 +368,8 @@ export type OutputStreamEvent =
     };
 
 export interface ConfirmOutputParams {
+  /** Ticket from the accepted QueryTask assignment/terminal summary. */
+  readonly dispatchTicketHash: string;
   readonly taskId: string;
   readonly taskHash: string;
   readonly checkpoint: OutputStreamVerifierCheckpoint;
@@ -447,8 +461,27 @@ export class TrueOpenClient {
     return signatureChainIdBigInt(this.cfg.signatureChainId ?? DEFAULT_SIGNATURE_CHAIN_ID);
   }
 
-  createSession(label?: string): Promise<SessionHandle> {
-    return this.sessionManager.create(label);
+  createSession(label?: string, input?: CreateSessionInput): Promise<SessionHandle> {
+    return this.sessionManager.create(label, input);
+  }
+
+  depositSession(input: DepositSessionInput) {
+    if (!this.cfg.chain.depositSession) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_FUNDING_UNSUPPORTED', 'Chain adapter does not support Session deposits');
+    return this.cfg.chain.depositSession(input);
+  }
+
+  withdrawSession(input: WithdrawSessionInput) {
+    if (!this.cfg.chain.withdrawSession) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_FUNDING_UNSUPPORTED', 'Chain adapter does not support Session withdrawals');
+    return this.cfg.chain.withdrawSession(input);
+  }
+
+  updateSessionKey(input: UpdateSessionKeyInput) {
+    if (!this.cfg.chain.updateSessionKey) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_KEY_UNSUPPORTED', 'Chain adapter does not support Session key changes');
+    return this.cfg.chain.updateSessionKey(input);
+  }
+
+  closeSession(sessionId: string) {
+    return this.withdrawSession({ sessionId, close: true });
   }
 
   getSession(sessionId: string): Promise<SessionHandle> {
@@ -458,10 +491,8 @@ export class TrueOpenClient {
   /**
    * Place an order through OpenTask, the order-placement entry point.
    *
-   * Full flow: read the on-chain context -> assemble the frozen TaskOrderV3 -> sign the order's
-   * EIP-712 digest, then the request envelope (no outer order signature) -> select
-   * Task Builders via task_builder_seed -> submit concurrently to all selected endpoints,
-   * succeeding as soon as any one is accepted.
+   * Read the current BuilderSet and Session binding, sign the order, and submit to
+   * the bound Builder. Use openTaskWithRecovery for bounded sequential takeover.
    *
    * Requires config.hub and config.ingressTransportFactory. The order is signed by config.wallet.
    * So is the request envelope, unless config.session is set, in which case the session key signs
@@ -471,6 +502,46 @@ export class TrueOpenClient {
    * source of truth for final state.
    */
   async openTask(params: OpenTaskParams): Promise<OpenTaskResult> {
+    return this.submitOpenTask(params);
+  }
+
+  /** Recover one sequence from chain state; never submits a sequence already consumed. */
+  async openTaskWithRecovery(params: OpenTaskParams, policy: DispatchRecoveryPolicy): Promise<OpenTaskResult | OpenTaskAck> {
+    const hub = this.cfg.hub;
+    if (!hub) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'Recovery requires a Hub reader');
+    const state = await this.cfg.chain.querySession(params.sessionId);
+    const orderSequence = params.orderSequence ?? state.nextExpectedSequence;
+    let context = params.context ?? await resolveTaskOrderContext(hub, this.cfg.chainId);
+    const set = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
+    let result: OpenTaskResult | undefined;
+    const ack = await recoverDispatch({
+      orderSequence, builders: set.builders.split(',').map(x => x.trim()).filter(Boolean),
+      refreshBuilders: async () => {
+        context = await resolveTaskOrderContext(hub, this.cfg.chainId);
+        const current = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
+        return current.builders.split(',').map(x => x.trim()).filter(Boolean);
+      },
+      readSession: () => this.cfg.chain.querySession(params.sessionId),
+      readHeight: () => hub.getLatestHeight(),
+      submit: async (builder, refresh) => {
+        const { context: _oldContext, expiryHeight: _oldExpiry, ...rest } = params;
+        if (refresh) context = await resolveTaskOrderContext(hub, this.cfg.chainId);
+        result = await this.submitOpenTask({ ...rest, orderSequence, context, ...(policy.signal === undefined ? {} : { signal: policy.signal }) }, builder);
+        return result;
+      },
+      recorded: async (builder) => {
+        const taskId = deriveTaskId(params.sessionId, orderSequence);
+        if (!this.cfg.taskReader) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED', 'QueryTask is required to distinguish admission from cancellation');
+        const task = await this.cfg.taskReader.queryTask(taskId);
+        if (task.taskId !== taskId || task.orderSequence !== orderSequence) throw new TrueOpenError('DATA', 'DATA_TASK_SEQUENCE_MISMATCH', 'Recorded task has another sequence');
+        result = undefined;
+        return { taskId, sessionId: params.sessionId, accepted: true, reason: '', status: 4, boundBuilder: builder };
+      },
+    }, policy);
+    return result ?? ack;
+  }
+
+  private async submitOpenTask(params: OpenTaskParams, destination?: string): Promise<OpenTaskResult> {
     const { hub, ingressTransportFactory } = this.cfg;
     if (!hub || !ingressTransportFactory) {
       throw new TrueOpenError(
@@ -479,24 +550,41 @@ export class TrueOpenClient {
         'openTask requires config.hub and config.ingressTransportFactory',
       );
     }
+    if (params.ackTimeoutMs !== undefined && (!Number.isFinite(params.ackTimeoutMs) || params.ackTimeoutMs <= 0)) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_INVALID_TIMEOUT', 'ackTimeoutMs must be positive and finite');
     const signatureChainId = this.signatureChainId();
     // Both go into the signature or decide whether the chain accepts the order, and a
     // mistake in either only surfaces after nexus accepted the order: the task just vanishes.
     const feeDenom = await this.resolveFeeDenom();
     const pricing = params.pricing ?? (await this.readProfilePricing(params.order));
 
+    const sessionState = await this.cfg.chain.querySession(params.sessionId);
+    if (sessionState.status === 'CLOSED' || sessionState.pendingWithdrawKind === 'CLOSE') {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_CLOSING', 'Session is closed or has a pending close');
+    }
+    if (!sessionState.boundBuilder) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_BINDING_MISSING', 'Session has no bound Builder; refresh its chain state');
+    }
     const orderSequence = params.orderSequence ?? (await this.nextOrderSequence(params.sessionId));
     const ctx = params.context ?? (await resolveTaskOrderContext(hub, this.cfg.chainId));
     const order = buildTaskOrder(
       ctx,
       {
         ...params.order,
+        earliestSubmitHeight: ctx.latestHeight,
         userAddress: this.cfg.userAddress,
         sessionId: params.sessionId,
         orderSequence,
       },
       pricing,
     );
+    if (params.delegatedOrderSigner) {
+      const key = params.delegatedOrderSigner.address;
+      if (!sessionState.sessionKey || key.length !== 20 || !bytesEqual(key, sessionState.sessionKey)) throw new TrueOpenError('SDK_AUTH', 'SDK_AUTH_SESSION_KEY_NOT_REGISTERED', 'Delegated order key is not the effective Session key');
+      if (sessionState.sessionKeyExpiryHeight === undefined || ctx.latestHeight > sessionState.sessionKeyExpiryHeight || sessionState.sessionKeySetHeight === undefined || ctx.sessionAnchorHeight < sessionState.sessionKeySetHeight) throw new TrueOpenError('SDK_AUTH', 'SDK_AUTH_SESSION_KEY_NOT_EFFECTIVE', 'Delegated key is expired or not effective at the signed anchor');
+      if (sessionState.sessionKeySpendCap === undefined || sessionState.sessionKeySpent === undefined) throw new TrueOpenError('SDK_AUTH', 'SDK_AUTH_SESSION_KEY_STATE_MISSING', 'Missing delegated spending state');
+      const cap = BigInt(sessionState.sessionKeySpendCap);
+      if (cap !== 0n && BigInt(sessionState.sessionKeySpent) + BigInt(params.order.amounts.maxFee.atomicUnits) > cap) throw new TrueOpenError('SDK_AUTH', 'SDK_AUTH_SESSION_KEY_CAP_EXCEEDED', 'Order exceeds the delegated cumulative max_fee cap');
+    }
     const taskId = deriveTaskId(params.sessionId, orderSequence);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     const expiryHeight = params.expiryHeight ?? ctx.latestHeight + BigInt(this.cfg.requestTtlBlocks ?? 10);
@@ -510,6 +598,7 @@ export class TrueOpenClient {
       requestNonce: this.nextNonce(),
       idempotencyKey: params.idempotencyKey,
       wallet: this.cfg.wallet,
+      ...(params.delegatedOrderSigner === undefined ? {} : { delegatedOrderSigner: params.delegatedOrderSigner }),
       ...(this.sessionGrants !== undefined ? { session: await this.sessionGrants.current() } : {}),
       orderEip712: { signatureChainId, feeDenom },
       chainId: this.cfg.chainId,
@@ -519,13 +608,14 @@ export class TrueOpenClient {
 
     // The selection seed and the candidate pool must use the same BuilderSet / anchor that was
     // signed into the order: the set in effect at session_anchor_height.
-    const { endpoints, errors } = await resolveTaskBuilderEndpoints(hub, {
+    const { endpoints: snapshotEndpoints, errors } = await resolveTaskBuilderEndpoints(hub, {
       chainId: this.cfg.chainId,
       taskId,
       builderSetHash: ctx.builderSetHash,
-      sessionAnchorBlockHash: ctx.sessionAnchorBlockHash,
       sessionAnchorHeight: ctx.sessionAnchorHeight,
+      dispatchingBuilder: destination ?? sessionState.boundBuilder,
     });
+    const endpoints = snapshotEndpoints.filter((e) => e.address === (destination ?? sessionState.boundBuilder));
     if (endpoints.length === 0) {
       throw new TrueOpenError(
         'NEXUS_INGRESS',
@@ -540,7 +630,7 @@ export class TrueOpenClient {
     const fan = await fanOutToEndpoints(built.input, endpoints, async (endpoint: TaskBuilderEndpoint, req) => {
       const submit = (serviceEndpoint: string, tlsPubkeyHash: string): Promise<OpenTaskAck> => {
         usedEndpoint.set(endpoint.address, { uri: serviceEndpoint, tlsPubkeyHash });
-        return new IngressClient(ingressTransportFactory(serviceEndpoint, tlsPubkeyHash)).openTask(req);
+        return new IngressClient(ingressTransportFactory(serviceEndpoint, tlsPubkeyHash)).openTask(req, { timeoutMs: params.ackTimeoutMs ?? 30_000, ...(params.signal === undefined ? {} : { signal: params.signal }) });
       };
       try {
         return await submit(endpoint.serviceEndpoint, endpoint.tlsPubkeyHash ?? '');
@@ -553,6 +643,13 @@ export class TrueOpenClient {
         if (!fresh || fresh.tlsPubkeyHash === (endpoint.tlsPubkeyHash ?? '')) throw err;
         return await submit(fresh.uri, fresh.tlsPubkeyHash);
       }
+    }).catch((error: unknown) => {
+      if (destination !== undefined && error instanceof TaskBuilderAllEndpointsFailedError) {
+        const first = error.results[0];
+        if (first?.error !== undefined) throw first.error;
+        if (first?.ack?.status === 2) return { ack: first.ack, results: [...error.results] };
+      }
+      throw error;
     });
     const ack = fan.ack as OpenTaskAck;
     const builders: OpenTaskBuilderResult[] = fan.results.map((r) => {
@@ -692,7 +789,7 @@ export class TrueOpenClient {
         `winner Worker ${task.winnerWorker} service key status is ${key.status || 'unset'}, not ACTIVE`,
       );
     }
-    const base = { taskId, taskHash, winnerWorker: task.winnerWorker, workerServicePubKey: key.servicePubKey };
+    const base = { ...(task.dispatchTicketHash !== undefined ? { dispatchTicketHash: task.dispatchTicketHash } : {}), taskId, taskHash, winnerWorker: task.winnerWorker, workerServicePubKey: key.servicePubKey };
     if (opts?.withReceipt === false) return base;
 
     const receipt = await taskReader.queryInferReceipt(taskId);
@@ -894,18 +991,22 @@ export class TrueOpenClient {
   async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent> {
     // Anchors default to the chain: the accepted task_hash and the winner Worker's current
     // service key. The receipt is not needed (and usually not there yet) while streaming.
+    let dispatchTicketHashHex = p.dispatchTicketHash ?? (p.checkpoint?.dispatchTicketHash === undefined ? undefined : hash32Text(p.checkpoint.dispatchTicketHash));
     let taskHashHex = p.taskHash;
     let workerServicePubKey = p.workerServicePubKey;
-    if (taskHashHex === undefined || workerServicePubKey === undefined) {
+    if (taskHashHex === undefined || workerServicePubKey === undefined || dispatchTicketHashHex === undefined) {
       const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
       taskHashHex ??= anchors.taskHash;
+      dispatchTicketHashHex ??= anchors.dispatchTicketHash;
       workerServicePubKey ??= anchors.workerServicePubKey;
     }
     const taskHash = strictHash32('task_hash', taskHashHex);
+    const dispatchTicketHash = strictHash32('dispatch_ticket_hash', dispatchTicketHashHex ?? '');
     const verifier = new OutputStreamVerifier({
       chainId: this.cfg.chainId,
       taskHash,
       workerServicePubKey,
+      dispatchTicketHash,
     }, p.checkpoint);
 
     if (p.resumeAfterSeq !== undefined) {
@@ -949,12 +1050,18 @@ export class TrueOpenClient {
       // the event loop referenced and preventing the caller's process from exiting (this was
       // observed hanging the CLI output stream).
       const abort = new AbortController();
-      const iterator = source.ingress.subscribeOutput({
+      const outputRequest = {
         sessionId: p.sessionId,
         taskId: p.taskId,
         ...(cursor !== undefined ? { resumeAfterSeq: cursor } : {}),
         signal: abort.signal,
-      })[Symbol.asyncIterator]();
+        dispatchTicketHash,
+      };
+      if (cursor !== undefined && source.ingress.resumeOutput === undefined) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_RESUME_UNSUPPORTED', 'Output source must implement ResumeOutput to resume a Phase 1 stream');
+      const output = cursor === undefined
+        ? source.ingress.subscribeOutput(outputRequest)
+        : unwrapResumeOutput(source.ingress.resumeOutput!(outputRequest));
+      const iterator = output[Symbol.asyncIterator]();
       let sawFin = false;
       try {
         for (;;) {
@@ -971,6 +1078,7 @@ export class TrueOpenClient {
               text: c.text,
               mmrRoot: c.mmrRoot,
               signature: c.workerSignature,
+              dispatchTicketHash: c.dispatchTicketHash,
             });
             if (acceptance === 'duplicate') continue;
             if (p.onCheckpoint !== undefined) {
@@ -997,6 +1105,7 @@ export class TrueOpenClient {
           }
           if (frame.case === 'fin') {
             const f = frame.value;
+            if (!bytesEqual(f.dispatchTicketHash, dispatchTicketHash)) throw dataError('DATA_OUTPUT_ATTEMPT_MISMATCH', 'fin belongs to another dispatch attempt');
             if (f.finalSeq !== verifier.resumeAfterSeq) {
               throw dataError('DATA_OUTPUT_FIN_SEQ_MISMATCH', `fin says final_seq=${f.finalSeq} but ${verifier.resumeAfterSeq} was verified`);
             }
@@ -1017,6 +1126,7 @@ export class TrueOpenClient {
               const finFields = {
                 chainId: this.cfg.chainId,
                 taskHash,
+                dispatchTicketHash,
                 finalSeq: f.finalSeq,
                 outputMmrRoot: Uint8Array.from(f.outputMmrRoot),
                 finishReason: Number(f.finishReason),
@@ -1230,5 +1340,12 @@ async function rereadNexusEndpoint(
     return { uri: endpoint.uri, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' };
   } catch {
     return undefined;
+  }
+}
+
+async function* unwrapResumeOutput(source: AsyncIterable<import('./gen/nexus/v1/ingress_pb.js').ResumeOutputResponse>) {
+  for await (const response of source) {
+    if (response.frame === undefined) throw new TrueOpenError('DATA', 'DATA_OUTPUT_RESUME_FRAME_MISSING', 'ResumeOutput response has no frame');
+    yield response.frame;
   }
 }

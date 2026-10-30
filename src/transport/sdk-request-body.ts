@@ -22,6 +22,8 @@ import { TrueOpenError } from '../errors/errors';
  */
 export const SDK_BODY_DOMAIN = {
   OpenTask: 'TRUEOPEN_SDK_BODY_OPEN_TASK_V1',
+  ResumeOutput: 'TRUEOPEN_SDK_BODY_RESUME_OUTPUT_V1',
+  GetDispatchRoster: 'TRUEOPEN_SDK_BODY_GET_DISPATCH_ROSTER_V1',
   SubscribeOutput: 'TRUEOPEN_SDK_BODY_SUBSCRIBE_OUTPUT_V1',
   AckOutput: 'TRUEOPEN_SDK_BODY_ACK_OUTPUT_V1',
   GetTaskEvents: 'TRUEOPEN_SDK_BODY_GET_TASK_EVENTS_V1',
@@ -92,12 +94,13 @@ export function openTaskPayloadRef(inputHash: string): string {
  * TRUEOPEN_SDK_BODY_SUBSCRIBE_OUTPUT_V1(session_id, task_id, OPTIONAL_V1(resume_after_seq)).
  * Follows transport presence: undefined is absent, 0n is present 0.
  */
-export function subscribeOutputBodyDigest(sessionId: string, taskId: string, resumeAfterSeq?: bigint): Uint8Array {
+export function subscribeOutputBodyDigest(sessionId: string, taskId: string, resumeAfterSeq?: bigint, dispatchTicketHash?: Uint8Array): Uint8Array {
   return bodyDigest(
     SDK_BODY_DOMAIN.SubscribeOutput,
     strictHash32('session_id', sessionId),
     strictHash32('task_id', taskId),
     optionalV1(resumeAfterSeq === undefined ? undefined : u64('resume_after_seq', resumeAfterSeq)),
+    optionalV1(ticket(dispatchTicketHash)),
   );
 }
 
@@ -157,4 +160,20 @@ export function prepareChallengeBodyDigest(
     enc.encode(challengeKind),
     optionalV1(localEvidenceDigest.length === 0 ? undefined : localEvidenceDigest),
   );
+}
+
+function ticket(value: Uint8Array | undefined): Uint8Array | undefined {
+  if (value !== undefined && value.length !== 32) throw malformed('dispatch_ticket_hash must be 32 bytes');
+  return value;
+}
+
+export function resumeOutputBodyDigest(sessionId: string, taskId: string, resumeAfterSeq?: bigint, dispatchTicketHash?: Uint8Array): Uint8Array {
+  return bodyDigest(SDK_BODY_DOMAIN.ResumeOutput,
+    strictHash32('session_id', sessionId), strictHash32('task_id', taskId),
+    optionalV1(resumeAfterSeq === undefined ? undefined : u64('resume_after_seq', resumeAfterSeq)),
+    optionalV1(ticket(dispatchTicketHash)));
+}
+
+export function getDispatchRosterBodyDigest(sessionId: string, taskId: string): Uint8Array {
+  return bodyDigest(SDK_BODY_DOMAIN.GetDispatchRoster, strictHash32('session_id', sessionId), strictHash32('task_id', taskId));
 }

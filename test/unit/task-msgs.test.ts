@@ -25,9 +25,13 @@ describe('typeUrls', () => {
 
 describe('encode Msg (verify field layout using the reader)', () => {
   it('MsgCreateSession', () => {
-    const r = new ProtoReader(encodeMsgCreateSession({ signer: 'trueopen1abc' }));
+    const r = new ProtoReader(encodeMsgCreateSession({ signer: 'trueopen1abc', initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' }));
     expect(r.tag()).toEqual({ field: 1, wire: 2 });
     expect(r.string()).toBe('trueopen1abc');
+    expect(r.tag()).toEqual({ field: 3, wire: 2 });
+    expect(new ProtoReader(r.bytes()).tag()).toEqual({ field: 1, wire: 2 });
+    expect(r.tag()).toEqual({ field: 4, wire: 2 });
+    expect(r.string()).toBe('trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl');
     expect(r.eof).toBe(true);
   });
 

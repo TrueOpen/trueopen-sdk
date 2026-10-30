@@ -127,12 +127,12 @@ const makeClient = (ingressTransport: ReturnType<typeof nexus>) =>
     signatureChainId: 1n, // signer-chosen EIP-712 domain chainId; no feeDenom: openTask signs business_denom via the hub
     chain, hub, taskReader,
     ingressTransport, // default transport for calls not routed by the SDK
-    ingressTransportFactory: nexus, // openTask picks Builders by task_builder_seed
+    ingressTransportFactory: nexus, // openTask routes to the Session-bound Builder
   });
 const client = makeClient(nexus('http://nexus.unused.invalid'));
 
 // --- 5. Session -> order ---
-const { sessionId } = await client.createSession('demo');
+const { sessionId } = await client.createSession('demo', { initialBuilder: process.env.TRUEOPEN_INITIAL_BUILDER!, initialDeposit: '1000000' });
 const orderSequence = await client.nextOrderSequence(sessionId); // 0 for a new session
 const height = await hub.getLatestHeight();
 const res = await client.openTask({
@@ -231,7 +231,7 @@ endpoint to try instead (that is what `examples/fetch-output.mjs` does).
 
 **Hash32 text form (ADR-0034).** Every 32-byte digest or ID the SDK takes or returns as a string
 -- `sessionId`, `taskId`, `taskHash`, `modelId`, `inputHash`, `outputHash`, `manifestHash`,
-`builderSetHash`, the session anchor block hash, `tlsPubkeyHash`, `rankHash`, and the rest -- is
+`builderSetHash`, `dispatchTicketHash`, `tlsPubkeyHash`, and the rest -- is
 `0x` followed by exactly 64 lowercase hex characters (66 in all). Input accepts only that form:
 a bare 64-hex string, uppercase hex, `0X` or any other length is refused (`SDK_LOCAL_NOT_HASH32`
 and friends). The SDK sends these strings to the Nexus ingress and node REST paths as is, and
@@ -241,16 +241,20 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 
 | Method | Description |
 |---|---|
-| `createSession(label?)` / `getSession(sessionId)` | create / retrieve a session |
+| `createSession(label, { initialBuilder, initialDeposit, sessionKey? })` / `getSession(sessionId)` | create a prefunded Session / refresh its chain state |
+| `depositSession({ sessionId, amount })` | owner-signed deposit in atomic units |
+| `withdrawSession({ sessionId, amount })` / `closeSession(sessionId)` | register delayed withdrawal / close; inspect the returned effective height |
+| `updateSessionKey({ sessionId, set })` / `updateSessionKey({ sessionId, clear: true })` | register or clear a delegated order key; restrictive changes are delayed |
+| `openTaskWithRecovery(params, { maxAttempts, maxPolls, pollIntervalMs, signal? })` | bounded sequential recovery; checks chain sequence/binding, waits for takeover, and refreshes stale orders |
 | `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
-| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> selects Task Builders by `task_builder_seed` -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` has every selected Builder's address, endpoint and ack or error |
+| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> uses the current immutable BuilderSet and submits to the bound Builder -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` records the contacted Builder's address, endpoint and ack or error |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
 | `watchTask(sessionId, taskId, fromCursor?)` | subscribes to the task event stream (`AsyncIterable`) |
 | `fetchTaskOutput({ sessionId, taskId, builderAddress, taskHash?, outputHash?, expiresAtHeight? })` | fetches the full output in ranges and recomputes the MMR root from `chunk_lengths` to verify it against the on-chain receipt (see section 4) |
-| `streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
-| `confirmOutput({ taskId, taskHash, checkpoint, receipt })` | uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
+| `streamOutput({ sessionId, taskId, taskHash?, dispatchTicketHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
+| `confirmOutput({ taskId, taskHash, dispatchTicketHash, checkpoint, receipt })` | binds the checkpoint to the chain-recorded ticket and uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
@@ -277,7 +281,7 @@ This section states plainly **which capabilities are already aligned with the re
 > signature recovers `<some random address>`, not `<your address>`" -- which looks like a signing
 > bug but is actually just a mismatched domain separator.
 - **MMR_ROOT_V1 and output commitments** -- anchored to `testdata/v1/shared/mmr_primitive_v1.json` and `testdata/v1/task/output_mmr_v1.json`, including 7-leaf discriminating vectors for fold direction and all negative cases.
-- **`task_builder_rank`** -- anchored to all four vectors (preimage and rank) in `testdata/v1/task/task_builder_rank_v1.json`.
+- **BuilderSet membership** -- complete immutable snapshot in cyclic order from the dispatching Builder; retired ranking and seed projections are not used.
 
 - **`TaskOrderV3`'s canonical `task_hash`** -- anchored to the three `TRUEOPEN_TASK_ORDER_V3`
   vectors in `testdata/v1/task/task_order_v3.json` (preimage and digest); the three
@@ -296,13 +300,13 @@ non-streaming case is not a special case -- it is the same object with a chunk l
 Chunk boundaries are part of the commitment: the same bytes cut a different way produce a
 different `output_hash`.
 
-**Streaming**: `client.streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, ack? })`
+**Streaming**: `client.streamOutput({ sessionId, taskId, taskHash?, dispatchTicketHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, ack? })`
 (`taskHash` and `workerServicePubKey` default to the chain: the accepted task_hash and the
 winner Worker's current service key)
 
 - Two checks per frame: the locally computed root over the first `seq+1` leaves must equal the
   frame's `mmr_root`; the Worker service key's signature over
-  `TRUEOPEN_OUTPUT_CHUNK_V1(chain_id, task_hash, seq, mmr_root)` must verify. Either failure
+  `TRUEOPEN_OUTPUT_CHUNK_V1(chain_id, task_hash, dispatch_ticket_hash, seq, mmr_root)` must verify. Either failure
   throws and stops the stream.
 - The Builder forwards the Worker-signed frames as-is, without adding its own signature, so
   verification happens entirely locally.
@@ -312,7 +316,7 @@ winner Worker's current service key)
   bad frame, or a sequence gap; frames replayed from an old wire position are fully re-verified
   and deduplicated, so they are never delivered twice.
 - `OutputFinV1` carries `finish_reason` and `worker_signature`: the
-  digest is `H_FIELDS_V1(TRUEOPEN_OUTPUT_FIN_V1, chain_id, task_hash, final_seq,
+  digest is `H_FIELDS_V1(TRUEOPEN_OUTPUT_FIN_V1, chain_id, task_hash, dispatch_ticket_hash, final_seq,
   output_mmr_root, finish_reason)`, with `finish_reason` encoded in the frame as a **uint32_be
   enum value**, accepting only 1..6 (UNSPECIFIED / unknown values are rejected before the digest
   is even computed). The authoritative settlement commitment is still the on-chain
@@ -370,7 +374,7 @@ checkpoint to perform the final confirmation:
 ```ts
 const receipt = await chainReader.queryInferReceipt(taskId);
 if (receipt) {
-  const confirmed = client.confirmOutput({ taskId, taskHash, checkpoint, receipt });
+  const confirmed = client.confirmOutput({ taskId, taskHash, dispatchTicketHash, checkpoint, receipt });
   // confirmed.type === 'confirmed'
 }
 ```
@@ -809,3 +813,10 @@ TRUEOPEN_REST_URL=https://<host>:1317 TRUEOPEN_MNEMONIC="..." \
   node dist/cli.cjs output get <session> <task> --auto --json
 ```
 Exit codes: 0 on success, 1 on error (with `--json`, errors are printed to stderr as `{error:{code,message}}`).
+
+### Phase 1 migration (wire PR #49)
+
+This checkout pins wire commit `495ea3e`. It targets a fresh Phase 1 chain; old sessions,
+output checkpoints and signatures are incompatible. See [the migration guide](docs/phase1-migration.md)
+for funding, recovery and output trust requirements. A Builder acknowledgement or signed Fin
+is provisional; only chain admission and settlement establish the corresponding final facts.

@@ -166,7 +166,7 @@ describe('classifyBroadcastError', () => {
         getTx: async (): Promise<IndexedTx | null> => null,
       },
     });
-    await expect(writer.createSession()).rejects.toMatchObject({
+    await expect(writer.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toMatchObject({
       code: 'CHAIN_TX_REJECTED',
       details: { codespace: 'sdk', code: 5, log: 'insufficient funds' },
     });

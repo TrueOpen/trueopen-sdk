@@ -1,3 +1,6 @@
+import type { UpdateSessionKeyInput } from './session-funding';
+import type { MsgUpdateSessionKeyResponse } from '../gen/task/v1/msg_session_pb.js';
+import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, DepositSessionResult, WithdrawSessionResult } from './session-funding';
 import type { StreamStateView } from '../types/node';
 
 /**
@@ -14,7 +17,10 @@ export interface ChainReader {
  * Adapters implement this separately; business logic and mocks depend on this interface only.
  */
 export interface ChainClient extends ChainReader {
-  createSession(): Promise<CreateSessionResult>;
+  createSession(input?: CreateSessionInput): Promise<CreateSessionResult>;
+  depositSession?(input: DepositSessionInput): Promise<DepositSessionResult>;
+  withdrawSession?(input: WithdrawSessionInput): Promise<WithdrawSessionResult>;
+  updateSessionKey?(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse>;
   cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult>;
 }
 
@@ -44,6 +50,7 @@ export interface CancelOrderResult {
   /** Hash32 text, `0x` + 64 lowercase hex; the node returns task_id here, not session_id. */
   readonly taskId: string;
   readonly cancelledSequence: bigint;
+  readonly cancelEffectiveHeight?: bigint;
   readonly nextExpectedSequence: bigint;
   /** Enum name from hub.v1.MutationStatusV1. */
   readonly status: string;

@@ -47,6 +47,8 @@ export interface BuildOpenTaskInput {
    * recovers the address from it), and signs the request envelope unless `session` is given.
    */
   readonly wallet: TypedDataSigner;
+  /** Registered on-chain delegated order signer, already checked against Session state. */
+  readonly delegatedOrderSigner?: { readonly signer: TypedDataSigner; readonly address: Uint8Array };
   /**
    * Signs the request envelope with this session key instead of the wallet, carrying its grant
    * (wire PR #43). The grant must be for order.userAddress. The order is still wallet-signed, so
@@ -134,7 +136,7 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
   }
 
   // (1) The order's EIP-712 signature (task_hash is one of its fields), encoded as SignedOrderV2.
-  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.wallet);
+  const signed = await signAndEncodeOrder(input.order, input.orderEip712, input.delegatedOrderSigner?.signer ?? input.wallet, input.delegatedOrderSigner?.address);
   const orderEnvelopeHex = toHex(signed.bytes);
 
   const payloadRef = openTaskPayloadRef(payloadHashHex);

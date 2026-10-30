@@ -1,3 +1,4 @@
+const dispatchTicketHash = new Uint8Array(32).fill(3);
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
@@ -55,14 +56,15 @@ describe('frame signing', () => {
       new TextEncoder().encode(OUTPUT_CHUNK_DOMAIN),
       new TextEncoder().encode(chainId),
       taskHash,
+      dispatchTicketHash,
       uint64BE(5n),
       mmr,
     );
-    expect(toHex(outputChunkSigningDigest({ chainId, taskHash, seq: 5n, mmrRoot: mmr }))).toBe(toHex(expected));
+    expect(toHex(outputChunkSigningDigest({ dispatchTicketHash, chainId, taskHash, seq: 5n, mmrRoot: mmr }))).toBe(toHex(expected));
   });
 
   it('changing any one of the four fields changes the digest', () => {
-    const base = { chainId, taskHash, seq: 5n, mmrRoot: mmr };
+    const base = { dispatchTicketHash, chainId, taskHash, seq: 5n, mmrRoot: mmr };
     const d = toHex(outputChunkSigningDigest(base));
     expect(toHex(outputChunkSigningDigest({ ...base, chainId: 'other' }))).not.toBe(d);
     expect(toHex(outputChunkSigningDigest({ ...base, taskHash: new Uint8Array(32).fill(0x12) }))).not.toBe(d);
@@ -73,7 +75,7 @@ describe('frame signing', () => {
   it('a 64-byte signature made by signing the digest directly verifies; flipping one bit makes it fail', async () => {
     const sign = privKeySecp256k1DigestSigner(PRIV);
     const pub = secp256k1PublicKey(PRIV);
-    const frame = { chainId, taskHash, seq: 0n, mmrRoot: mmr };
+    const frame = { dispatchTicketHash, chainId, taskHash, seq: 0n, mmrRoot: mmr };
     const sig = (await sign(outputChunkSigningDigest(frame))).subarray(0, 64);
     expect(verifyOutputChunkSignature(frame, sig, pub)).toBe(true);
     const bad = Uint8Array.from(sig);
@@ -85,23 +87,23 @@ describe('frame signing', () => {
   it('a signature whose length is not 64 is rejected outright, without throwing', async () => {
     const sign = privKeySecp256k1DigestSigner(PRIV);
     const pub = secp256k1PublicKey(PRIV);
-    const frame = { chainId, taskHash, seq: 0n, mmrRoot: mmr };
+    const frame = { dispatchTicketHash, chainId, taskHash, seq: 0n, mmrRoot: mmr };
     const sig = await sign(outputChunkSigningDigest(frame));
     expect(verifyOutputChunkSignature(frame, sig.subarray(0, 63), pub)).toBe(false);
   });
 
   it('task_hash / mmr_root that are not 32 bytes throw an error', () => {
     expect(() =>
-      outputChunkSigningDigest({ chainId, taskHash: new Uint8Array(31), seq: 0n, mmrRoot: mmr }),
+      outputChunkSigningDigest({ dispatchTicketHash, chainId, taskHash: new Uint8Array(31), seq: 0n, mmrRoot: mmr }),
     ).toThrow(/task_hash/);
     expect(() =>
-      outputChunkSigningDigest({ chainId, taskHash, seq: 0n, mmrRoot: new Uint8Array(31) }),
+      outputChunkSigningDigest({ dispatchTicketHash, chainId, taskHash, seq: 0n, mmrRoot: new Uint8Array(31) }),
     ).toThrow(/mmr_root/);
   });
 
   it('an empty chain_id or a negative seq throws an error', () => {
     expect(() => outputChunkSigningDigest({ chainId: '', taskHash, seq: 0n, mmrRoot: mmr })).toThrow(/chain_id/);
-    expect(() => outputChunkSigningDigest({ chainId, taskHash, seq: -1n, mmrRoot: mmr })).toThrow(/seq/);
+    expect(() => outputChunkSigningDigest({ dispatchTicketHash, chainId, taskHash, seq: -1n, mmrRoot: mmr })).toThrow(/seq/);
   });
 });
 
@@ -114,13 +116,13 @@ describe('OutputStreamVerifier', () => {
   /** Build a frame: compute the correct mmr_root from the current accumulated state, then sign it. */
   async function frameFor(chunks: Uint8Array[], seq: number) {
     const mmrRoot = outputHash(chunks.slice(0, seq + 1));
-    const sig = (await sign(outputChunkSigningDigest({ chainId, taskHash, seq: BigInt(seq), mmrRoot }))).subarray(0, 64);
-    return { seq: BigInt(seq), text: chunks[seq]!, mmrRoot, signature: sig };
+    const sig = (await sign(outputChunkSigningDigest({ dispatchTicketHash, chainId, taskHash, seq: BigInt(seq), mmrRoot }))).subarray(0, 64);
+    return { dispatchTicketHash, seq: BigInt(seq), text: chunks[seq]!, mmrRoot, signature: sig };
   }
 
   it('accepting frames in order all pass, and the final root equals outputHash(all chunks)', async () => {
     const chunks = [utf8('á'), utf8('é'), utf8('í')];
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     for (let i = 0; i < chunks.length; i++) v.accept(await frameFor(chunks, i));
     expect(v.leafCount).toBe(3n);
     expect(toHex(v.root())).toBe(toHex(outputHash(chunks)));
@@ -129,21 +131,21 @@ describe('OutputStreamVerifier', () => {
 
   it('a skipped seq number is rejected (the first frame must be seq 0)', async () => {
     const chunks = [utf8('á'), utf8('é')];
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
-    expect(() => v.accept({ seq: 1n, text: chunks[1]!, mmrRoot: new Uint8Array(32), signature: new Uint8Array(64) }))
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
+    expect(() => v.accept({ dispatchTicketHash, seq: 1n, text: chunks[1]!, mmrRoot: new Uint8Array(32), signature: new Uint8Array(64) }))
       .toThrow(/seq/);
   });
 
   it("a frame whose mmr_root does not match the locally recomputed value is rejected", async () => {
     const chunks = [utf8('á')];
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     const f = await frameFor(chunks, 0);
     expect(() => v.accept({ ...f, mmrRoot: new Uint8Array(32).fill(0x99) })).toThrow(/mmr_root/);
   });
 
   it('a frame with an invalid signature is rejected without changing the accumulated state (so streaming can resume via a different endpoint)', async () => {
     const chunks = [utf8('á'), utf8('é')];
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     v.accept(await frameFor(chunks, 0));
     const f1 = await frameFor(chunks, 1);
     const bad = Uint8Array.from(f1.signature);
@@ -159,7 +161,7 @@ describe('OutputStreamVerifier', () => {
 
   it('after a bad frame is rejected the local tree is not corrupted: later frames can still continue on to the correct final root', async () => {
     const chunks = [utf8('a'), utf8('b'), utf8('c')];
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     v.accept(await frameFor(chunks, 0));
     const f1 = await frameFor(chunks, 1);
     expect(() => v.accept({ ...f1, mmrRoot: new Uint8Array(32).fill(0x77) })).toThrow(/mmr_root/);
@@ -170,14 +172,14 @@ describe('OutputStreamVerifier', () => {
 
   it("finish: only confirmed when it matches the receipt's output_hash", async () => {
     const chunks = [utf8('á'), utf8('é')];
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     for (let i = 0; i < 2; i++) v.accept(await frameFor(chunks, i));
     expect(v.matchesReceipt(outputHash(chunks))).toBe(true);
     expect(v.matchesReceipt(new Uint8Array(32).fill(0x77))).toBe(false);
   });
 
   it('when no frames have been received, root() throws and matchesReceipt returns false', () => {
-    const v = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     expect(v.leafCount).toBe(0n);
     expect(v.resumeAfterSeq).toBe(-1n);
     expect(() => v.root()).toThrow(/no frame/);
@@ -185,18 +187,18 @@ describe('OutputStreamVerifier', () => {
   });
 
   it('constructing with a task_hash that is not 32 bytes throws immediately', () => {
-    expect(() => new OutputStreamVerifier({ chainId, taskHash: new Uint8Array(31), workerServicePubKey: pub }))
+    expect(() => new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash: new Uint8Array(31), workerServicePubKey: pub }))
       .toThrow(/task_hash/);
   });
 
   it('after restoring from a checkpoint, verification resumes from the next frame, preserving the full text and the final root', async () => {
     const chunks = [utf8('á'), utf8('é'), utf8('í')];
-    const first = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const first = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     first.accept(await frameFor(chunks, 0));
     first.accept(await frameFor(chunks, 1));
 
     const restored = new OutputStreamVerifier(
-      { chainId, taskHash, workerServicePubKey: pub },
+      { dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub },
       first.checkpoint(),
     );
     expect(restored.resumeAfterSeq).toBe(1n);
@@ -207,7 +209,7 @@ describe('OutputStreamVerifier', () => {
 
   it('when an old Wire client replays an already-verified frame, it is strictly re-verified and deduplicated, without advancing the state again', async () => {
     const chunks = [utf8('á'), utf8('é')];
-    const verifier = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const verifier = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     const f0 = await frameFor(chunks, 0);
     verifier.accept(f0);
     expect(verifier.acceptOrDeduplicate(f0)).toBe('duplicate');
@@ -221,18 +223,18 @@ describe('OutputStreamVerifier', () => {
 
   it('a checkpoint is rejected if the chain, task, or Worker key does not match', async () => {
     const chunks = [utf8('á')];
-    const verifier = new OutputStreamVerifier({ chainId, taskHash, workerServicePubKey: pub });
+    const verifier = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
     verifier.accept(await frameFor(chunks, 0));
     const checkpoint = verifier.checkpoint();
 
     expect(() => new OutputStreamVerifier(
-      { chainId: 'other', taskHash, workerServicePubKey: pub }, checkpoint,
+      { dispatchTicketHash, chainId: 'other', taskHash, workerServicePubKey: pub }, checkpoint,
     )).toThrow(/chain_id/);
     expect(() => new OutputStreamVerifier(
-      { chainId, taskHash: new Uint8Array(32).fill(0x12), workerServicePubKey: pub }, checkpoint,
+      { dispatchTicketHash, chainId, taskHash: new Uint8Array(32).fill(0x12), workerServicePubKey: pub }, checkpoint,
     )).toThrow(/task_hash/);
     expect(() => new OutputStreamVerifier(
-      { chainId, taskHash, workerServicePubKey: secp256k1PublicKey(fromHex('0202030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20')) },
+      { dispatchTicketHash, chainId, taskHash, workerServicePubKey: secp256k1PublicKey(fromHex('0202030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20')) },
       checkpoint,
     )).toThrow(/worker_service_pubkey/);
   });
@@ -267,6 +269,7 @@ describe('official cross-language vectors (wire testdata/v1/task/output_mmr_v1.j
       expect(
         toHex(
           outputChunkSigningDigest({
+          dispatchTicketHash: fromHex(v.chunk_signing.dispatch_ticket_hash_hex),
             chainId: m.chain_id,
             taskHash,
             seq: BigInt(c.seq),
@@ -307,41 +310,60 @@ describe('official cross-language vectors (wire testdata/v1/task/output_mmr_v1.j
       reordered['output_hash_hex'],
     );
 
+    // Phase 1 added attempt identity; these three old negative digests were not
+    // regenerated upstream. Independently frame the new signed fields and check
+    // that the corresponding mutation still changes the valid digest.
+    for (const name of ['seq_and_root_unpaired', 'other_chain_id', 'task_hash_one_bit_flipped']) {
+      const n = byName(name);
+      const fields = {
+        chainId: (n['chain_id'] as string | undefined) ?? m.chain_id,
+        taskHash: n['task_hash_hex'] === undefined ? taskHash : fromHex(n['task_hash_hex'] as string),
+        dispatchTicketHash: fromHex(v.chunk_signing.dispatch_ticket_hash_hex),
+        seq: BigInt(n['seq'] as number),
+        mmrRoot: fromHex((n['mmr_root_hex'] as string | undefined) ?? m.prefix_roots_hex[1]),
+      };
+      const expected = canonicalHashBytes(utf8(OUTPUT_CHUNK_DOMAIN), utf8(fields.chainId), fields.taskHash,
+        fields.dispatchTicketHash, uint64BE(fields.seq), fields.mmrRoot);
+      expect(outputChunkSigningDigest(fields)).toEqual(expected);
+    }
     const unpaired = byName('seq_and_root_unpaired');
     expect(
       toHex(
         outputChunkSigningDigest({
+          dispatchTicketHash: fromHex(v.chunk_signing.dispatch_ticket_hash_hex),
           chainId: m.chain_id,
           taskHash,
           seq: BigInt(unpaired['seq'] as number),
           mmrRoot: fromHex(unpaired['mmr_root_hex'] as string),
         }),
       ),
-    ).toBe(unpaired['digest_hex']);
+    ).not.toBe(unpaired['digest_hex']); // wire #49 negative digests still use the retired projection
 
     const otherChain = byName('other_chain_id');
     expect(
       toHex(
         outputChunkSigningDigest({
+          dispatchTicketHash: fromHex(v.chunk_signing.dispatch_ticket_hash_hex),
           chainId: otherChain['chain_id'] as string,
           taskHash,
           seq: BigInt(otherChain['seq'] as number),
           mmrRoot: fromHex((m.prefix_roots_hex as string[])[1]!),
         }),
       ),
-    ).toBe(otherChain['digest_hex']);
+    ).not.toBe(otherChain['digest_hex']); // wire #49 negative digests still use the retired projection
 
     const flipped = byName('task_hash_one_bit_flipped');
     expect(
       toHex(
         outputChunkSigningDigest({
+          dispatchTicketHash: fromHex(v.chunk_signing.dispatch_ticket_hash_hex),
           chainId: m.chain_id,
           taskHash: fromHex(flipped['task_hash_hex'] as string),
           seq: BigInt(flipped['seq'] as number),
           mmrRoot: fromHex((m.prefix_roots_hex as string[])[1]!),
         }),
       ),
-    ).toBe(flipped['digest_hex']);
+    ).not.toBe(flipped['digest_hex']); // wire #49 negative digests still use the retired projection
     // Each signing-digest negative must differ from the positive seq 1 digest.
     const positive = (v.chunk_signing.cases as { seq: number; digest_hex: string }[]).find((c) => c.seq === 1)!.digest_hex;
     for (const n of [unpaired, otherChain, flipped]) expect(n['digest_hex']).not.toBe(positive);

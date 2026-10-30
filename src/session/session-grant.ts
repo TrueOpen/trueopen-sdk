@@ -1,8 +1,8 @@
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { randomBytes } from '@noble/hashes/utils';
 import { create } from '@bufbuild/protobuf';
-import { SessionGrantV1Schema } from '../gen/nexus/v1/ingress_pb.js';
-import type { SessionGrantV1 } from '../gen/nexus/v1/ingress_pb.js';
+import { SessionGrantV1Schema } from '../gen/nexus/v1/sdk_auth_pb.js';
+import type { SessionGrantV1 } from '../gen/nexus/v1/sdk_auth_pb.js';
 import { eip712HashStruct } from '../codec/eip712';
 import type { Eip712Types } from '../codec/eip712';
 import { canonicalAccountAddressBytes } from '../codec/address';

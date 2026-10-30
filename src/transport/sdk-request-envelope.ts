@@ -39,7 +39,7 @@ export const INGRESS_SERVICE_PATH = '/nexus.v1.IngressAPI';
  * OpenTask joined it in wire PR #43: a session key may sign the OpenTask request envelope, under
  * a grant whose user is the order's user. The order itself is always signed by the wallet.
  */
-export const SESSION_SDK_METHODS: readonly string[] = ['OpenTask', 'SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
+export const SESSION_SDK_METHODS: readonly string[] = ['OpenTask', 'ResumeOutput', 'GetDispatchRoster', 'SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 
 /** Values of 10^12 and above are Unix milliseconds; smaller values are a chain height (OpenTask only). */
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;

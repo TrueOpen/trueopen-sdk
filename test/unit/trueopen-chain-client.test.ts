@@ -69,7 +69,7 @@ describe('createTrueOpenChainClient (combined read + write, no real node)', () =
       restUrl: 'http://rest', signerAddress: 'trueopen1me', fee, broadcaster: bc,
       fetch: async () => okJson({}),
     });
-    const created = await client.createSession();
+    const created = await client.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(created.sessionId).toBe(`0x${sessionHex}`);
     expect(bc.last?.[0]?.typeUrl).toBe(TYPE_URL.createSession);
   });

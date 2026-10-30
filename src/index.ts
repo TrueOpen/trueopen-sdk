@@ -37,7 +37,7 @@ export type {
   ResolveBuilderEndpointsResult,
 } from './hub/builder-discovery';
 export type { BuilderSetSnapshot } from './types/hub';
-export { selectTaskBuilders, taskBuilderSeed, taskBuilderRank, BUILDERS_PER_TASK, DOMAIN_TASK_BUILDERS_V1, DOMAIN_TASK_BUILDER_RANK_V1 } from './hub/builder-selection';
+export { selectTaskBuilders } from './hub/builder-selection';
 export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } from './hub/builder-selection';
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
@@ -373,3 +373,12 @@ export { isPublicAddress } from './manifest/address-policy';
 export { canonicalJsonBytes, parseStrictJson } from './codec/canonical-json';
 export type { CanonicalJsonValue } from './codec/canonical-json';
 export { framedHashV1, framedV1Preimage } from './codec/domain-hash';
+
+export type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, DepositSessionResult, WithdrawSessionResult } from './transport/session-funding';
+
+export { resumeOutputBodyDigest, getDispatchRosterBodyDigest } from './transport/sdk-request-body';
+
+export type { UpdateSessionKeyInput, SessionKeyInput } from './transport/session-funding';
+
+export { recoverDispatch } from './transport/dispatch-recovery';
+export type { DispatchRecoveryPolicy, DispatchRecoveryPort } from './transport/dispatch-recovery';

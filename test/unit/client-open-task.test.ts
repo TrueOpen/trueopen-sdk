@@ -1,3 +1,4 @@
+import { canonicalAccountAddressBytes } from '../../src/codec/address';
 import { describe, it, expect } from 'vitest';
 import { createRouterTransport, ConnectError, Code } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
@@ -84,7 +85,7 @@ const order: TaskOrderIntent = {
 function fakeChain(): ChainClient {
   return {
     async querySession(id) {
-      return { sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
+      return { boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
     async createSession() { return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
@@ -105,10 +106,10 @@ function acceptTransport(seen: { calls: number; frames: OpenTaskRequest[] }): Tr
   });
 }
 
-function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }): TrueOpenClient {
+function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }, chain: ChainClient = fakeChain()): TrueOpenClient {
   return new TrueOpenClient({
     chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
-    chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+    chain, ingressTransport: acceptTransport({ calls: 0, frames: [] }),
     hub, ingressTransportFactory: () => acceptTransport(seen),
     nonce: () => new Uint8Array(32).fill(1),
     signatureChainId: 424242n,
@@ -117,27 +118,27 @@ function makeClient(seen: { calls: number; frames: OpenTaskRequest[] }): TrueOpe
 }
 
 describe('TrueOpenClient.openTask', () => {
-  it('assembles once, sends to every selected Task Builder, and succeeds if any one accepts', async () => {
+  it('assembles once and sends only to the bound Builder', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const res = await makeClient(seen).openTask({
       sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1',
     });
 
     expect(res.accepted).toBe(true);
-    expect(res.endpointsTried).toBe(3);
-    expect(seen.calls).toBe(3); // each of the 3 endpoints receives one call
+    expect(res.endpointsTried).toBe(1);
+    expect(seen.calls).toBe(1); // each of the 3 endpoints receives one call
     expect(res.taskId).toBe(deriveTaskId(SESSION, 3n));
     expect(res.taskHash).toMatch(/^0x[0-9a-f]{64}$/);
 
     // Context is fetched from the chain and returned, for reuse/debugging.
-    expect(res.context.sessionAnchorBlockHash).toBe(ANCHOR);
+    expect(res.context.sessionAnchorBlockHash).toBeUndefined();
     expect(res.context.builderSetId).toBe('genesis-1');
     expect(res.context.timeoutBucketVersion).toBe(1n);
     // anchor is latestHeight - 2.
-    expect(res.context.sessionAnchorHeight).toBe(998n);
+    expect(res.context.sessionAnchorHeight).toBe(1000n);
   });
 
-  it('a BuilderSet change between the anchor and the latest height: signs and routes by the anchor-height set', async () => {
+  it('a newly effective BuilderSet is used for signing and routing', async () => {
     // A new set with a single member takes effect at 999, after the anchor (998) but by the latest height (1000).
     const rotated: BuilderSetSnapshot = {
       builderSetId: 'rotation-2', builderSetVersion: 2n, effectiveHeight: 999n, builders: ADDRS[0]!, setHash: hexOf(0x99),
@@ -166,11 +167,11 @@ describe('TrueOpenClient.openTask', () => {
     const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
 
     // Every BuilderSet read, for signing and for routing, is at the anchor height.
-    expect(heights).toEqual([998n, 998n]);
-    expect(res.context.builderSetId).toBe('genesis-1');
-    expect(res.context.builderSetHash).toBe(SET_HASH);
+    expect(heights).toEqual([1000n, 1000n]);
+    expect(res.context.builderSetId).toBe('rotation-2');
+    expect(res.context.builderSetHash).toBe(hexOf(0x99));
     // The Builders contacted are the anchor-height set's members, not the latest set's single member.
-    expect(contacted.sort()).toEqual(ADDRS.map((a) => `grpc://${a}:8080`).sort());
+    expect(contacted.sort()).toEqual([ADDRS[0]].map((a) => `grpc://${a}:8080`));
   });
 
   it('expiry uses block height rather than a timestamp (nexus only accepts block height for OpenTask)', async () => {
@@ -262,7 +263,7 @@ describe('TrueOpenClient.openTask', () => {
     ).rejects.toMatchObject({ code: 'SDK_LOCAL_ROUTING_UNCONFIGURED' });
   });
 
-  it('returns every selected Builder with its ack or error, keeping the first ack at the top level', async () => {
+  it('returns only the contacted bound Builder; unrelated failures do not cause fan-out', async () => {
     const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
     const rejecting = createRouterTransport(({ service }) => {
       service(IngressAPI, {
@@ -285,9 +286,9 @@ describe('TrueOpenClient.openTask', () => {
 
     expect(res.accepted).toBe(true);
     expect(res.sessionId).toBe(SESSION);
-    expect(res.builders.map((b) => b.address).sort()).toEqual([...ADDRS].sort());
+    expect(res.builders.map((b) => b.address).sort()).toEqual([ADDRS[0]]);
     // Ranks are 1-based, in selection order.
-    expect(res.builders.map((b) => b.rank)).toEqual([1, 2, 3]);
+    expect(res.builders.map((b) => b.rank)).toEqual([1]);
     for (const b of res.builders) {
       expect(b.serviceEndpoint).toBe(`grpc://${b.address}:8080`);
       if (b.address === ADDRS[1]) {
@@ -406,4 +407,43 @@ describe('request nonce without globalThis.crypto (node 18)', () => {
     expect(res.accepted).toBe(true);
     expect(seen.calls).toBeGreaterThan(0);
   });
+});
+
+it('delegated orders require the effective registered key, valid height and cumulative cap', async () => {
+  const keyPrivate = new Uint8Array(32).fill(7);
+  const keyAddress = canonicalAccountAddressBytes('key', ethSecp256k1Address(secp256k1PublicKey(keyPrivate), 'trueopen'));
+  const signer = privateKeyTypedDataSigner(keyPrivate);
+  const base = fakeChain();
+  let cap = '1000';
+  const chain: ChainClient = { ...base, querySession: async id => ({ ...await base.querySession(id), sessionKey: keyAddress, sessionKeyExpiryHeight: 2000n, sessionKeySetHeight: 900n, sessionKeySpendCap: cap, sessionKeySpent: '0' }) };
+  const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+  const client = makeClient(seen, chain);
+  const params = { sessionId: SESSION, order, idempotencyKey: 'delegated', delegatedOrderSigner: { signer, address: keyAddress } };
+  expect((await client.openTask(params)).accepted).toBe(true);
+  cap = '999';
+  await expect(client.openTask(params)).rejects.toMatchObject({ code: 'SDK_AUTH_SESSION_KEY_CAP_EXCEEDED' });
+  await expect(client.openTask({ ...params, delegatedOrderSigner: { signer, address: new Uint8Array(20) } })).rejects.toMatchObject({ code: 'SDK_AUTH_SESSION_KEY_NOT_REGISTERED' });
+  expect(seen.calls).toBe(1);
+});
+
+it('an acknowledgement timeout aborts the original RPC and recovery contacts the next Builder', async () => {
+  let aborted = false;
+  const destinations: string[] = [];
+  const slow = createRouterTransport(({ service }) => service(IngressAPI, {
+    async openTask(_requests, context) {
+      return await new Promise<never>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => { aborted = true; reject(context.signal.reason); }, { once: true });
+      });
+    },
+  }));
+  const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+  const client = new TrueOpenClient({
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet, chain: fakeChain(), hub,
+    signatureChainId: 424242n, feeDenom: 'utrueopen', ingressTransport: slow,
+    ingressTransportFactory: uri => { destinations.push(uri); return destinations.length === 1 ? slow : acceptTransport(seen); },
+  });
+  const result = await client.openTaskWithRecovery({ sessionId: SESSION, order, idempotencyKey: 'timeout', ackTimeoutMs: 20 }, { maxAttempts: 2, maxPolls: 1, pollIntervalMs: 0 });
+  expect(result.accepted).toBe(true);
+  expect(aborted).toBe(true);
+  expect(destinations).toEqual([ADDRS[0], ADDRS[1]].map(a => `grpc://${a}:8080`));
 });

@@ -17,14 +17,10 @@ export interface ResolveTaskBuilderInput {
   readonly chainId: string;
   /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly taskId: string;
-  /**
-   * The builder_set_hash and session_anchor_block_hash signed into the order.
-   * The selection seed is determined by these, and they must **match exactly** the
-   * order the user signed, or the order will get sent to a set of Builders that were
-   * never actually selected.
-   */
+  /** The immutable BuilderSet hash signed into the order. */
   readonly builderSetHash: string;
-  readonly sessionAnchorBlockHash: string;
+  /** @deprecated Retired; ignored. */
+  readonly sessionAnchorBlockHash?: string;
   /**
    * The session_anchor_height signed into the order. The candidate pool is the BuilderSet in
    * effect at this height -- the same set the chain checks the order against -- never the
@@ -34,6 +30,7 @@ export interface ResolveTaskBuilderInput {
   /** Defaults to the active_builders of the BuilderSet at sessionAnchorHeight. */
   readonly members?: readonly BuilderSetMember[];
   readonly buildersPerTask?: number;
+  readonly dispatchingBuilder?: string;
 }
 
 export interface TaskBuilderEndpoint {
@@ -51,16 +48,8 @@ export interface ResolveTaskBuilderResult {
   readonly errors: { readonly address: string; readonly error: unknown }[];
 }
 
-/**
- * Select this task's Task Builders -> for each, fetch the nexus gRPC uri from the endpoints
- * inlined in the on-chain descriptor.
- *
- * Selection matches node's deriveTaskBuilderSelection (see builder-selection.ts): the seed
- * is determined by chain_id/task_id/builder_set_hash/session_anchor_block_hash, i.e. it is
- * **uniquely determined by the order the user signed**.
- *
- * Best-effort per builder: if a single descriptor cannot be fetched it is recorded in
- * errors without blocking the rest.
+/** Resolve descriptors for the complete immutable snapshot in cyclic dispatch order.
+ * Individual descriptor failures are returned without modifying group membership.
  */
 export async function resolveTaskBuilderEndpoints(
   reader: TaskBuilderReader,
@@ -82,11 +71,7 @@ export async function resolveTaskBuilderEndpoints(
         `but the order signs ${input.builderSetHash}`,
     );
   }
-  // The active_builders returned by the by_height snapshot is the candidate pool at the
-  // anchor height; when node actually selects, it filters once more by **live** status
-  // (slashed members must be excluded from new tasks), but the snapshot cannot read live
-  // status. So this treats all of them as ACTIVE; callers needing strict consistency can
-  // pass members explicitly.
+  // Snapshot membership is immutable; live status never filters it.
   const members: readonly BuilderSetMember[] =
     input.members ??
     snapshot.builders
@@ -99,8 +84,8 @@ export async function resolveTaskBuilderEndpoints(
     chainId: input.chainId,
     taskId: input.taskId,
     builderSetHash: input.builderSetHash,
-    sessionAnchorBlockHash: input.sessionAnchorBlockHash,
     members,
+    ...(input.dispatchingBuilder !== undefined ? { dispatchingBuilder: input.dispatchingBuilder } : {}),
     ...(input.buildersPerTask !== undefined ? { buildersPerTask: input.buildersPerTask } : {}),
   });
 

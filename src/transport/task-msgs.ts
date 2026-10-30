@@ -1,3 +1,8 @@
+import { create, toBinary } from '@bufbuild/protobuf';
+import { MsgCreateSessionSchema } from '../gen/task/v1/msg_session_pb.js';
+import { sessionKeyGrant } from './session-funding';
+import { atomicAmount, validateInitialBuilder } from './session-funding';
+import type { CreateSessionInput } from './session-funding';
 import { ProtoWriter, ProtoReader } from '../codec/protobuf';
 import { hash32Text, strictHash32 } from '../codec/hash32';
 
@@ -34,11 +39,16 @@ export const TYPE_URL = {
 } as const;
 
 // ---- MsgCreateSession (signer=1) ----
-export interface MsgCreateSession {
+export interface MsgCreateSession extends Partial<CreateSessionInput> {
   readonly signer: string;
 }
 export function encodeMsgCreateSession(m: MsgCreateSession): Uint8Array {
-  return new ProtoWriter().string(1, m.signer).finish();
+  if (m.initialBuilder === undefined) throw new Error('initial_builder is required in Phase 1');
+  validateInitialBuilder(m.initialBuilder);
+  return toBinary(MsgCreateSessionSchema, create(MsgCreateSessionSchema, {
+    signerAddress: m.signer, initialBuilder: m.initialBuilder, initialDeposit: atomicAmount(m.initialDeposit ?? '0'),
+    ...(m.sessionKey === undefined ? {} : { sessionKey: sessionKeyGrant(m.sessionKey, m.signer) }),
+  }));
 }
 /**
  * MsgCreateSessionResponse (node msg_session.proto):
@@ -102,6 +112,7 @@ export interface MsgCancelOrderResponse {
   readonly taskId: string;
   readonly cancelledSequence: bigint;
   readonly nextExpectedSequence: bigint;
+  readonly cancelEffectiveHeight?: bigint;
   readonly status: string;
 }
 export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderResponse {
@@ -109,16 +120,18 @@ export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderR
   let taskId = '';
   let cancelledSequence = 0n;
   let nextExpectedSequence = 0n;
+  let cancelEffectiveHeight: bigint | undefined;
   let status = mutationStatus(0n);
   while (!r.eof) {
     const { field, wire } = r.tag();
     switch (field) {
-      case 1: taskId = hash32Text(r.bytes()); break;
+      case 1: { const b = r.bytes(); taskId = b.length === 0 ? '' : hash32Text(b); break; }
       case 2: cancelledSequence = r.uint64(); break;
       case 3: nextExpectedSequence = r.uint64(); break;
       case 4: status = mutationStatus(r.uint64()); break;
+      case 5: cancelEffectiveHeight = r.uint64(); break;
       default: r.skip(wire);
     }
   }
-  return { taskId, cancelledSequence, nextExpectedSequence, status };
+  return { taskId, cancelledSequence, nextExpectedSequence, status, ...(cancelEffectiveHeight !== undefined ? { cancelEffectiveHeight } : {}) };
 }

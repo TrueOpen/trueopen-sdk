@@ -1,3 +1,4 @@
+import type { ResumeOutputRequest } from '../../../src/gen/nexus/v1/dispatch_pb.js';
 /**
  * A fake nexus IngressAPI for one Builder: Connect over HTTPS on localhost, with the self-signed
  * test certificate whose SPKI hash the fake chain registers as the Builder's tls_pubkey_hash, so
@@ -67,6 +68,7 @@ export const MAX_SESSION_GRANT_BLOCKS = 400n;
  * the Worker key stay bare hex: they are decoded to bytes, never sent as Hash32 text.
  */
 export interface OutputStreamFixture {
+  readonly dispatch_ticket_hash: string;
   readonly chain_id: string;
   readonly session_id: string;
   readonly task_id: string;
@@ -212,10 +214,11 @@ export class FakeNexus {
   }
 
   private routes(router: ConnectRouter): void {
+    const self = this;
     router.service(IngressAPI, {
       openTask: async (reqs: AsyncIterable<OpenTaskRequest>) => this.openTask(reqs),
-      confirmOpenTask: () => this.fail('ConfirmOpenTask', Code.FailedPrecondition, 'NEXUS_INGRESS_CONTRACT_NOT_FROZEN: ConfirmOpenTask is not callable in V1'),
       subscribeOutput: (req: SubscribeOutputRequest) => this.subscribeOutput(req),
+      resumeOutput: async function* (req: ResumeOutputRequest) { for await (const frame of self.subscribeOutput(req, true)) yield { frame }; },
       ackOutput: async (req: AckOutputRequest) => this.ackOutput(req),
       getTaskDataMetadata: async (req: GetTaskDataMetadataRequest) => this.getTaskDataMetadata(req),
       fetchTaskData: (req: FetchTaskDataRequest) => this.fetchTaskData(req),
@@ -240,7 +243,6 @@ export class FakeNexus {
     this.injected(M);
 
     // No outer order signature exists: both deprecated fields must be empty.
-    if (h.signature.length !== 0 || h.signatureScheme !== '') this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask signature and signature_scheme must be empty');
     if (h.sessionId === '' || h.userAddress === '' || h.inputSizeBytes === 0n || h.inputHash === '' || h.inputMediaType === '' ||
       h.orderEnvelope.length === 0) {
       this.fail(M, Code.InvalidArgument, 'NEXUS_INGRESS_MALFORMED: OpenTask header');
@@ -269,11 +271,11 @@ export class FakeNexus {
     // The order's anchor must be real, and this Builder must be one the order selects.
     const anchor = order.sessionAnchorHeight;
     const set = this.node.builderSetAt(anchor);
-    if (w.hash32(order.sessionAnchorBlockHash) !== w.beaconBlockHash(anchor) || set === undefined ||
+    if (set === undefined ||
       w.hash32(order.builderSetHash) !== set.hash || order.builderSetId !== set.id) {
       this.fail(M, Code.FailedPrecondition, 'NEXUS_INGRESS_STAGE1_MISMATCH: order anchor or builder set is not the one in effect at its anchor height');
     }
-    if (!selectedBuilders(w.CHAIN_ID, taskId, set!, w.hash32(order.sessionAnchorBlockHash)).includes(this.builder.address)) {
+    if (!selectedBuilders(w.CHAIN_ID, taskId, set!, w.beaconBlockHash(anchor)).includes(this.builder.address)) {
       this.fail(M, Code.NotFound, 'NEXUS_INGRESS_NOT_SELECTED_BUILDER: this Builder is not selected for the task');
     }
 
@@ -303,13 +305,13 @@ export class FakeNexus {
     return this.node.sessions.get(sessionId)?.owner;
   }
 
-  private async *subscribeOutput(req: SubscribeOutputRequest): AsyncGenerator<SubscribeOutputResponse> {
-    const M = 'SubscribeOutput';
+  private async *subscribeOutput(req: SubscribeOutputRequest | ResumeOutputRequest, resume = false): AsyncGenerator<SubscribeOutputResponse> {
+    const M = resume ? 'ResumeOutput' : 'SubscribeOutput';
     this.calls.push(M);
     this.subscribes.push(req.resumeAfterSeq !== undefined ? { resumeAfterSeq: req.resumeAfterSeq } : {});
     const requester = this.check(M, () => v.verifySdkRequest(req.requestEnvelope, {
       method: M, sessionId: req.sessionId, taskId: req.taskId,
-      body: () => v.subscribeOutputBody(req.sessionId, req.taskId, req.resumeAfterSeq),
+      body: () => v.subscribeOutputBody(req.sessionId, req.taskId, req.resumeAfterSeq, req.dispatchTicketHash, resume),
     }, this.ctx()));
     this.injected(M);
     if (requester !== this.owner(req.sessionId)) this.fail(M, Code.PermissionDenied, 'NEXUS_OUTPUT_UNAUTHORIZED: only the task owner may subscribe');
@@ -319,14 +321,14 @@ export class FakeNexus {
 
     const after = req.resumeAfterSeq;
     const chunk = (f: OutputStreamFixture['frames'][number]): SubscribeOutputResponse => ({
-      frame: { case: 'chunk', value: { seq: BigInt(f.seq), text: Buffer.from(f.text_b64, 'base64'), mmrRoot: unhex(f.root_hex), workerSignature: unhex(f.sig_hex) } },
+      frame: { case: 'chunk', value: { dispatchTicketHash: unhex(out!.dispatch_ticket_hash), seq: BigInt(f.seq), text: Buffer.from(f.text_b64, 'base64'), mmrRoot: unhex(f.root_hex), workerSignature: unhex(f.sig_hex) } },
     }) as unknown as SubscribeOutputResponse;
     const frames = out!.frames.filter((f) => after === undefined || BigInt(f.seq) > after);
     if (this.stream === 'truncate-unsigned-fin') {
       const kept = out!.frames.slice(0, -1);
       for (const f of kept.filter((f) => after === undefined || BigInt(f.seq) > after)) yield chunk(f);
       const last = kept[kept.length - 1]!;
-      yield { frame: { case: 'fin', value: { finalSeq: BigInt(last.seq), outputMmrRoot: unhex(last.root_hex), finishReason: 0, workerSignature: new Uint8Array() } } } as unknown as SubscribeOutputResponse;
+      yield { frame: { case: 'fin', value: { dispatchTicketHash: unhex(out!.dispatch_ticket_hash), finalSeq: BigInt(last.seq), outputMmrRoot: unhex(last.root_hex), finishReason: 0, workerSignature: new Uint8Array() } } } as unknown as SubscribeOutputResponse;
       return;
     }
     if (typeof this.stream === 'object') {
@@ -336,7 +338,7 @@ export class FakeNexus {
     }
     for (const f of frames) yield chunk(f);
     const fin = out!.fin;
-    yield { frame: { case: 'fin', value: { finalSeq: BigInt(fin.final_seq), outputMmrRoot: unhex(fin.root_hex), finishReason: fin.finish_reason, workerSignature: unhex(fin.sig_hex) } } } as unknown as SubscribeOutputResponse;
+    yield { frame: { case: 'fin', value: { dispatchTicketHash: unhex(out!.dispatch_ticket_hash), finalSeq: BigInt(fin.final_seq), outputMmrRoot: unhex(fin.root_hex), finishReason: fin.finish_reason, workerSignature: unhex(fin.sig_hex) } } } as unknown as SubscribeOutputResponse;
   }
 
   private ackOutput(req: AckOutputRequest) {
@@ -350,7 +352,7 @@ export class FakeNexus {
     this.injected(M);
     if (requester !== this.owner(req.sessionId)) this.fail(M, Code.PermissionDenied, 'NEXUS_OUTPUT_UNAUTHORIZED: only the task owner may ack');
     this.accepted(M, req.requestEnvelope?.sessionGrant);
-    this.acks.push({ lastSeq: req.lastSeq, outputId: req.outputId });
+    this.acks.push({ lastSeq: req.lastSeq, outputId: '' });
     return { acked: true, alreadyAcked: false, ackedAt: BigInt(Date.now()) };
   }
 

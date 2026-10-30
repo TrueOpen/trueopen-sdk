@@ -212,6 +212,10 @@ export type ParticipantTypeName = (typeof PARTICIPANT_TYPE)[keyof typeof PARTICI
  * is a raw64 signature by the selected Worker's service key over the TRUEOPEN_OUTPUT_CHUNK_V1 digest.
  */
 export interface ServiceKeyBinding {
+  /** Previous key is proof-only; it never authorizes online requests. */
+  readonly previousServicePubKey?: Uint8Array;
+  readonly previousServiceAuthorizationNonce?: bigint;
+  readonly previousRetiredHeight?: bigint;
   readonly participantType: string;
   readonly operatorAddress: string;
   readonly serviceAddress: string;

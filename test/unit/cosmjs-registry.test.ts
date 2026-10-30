@@ -5,8 +5,8 @@ import { TYPE_URL, encodeMsgCreateSession, encodeMsgCancelOrder } from '../../sr
 describe('taskRegistry', () => {
   it('registry.encode matches the hand-written encoder byte-for-byte (CreateSession)', () => {
     const reg = taskRegistry();
-    const bytes = reg.encode({ typeUrl: TYPE_URL.createSession, value: { signer: 'trueopen1x' } });
-    expect(bytes).toEqual(encodeMsgCreateSession({ signer: 'trueopen1x' }));
+    const bytes = reg.encode({ typeUrl: TYPE_URL.createSession, value: { signer: 'trueopen1x', initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' } });
+    expect(bytes).toEqual(encodeMsgCreateSession({ signer: 'trueopen1x', initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' }));
   });
 
   it('registry.encode matches (CancelOrder, includes uint64)', () => {

@@ -191,8 +191,7 @@ describe('e2e: session grants', () => {
     });
   }
 
-  it('ConfirmOpenTask is not callable (NEXUS_INGRESS_CONTRACT_NOT_FROZEN)', async () => {
-    const err = await caught(world.client(0).ingress.raw.confirmOpenTask({ sessionId, taskId: STREAM.task_id }));
-    expect(err).toMatchObject({ code: 'NEXUS_INGRESS_CONTRACT_NOT_FROZEN', retriable: false });
+  it('retired ConfirmOpenTask is absent from the service', () => {
+    expect('confirmOpenTask' in world.client(0).ingress.raw).toBe(false);
   });
 });

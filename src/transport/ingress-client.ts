@@ -273,6 +273,7 @@ export class IngressClient {
     sessionId: string;
     taskId: string;
     fromCursor?: string;
+    signal?: AbortSignal;
   }): AsyncIterable<GetTaskEventsResponse> {
     const cursor = p.fromCursor ?? '';
     const bd = getTaskEventsBodyDigest(p.sessionId, p.taskId, cursor);
@@ -284,6 +285,7 @@ export class IngressClient {
           fromCursor: cursor,
           requestEnvelope: envelopeMessage(env),
         }),
+        p.signal === undefined ? undefined : { signal: p.signal },
       ),
     );
   }
@@ -308,6 +310,7 @@ export class IngressClient {
      */
     signal?: AbortSignal;
   }): AsyncIterable<SubscribeOutputResponse> {
+    requireResumeTicket(p.resumeAfterSeq, p.dispatchTicketHash);
     const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq, p.dispatchTicketHash);
     yield* this.signedStream('SubscribeOutput', p.sessionId, p.taskId, bd, (env) =>
       this.client.subscribeOutput(
@@ -324,6 +327,7 @@ export class IngressClient {
   }
 
   async *resumeOutput(p: { sessionId: string; taskId: string; resumeAfterSeq?: bigint; dispatchTicketHash?: Uint8Array; signal?: AbortSignal }) {
+    requireResumeTicket(p.resumeAfterSeq, p.dispatchTicketHash);
     const digest = resumeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq, p.dispatchTicketHash);
     yield* this.signedStream('ResumeOutput', p.sessionId, p.taskId, digest, (env) =>
       this.client.resumeOutput(create(ResumeOutputRequestSchema, {
@@ -791,5 +795,11 @@ async function* classifyingIterable<T>(source: AsyncIterable<T>): AsyncGenerator
     yield* source;
   } catch (e) {
     throw classifyNexusError(e);
+  }
+}
+
+function requireResumeTicket(cursor: bigint | undefined, ticket: Uint8Array | undefined): void {
+  if (cursor !== undefined && ticket?.length !== 32) {
+    throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_RESUME_TICKET_REQUIRED', 'resume_after_seq requires the same attempt\'s raw32 dispatch_ticket_hash');
   }
 }

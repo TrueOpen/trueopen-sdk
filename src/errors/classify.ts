@@ -16,6 +16,7 @@ const rule = (category: ErrorCategory, retriable: boolean, switchSource: boolean
  * That code is more precise than the Connect code, so it wins when present.
  */
 const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
+  NEXUS_INGRESS_ATTEMPT_STALE: rule('conflict', true, false),
   NEXUS_INGRESS_BUILDER_SET_STALE: rule('expired', true, false),
   NEXUS_INGRESS_ORDER_FUTURE: rule('expired', true, false),
   NEXUS_INGRESS_SESSION_BALANCE_INSUFFICIENT: rule('invalid', false, false),

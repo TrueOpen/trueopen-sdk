@@ -189,12 +189,14 @@ fetching the whole object after the receipt lands:
 // the non-streaming path above. It derives the trust anchors from chain when `taskReader`
 // and `hub.getCurrentServiceKey` are configured (they are).
 let text = '';
-ç
+for (const b of res.builders) {
   try {
     const bc = makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash));
-    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId })) {
+    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId, admissionWait: { timeoutMs: 30000 } })) {
       if (event.kind === 'chunk') {
         text += event.text;                   // per-frame Worker signature + MMR root verified
+      } else if (event.kind === 'reset') {
+        text = ''; // ATTEMPT_STALE: discard the voided attempt before displaying its replacement
       } else {
         console.error(`fin: attested=${event.attested} finish_reason=${event.finishReason}`);
       }
@@ -217,7 +219,7 @@ for await (const e of makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).stre
 })) { /* ... */ }
 // later, in a fresh process:
 for await (const e of makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).streamOutput({
-  sessionId, taskId: res.taskId, checkpoint: cp, resumeAfterSeq: cp.leafCount - 1n,
+  sessionId, taskId: res.taskId, checkpoint: cp, resumeAfterSeq: cp.mmr.leafCount > 0n ? cp.mmr.leafCount - 1n : undefined,
 })) { /* ... */ }
 ```
 
@@ -248,6 +250,7 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 | `openTaskWithRecovery(params, { maxAttempts, maxPolls, pollIntervalMs, signal? })` | bounded sequential recovery; checks chain sequence/binding, waits for takeover, and refreshes stale orders |
 | `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
 | `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> uses the current immutable BuilderSet and submits to the bound Builder -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` records the contacted Builder's address, endpoint and ack or error |
+| `waitForOutputTrustAnchors(sessionId, taskId, { pollIntervalMs?, timeoutMs?, signal? })` | waits for chain anchors; `DISPATCH_RECORDED` triggers an immediate read, with polling fallback |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |

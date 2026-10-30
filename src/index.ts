@@ -14,6 +14,7 @@ export { HASH32_TEXT_RE, isHash32Text, hash32Text } from './codec/hash32';
 
 export type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 
+export type { OutputAdmissionWaitOptions } from './output/output-admission';
 export type {
   ChainReader,
   ChainClient,

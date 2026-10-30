@@ -113,10 +113,11 @@ describe('IngressClient signed methods (router transport)', () => {
   it('subscribeOutput signs + body_digest + yields frame by frame', async () => {
     const cap: Captured = {};
     let n = 0;
-    for await (const _ of client(cap).subscribeOutput({ sessionId: S, taskId: T, resumeAfterSeq: 17n })) n += 1;
+    for await (const _ of client(cap).subscribeOutput({ sessionId: S, taskId: T, resumeAfterSeq: 17n, dispatchTicketHash: EVIDENCE })) n += 1;
     expect(n).toBeGreaterThan(0);
     expect(cap.subscribe?.requestEnvelope?.method).toBe('SubscribeOutput');
-    expect(toHex(cap.subscribe?.requestEnvelope?.bodyDigest as Uint8Array)).toBe(G.subscribeResume17);
+    expect(cap.subscribe?.requestEnvelope?.bodyDigest).toEqual(subscribeOutputBodyDigest(S, T, 17n, EVIDENCE));
+    expect(cap.subscribe?.dispatchTicketHash).toEqual(EVIDENCE);
     expect(cap.subscribe?.resumeAfterSeq).toBe(17n);
   });
 

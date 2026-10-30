@@ -447,3 +447,26 @@ it('an acknowledgement timeout aborts the original RPC and recovery contacts the
   expect(aborted).toBe(true);
   expect(destinations).toEqual([ADDRS[0], ADDRS[1]].map(a => `grpc://${a}:8080`));
 });
+
+it('resolves a recorded-task error detail through QueryTask without sending the order again', async () => {
+  const { OpenTaskResponseSchema } = await import('../../src/gen/nexus/v1/ingress_pb.js');
+  const taskId = deriveTaskId(SESSION, 0n);
+  const contacted: string[] = [];
+  let queried = 0;
+  const transport = createRouterTransport(({ service }) => service(IngressAPI, {
+    async openTask() {
+      throw new ConnectError('NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', Code.FailedPrecondition, undefined, [{ desc: OpenTaskResponseSchema, value: { taskId, boundBuilder: ADDRS[1], status: 4 } }]);
+    },
+  }));
+  const client = new TrueOpenClient({
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet, chain: fakeChain(), hub,
+    signatureChainId: 424242n, feeDenom: 'utrueopen', ingressTransport: transport,
+    ingressTransportFactory: uri => { contacted.push(uri); return transport; },
+    taskReader: { queryTask: async id => { queried++; expect(id).toBe(taskId); return { view: 'active', taskId, acceptedTaskHash: hexOf(1), winnerWorker: USER, modelId: hexOf(2), profileVersion: 1n, orderSequence: 0n }; }, queryInferReceipt: async () => undefined },
+  });
+  await expect(client.openTask({ sessionId: SESSION, order, idempotencyKey: 'recorded' })).rejects.toMatchObject({ code: 'NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', details: { taskId, boundBuilder: ADDRS[1] } });
+  contacted.length = 0;
+  expect(await client.openTaskWithRecovery({ sessionId: SESSION, order, idempotencyKey: 'recorded' }, { maxAttempts: 3, maxPolls: 2, pollIntervalMs: 0 })).toMatchObject({ status: 4, taskId, boundBuilder: ADDRS[1] });
+  expect(contacted).toEqual([`grpc://${ADDRS[0]}:8080`]);
+  expect(queried).toBe(1);
+});

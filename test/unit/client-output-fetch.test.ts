@@ -329,7 +329,7 @@ describe('streamOutput trust anchors', () => {
     let attested = false;
     for await (const e of makeClient(transport, reader).streamOutput({ sessionId: SESSION, taskId: TASK })) {
       if (e.kind === 'chunk') text.push(e.text);
-      else attested = e.attested;
+      else if (e.kind === 'fin') attested = e.attested;
     }
     expect(text.join('')).toBe('hello final output');
     expect(attested).toBe(true);

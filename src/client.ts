@@ -2,6 +2,8 @@ import { recoverDispatch, type DispatchRecoveryPolicy } from './transport/dispat
 import type { UpdateSessionKeyInput } from './transport/session-funding';
 import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } from './transport/session-funding';
 import type { Transport } from '@connectrpc/connect';
+import type { DispatchResultHeaderV1 } from './gen/nexus/v1/dispatch_pb.js';
+import { waitForOutputAdmission, type OutputAdmissionWaitOptions } from './output/output-admission';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { TypedDataSigner } from './signer/typed-data-signer';
 import { IngressClient } from './transport/ingress-client';
@@ -267,6 +269,12 @@ export interface OutputStreamSource {
 }
 
 export interface StreamOutputParams {
+  /** Wait for chain anchors using DISPATCH_RECORDED hints plus polling when needed. */
+  readonly admissionWait?: OutputAdmissionWaitOptions;
+  /** Authenticate an optimistic replacement header and return its trusted anchors.
+   * Defaults to chain-derived anchors. Never trust a header solely because it arrived from a Builder.
+   */
+  readonly resolveDispatchResult?: (header: DispatchResultHeaderV1) => Promise<OutputTrustAnchors>;
   /** Trusted dispatch attempt Hash32; required by the Phase 1 verifier. */
   readonly dispatchTicketHash?: string;
   readonly sessionId: string;
@@ -329,12 +337,17 @@ export interface StreamOutputParams {
  * `chunk`, so the terminal state is part of the control flow rather than something the
  * caller has to reconstruct from the iterator finishing.
  *
- * Two shapes rather than one carrying an optional field: a caller that only handles
- * `chunk` still type-checks under a non-exhaustive switch, but has to *say* it is ignoring
- * termination. `finish_reason` carries caveats (see below) that are easy to miss if the
+ * A `reset` invalidates earlier text after a voided attempt; consumers must clear it.
+ * A `fin` ends the currently verified attempt. `finish_reason` carries caveats (see below) that are easy to miss if the
  * value merely appears on every chunk.
  */
 export type OutputStreamEvent =
+  | {
+      /** Discard previously displayed output; the replacement starts again at seq 0. */
+      readonly kind: 'reset';
+      readonly previousDispatchTicketHash: string;
+      readonly dispatchTicketHash: string;
+    }
   | {
       readonly kind: 'chunk';
       readonly seq: bigint;
@@ -374,6 +387,22 @@ export interface ConfirmOutputParams {
   readonly taskHash: string;
   readonly checkpoint: OutputStreamVerifierCheckpoint;
   readonly receipt: InferReceiptView;
+}
+
+function dispatchHeaderTicket(header: DispatchResultHeaderV1, chainId: string, sessionId: string, taskId: string, taskHash: Uint8Array): Uint8Array {
+  const ticket = header.winnerTicket;
+  const accept = header.accept;
+  const task = strictHash32('task_id', taskId);
+  if (!ticket || !accept || ticket.schemaVersion !== 1 || accept.schemaVersion !== 1 ||
+      ticket.chainId !== chainId || accept.chainId !== chainId ||
+      !bytesEqual(header.taskId, task) || !bytesEqual(ticket.taskId, task) || !bytesEqual(accept.taskId, task) ||
+      !bytesEqual(ticket.sessionId, strictHash32('session_id', sessionId)) ||
+      !bytesEqual(ticket.taskHash, taskHash) || !bytesEqual(accept.taskHash, taskHash) ||
+      !ticket.target?.operatorAddress || ticket.target.operatorAddress !== accept.member?.operatorAddress ||
+      accept.dispatchTicketHash.length !== 32) {
+    throw dataError('DATA_OUTPUT_DISPATCH_HEADER_INVALID', 'DispatchResultHeaderV1 has inconsistent task, attempt or Worker identity');
+  }
+  return Uint8Array.from(accept.dispatchTicketHash);
 }
 
 async function nextWithIdleTimeout<T>(iterator: AsyncIterator<T>, idleTimeoutMs?: number): Promise<IteratorResult<T>> {
@@ -515,6 +544,7 @@ export class TrueOpenClient {
     const set = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
     let result: OpenTaskResult | undefined;
     const ack = await recoverDispatch({
+      taskId: deriveTaskId(params.sessionId, orderSequence),
       orderSequence, builders: set.builders.split(',').map(x => x.trim()).filter(Boolean),
       refreshBuilders: async () => {
         context = await resolveTaskOrderContext(hub, this.cfg.chainId);
@@ -529,8 +559,9 @@ export class TrueOpenClient {
         result = await this.submitOpenTask({ ...rest, orderSequence, context, ...(policy.signal === undefined ? {} : { signal: policy.signal }) }, builder);
         return result;
       },
-      recorded: async (builder) => {
+      recorded: async (builder, hintedTaskId) => {
         const taskId = deriveTaskId(params.sessionId, orderSequence);
+        if (hintedTaskId !== undefined && hintedTaskId !== taskId) throw new TrueOpenError('DATA', 'DATA_TASK_SEQUENCE_MISMATCH', 'OpenTask redirect names another task');
         if (!this.cfg.taskReader) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED', 'QueryTask is required to distinguish admission from cancellation');
         const task = await this.cfg.taskReader.queryTask(taskId);
         if (task.taskId !== taskId || task.orderSequence !== orderSequence) throw new TrueOpenError('DATA', 'DATA_TASK_SEQUENCE_MISMATCH', 'Recorded task has another sequence');
@@ -644,6 +675,10 @@ export class TrueOpenClient {
         return await submit(fresh.uri, fresh.tlsPubkeyHash);
       }
     }).catch((error: unknown) => {
+      if (error instanceof TaskBuilderAllEndpointsFailedError) {
+        const rejection = error.results[0]?.error;
+        if (rejection instanceof TrueOpenError && ['NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'NEXUS_INGRESS_TAKEOVER_PENDING'].includes(rejection.code)) throw rejection;
+      }
       if (destination !== undefined && error instanceof TaskBuilderAllEndpointsFailedError) {
         const first = error.results[0];
         if (first?.error !== undefined) throw first.error;
@@ -724,6 +759,15 @@ export class TrueOpenClient {
   watchTask(sessionId: string, taskId: string, fromCursor?: string): AsyncIterable<GetTaskEventsResponse> {
     const p = fromCursor !== undefined ? { sessionId, taskId, fromCursor } : { sessionId, taskId };
     return this.ingress.getTaskEvents(p);
+  }
+
+  /** Events accelerate reads; only chain-derived anchors establish output authority. */
+  waitForOutputTrustAnchors(sessionId: string, taskId: string, options: OutputAdmissionWaitOptions = {}): Promise<OutputTrustAnchors> {
+    return waitForOutputAdmission(
+      () => this.resolveOutputTrustAnchors(taskId, { withReceipt: false }),
+      signal => this.ingress.getTaskEvents({ sessionId, taskId, signal }),
+      options,
+    );
   }
 
   /**
@@ -995,14 +1039,16 @@ export class TrueOpenClient {
     let taskHashHex = p.taskHash;
     let workerServicePubKey = p.workerServicePubKey;
     if (taskHashHex === undefined || workerServicePubKey === undefined || dispatchTicketHashHex === undefined) {
-      const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
+      const anchors = p.admissionWait === undefined
+        ? await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false })
+        : await this.waitForOutputTrustAnchors(p.sessionId, p.taskId, p.admissionWait);
       taskHashHex ??= anchors.taskHash;
       dispatchTicketHashHex ??= anchors.dispatchTicketHash;
       workerServicePubKey ??= anchors.workerServicePubKey;
     }
     const taskHash = strictHash32('task_hash', taskHashHex);
-    const dispatchTicketHash = strictHash32('dispatch_ticket_hash', dispatchTicketHashHex ?? '');
-    const verifier = new OutputStreamVerifier({
+    let dispatchTicketHash = strictHash32('dispatch_ticket_hash', dispatchTicketHashHex ?? '');
+    let verifier = new OutputStreamVerifier({
       chainId: this.cfg.chainId,
       taskHash,
       workerServicePubKey,
@@ -1040,9 +1086,12 @@ export class TrueOpenClient {
     let finSource: OutputStreamSource | undefined;
     // The termination reason declared by a signature-verified Fin; stays undefined for an unattested Fin.
     let finishReason: FinishReasonV1 | undefined;
+    let discoveringAttempt = false;
+    let sourceIndex = 0;
     for (let attempt = 0; attempt < maxAttempts && finSource === undefined; attempt += 1) {
-      const source = sources[attempt % sources.length]!;
-      const cursor = verifier.leafCount > 0n ? verifier.resumeAfterSeq : undefined;
+      const source = sources[sourceIndex % sources.length]!;
+      let retrySameSource = false;
+      const cursor = !discoveringAttempt && verifier.leafCount > 0n ? verifier.resumeAfterSeq : undefined;
       // A fresh AbortController per subscription: abandoning this stream must actually cut the
       // underlying request. iterator.return() only stops reading -- connect-node does not close
       // the HTTP connection because of it. If the Builder being asked isn't the dispatching one,
@@ -1055,7 +1104,7 @@ export class TrueOpenClient {
         taskId: p.taskId,
         ...(cursor !== undefined ? { resumeAfterSeq: cursor } : {}),
         signal: abort.signal,
-        dispatchTicketHash,
+        ...(discoveringAttempt ? {} : { dispatchTicketHash }),
       };
       if (cursor !== undefined && source.ingress.resumeOutput === undefined) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_RESUME_UNSUPPORTED', 'Output source must implement ResumeOutput to resume a Phase 1 stream');
       const output = cursor === undefined
@@ -1063,11 +1112,42 @@ export class TrueOpenClient {
         : unwrapResumeOutput(source.ingress.resumeOutput!(outputRequest));
       const iterator = output[Symbol.asyncIterator]();
       let sawFin = false;
+      let replacedAttempt = false;
       try {
         for (;;) {
           const step = await nextWithIdleTimeout(iterator, p.idleTimeoutMs);
           if (step.done) break;
+          const header = step.value.dispatchResult;
+          if (discoveringAttempt) {
+            if (!header) throw dataError('DATA_OUTPUT_DISPATCH_HEADER_REQUIRED', 'A replacement attempt must supply DispatchResultHeaderV1 before output');
+            const replacement = dispatchHeaderTicket(header, this.cfg.chainId, p.sessionId, p.taskId, taskHash);
+            if (bytesEqual(replacement, dispatchTicketHash)) throw dataError('DATA_OUTPUT_ATTEMPT_STALE', 'Builder still reports the voided dispatch attempt');
+            const anchors = p.resolveDispatchResult === undefined
+              ? await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false })
+              : await p.resolveDispatchResult(header);
+            if (anchors.taskId !== p.taskId || anchors.taskHash !== hash32Text(taskHash) || anchors.dispatchTicketHash !== hash32Text(replacement) || anchors.winnerWorker !== header.accept!.member!.operatorAddress) {
+              throw dataError('DATA_OUTPUT_DISPATCH_ANCHOR_MISMATCH', 'Replacement header does not match trusted output anchors');
+            }
+            const previousDispatchTicketHash = hash32Text(dispatchTicketHash);
+            const nextVerifier = new OutputStreamVerifier({ chainId: this.cfg.chainId, taskHash, dispatchTicketHash: replacement, workerServicePubKey: anchors.workerServicePubKey });
+            // Persist an empty replacement checkpoint before delivering any new output.
+            try { await p.onCheckpoint?.(nextVerifier.checkpoint()); }
+            catch (cause) { throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED', 'failed to persist replacement checkpoint', { cause }); }
+            verifier = nextVerifier;
+            dispatchTicketHash = replacement;
+            workerServicePubKey = anchors.workerServicePubKey;
+            discoveringAttempt = false;
+            replacedAttempt = true;
+            retrySameSource = true;
+            yield { kind: 'reset', previousDispatchTicketHash, dispatchTicketHash: hash32Text(replacement) };
+            // Reopen with the replacement ticket and no cursor, including any chunk that accompanied the header.
+            break;
+          }
+          if (header && !bytesEqual(dispatchHeaderTicket(header, this.cfg.chainId, p.sessionId, p.taskId, taskHash), dispatchTicketHash)) {
+            throw dataError('DATA_OUTPUT_ATTEMPT_MISMATCH', 'Unannounced dispatch attempt change');
+          }
           const frame = step.value.frame;
+          if (header && frame.case === undefined) continue;
           if (frame.case === 'chunk') {
             const c = frame.value;
             if (c.attachment.length > 0 || c.attachmentSignature.length > 0) {
@@ -1145,11 +1225,17 @@ export class TrueOpenClient {
           }
           throw dataError('DATA_OUTPUT_STREAM_FRAME_MISSING', `SubscribeOutput returned no frame for task ${p.taskId}`);
         }
-        if (!sawFin) {
+        if (!sawFin && !replacedAttempt) {
           failures.push(`${source.id}: stream ended without fin after seq ${verifier.resumeAfterSeq}`);
         }
       } catch (e) {
         if (e instanceof TrueOpenError && e.code === 'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED') throw e;
+        const classified = classifyNexusError(e);
+        if (classified instanceof TrueOpenError && classified.code === 'NEXUS_INGRESS_ATTEMPT_STALE') {
+          discoveringAttempt = true;
+          finishReason = undefined;
+          retrySameSource = true;
+        }
         const err = e as { message?: string };
         failures.push(`${source.id}: ${err.message ?? String(e)}`);
       } finally {
@@ -1160,6 +1246,7 @@ export class TrueOpenClient {
         void iterator.return?.().catch(() => undefined);
         abort.abort();
       }
+      if (!retrySameSource) sourceIndex++;
     }
 
     if (finSource === undefined) {

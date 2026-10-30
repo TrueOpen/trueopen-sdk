@@ -91,3 +91,35 @@ HTTP/TLS transports, funding message codecs, delegated signing and bounded recov
 Synthetic Phase 1 output signatures reuse captured text/MMR roots; they are clearly
 labelled and are not a running Phase 1 Worker capture. Real funded localnet validation
 requires matching Node/Nexus/Cortex deployments and is a separate release check.
+
+## Issue #21: attempt replacement and admission hints
+
+When `NEXUS_INGRESS_ATTEMPT_STALE` terminates a subscription, the SDK stops using
+its old cursor/checkpoint. It subscribes without a cursor to discover the replacement
+`DispatchResultHeaderV1`, checks its task/session/Worker identity, and compares its
+accepted ticket with chain-derived anchors. It then persists an empty replacement
+checkpoint, emits `{ kind: 'reset', previousDispatchTicketHash, dispatchTicketHash }`,
+and resubscribes **with the new ticket and no cursor**. Consumers must clear old text
+on `reset`. Subsequent reconnects carry only the cursor verified under that ticket.
+Both low-level subscription methods reject a cursor without a raw32 ticket.
+
+Before chain recording, an application can supply `resolveDispatchResult(header)`
+to authenticate the optimistic header using its own proof verifier and return
+`OutputTrustAnchors`. This callback must return an independently trusted ticket,
+task hash, Worker identity and service key; copying unverified header fields is
+not verification. Missing/mismatched headers or anchors never reset trust silently.
+
+`openTaskWithRecovery` now consumes typed OpenTask error details. A recorded-task
+redirect queries that task at the supplied Builder binding without resubmitting,
+even if the Session reader lags. A pending-takeover hint enforces its activation
+height before contacting the candidate; it does not authorize a third candidate.
+Chain facts remain authoritative and all waits use bounded budgets.
+
+`waitForOutputTrustAnchors(sessionId, taskId, options)` combines polling with Builder
+events. Only `DISPATCH_RECORDED` accelerates the admission read; retired
+`ASSIGN_ACCEPTED`/`ASSIGNMENT_FINALIZED` and provisional `DISPATCH_ACCEPTED` do not.
+The event itself never establishes admission. Event transport failure falls back
+to polling, and success, timeout or cancellation aborts the event subscription.
+Use `streamOutput({ ..., admissionWait: { timeoutMs: 30000, pollIntervalMs: 1000 } })`
+to enable this wait while deriving the initial anchors. Explicit anchors retain
+the immediate subscription path.

@@ -69,3 +69,60 @@ it('a stale BuilderSet refresh retries the same sequence against the new snapsho
   await recoverDispatch(port({ refreshBuilders: async () => ['d', 'e'], submit: async b => { calls.push(b); if (calls.length === 1) throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_BUILDER_SET_STALE', 'stale'); return ack; } }), policy);
   expect(calls).toEqual(['a', 'd']);
 });
+
+it('uses a recorded-task redirect despite a lagging Session reader and never dispatches twice', async () => {
+  const taskId = `0x${'12'.repeat(32)}`;
+  let submits = 0, reads = 0;
+  const result = await recoverDispatch(port({ taskId,
+    submit: async () => { submits++; throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'moved', { details: { taskId, boundBuilder: 'b' } }); },
+    recorded: async (builder, id) => {
+      expect([builder, id]).toEqual(['b', taskId]);
+      if (++reads === 1) throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_NOT_FOUND', 'reader behind');
+      return { ...ack, taskId, status: 4, boundBuilder: builder };
+    },
+  }), policy);
+  expect(result.status).toBe(4);
+  expect(submits).toBe(1);
+  expect(reads).toBe(2);
+});
+
+it('keeps a redirected recorded task pending when QueryTask has not caught up', async () => {
+  const taskId = `0x${'12'.repeat(32)}`;
+  let submits = 0;
+  await expect(recoverDispatch(port({ taskId,
+    submit: async () => { submits++; throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'moved', { details: { taskId, boundBuilder: 'b' } }); },
+    recorded: async () => { throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_NOT_FOUND', 'behind'); },
+  }), policy)).rejects.toMatchObject({ code: 'OUTPUT_TRUST_ANCHOR_PENDING', details: { boundBuilder: 'b', taskId } });
+  expect(submits).toBe(1);
+});
+
+it('honors the takeover detail activation height while Session state is lagging', async () => {
+  let height = 10n;
+  const calls: [string, bigint][] = [];
+  await recoverDispatch(port({ readHeight: async () => height,
+    submit: async builder => { calls.push([builder, height]); if (calls.length === 1) throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_TAKEOVER_PENDING', 'wait', { details: { boundBuilder: 'b', takeoverActivationHeight: 12n } }); return ack; },
+  }), { ...policy, sleep: async () => { height++; } });
+  expect(calls).toEqual([['a', 10n], ['b', 12n]]);
+});
+
+it('a pending takeover detail never permits early dispatch or a third candidate', async () => {
+  const calls: string[] = [];
+  const error = new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_TAKEOVER_PENDING', 'wait', { details: { boundBuilder: 'b', takeoverActivationHeight: 20n } });
+  await expect(recoverDispatch(port({ submit: async b => { calls.push(b); throw error; } }), policy)).rejects.toBe(error);
+  expect(calls).toEqual(['a']);
+});
+
+it('rejects redirects to a different task or an operator outside the snapshot', async () => {
+  const taskId = `0x${'12'.repeat(32)}`;
+  for (const details of [{ boundBuilder: 'b', taskId: `0x${'34'.repeat(32)}` }, { boundBuilder: 'outside', taskId }]) {
+    let calls = 0;
+    await expect(recoverDispatch(port({ taskId, submit: async () => { calls++; throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'moved', { details }); } }), policy)).rejects.toMatchObject({ code: details.boundBuilder === 'outside' ? 'SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT' : 'DATA_TASK_SEQUENCE_MISMATCH' });
+    expect(calls).toBe(1);
+  }
+});
+
+it('uses the bound Builder hint for redirection when the chain Session view has not changed', async () => {
+  const calls: string[] = [];
+  await recoverDispatch(port({ submit: async builder => { calls.push(builder); if (calls.length === 1) throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'moved', { details: { boundBuilder: 'b' } }); return ack; } }), policy);
+  expect(calls).toEqual(['a', 'b']);
+});

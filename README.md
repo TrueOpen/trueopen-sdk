@@ -448,6 +448,10 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
   UNSPECIFIED and unknown values fail closed.
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.
+- The chunks follow OpenAI's shape: a first chunk `{"role":"assistant","content":""}`, then the
+  content, then the terminal chunk; every choice has `logprobs: null` and every chunk has
+  `system_fingerprint` (the context's `systemFingerprint`, else `null`). `includeObfuscation: true`
+  adds a random `obfuscation` padding to every chunk (off by default).
 
 The SDK implements the digest and signature verification for `TRUEOPEN_OUTPUT_FIN_V1`
 (anchored to the official `fin_signing` vectors) and requires it in `streamOutput` by default.

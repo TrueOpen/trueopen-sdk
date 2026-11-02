@@ -772,6 +772,8 @@ Upgrade locally verified output to **confirmed** using the on-chain
 type OutputDeliveryMode = 'provisional' | 'confirmed-only'
 type OpenAIFinishReason = 'stop' | 'length'
 const DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES = 16 * 1024 * 1024
+const OPENAI_SSE_OBFUSCATION_MIN_LENGTH = 8
+const OPENAI_SSE_OBFUSCATION_MAX_LENGTH = 48
 
 function openAIFinishReason(reason: FinishReasonV1): OpenAIFinishReason
 async function* toOpenAIChatSSEIterable(events, context, options?): AsyncIterable<Uint8Array>
@@ -780,10 +782,19 @@ function toOpenAIChatSSE(events, context, options?): ReadableStream<Uint8Array>
 
 Adapters that turn `VerifiedOutputEvent` (the `streamOutput` stream) into OpenAI
 `chat.completion.chunk` SSE, for Node (`Iterable`) and browser (`ReadableStream`).
-`OpenAIChatSseContext` = `{ id, model }`; `OpenAIChatSseOptions` carries the delivery mode
-(`provisional` = stream as frames arrive; `confirmed-only` = buffer and emit only after
-confirmation) and the buffer cap. Build a `VerifiedOutputFinEvent` only from an
-`attested: true` fin.
+`OpenAIChatSseContext` = `{ id, taskId, taskHash, model, created, choiceIndex?, systemFingerprint? }`:
+`taskId` / `taskHash` are `0x` Hash32 text (they tie a `confirmed` event to this task), `created`
+is Unix seconds, `choiceIndex` defaults to 0, and `systemFingerprint` is written on every chunk
+(`null` when omitted). `OpenAIChatSseOptions` = `{ delivery?, maxBufferedBytes?, signal?,
+includeObfuscation? }`: the delivery mode (`provisional` = stream as frames arrive;
+`confirmed-only` = buffer and emit only after confirmation), the buffer cap, an abort signal,
+and whether every chunk carries a random `obfuscation` padding (default false; OpenAI's default
+is true). Build a `VerifiedOutputFinEvent` only from an `attested: true` fin.
+
+Chunk shape, as OpenAI sends it: a first chunk `delta: {"role":"assistant","content":""}`, the
+content chunks, a terminal chunk with `delta: {}` and the finish_reason, then `data: [DONE]`.
+Every choice carries `logprobs: null` (the chain keeps no logprobs). Not produced: `usage`
+(`include_usage`), `service_tier`, `tool_calls`, and reasoning separation.
 
 ### 8.7 Checkpoint codec
 

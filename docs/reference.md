@@ -342,6 +342,34 @@ The order is authorized by the **inner** EIP-712 signature (`SignedOrderV2.user_
 
 ---
 
+### 3.4 Chat input
+
+```ts
+function chatInferInputBytes(input: ChatInferInput): Uint8Array
+interface ChatInferInput {
+  messages: ChatMessage[];          // oldest first, at least one
+  tools?: ChatTool[];               // { type: 'function', function: { name, description?, parameters?, strict? } }
+  tool_choice?: string | { type: 'function'; function: { name: string } };
+  parallel_tool_calls?: boolean;
+  response_format?: ChatJsonObject;
+}
+interface ChatMessage { role: string; content?: string | ChatJsonObject[]; name?: string; tool_calls?: ChatToolCall[]; tool_call_id?: string }
+interface ChatToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
+```
+
+The payload of a `TASK_TYPE.CHAT` order: the OpenAI Chat Completions request body as Cortex
+forwards it to the engine, content and intent fields only, encoded with canonical_json_v1
+(snake_case keys). `input_hash` commits the bytes, not the request, so call it once per request
+and resend the same bytes on every retry; `openTask` refuses a different input under an
+idempotency key it already used. This encoder is the rule: no other component re-encodes the
+payload. Refused (`SDK_LOCAL_CHAT_INPUT_INVALID`): floats and `null` anywhere (canonical_json_v1
+has neither, tool parameter schemas included), unknown top-level fields, the sampling fields
+(`temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `seed`, `presence_penalty`,
+`frequency_penalty`, `stop`: they belong to the order's `generationParams`, which the order signs)
+and the fields the model profile fixes (`logprobs`, `top_logprobs`, `logit_bias`, `n`). For the next turn
+of a conversation, replay the assistant message with its `tool_calls` (ids from `newToolCallId`,
+8.8) and one `role: "tool"` message per call with its `tool_call_id`.
+
 ## 4. SDK request envelope & body
 
 ### 4.1 Envelope (every nexus request is signed)
@@ -813,6 +841,8 @@ the verified Fin), so a caller can persist resumable-stream state across restart
 ```ts
 // Neutral assistant view (tool calls and reasoning parsed from the committed text)
 client.assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent>
+client.streamAssistantMessage(p: StreamOutputParams & ToolCallParams): AsyncIterable<AssistantStreamEvent>
+client.confirmAssistantMessage(p: ConfirmOutputParams & ToolCallParams): ConfirmedAssistantMessage
 client.fetchAssistantMessage(p: FetchAssistantMessageParams & ...): Promise<ConfirmedAssistantMessage>
 client.profileParsers(taskId: string): Promise<ProfileParsers>
 client.toolCallIdFormat(modelId: string, profileVersion: bigint): Promise<ToolCallIdFormat | undefined>
@@ -904,6 +934,57 @@ for await (const e of client.assistantTurn({ sessionId, taskId, allowUnverified:
 For a non-streamed reply, `fetchAssistantMessage({ sessionId, taskId, ... })` returns the same
 `ConfirmedAssistantMessage`; without `builderAddress` it asks the task's Task Builders
 concurrently and takes the first one that stored the signed Fin. In the message, `content` is `null` on a turn that only made calls.
+
+**Two stages.** `assistantTurn` is `streamAssistantMessage` followed by `confirmAssistantMessage`
+with the receipt read for you. Call them yourself to control the receipt read or to keep the
+checkpoint across processes:
+
+```ts
+const parsers = { ...(await client.profileParsers(taskId)), allowUnverified: true };
+let checkpoint;
+for await (const e of client.streamAssistantMessage({
+  sessionId, taskId, ...parsers, onCheckpoint: (c) => { checkpoint = c; },
+})) {
+  // e.kind: 'reasoning' | 'content' | 'tool-call-provisional' -- a provisional call is for
+  // display only and must not be executed
+}
+const { taskHash, receipt } = await client.resolveOutputTrustAnchors(taskId, { withReceipt: true }); // receipt undefined until on chain: poll
+const m = client.confirmAssistantMessage({ taskId, taskHash, checkpoint, receipt, ...parsers });
+// m.toolCalls is the executable list
+```
+
+Give `confirmAssistantMessage` the same parser refs (or the same resolved `parser` /
+`reasoning`) as the stream: the confirming step must not parse more permissively than the stream
+did, or a call the model only drafted while reasoning would become executable. Both methods also
+take an already-resolved `{ parser, reasoning? }` instead of the refs.
+
+**Resolution.** `toolCallParser` / `reasoningParser` are looked up in `registry`
+(default `BUILTIN_TOOL_CALL_PARSERS`: `hermes@1`, `qwen3_coder@1`) and `reasoningRegistry`
+(default `BUILTIN_REASONING_PARSERS`: `qwen3@1`). A parser that is not pinned, unknown to the
+registry, or unverified without `allowUnverified` is not used, and the output is still delivered
+without that view. A pinned reasoning parser that does not resolve disables the tool-call parser
+too (the whole output is content), so a call written while reasoning is never parsed.
+
+**Custom parsers and the views without a client:**
+
+```ts
+function deriveAssistantStream(source: AsyncIterable<{ kind: 'chunk'; text } | { kind: 'fin'; finishReason? }>, opts: DerivedViewOptions): AsyncIterable<AssistantStreamEvent>
+function deriveAssistantMessage(text: string, opts: DerivedViewOptions): DerivedAssistantMessage
+function confirmAssistantMessageWithReceipt(input, opts: DerivedViewOptions): ConfirmedAssistantMessage
+// DerivedViewOptions = { parser: ToolCallParser; reasoning?: ReasoningParser; finishReason? }
+// finishReason: the verified Fin's reason, needed only by deriveAssistantMessage (it decides
+// whether an unclosed final call is recovered); the stream and confirmation take it from the Fin
+
+function createToolCallRegistry(entries: { parser: ToolCallParser; conformance: 'unverified' | 'vector-verified' }[]): ToolCallRegistry
+function createReasoningRegistry(entries: { parser: ReasoningParser; conformance }[]): ReasoningRegistry
+function createMarkerReasoningParser(ref: ParserRef, markers: { startMarker, endMarker, startMarkerClass: 'explicit' | 'implicit', trimNewlines? }): ReasoningParser
+function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStreamState   // the marker state machine the built-in tool parsers use
+```
+
+A `ToolCallParser` is `{ name, version, parseComplete(text, opts?), createStreamState() }`; its
+streaming and whole-text results must agree under every frame split. Register it with
+`createToolCallRegistry` and pass the registry as `registry`. The built-in parser objects are
+exported as `hermesParser`, `qwen3CoderParser` and `qwen3ReasoningParser`.
 
 ---
 

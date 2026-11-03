@@ -10,6 +10,11 @@
 
 `trueopen-sdk` is the runtime-agnostic TypeScript client SDK for the **TrueOpen decentralized AI inference network**. It wraps the full user flow -- place an order -> track it -> retrieve output -> open a challenge -- into a single facade class, `TrueOpenClient`, that supports dependency injection and unit testing.
 
+On top of the verified output it derives the assistant view: the reasoning span and tool calls are
+parsed from the committed text with the parsers the model's profile pins on chain, and tool calls
+become executable only after the output is reconciled with the on-chain receipt (see "Chat and
+tool calls" below).
+
 ### Signing: one wallet, EIP-712 everywhere
 
 Every signature a user makes is **EIP-712 typed data** (65 bytes `R||S||V`, `V` 27/28, low S),
@@ -238,6 +243,47 @@ for await (const e of makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).stre
 })) { /* ... */ }
 ```
 
+### Chat and tool calls
+
+A chat task's payload is a `ChatInferInput` (the OpenAI Chat Completions request body, content
+fields only), encoded once with `chatInferInputBytes`. Keep the bytes: a retry must resend exactly
+these, and the client refuses a different input under an idempotency key it already used.
+
+```ts
+import { chatInferInputBytes, TASK_TYPE } from 'trueopen-sdk';
+
+const payload = chatInferInputBytes({
+  messages: [{ role: 'user', content: 'List the files in the current directory' }],
+  tools: [{ type: 'function', function: {
+    name: 'list_files', description: 'List a directory',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  } }],
+});
+// order: { ...as above, taskType: TASK_TYPE.CHAT, payload }
+```
+
+`assistantTurn` streams one assistant turn: reasoning and content as frames verify (provisional,
+for display), then, once the accepted receipt matches, the confirmed message. Tool calls appear
+only there, so nothing the agent executes comes from unconfirmed frames.
+
+```ts
+for await (const e of client.assistantTurn({ sessionId, taskId: res.taskId, allowUnverified: true })) {
+  if (e.kind === 'reasoning') showThinking(e.text);
+  if (e.kind === 'content') showText(e.text);
+  if (e.kind === 'confirmed') {
+    const m = e.message; // { content, toolCalls: [{ name, arguments }], reasoningContent?, finishReason?, confirmation }
+    for (const call of m.toolCalls) await runTool(call.name, JSON.parse(call.arguments));
+  }
+}
+```
+
+The parsers come from the task's profile on chain (`tool_call_parser`, `reasoning_parser`); the
+built-in ones are `hermes@1`, `qwen3_coder@1` and `qwen3@1` (reasoning). They are `unverified`
+until wire publishes their shared vectors, so they take effect only with `allowUnverified: true`;
+without it the turn is plain content with no calls. For an OpenAI-compatible stream, pass the turn
+to `toOpenAIAssistantSSE`; for a finished task, `fetchAssistantMessage` returns the same confirmed
+message without streaming. Details, the two-stage API and custom parsers: reference 8.8.
+
 The full API — every exported symbol plus both complete flows (with the retry-on-pending
 loop) — is in [docs/reference.md](docs/reference.md).
 
@@ -272,6 +318,10 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 | `streamOutput({ sessionId, taskId, taskHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack?, waitForAnchors?, pendingAnchors?, maxPendingFrames?, signal? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame; `waitForAnchors` / `pendingAnchors` subscribe before the anchors are known (see section 4) |
 | `confirmOutput({ taskId, taskHash, checkpoint, receipt })` | uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
+| `assistantTurn({ sessionId, taskId, allowUnverified?, toolCallParser?, reasoningParser?, receiptTimeoutMs?, signal?, ... })` | one assistant turn: reasoning and content as frames verify, then the confirmed message (tool calls, finish reason) after the receipt matches |
+| `streamAssistantMessage(...)` / `confirmAssistantMessage(...)` | the same in two stages: provisional events over `streamOutput`, then the executable message from the checkpoint and the receipt |
+| `fetchAssistantMessage({ sessionId, taskId, builderAddress?, ... })` | the confirmed message of a finished task, without streaming |
+| `profileParsers(taskId)` / `toolCallIdFormat(modelId, profileVersion)` | the parsers the task's profile pins on chain / the manifest's tool call id format |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
 | `toOpenAIAssistantSSEIterable(turn, context, opts)` / `toOpenAIAssistantSSE` | one `assistantTurn` -> OpenAI SSE with confirmed `tool_calls` and finish_reason; reasoning dropped |
@@ -307,6 +357,13 @@ This section states plainly **which capabilities are already aligned with the re
 - **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/task/...` (both the active and the compacted terminal view).
 - **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` (including the task registry).
 - **Not supported yet** -- `MsgOpenChallengeRound`, the only challenge Msg in wire. `prepareChallenge` (nexus) still prepares material.
+- **Tool calls and reasoning (derived from the committed output)** -- `hermes@1` and
+  `qwen3_coder@1` (tool calls) and `qwen3@1` (reasoning, implicit start marker) follow wire #46
+  (`docs/REASONING_PARSER_V1.md`, `docs/TOOL_CALL_PARSER_V1.md` @ `5760ab7`) and its worked
+  examples, and are cross-checked against a corpus from the vLLM and Dynamo parser tests. wire #46
+  is still a draft and has published no vector files, so all three are `unverified`: they run
+  only with `allowUnverified: true`. The result is a derived view: it never enters `output_hash`,
+  the receipt or the chain.
 - **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput` / `getTaskDataMetadata` / `fetchTaskData`. The deprecated `SubmitOrder` / `FetchOutputRef` / `RefreshCredential` RPCs are not wrapped.
 
 ### ✅ Output delivery: two paths

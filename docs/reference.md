@@ -727,8 +727,8 @@ async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent>
 { kind: 'fin', attested: false, finishReason: undefined }   // only under 'accept-unsigned'
 ```
 
-- `text` is the **presented** view with the chat template's trailing EOS marker
-  (`<|im_end|>`) stripped; `mmrRoot` still covers the committed bytes.
+- `text` is the frame's committed bytes decoded; the SDK strips nothing (Cortex strips the
+  trailing EOS before committing). `mmrRoot` covers the committed bytes.
 - The stream completes only on a fin whose `final_seq` and `output_mmr_root` match the
   locally verified prefix **and** whose Worker signature verifies. An unsigned fin is a bad
   frame under the default policy; under the explicit opt-in it ends the stream as
@@ -754,7 +754,7 @@ expiresAtHeight?, maxRangeBytes?, rangeAttempts? }`. Fetches in ranges (≤
 retries a range that failed on transport (with backoff), checks the metadata against the
 accepted receipt, and computes the MMR root against `output_hash`. A size-0 object is
 returned verified as one zero-length leaf without a fetch. `bytes` is the committed object;
-`text` has the EOS marker stripped.
+`text` is its decoding, with nothing stripped.
 
 ### 8.5 Confirmation
 
@@ -804,8 +804,77 @@ function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifierCheckpo
 function deserializeOutputStreamCheckpoint(json: string): OutputStreamVerifierCheckpoint
 ```
 
-JSON round-trip for a verifier checkpoint (MMR peaks + leaf count + last seq), so a caller
-can persist resumable-stream state across restarts.
+JSON round-trip for a verifier checkpoint (MMR peaks + leaf count + last seq, and since schema 2
+the verified Fin), so a caller can persist resumable-stream state across restarts.
+
+### 8.8 Assistant messages and the OpenAI format
+
+```ts
+// Neutral assistant view (tool calls and reasoning parsed from the committed text)
+client.assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent>
+client.fetchAssistantMessage(p: FetchAssistantMessageParams & ...): Promise<ConfirmedAssistantMessage>
+client.profileParsers(taskId: string): Promise<ProfileParsers>
+client.toolCallIdFormat(modelId: string, profileVersion: bigint): Promise<ToolCallIdFormat | undefined>
+
+// OpenAI rules (sdk_详细设计 §5.5)
+function openAIFinishReasonOf(m: ConfirmedAssistantMessage): 'stop' | 'length' | 'tool_calls' | undefined
+function newToolCallId(format: ToolCallIdFormat): string   // 'OPENAI_CALL_PREFIX' | 'MISTRAL_ALNUM_9'
+```
+
+The SDK parses the committed output with the parsers the task's profile pins on chain
+(`tool_call_parser`, `reasoning_parser`) and confirms it against the receipt. A
+`ConfirmedAssistantMessage` is `{ role, content, toolCalls: [{ name, arguments }],
+reasoningContent?, confirmation, finishReason? }`: only its calls may be executed, and
+`finishReason` is the protocol reason from the Worker-signed Fin (undefined when unavailable). The
+built-in parsers (`hermes@1`, `qwen3_coder@1`, `qwen3@1`) are unverified until their vectors exist, so pass
+`allowUnverified: true` to use them.
+
+A parser's result depends only on the committed output, the parser `(name, version)` and the
+verified finish reason; the request's `tools` are not an input. `qwen3_coder@1` keeps every
+argument value as a JSON string, verbatim, and reads no tool schema (spec:
+`docs/qwen3-coder-parser-v1.md`); convert values against your own schema if you need numbers or
+objects.
+
+`qwen3@1` (reasoning) has an implicit start marker: the output opens in reasoning whether or not it
+starts with `<think>`, and reasoning runs to the first `</think>`. With no `</think>` the whole
+output is `reasoningContent`, `content` is empty and no tool call is parsed. A profile whose chat
+template does not think pins no reasoning parser.
+
+A final call whose closing marker never came is a call only if the Fin says the model stopped by
+itself (`EOS_TOKEN` / `STOP_SEQUENCE` / `STOP_TOKEN`) and the parser defines recovery: `hermes@1`
+recovers a body that is a complete JSON object with a string `name`, `qwen3_coder@1` recovers
+nothing. Otherwise -- a truncation, a user stop, no signed Fin, or no recovery defined -- it stays in
+`content` as text. The body is judged on the raw committed bytes; no stop string is stripped.
+
+Division of work (sdk_详细设计 §5.5): the SDK supplies the finish_reason mapping and ids in the
+manifest's `call_id_format` (read with `toolCallIdFormat`; needs `config.manifestSource`); the
+Provider decides when to assign each id and builds `type`, `index` and the envelope. A turn cut
+off by `MAX_OUTPUT_TOKENS` keeps the calls it closed and reports `"length"`.
+
+An OpenAI Chat Completions reply from one turn:
+
+```ts
+const callIdFormat = await client.toolCallIdFormat(modelId, profileVersion); // once per profile
+for await (const e of client.assistantTurn({ sessionId, taskId, allowUnverified: true })) {
+  if (e.kind === 'reasoning') send({ delta: { reasoning_content: e.text } });
+  if (e.kind === 'content') send({ delta: { content: e.text } });
+  if (e.kind === 'confirmed') {
+    const m = e.message;
+    const toolCalls = m.toolCalls.map((c, index) => ({
+      index, id: newToolCallId(callIdFormat!), type: 'function',
+      function: { name: c.name, arguments: c.arguments },
+    }));
+    if (toolCalls.length > 0) send({ delta: { tool_calls: toolCalls } });
+    const finish = openAIFinishReasonOf(m);
+    if (finish === undefined) throw new Error('finish_reason unavailable'); // never guess
+    send({ delta: {}, finish_reason: finish });
+  }
+}
+```
+
+For a non-streamed reply, `fetchAssistantMessage({ sessionId, taskId, ... })` returns the same
+`ConfirmedAssistantMessage`; without `builderAddress` it asks the task's Task Builders
+concurrently and takes the first one that stored the signed Fin. In the message, `content` is `null` on a turn that only made calls.
 
 ---
 
@@ -1248,7 +1317,7 @@ for await (const event of client.streamOutput({
     console.error(`\nfin: attested=${event.attested} finish_reason=${event.finishReason}`);
   }
 }
-console.log(text);                            // presented view (chat-template EOS stripped)
+console.log(text);                            // the committed text
 ```
 
 To resume after a disconnect, persist `onCheckpoint` and pass it back on the next call:
@@ -1286,7 +1355,7 @@ for (const b of result.builders.filter((x) => x.ack?.accepted)) {
   }
 }
 if (!output) throw new Error('no accepted builder served the output');
-console.log(output.text);                     // presented text (EOS stripped)
+console.log(output.text);                     // the committed text, decoded
 // output.bytes is the committed object; output.outputHash is the MMR root the receipt commits to.
 
 // Optionally upgrade to "confirmed" using the on-chain receipt.

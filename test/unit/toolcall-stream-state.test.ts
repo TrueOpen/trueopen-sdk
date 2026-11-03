@@ -1,0 +1,274 @@
+import { describe, expect, it } from 'vitest';
+import { createMarkerStreamState } from '../../src/toolcall/stream-state';
+import type { AssistantStreamEvent, DerivedToolCall } from '../../src/toolcall/types';
+import { TrueOpenError } from '../../src/errors/errors';
+
+/** A deliberately trivial stand-in: phase 1 ships no real parser, and the state machine's job is
+ *  to decide *what text* reaches parseCall, not to interpret it. */
+const parseCall = (inner: string): DerivedToolCall | undefined => {
+  const at = inner.indexOf('|');
+  if (at < 0) return undefined;
+  return { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+};
+
+const make = () => createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall });
+
+/** Feeds the frames in order and returns every event, including those from finish(). */
+function run(frames: readonly string[]): AssistantStreamEvent[] {
+  const state = make();
+  const events: AssistantStreamEvent[] = [];
+  for (const frame of frames) events.push(...state.push(frame));
+  events.push(...state.finish());
+  return events;
+}
+
+describe('createMarkerStreamState', () => {
+  it('emits plain text as content', () => {
+    expect(run(['hello world'])).toEqual([{ kind: 'content', text: 'hello world' }]);
+  });
+
+  it('turns a complete segment into a provisional call', () => {
+    expect(run(['<tc>get_weather|{"city":"London"}</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"city":"London"}' } },
+    ]);
+  });
+
+  it('never emits a confirmed call: provisional is the only kind this layer can produce', () => {
+    expect(run(['a<tc>x|1</tc>b']).map((e) => e.kind)).toEqual([
+      'content',
+      'tool-call-provisional',
+      'content',
+    ]);
+  });
+
+  it('matches a start marker split across frames', () => {
+    expect(run(['weather is <t', 'c>x|1</tc>'])).toEqual([
+      { kind: 'content', text: 'weather is ' },
+      { kind: 'tool-call-provisional', call: { name: 'x', arguments: '1' } },
+    ]);
+  });
+
+  it('matches an end marker split across frames', () => {
+    expect(run(['<tc>x|1</t', 'c>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'x', arguments: '1' } },
+    ]);
+  });
+
+  it('matches markers split character by character', () => {
+    const frames = [...'<tc>get_weather|{"city":"London"}</tc>'];
+    expect(run(frames)).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"city":"London"}' } },
+    ]);
+  });
+
+  it('does not emit a partial start marker as content before it is resolved', () => {
+    const state = make();
+    expect(state.push('abc<t')).toEqual([{ kind: 'content', text: 'abc' }]);
+    expect(state.push('c>x|1</tc>')).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'x', arguments: '1' } },
+    ]);
+  });
+
+  it('releases a held-back partial marker as content once it cannot become one', () => {
+    expect(run(['abc<t', 'ail'])).toEqual([
+      { kind: 'content', text: 'abc' },
+      { kind: 'content', text: '<tail' },
+    ]);
+  });
+
+  it('returns to text after a closing marker, because the chat path has no stop conditions', () => {
+    expect(run(['<tc>a|1</tc> and then <tc>b|2</tc> done'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+      { kind: 'content', text: ' and then ' },
+      { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+      { kind: 'content', text: ' done' },
+    ]);
+  });
+
+  it('does not treat a marker quoted in prose as a call', () => {
+    // Design §5.3: a quoted marker is content, not control syntax.
+    expect(run(['say "<tc>a|1</tc>" done'])).toEqual([
+      { kind: 'content', text: 'say "<tc>a|1</tc>" done' },
+    ]);
+  });
+
+  it('does not close early on an end marker inside a quoted argument', () => {
+    // The `</tc>` inside `"b</tc>c"` is a string literal; only the final `</tc>` closes.
+    expect(run(['<tc>a|"b</tc>c"</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '"b</tc>c"' } },
+    ]);
+  });
+
+  it('mixes quoted text and calls', () => {
+    expect(run(['<tc>a|1</tc> "not a call" <tc>b|2</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+      { kind: 'content', text: ' "not a call" ' },
+      { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+    ]);
+  });
+
+  it('does not emit a frame that ends inside an unclosed quote', () => {
+    // The closing quote arrives next frame; emitting `"abc` now would make `def"`'s quote look
+    // like an opening quote and swallow the marker.
+    expect(run(['"abc', 'def" <tc>a|1</tc>'])).toEqual([
+      { kind: 'content', text: '"abcdef" ' },
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+    ]);
+  });
+
+  it('releases an unclosed quote as text on finish', () => {
+    expect(run(['"abc'])).toEqual([{ kind: 'content', text: '"abc' }]);
+  });
+
+  it('flushes an unclosed segment as plain text at end of stream, marker included', () => {
+    // What a generation truncated by max_output_tokens produces. A normal outcome, not an
+    // error, and no character may be dropped.
+    expect(run(['text <tc>get_weather|{"ci'])).toEqual([
+      { kind: 'content', text: 'text ' },
+      { kind: 'content', text: '<tc>get_weather|{"ci' },
+    ]);
+  });
+
+  it('passes an unparseable segment through as text rather than raising', () => {
+    // Design S6 row one: "the parse did not succeed" is what happens when calling an engine
+    // directly too. It is not an error, and enabling tool calling must never lose data.
+    expect(run(['<tc>not a call</tc>'])).toEqual([{ kind: 'content', text: '<tc>not a call</tc>' }]);
+  });
+
+  it('passes an orphan end marker through as text', () => {
+    // Design §5.4: an end marker with no opening marker is ordinary text.
+    expect(run(['hello </tc>'])).toEqual([{ kind: 'content', text: 'hello </tc>' }]);
+    expect(run(['</tc> <tc>a|1</tc>'])).toEqual([
+      { kind: 'content', text: '</tc> ' },
+      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+    ]);
+  });
+
+  it('passes an empty segment through as text', () => {
+    expect(run(['<tc></tc>'])).toEqual([{ kind: 'content', text: '<tc></tc>' }]);
+  });
+
+  it('treats a nested start marker as part of the inner text', () => {
+    // The machine only knows start/end markers, not JSON: a second start marker before the first
+    // end marker is inner text, so the call spans to the first end marker.
+    expect(run(['<tc>a<tc>b|2</tc>'])).toEqual([
+      { kind: 'tool-call-provisional', call: { name: 'a<tc>b', arguments: '2' } },
+    ]);
+  });
+
+  it('emits nothing for an empty stream', () => {
+    expect(run([])).toEqual([]);
+    expect(run([''])).toEqual([]);
+  });
+
+  it('rejects an empty marker, which would match everywhere', () => {
+    expect(() => createMarkerStreamState({ startMarker: '', endMarker: '</tc>', parseCall })).toThrow(TrueOpenError);
+    expect(() => createMarkerStreamState({ startMarker: '<tc>', endMarker: '', parseCall })).toThrow(TrueOpenError);
+  });
+
+  describe('quoteAware: false (a plain-text payload)', () => {
+    const blind = () =>
+      createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, quoteAware: false });
+    const runBlind = (frames: readonly string[], recover = false): AssistantStreamEvent[] => {
+      const state = blind();
+      const events: AssistantStreamEvent[] = [];
+      for (const frame of frames) events.push(...state.push(frame));
+      events.push(...state.finish({ recoverUnclosedAtEnd: recover }));
+      return events;
+    };
+
+    it('lets a lone quote inside a segment not hide the end marker', () => {
+      expect(runBlind(['<tc>f|say "hi</tc> after'])).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: 'say "hi' } },
+        { kind: 'content', text: ' after' },
+      ]);
+    });
+
+    it('finds a start marker after an unbalanced quote in prose', () => {
+      expect(runBlind(['he said "x <tc>f|1</tc>'])).toEqual([
+        { kind: 'content', text: 'he said "x ' },
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: '1' } },
+      ]);
+    });
+
+    it('does not hold back a frame that ends inside a quote', () => {
+      const state = blind();
+      expect(state.push('a "b')).toEqual([{ kind: 'content', text: 'a "b' }]);
+    });
+
+    it('still holds back a partial start marker', () => {
+      const state = blind();
+      expect(state.push('a <t')).toEqual([{ kind: 'content', text: 'a ' }]);
+      expect(state.push('c>f|1</tc>')).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: '1' } },
+      ]);
+    });
+  });
+
+  describe('a segment that holds several calls', () => {
+    const many = (inner: string): DerivedToolCall[] | undefined => {
+      const calls = inner.split(';').filter((s) => s !== '').map(parseCall);
+      return calls.every((c) => c !== undefined) ? (calls as DerivedToolCall[]) : undefined;
+    };
+    const runMany = (frames: readonly string[], recover = false): AssistantStreamEvent[] => {
+      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall: many, recoverUnclosed: many });
+      const events: AssistantStreamEvent[] = [];
+      for (const frame of frames) events.push(...state.push(frame));
+      events.push(...state.finish({ recoverUnclosedAtEnd: recover }));
+      return events;
+    };
+
+    it('emits each call in order', () => {
+      expect(runMany(['x<tc>a|1;b|2</tc>y'])).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+        { kind: 'content', text: 'y' },
+      ]);
+    });
+
+    it('treats an empty list as not a call', () => {
+      expect(runMany(['<tc></tc>'])).toEqual([{ kind: 'content', text: '<tc></tc>' }]);
+    });
+
+    it('recovers several calls from an unclosed final segment after a natural stop', () => {
+      expect(runMany(['<tc>a|1;b|2'], true)).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+      ]);
+    });
+  });
+
+  describe('unclosed-call recovery is the parser\'s own (Manifest S7.2 rule 6)', () => {
+    const finishWith = (opts: { recoverUnclosed?: (body: string) => DerivedToolCall | undefined }, recover: boolean) => {
+      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, ...opts });
+      return [...state.push('x<tc>f|1</t'), ...state.finish({ recoverUnclosedAtEnd: recover })];
+    };
+
+    it('a parser that defines no recovery flushes the unclosed segment as text, even after a natural stop', () => {
+      expect(finishWith({}, true)).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'content', text: '<tc>f|1</t' },
+      ]);
+    });
+
+    it('a parser that defines recovery gets the raw body, partial end marker included', () => {
+      const seen: string[] = [];
+      const events = finishWith({ recoverUnclosed: (body) => (seen.push(body), parseCall(body)) }, true);
+      expect(seen).toEqual(['f|1</t']);
+      expect(events).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'tool-call-provisional', call: { name: 'f', arguments: '1</t' } },
+      ]);
+    });
+
+    it('is not consulted without the finish-reason gate', () => {
+      const seen: string[] = [];
+      expect(finishWith({ recoverUnclosed: (body) => (seen.push(body), parseCall(body)) }, false)).toEqual([
+        { kind: 'content', text: 'x' },
+        { kind: 'content', text: '<tc>f|1</t' },
+      ]);
+      expect(seen).toEqual([]);
+    });
+  });
+});

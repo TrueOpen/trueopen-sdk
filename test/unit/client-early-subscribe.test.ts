@@ -216,7 +216,8 @@ describe('streamOutput early subscribe', () => {
     for (let r = await it.next(); !r.done; r = await it.next()) events.push(r.value);
     expect(events.map((e) => (e.kind === 'chunk' ? `c${e.seq}` : 'fin'))).toEqual(['c0', 'c1', 'c2', 'fin']);
     expect(events.at(-1)).toMatchObject({ kind: 'fin', attested: true });
-    expect(checkpoints).toEqual([1n, 2n, 3n]);
+    // One checkpoint per frame, then one more after the verified Fin, which it carries.
+    expect(checkpoints).toEqual([1n, 2n, 3n, 3n]);
     // Acked once, after the verified Fin.
     expect(acks).toEqual([2n]);
     expect(subs).toHaveLength(1);

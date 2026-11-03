@@ -23,6 +23,8 @@ import { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 import type { TaskBuilderReader } from './hub/stage1-routing';
 import { fanOutToEndpoints } from './transport/fan-out-submit';
 import { nexusGrpcEndpoint } from './types/hub';
+import type { ManifestSource } from './manifest/manifest-source';
+import { toolCallIdFormatOf, type ToolCallIdFormat } from './manifest/model-manifest';
 import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
 import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet, DEFAULT_ANCHOR_LAG } from './order/task-order-input';
@@ -51,6 +53,21 @@ import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { randomBytes } from '@noble/hashes/utils';
 import { hash32Text, isHash32Text, strictHash32 } from './codec/hash32';
 import { bytesEqual } from './util/bytes';
+import {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+import { BUILTIN_TOOL_CALL_PARSERS, resolveToolCalling, type ToolCallRegistry } from './toolcall/registry';
+import { BUILTIN_REASONING_PARSERS, type ReasoningParser, type ReasoningRegistry } from './toolcall/reasoning';
+import type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+  ParserRef,
+  ToolCallParser,
+} from './toolcall/types';
 
 export interface TrueOpenClientConfig {
   readonly chainId: string;
@@ -157,6 +174,12 @@ export interface TrueOpenClientConfig {
    */
   readonly ingressTransportFactory?: (serviceEndpoint: string, tlsPubkeyHash?: string) => Transport;
   /**
+   * Where verified profile manifests come from (Node: createNodeManifestSource from
+   * "trueopen-sdk/node"). Needed for what only the manifest carries -- `tool_calling.call_id_format`,
+   * which is not projected on chain (ADR-0028).
+   */
+  readonly manifestSource?: ManifestSource;
+  /**
    * Opens connections to a Builder's nexus ahead of use, so OpenTask and the output stream
    * skip the TCP + TLS handshake. Under Node, pass
    * `(uri, hash) => prewarmNexusConnections(uri, hash)` together with
@@ -238,9 +261,47 @@ export type FacadeHubReader = TaskBuilderReader &
   };
 
 /** On-chain task reads needed to derive the output trust anchors (RestChainReader satisfies it). */
+/**
+ * Parameters of TrueOpenClient.fetchAssistantMessage: those of fetchTaskOutput, with the hashes
+ * and key always taken from the chain anchors (so the result can be confirmed against the
+ * receipt), and the Builder optional.
+ */
+export type FetchAssistantMessageParams = Omit<FetchTaskOutputParams, 'builderAddress' | 'taskHash' | 'outputHash' | 'workerServicePubKey'> & {
+  /** Fetch from this Builder only. Omitted: the SDK asks the task's frozen Task Builders. */
+  builderAddress?: string;
+};
+
+/** Parameters of TrueOpenClient.fetchTaskOutput. */
+export type FetchTaskOutputParams = {
+  sessionId: string;
+  taskId: string;
+  /** Hash32 text (`0x` + 64 lowercase hex), the on-chain accepted_task_hash. Defaults to the chain value. */
+  taskHash?: string;
+  /** Hash32 text (`0x` + 64 lowercase hex), the on-chain InferReceipt.output_hash (= MMR root). Defaults to the chain value. */
+  outputHash?: string;
+  /** Anchors already resolved by the caller; saves the chain reads. */
+  anchors?: OutputTrustAnchors;
+  builderAddress: string;
+  expiresAtHeight?: bigint;
+  /** Largest range per FetchTaskData call; defaults to 8 MiB (nexus's default max range). */
+  maxRangeBytes?: number;
+  /** Attempts per range for transport failures; default 3. */
+  rangeAttempts?: number;
+  /**
+   * The winner Worker's service key, for verifying the stored Fin. Defaults to the anchors'
+   * key, and is resolved from chain when the metadata carries a signed Fin and neither is given.
+   */
+  workerServicePubKey?: Uint8Array;
+};
+
 export interface OutputTaskReader {
   queryTask(taskId: string): Promise<ChainTaskSnapshot>;
   queryInferReceipt(taskId: string): Promise<InferReceiptView | undefined>;
+  /**
+   * The task's frozen Task Builder addresses, in rank order (RestChainReader provides it). Needed
+   * only to let fetchAssistantMessage choose the Builder itself.
+   */
+  queryTaskBuilders?(taskId: string): Promise<readonly string[]>;
 }
 
 /**
@@ -674,6 +735,109 @@ export interface ConfirmOutputParams {
   readonly receipt: InferReceiptView;
 }
 
+/**
+ * Tool-calling parameters for `streamAssistantMessage` / `fetchAssistantMessage`.
+ *
+ * The alternative to passing an already-resolved `parser` (the phase-1 path). When this shape is
+ * used, the facade resolves the parser from the profile's on-chain `tool_call_parser` projection
+ * (design S5.1), and degrades to `content`-only output when the profile does not support tool
+ * calling. The two shapes are disjoint: this one has no `parser` and a required `toolCallParser`.
+ */
+export interface ToolCallParams {
+  /** The profile's on-chain tool-call parser (ProfileInfo.toolCallParser); zero value = "no tool calling". */
+  readonly toolCallParser: ParserRef;
+  /** Defaults to the built-in registry (hermes@1, qwen3_coder@1; unverified); injectable for tests/custom parsers. */
+  readonly registry?: ToolCallRegistry;
+  /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
+  readonly allowUnverified?: boolean;
+  /**
+   * The profile's on-chain reasoning parser (ProfileInfo.reasoningParser). When it resolves, the
+   * leading reasoning span is split off first and tool calls are parsed from the remainder only
+   * (Manifest S7.3 rule 5). Zero value or absent = no reasoning separation.
+   */
+  readonly reasoningParser?: ParserRef;
+  /** Defaults to the built-in reasoning registry (qwen3@1, unverified). */
+  readonly reasoningRegistry?: ReasoningRegistry;
+}
+
+/** The parsers a task's profile pins on chain (ProfileState.tool_call_parser / reasoning_parser). */
+export interface ProfileParsers {
+  /** Zero value when the profile offers no tool calling. */
+  readonly toolCallParser: ParserRef;
+  /** Zero value when the profile pins no reasoning parser. */
+  readonly reasoningParser: ParserRef;
+}
+
+/**
+ * Parameters of TrueOpenClient.assistantTurn: the stream's, with the trust anchors always from
+ * chain, plus the parser options (the profile's on-chain parsers when not given) and the wait for
+ * the receipt.
+ */
+export interface AssistantTurnParams extends Omit<StreamOutputParams, 'taskHash' | 'workerServicePubKey'> {
+  /** Defaults to the task profile's on-chain parser (profileParsers). */
+  readonly toolCallParser?: ParserRef;
+  /** Defaults to the task profile's on-chain reasoning parser. Ignored when toolCallParser is given without it. */
+  readonly reasoningParser?: ParserRef;
+  readonly registry?: ToolCallRegistry;
+  readonly reasoningRegistry?: ReasoningRegistry;
+  /** Whether unverified parsers may be used (the built-in parsers are unverified until their vectors exist). */
+  readonly allowUnverified?: boolean;
+  /** How long to wait for the accepted InferReceipt after the stream ends; default 120 s. */
+  readonly receiptTimeoutMs?: number;
+  /** Interval between receipt reads; default 1000 ms. */
+  readonly receiptPollIntervalMs?: number;
+  /** Aborts the wait for the receipt. */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * What assistantTurn yields: reasoning and content as frames verify (provisional, for display),
+ * then the confirmed message once the receipt matched. Tool calls appear only in `confirmed`.
+ */
+export type AssistantTurnEvent =
+  | { readonly kind: 'reasoning'; readonly text: string }
+  | { readonly kind: 'content'; readonly text: string }
+  | { readonly kind: 'confirmed'; readonly message: ConfirmedAssistantMessage };
+
+/**
+ * The tool parser used when the profile has none, or this build cannot vouch for it: the output
+ * is content, with no calls (design S6). Running it through the same pipeline keeps reasoning
+ * separation working for a profile that pins only a reasoning parser (S7.3 rule 9).
+ */
+const NO_TOOL_CALLS: ToolCallParser = {
+  name: '',
+  version: 0,
+  parseComplete: (text) => ({ role: 'assistant', content: text, toolCalls: [] }),
+  createStreamState: () => ({
+    push: (text) => (text === '' ? [] : [{ kind: 'content', text }]),
+    finish: () => [],
+  }),
+};
+
+/**
+ * Resolves both parsers the profile pins. A parser that does not resolve -- not pinned, unknown
+ * to this build, or unverified without the caller's opt-in -- is simply not used (S7.3 rule 8,
+ * design S6): the output still arrives, without that view.
+ *
+ * A pinned reasoning parser that does not resolve takes the tool-call parser with it
+ * (TOOL_CALL_PARSER_V1, Support): without the reasoning split, a call the model wrote while
+ * reasoning would be parsed, so the whole output is content with no calls.
+ */
+function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser } {
+  const allow = p.allowUnverified === true ? { allowUnverified: true } : undefined;
+  const tool = resolveToolCalling({
+    toolCallParser: p.toolCallParser,
+    registry: p.registry ?? BUILTIN_TOOL_CALL_PARSERS,
+    ...(allow ?? {}),
+  });
+  const reasoning = (p.reasoningRegistry ?? BUILTIN_REASONING_PARSERS).lookup(p.reasoningParser ?? { name: '', version: 0 }, allow);
+  const reasoningUsable = reasoning.supported || reasoning.reason === 'parser-not-pinned';
+  return {
+    parser: tool.supported && reasoningUsable ? tool.parser : NO_TOOL_CALLS,
+    ...(reasoning.supported ? { reasoning: reasoning.parser } : {}),
+  };
+}
+
 async function nextWithIdleTimeout<T>(
   iterator: AsyncIterator<T>,
   idleTimeoutMs?: number,
@@ -712,6 +876,13 @@ export class TrueOpenClient {
 
   /** The session key and its grant, when config.session is set. */
   readonly sessionGrants: SessionKeyManager | undefined;
+  /**
+   * input_hash first sent under each idempotency key by this client. A Builder answers a retry
+   * under the same key with the first result only when the input is the same and refuses it
+   * otherwise; re-serializing the payload on retry changes the bytes and hits that refusal. This
+   * refuses it before anything is signed. It lives as long as this client, not across processes.
+   */
+  private readonly inputHashByIdempotencyKey = new Map<string, string>();
 
   /** Order contexts with session-anchor reuse; undefined without a hub or with orderContextReuse: false. */
   private readonly contextCache: TaskOrderContextCache | undefined;
@@ -1254,6 +1425,8 @@ export class TrueOpenClient {
     const ctx = resolved.context;
     if (registered !== undefined && stream !== undefined) checkSessionKeySpendCap(stream, order.maxFee.atomicUnits);
     const taskId = deriveTaskId(params.sessionId, orderSequence);
+    const inputHash = hash32Text(order.inputHash);
+    this.checkIdempotencyKey(params.idempotencyKey, inputHash);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     const expiryHeight = params.expiryHeight ?? ctx.latestHeight + BigInt(this.cfg.requestTtlBlocks ?? 10);
 
@@ -1305,6 +1478,9 @@ export class TrueOpenClient {
       );
     }
 
+    // From here a Builder may hold the input under this key, so a different input is refused.
+    // A failure before this point sent nothing, and leaves the key free.
+    this.inputHashByIdempotencyKey.set(params.idempotencyKey, inputHash);
     // Where each Builder was actually reached: a certificate re-read can move it.
     const usedEndpoint = new Map<string, { uri: string; tlsPubkeyHash: string }>();
     const isRetry = rejectedTaskHash !== undefined;
@@ -2090,22 +2266,7 @@ export class TrueOpenClient {
    * block height and defaults to latest height + taskDataExpiryBlocks (10), which must fit the
    * Builders' max_service_material_expiry_blocks.
    */
-  async fetchTaskOutput(p: {
-    sessionId: string;
-    taskId: string;
-    /** Hash32 text (`0x` + 64 lowercase hex), the on-chain accepted_task_hash. Defaults to the chain value. */
-    taskHash?: string;
-    /** Hash32 text (`0x` + 64 lowercase hex), the on-chain InferReceipt.output_hash (= MMR root). Defaults to the chain value. */
-    outputHash?: string;
-    /** Anchors already resolved by the caller; saves the chain reads. */
-    anchors?: OutputTrustAnchors;
-    builderAddress: string;
-    expiresAtHeight?: bigint;
-    /** Largest range per FetchTaskData call; defaults to 8 MiB (nexus's default max range). */
-    maxRangeBytes?: number;
-    /** Attempts per range for transport failures; default 3. */
-    rangeAttempts?: number;
-  }): Promise<{
+  async fetchTaskOutput(p: FetchTaskOutputParams): Promise<{
     bytes: Uint8Array;
     text: string;
     outputHash: string;
@@ -2115,6 +2276,35 @@ export class TrueOpenClient {
     mediaType: string;
     /** The accepted InferReceipt the output was checked against, when it was read. */
     receipt?: InferReceiptView;
+    /**
+     * The termination reason from the Worker-signed Fin the Builder stored with the object
+     * (TaskDataObjectMetadataV1.fin, ADR-0027), verified against the Worker's service key, the
+     * leaf count and the output root. Undefined when the metadata carries no Fin or an unsigned
+     * one: the reason is then unavailable, never inferred from the text or its length.
+     */
+    finishReason?: FinishReasonV1;
+  }> {
+    return this.fetchTaskOutputVia(this.ingress, p);
+  }
+
+  /** fetchTaskOutput against a given Builder's ingress (fetchAssistantMessage picks the Builder itself). */
+  private async fetchTaskOutputVia(ingress: IngressClient, p: FetchTaskOutputParams): Promise<{
+    bytes: Uint8Array;
+    text: string;
+    outputHash: string;
+    taskHash: string;
+    chunks: Uint8Array[];
+    sizeBytes: bigint;
+    mediaType: string;
+    /** The accepted InferReceipt the output was checked against, when it was read. */
+    receipt?: InferReceiptView;
+    /**
+     * The termination reason from the Worker-signed Fin the Builder stored with the object
+     * (TaskDataObjectMetadataV1.fin, ADR-0027), verified against the Worker's service key, the
+     * leaf count and the output root. Undefined when the metadata carries no Fin or an unsigned
+     * one: the reason is then unavailable, never inferred from the text or its length.
+     */
+    finishReason?: FinishReasonV1;
   }> {
     const maxRange = BigInt(p.maxRangeBytes ?? DEFAULT_MAX_RANGE_BYTES);
     if (maxRange <= 0n) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_RANGE_INVALID', 'maxRangeBytes must be positive');
@@ -2143,7 +2333,7 @@ export class TrueOpenClient {
       contentHash: outputHash,
     };
 
-    const meta = await this.ingress.getTaskDataMetadata({ objectRef, builderAddress: p.builderAddress, expiresAtHeight: await expiry() });
+    const meta = await ingress.getTaskDataMetadata({ objectRef, builderAddress: p.builderAddress, expiresAtHeight: await expiry() });
     if (!meta) {
       throw dataError('DATA_OUTPUT_NOT_FOUND', `no OUTPUT object for task ${p.taskId}`);
     }
@@ -2172,7 +2362,7 @@ export class TrueOpenClient {
     for (let offset = 0n; offset < meta.sizeBytes; ) {
       const range: ByteRange = { offset, length: minBig(maxRange, meta.sizeBytes - offset) };
       const got = await retryTransient(attempts, async () =>
-        this.ingress.fetchTaskDataRange({
+        ingress.fetchTaskDataRange({
           objectRef,
           builderAddress: p.builderAddress,
           expiresAtHeight: await expiry(),
@@ -2198,18 +2388,60 @@ export class TrueOpenClient {
       );
     }
 
+    const finishReason = await this.verifyStoredFin(meta.fin, {
+      taskId: p.taskId,
+      taskHash,
+      outputHash: got,
+      leafCount: meta.outputLeafCount,
+      workerServicePubKey: p.workerServicePubKey ?? anchors?.workerServicePubKey,
+    });
+
     return {
-      // bytes is the committed object verbatim; text is the presented view with the chat
-      // template's trailing EOS marker stripped. They differ only by that suffix.
+      // bytes is the committed object; text is its decoding. Cortex strips the trailing EOS
+      // before committing (output_decoding.strip_trailing_eos), so nothing is stripped here.
       bytes,
-      text: stripChatTemplateEos(new TextDecoder().decode(bytes)),
+      text: new TextDecoder().decode(bytes),
       outputHash: got,
       taskHash,
       chunks,
       sizeBytes: meta.sizeBytes,
       mediaType: meta.mediaType,
       ...(receipt !== undefined ? { receipt } : {}),
+      ...(finishReason !== undefined ? { finishReason } : {}),
     };
+  }
+
+  /**
+   * The finish reason of a stored Fin, checked the way the stream checks its trailing frame:
+   * final_seq is the last leaf, output_mmr_root is the root just verified against the receipt,
+   * and the Worker signed both together with the reason. A Fin that is present and signed but
+   * fails any of these is a fault, not a missing fact, so it throws. An unsigned Fin attests
+   * nothing and yields undefined.
+   */
+  private async verifyStoredFin(
+    fin: { finalSeq: bigint; outputMmrRoot: Uint8Array; finishReason: FinishReasonV1; workerSignature: Uint8Array } | undefined,
+    c: { taskId: string; taskHash: string; outputHash: string; leafCount: bigint; workerServicePubKey: Uint8Array | undefined },
+  ): Promise<FinishReasonV1 | undefined> {
+    if (fin === undefined || fin.workerSignature.length === 0) return undefined;
+    if (fin.finalSeq !== c.leafCount - 1n) {
+      throw dataError('DATA_OUTPUT_FIN_SEQ_MISMATCH', `stored fin says final_seq=${fin.finalSeq} but the object has ${c.leafCount} leaves`);
+    }
+    if (fin.outputMmrRoot.length !== 32 || hash32Text(fin.outputMmrRoot) !== c.outputHash) {
+      throw dataError('DATA_OUTPUT_FIN_ROOT_MISMATCH', `stored fin root does not match output_hash for task ${c.taskId}`);
+    }
+    const key = c.workerServicePubKey
+      ?? (await this.resolveOutputTrustAnchors(c.taskId, { withReceipt: false })).workerServicePubKey;
+    const fields = {
+      chainId: this.cfg.chainId,
+      taskHash: strictHash32('task_hash', c.taskHash),
+      finalSeq: fin.finalSeq,
+      outputMmrRoot: Uint8Array.from(fin.outputMmrRoot),
+      finishReason: Number(fin.finishReason),
+    };
+    if (!verifyOutputFinSignature(fields, fin.workerSignature, key)) {
+      throw dataError('DATA_OUTPUT_FIN_SIGNATURE_INVALID', `stored fin signature for task ${c.taskId} did not verify (finish_reason=${fin.finishReason})`);
+    }
+    return fin.finishReason;
   }
 
   /** Task-data request expiry: latest height + taskDataExpiryBlocks (default 10). */
@@ -2487,9 +2719,8 @@ export class TrueOpenClient {
               yield {
                 kind: 'chunk',
                 seq: c.seq,
-                // text is the presented view (chat-template EOS stripped); mmrRoot still
-                // covers the committed bytes, so it is what verification ran against.
-                text: stripChatTemplateEos(new TextDecoder().decode(c.text)),
+                // mmrRoot covers the committed bytes, so it is what verification ran against.
+                text: new TextDecoder().decode(c.text),
                 mmrRoot: Uint8Array.from(c.mmrRoot),
               };
               continue;
@@ -2527,6 +2758,21 @@ export class TrueOpenClient {
                   );
                 }
                 finishReason = f.finishReason;
+                // Keep the verified Fin in the checkpoint: confirmation reads the finish reason from
+                // there (re-verified against the receipt), and a persisted checkpoint carries it.
+                v.acceptFin({
+                  finalSeq: f.finalSeq, outputMmrRoot: Uint8Array.from(f.outputMmrRoot),
+                  finishReason: Number(f.finishReason), workerSignature: Uint8Array.from(f.workerSignature),
+                });
+                if (p.onCheckpoint !== undefined) {
+                  try {
+                    await p.onCheckpoint(v.checkpoint());
+                  } catch (cause) {
+                    throw fatal(
+                      new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED', 'failed to persist checkpoint after fin', { cause }),
+                    );
+                  }
+                }
               }
               sawFin = true;
               finSource = source;
@@ -2600,6 +2846,291 @@ export class TrueOpenClient {
     return confirmOutputWithReceipt({ chainId: this.cfg.chainId, ...p });
   }
 
+  /**
+   * The derived-view counterpart of `streamOutput` (design S4.1, S5).
+   *
+   * Stage one of the execution gate: every tool call it yields is provisional and must not be
+   * executed. Obtain the checkpoint the usual way, via `onCheckpoint`, then call
+   * `confirmAssistantMessage` with the on-chain receipt to get the executable list.
+   *
+   * Two entry shapes, discriminated on `'parser' in p`:
+   *  - pass an already-resolved `parser` (phase-1, backward compatible), or
+   *  - pass `toolCallParser` (the profile's on-chain projection, `ProfileInfo.toolCallParser`)
+   *    and let this method resolve it through the registry up front (design S5.1). When the
+   *    profile does not support tool calling, the stream degrades to `content`-only events and
+   *    never throws.
+   */
+  async *streamAssistantMessage(
+    p: StreamOutputParams & (DerivedViewOptions | ToolCallParams),
+  ): AsyncIterable<AssistantStreamEvent> {
+    if ('parser' in p) {
+      // Phase-1 path, unchanged: the caller already resolved the parser.
+      yield* deriveAssistantStream(this.streamOutput(p), p);
+      return;
+    }
+    yield* deriveAssistantStream(this.streamOutput(p), resolveParsers(p));
+  }
+
+  /**
+   * The derived-view counterpart of `confirmOutput` (design S4.1, S5).
+   *
+   * Synchronous and receipt-taking for the same reason `confirmOutput` is: the chain read
+   * belongs to the caller, which is what lets the stream run against a Builder while the caller
+   * decides when to reach the node.
+   *
+   * It takes the same two shapes as `streamAssistantMessage`, and should be given the same
+   * values: an already-resolved `parser`, or the profile's `toolCallParser` / `reasoningParser`
+   * refs, resolved here exactly as the stream resolved them. This is the step that yields
+   * executable calls, so it must not parse more permissively than the stream did -- in
+   * particular, a reasoning parser the stream applied must be applied here too, or a call the
+   * model only drafted while reasoning would become executable (Manifest S7.3 rule 7). Resolution
+   * is a registry lookup, so the method stays synchronous.
+   */
+  confirmAssistantMessage(p: ConfirmOutputParams & (DerivedViewOptions | ToolCallParams)): ConfirmedAssistantMessage {
+    const receiptInput = { chainId: this.cfg.chainId, taskId: p.taskId, taskHash: p.taskHash, checkpoint: p.checkpoint, receipt: p.receipt };
+    if ('parser' in p) return confirmAssistantMessageWithReceipt(receiptInput, p);
+    return confirmAssistantMessageWithReceipt(receiptInput, resolveParsers(p));
+  }
+
+  /**
+   * The parsers the task's profile pins on chain: the task's model and profile version from the
+   * task, then that profile's tool_call_parser / reasoning_parser (ADR-0028 projects both on
+   * chain). Needs config.taskReader and config.hub with getProfile.
+   */
+  async profileParsers(taskId: string): Promise<ProfileParsers> {
+    const reader = this.cfg.taskReader;
+    const getProfile = this.cfg.hub?.getProfile?.bind(this.cfg.hub);
+    if (reader === undefined || getProfile === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_PROFILE_UNREADABLE', 'resolving the profile parsers needs config.taskReader and config.hub with getProfile');
+    }
+    const task = await reader.queryTask(taskId);
+    const profile = await getProfile(task.modelId, task.profileVersion);
+    const none = { name: '', version: 0 };
+    return { toolCallParser: profile.toolCallParser ?? none, reasoningParser: profile.reasoningParser ?? none };
+  }
+
+  /**
+   * One assistant turn, streamed and then confirmed (sdk_详细设计 §5.2, §5.5).
+   *
+   * Yields reasoning and content as frames verify -- provisional, for display -- and never a tool
+   * call from unconfirmed frames. When the stream has ended, it waits for the accepted
+   * InferReceipt and yields `confirmed` with the ConfirmedAssistantMessage: the calls an agent may
+   * execute, and the protocol finishReason from the Worker-signed Fin. The stream checkpoint is
+   * kept internally (and still handed to `onCheckpoint`).
+   *
+   * Parsers default to the ones the task's profile pins on chain. Both built-in parsers are
+   * unverified until wire publishes their vectors, so they take effect only with
+   * `allowUnverified`; otherwise the output is content with no calls. Needs config.taskReader and
+   * config.hub.
+   */
+  async *assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent> {
+    const reader = this.cfg.taskReader;
+    if (reader === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TASK_READER_REQUIRED', 'assistantTurn waits for the receipt and needs config.taskReader');
+    }
+    const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
+    const refs = p.toolCallParser !== undefined
+      ? { toolCallParser: p.toolCallParser, ...(p.reasoningParser !== undefined ? { reasoningParser: p.reasoningParser } : {}) }
+      : await this.profileParsers(p.taskId);
+    const opts = {
+      ...resolveParsers({
+        ...refs,
+        ...(p.registry !== undefined ? { registry: p.registry } : {}),
+        ...(p.reasoningRegistry !== undefined ? { reasoningRegistry: p.reasoningRegistry } : {}),
+        ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+      }),
+    };
+
+    let checkpoint: OutputStreamVerifierCheckpoint | undefined;
+    const source = this.streamOutput({
+      ...p,
+      taskHash: anchors.taskHash,
+      workerServicePubKey: anchors.workerServicePubKey,
+      onCheckpoint: async (c) => {
+        checkpoint = c;
+        await p.onCheckpoint?.(c);
+      },
+    });
+    for await (const e of deriveAssistantStream(source, opts)) {
+      // A provisional call is not executable and is not handed out; the confirmed list follows.
+      if (e.kind === 'reasoning' || e.kind === 'content') yield e;
+    }
+    if (checkpoint === undefined) throw dataError('DATA_OUTPUT_STREAM_EMPTY', `output stream for task ${p.taskId} verified no frame`);
+
+    const receipt = await this.waitForReceipt(reader, p);
+    yield {
+      kind: 'confirmed',
+      message: confirmAssistantMessageWithReceipt(
+        { chainId: this.cfg.chainId, taskId: p.taskId, taskHash: anchors.taskHash, checkpoint, receipt },
+        opts,
+      ),
+    };
+  }
+
+  /** Polls for the accepted InferReceipt until it appears, the timeout passes, or the signal aborts. */
+  private async waitForReceipt(reader: OutputTaskReader, p: AssistantTurnParams): Promise<InferReceiptView> {
+    const timeoutMs = p.receiptTimeoutMs ?? 120_000;
+    const intervalMs = p.receiptPollIntervalMs ?? 1_000;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (p.signal?.aborted === true) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ABORTED', 'assistantTurn aborted while waiting for the receipt');
+      const receipt = await reader.queryInferReceipt(p.taskId);
+      if (receipt !== undefined) return receipt;
+      if (Date.now() + intervalMs > deadline) {
+        throw new TrueOpenError('DATA', 'OUTPUT_RECEIPT_TIMEOUT', `no accepted InferReceipt for task ${p.taskId} within ${timeoutMs}ms`, { retriable: true });
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, intervalMs);
+        p.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    }
+  }
+
+  /**
+   * The confirmed assistant message of a finished task, retrieved without streaming
+   * (sdk_详细设计 §5.3, §5.5).
+   *
+   * Confirmed means reconciled with the chain: the output is fetched against the accepted
+   * InferReceipt's output_hash, so the anchors must carry that receipt (resolved from chain when
+   * not given). The result carries the same `confirmation` as the streaming path, and the protocol
+   * `finishReason` from the Worker-signed Fin the Builder stored (ADR-0027).
+   *
+   * Without `builderAddress` the SDK chooses: it asks the task's frozen Task Builders in rank
+   * order and prefers one that stored the signed Fin, since a Builder without it cannot say how
+   * the output ended. When none has it, the output is still returned, with `finishReason`
+   * undefined (unavailable) -- a Provider maps that to its own error, never to a guess.
+   *
+   * Parsers: an already-resolved `parser`, or the profile's `toolCallParser` / `reasoningParser`
+   * refs resolved through the registries. When the profile pins no tool parser, the text is
+   * `content` with no calls.
+   */
+  async fetchAssistantMessage(
+    p: FetchAssistantMessageParams & (DerivedViewOptions | ToolCallParams),
+  ): Promise<ConfirmedAssistantMessage> {
+    const anchors = p.anchors ?? (await this.resolveOutputTrustAnchors(p.taskId));
+    const receipt = anchors.receipt;
+    if (receipt === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_RECEIPT_REQUIRED',
+        'fetchAssistantMessage confirms against the accepted InferReceipt; pass anchors that carry it',
+      );
+    }
+    const base = {
+      sessionId: p.sessionId,
+      taskId: p.taskId,
+      anchors,
+      workerServicePubKey: anchors.workerServicePubKey,
+      ...(p.expiresAtHeight !== undefined ? { expiresAtHeight: p.expiresAtHeight } : {}),
+      ...(p.maxRangeBytes !== undefined ? { maxRangeBytes: p.maxRangeBytes } : {}),
+      ...(p.rangeAttempts !== undefined ? { rangeAttempts: p.rangeAttempts } : {}),
+    };
+    const got = p.builderAddress !== undefined
+      ? await this.fetchTaskOutputVia(this.ingress, { ...base, builderAddress: p.builderAddress })
+      : await this.fetchFromSelectedBuilders(p.taskId, base);
+
+    // The stored Fin's reason decides whether an unclosed final call is recovered.
+    const finish = got.finishReason !== undefined ? { finishReason: got.finishReason } : {};
+    const message = deriveAssistantMessage(got.text, 'parser' in p ? { ...p, ...finish } : {
+      ...resolveParsers(p),
+      ...finish,
+    });
+    // fetchTaskOutput already held root, size and leaf count to this receipt.
+    const confirmation: ConfirmedOutputEvent = {
+      type: 'confirmed',
+      taskId: p.taskId,
+      taskHash: got.taskHash,
+      winnerWorker: receipt.winnerWorker,
+      inferReceiptHash: receipt.inferReceiptHash,
+      outputHash: got.outputHash,
+      outputMmrRoot: strictHash32('output_hash', got.outputHash),
+      outputLeafCount: BigInt(got.chunks.length),
+      outputSizeBytes: got.sizeBytes,
+      ...(got.finishReason !== undefined ? { finishReason: got.finishReason } : {}),
+    };
+    return {
+      ...message,
+      confirmation,
+      ...(got.finishReason !== undefined ? { finishReason: got.finishReason } : {}),
+    };
+  }
+
+  /**
+   * Fetches from the task's frozen Task Builders concurrently, preferring one that stored the
+   * signed Fin (sdk_详细设计 §5.3: a Builder without it leaves the reason unavailable). Falls back to
+   * the highest-ranked output that verified without one.
+   */
+  private async fetchFromSelectedBuilders(
+    taskId: string,
+    base: Omit<FetchTaskOutputParams, 'builderAddress'>,
+  ): Promise<Awaited<ReturnType<TrueOpenClient['fetchTaskOutput']>>> {
+    const { taskReader, hub, ingressTransportFactory } = this.cfg;
+    if (taskReader?.queryTaskBuilders === undefined || hub === undefined || ingressTransportFactory === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED',
+        'choosing the Builder needs config.taskReader with queryTaskBuilders, config.hub and config.ingressTransportFactory; or pass builderAddress',
+      );
+    }
+    const addresses = await taskReader.queryTaskBuilders(taskId);
+    if (addresses.length === 0) throw dataError('DATA_OUTPUT_NO_BUILDERS', `task ${taskId} has no Task Builder selection on chain`);
+    type Fetched = Awaited<ReturnType<TrueOpenClient['fetchTaskOutput']>>;
+    const fetchFrom = async (address: string): Promise<Fetched> => {
+      const endpoint = nexusGrpcEndpoint(await hub.getServiceDescriptor(address));
+      if (endpoint === undefined || endpoint.uri === '') throw new Error('descriptor has no NEXUS_GRPC endpoint');
+      const ingress = new IngressClient(ingressTransportFactory(endpoint.uri, endpoint.tlsPubkeyHash ?? ''), this.ingressAuth());
+      return this.fetchTaskOutputVia(ingress, { ...base, builderAddress: address });
+    };
+    // All Builders at once: the first verified output with the signed Fin wins without waiting
+    // for the rest. Only when every one has settled without a Fin does the rank order pick the
+    // output to return; when all failed, every failure is reported.
+    return new Promise<Fetched>((resolve, reject) => {
+      const results: Array<{ got: Fetched } | { error: unknown } | undefined> = new Array(addresses.length);
+      let pending = addresses.length;
+      addresses.forEach((address, i) => {
+        fetchFrom(address).then(
+          (got) => {
+            results[i] = { got };
+            if (got.finishReason !== undefined) resolve(got);
+          },
+          (error: unknown) => { results[i] = { error }; },
+        ).finally(() => {
+          if (--pending > 0) return;
+          const withoutFin = results.find((r): r is { got: Fetched } => r !== undefined && 'got' in r);
+          if (withoutFin !== undefined) {
+            resolve(withoutFin.got);
+            return;
+          }
+          const failures = results.map((r, j) => `${addresses[j]}: ${(r as { error?: { message?: string } }).error?.message ?? String((r as { error?: unknown }).error)}`);
+          reject(new TrueOpenError(
+            'DATA',
+            'DATA_OUTPUT_ALL_BUILDERS_FAILED',
+            `no Task Builder returned a verified output for task ${taskId}:\n  ${failures.join('\n  ')}`,
+            { retriable: true },
+          ));
+        });
+      });
+    });
+  }
+
+  /**
+   * The profile's `tool_calling.call_id_format`, from its verified manifest (sdk_详细设计 §5.5):
+   * what newToolCallId needs. Undefined when the profile does not offer tool calling. Fails when
+   * the manifest cannot be fetched or does not verify against the chain -- a guessed format would
+   * break the second turn of a model whose chat template checks it.
+   */
+  async toolCallIdFormat(modelId: string, profileVersion: bigint): Promise<ToolCallIdFormat | undefined> {
+    const source = this.cfg.manifestSource;
+    if (source === undefined) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_MANIFEST_SOURCE_UNCONFIGURED',
+        'reading call_id_format needs config.manifestSource (Node: createNodeManifestSource from "trueopen-sdk/node")',
+      );
+    }
+    return toolCallIdFormatOf((await source.fetchManifest(modelId, profileVersion)).manifest);
+  }
+
   /** Prepare challenge materials (does not submit a verdict). */
   prepareChallenge(
     sessionId: string,
@@ -2622,6 +3153,19 @@ export class TrueOpenClient {
    * unflagged `globalThis.crypto`) and to `globalThis.crypto` in browsers, which covers both
    * without importing a Node built-in into the browser bundle.
    */
+  private checkIdempotencyKey(key: string, inputHash: string): void {
+    const first = this.inputHashByIdempotencyKey.get(key);
+    if (first !== undefined && first !== inputHash) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_IDEMPOTENCY_KEY_REUSED',
+        `idempotency_key ${JSON.stringify(key)} was first used with input_hash ${first}, not ${inputHash}: ` +
+          'a retry must resend the same payload bytes, and a different input needs a new key',
+        { category: 'conflict' },
+      );
+    }
+  }
+
   private nextNonce(): Uint8Array {
     if (this.cfg.nonce) return this.cfg.nonce();
     try {
@@ -2795,25 +3339,6 @@ function isResourceExhausted(err: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
-}
-
-/**
- * Qwen3's chat template ends every assistant turn with the literal `<|im_end|>` marker (its
- * end-of-turn / EOS token). The serving layer applies the template but does not yet strip
- * that trailing marker, so it is committed on chain as part of the output bytes. It is not
- * model content, so the SDK strips it from the *presented* text while the committed bytes
- * stay untouched -- verification still runs over the bytes that hash to the on-chain
- * receipt. Trailing whitespace left behind by the template is dropped with it.
- *
- * Temporary: once cortex strips the marker server side this becomes a no-op.
- */
-const CHAT_TEMPLATE_EOS = '<|im_end|>';
-
-export function stripChatTemplateEos(text: string): string {
-  if (text.endsWith(CHAT_TEMPLATE_EOS)) {
-    return text.slice(0, -CHAT_TEMPLATE_EOS.length).trimEnd();
-  }
-  return text;
 }
 
 function minBig(a: bigint, b: bigint): bigint {

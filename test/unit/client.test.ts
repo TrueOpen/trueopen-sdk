@@ -20,9 +20,12 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { mmrPrefixRoot } from '../../src/codec/mmr';
 import { OUTPUT_MMR_DOMAIN, OutputStreamVerifier, outputChunkSigningDigest, outputFinSigningDigest } from '../../src/output/output-commitment';
-import { fromHex, toHex } from '../../src/util/bytes';
+import { fromHex } from '../../src/util/bytes';
 import { hash32Text } from '../../src/codec/hash32';
 import { TrueOpenError } from '../../src/errors/errors';
+import { createMarkerStreamState } from '../../src/toolcall/stream-state';
+import { createToolCallRegistry } from '../../src/toolcall/registry';
+import type { AssistantStreamEvent, ParserRef, ToolCallParser } from '../../src/toolcall/types';
 
 // deriveTaskId requires Hash32 text, 0x + 64 lowercase hex (raw Hash32 goes into the preimage).
 const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
@@ -452,6 +455,7 @@ describe('TrueOpenClient facade', () => {
     const a = makeClientWithTransport(transportA);
     const b = makeClientWithTransport(transportB);
     const checkpoints: bigint[] = [];
+    let lastCheckpoint: { fin?: { finalSeq: bigint } } | undefined;
     const got: string[] = [];
 
     for await (const frame of a.streamOutput({
@@ -461,11 +465,13 @@ describe('TrueOpenClient facade', () => {
       workerServicePubKey: WORKER_PUB,
       sources: [{ id: 'builder-a', ingress: a.ingress }, { id: 'builder-b', ingress: b.ingress }],
       maxAttempts: 2,
-      onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint.mmr.leafCount); },
+      onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint.mmr.leafCount); lastCheckpoint = checkpoint; },
     })) { if (frame.kind === 'chunk') got.push(frame.text); }
 
     expect(got).toEqual(['hello ', 'final ', 'output']);
-    expect(checkpoints).toEqual([1n, 2n, 3n]);
+    // One checkpoint per new frame, then one more once the signed Fin verified: it carries the Fin.
+    expect(checkpoints).toEqual([1n, 2n, 3n, 3n]);
+    expect(lastCheckpoint?.fin?.finalSeq).toBe(2n);
     expect(capA.subscribes).toHaveLength(1);
     expect(capB.subscribes).toHaveLength(1);
     expect(capB.subscribes?.[0]?.resumeAfterSeq).toBe(0n);
@@ -594,5 +600,208 @@ describe('TrueOpenClient facade', () => {
       code: 'SDK_LOCAL_SIGNER_ADDRESS_MISMATCH',
     });
     expect(cap.ack).toBeUndefined();
+  });
+});
+
+describe('TrueOpenClient tool-call views', () => {
+  // `<tc>name|args</tc>`: a small marker grammar so the facade wiring is tested apart from hermes.
+  const parseCall = (inner: string) => {
+    const at = inner.indexOf('|');
+    return at < 0 ? undefined : { name: inner.slice(0, at), arguments: inner.slice(at + 1) };
+  };
+  const newState = () => createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall });
+  // Both paths run the same state machine, as a real parser's must agree.
+  const markerParser = (name: string): ToolCallParser => ({
+    name,
+    version: 1,
+    createStreamState: newState,
+    parseComplete(text: string) {
+      const state = newState();
+      const events = [...state.push(text), ...state.finish()];
+      return {
+        role: 'assistant',
+        content: events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join(''),
+        toolCalls: events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call] : [])),
+      };
+    },
+  });
+
+  // The start marker is split between the two frames, so a per-frame parse would find neither.
+  const toolCallChunks = ['weather <t', 'c>get_weather|{"city":"London"}</tc> done'].map((t) => new TextEncoder().encode(t));
+  const toolCallTransport = (): Transport =>
+    scriptedStreamTransport(async function* () {
+      const built = signedFrames('trueopen-devnet-1', toolCallChunks);
+      for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+      yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+    });
+
+  const drain = async (p: { parser: ToolCallParser } | { toolCallParser: ParserRef }): Promise<AssistantStreamEvent[]> => {
+    const events: AssistantStreamEvent[] = [];
+    for await (const e of makeClientWithTransport(toolCallTransport()).streamAssistantMessage({
+      sessionId: SESSION,
+      taskId: TASK,
+      taskHash: TASK_HASH,
+      workerServicePubKey: WORKER_PUB,
+      ...('parser' in p ? p : { ...p, registry: createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]) }),
+    })) {
+      events.push(e);
+    }
+    return events;
+  };
+  const text = (events: AssistantStreamEvent[]) => events.map((e) => (e.kind === 'content' ? e.text : '')).join('');
+
+  it('streamAssistantMessage derives provisional calls over the verified frame stream', async () => {
+    const events = await drain({ parser: markerParser('test-markers') });
+    expect(events).toEqual([
+      { kind: 'content', text: 'weather ' },
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"city":"London"}' } },
+      { kind: 'content', text: ' done' },
+    ]);
+    // Nothing executable came out of the stream: that requires confirmAssistantMessage.
+    expect(events.some((e) => 'confirmation' in e)).toBe(false);
+  });
+
+  it('resolves the profile parser and yields a provisional call when it is vector-verified', async () => {
+    expect(await drain({ toolCallParser: { name: 'hermes', version: 1 } })).toContainEqual({
+      kind: 'tool-call-provisional',
+      call: { name: 'get_weather', arguments: '{"city":"London"}' },
+    });
+  });
+
+  it('splits the reasoning off the stream before tool parsing when the profile pins a reasoning parser', async () => {
+    const chunks = ['<thi', 'nk>\nmaybe <tc>rm|{}</tc>\n</think>\n\nweather <tc>get_weather|{"city":"London"}</tc>'].map((t) => new TextEncoder().encode(t));
+    const transport = scriptedStreamTransport(async function* () {
+      const built = signedFrames('trueopen-devnet-1', chunks);
+      for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+      yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+    });
+    const events: AssistantStreamEvent[] = [];
+    for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+      sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+      toolCallParser: { name: 'hermes', version: 1 },
+      registry: createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]),
+      reasoningParser: { name: 'qwen3', version: 1 },
+      allowUnverified: true,
+    })) {
+      events.push(e);
+    }
+    expect(events.filter((e) => e.kind === 'reasoning').map((e) => (e.kind === 'reasoning' ? e.text : '')).join('')).toBe('maybe <tc>rm|{}</tc>');
+    expect(events.flatMap((e) => (e.kind === 'tool-call-provisional' ? [e.call.name] : []))).toEqual(['get_weather']);
+  });
+
+  describe('confirmAssistantMessage resolves the profile parsers like the other views', () => {
+    // The model drafts a call while reasoning, then makes a different one.
+    const OUTPUT = '<think>\nmaybe <tc>rm|{}</tc>\n</think>\n\n<tc>get_weather|{"city":"London"}</tc>';
+    const chunks = [OUTPUT.slice(0, 20), OUTPUT.slice(20)].map((t) => new TextEncoder().encode(t));
+    const confirm = (extra: Record<string, unknown>) => {
+      const frames = signedFrames('trueopen-devnet-1', chunks);
+      const verifier = new OutputStreamVerifier({ chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
+      for (const f of frames) verifier.accept({ seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
+      return makeClient().confirmAssistantMessage({
+        taskId: TASK,
+        taskHash: TASK_HASH,
+        checkpoint: verifier.checkpoint(),
+        receipt: {
+          taskId: TASK, winnerWorker: 'trueopen1worker', inferReceiptHash: `0x${'d'.repeat(64)}`,
+          outputHash: hash32Text(frames[frames.length - 1]!.mmrRoot),
+          outputSizeBytes: BigInt(new TextEncoder().encode(OUTPUT).length), outputLeafCount: BigInt(frames.length),
+        },
+        ...extra,
+      } as never);
+    };
+    const registry = createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]);
+
+    it('with the profile parsers, a call drafted inside the reasoning is not executable', () => {
+      const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true });
+      expect(m.toolCalls.map((c) => c.name)).toEqual(['get_weather']);
+      expect(m.reasoningContent).toBe('maybe <tc>rm|{}</tc>');
+      expect(m.confirmation.type).toBe('confirmed');
+    });
+
+    it('a pinned reasoning parser that does not resolve takes the tool parser with it (TOOL_CALL_PARSER_V1, Support)', () => {
+      for (const extra of [{ reasoningParser: { name: 'unknown', version: 1 }, allowUnverified: true }, { reasoningParser: { name: 'qwen3', version: 1 } }]) {
+        const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, ...extra });
+        expect(m.toolCalls).toEqual([]);
+        expect(m.content).toBe(OUTPUT);
+        expect(m.reasoningContent).toBeUndefined();
+      }
+    });
+
+    it('no reasoning parser pinned leaves the tool parser in use', () => {
+      const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: '', version: 0 } });
+      expect(m.toolCalls.map((c) => c.name)).toEqual(['rm', 'get_weather']);
+    });
+
+    it('a tool parser that does not resolve yields no executable calls', () => {
+      const m = confirm({ toolCallParser: { name: 'unknown', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true });
+      expect(m.toolCalls).toEqual([]);
+      expect(m.reasoningContent).toBe('maybe <tc>rm|{}</tc>');
+    });
+
+    it('agrees with what streamAssistantMessage yielded for the same output', async () => {
+      const opts = { toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true };
+      const transport = scriptedStreamTransport(async function* () {
+        const built = signedFrames('trueopen-devnet-1', chunks);
+        for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+        yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+      });
+      const streamed: string[] = [];
+      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+        sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, ...opts,
+      })) {
+        if (e.kind === 'tool-call-provisional') streamed.push(e.call.name);
+      }
+      expect(confirm(opts).toolCalls.map((c) => c.name)).toEqual(streamed);
+    });
+
+    it('qwen3_coder@1 arguments are JSON strings: no tool schema is read (wire #46)', () => {
+      const CODER = '<tool_call>\n<function=f>\n<parameter=n>\n5\n</parameter>\n</function>\n</tool_call>';
+      const coderChunks = [CODER.slice(0, 15), CODER.slice(15)].map((t) => new TextEncoder().encode(t));
+      const frames = signedFrames('trueopen-devnet-1', coderChunks);
+      const verifier = new OutputStreamVerifier({ chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
+      for (const f of frames) verifier.accept({ seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
+      const m = makeClient().confirmAssistantMessage({
+        taskId: TASK,
+        taskHash: TASK_HASH,
+        checkpoint: verifier.checkpoint(),
+        receipt: {
+          taskId: TASK, winnerWorker: 'trueopen1worker', inferReceiptHash: `0x${'d'.repeat(64)}`,
+          outputHash: hash32Text(frames[frames.length - 1]!.mmrRoot),
+          outputSizeBytes: BigInt(new TextEncoder().encode(CODER).length), outputLeafCount: BigInt(frames.length),
+        },
+        toolCallParser: { name: 'qwen3_coder', version: 1 },
+        allowUnverified: true,
+      });
+      expect(m.toolCalls).toEqual([{ name: 'f', arguments: '{"n":"5"}' }]);
+    });
+  });
+
+  it('streamAssistantMessage yields qwen3_coder@1 arguments as JSON strings', async () => {
+    const CODER = '<tool_call>\n<function=f>\n<parameter=n>\n5\n</parameter>\n</function>\n</tool_call>';
+    const chunks = [CODER.slice(0, 15), CODER.slice(15)].map((t) => new TextEncoder().encode(t));
+    const calls = async (): Promise<string[]> => {
+      const transport = scriptedStreamTransport(async function* () {
+        const built = signedFrames('trueopen-devnet-1', chunks);
+        for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
+        yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
+      });
+      const out: string[] = [];
+      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+        sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
+        toolCallParser: { name: 'qwen3_coder', version: 1 }, allowUnverified: true,
+      })) {
+        if (e.kind === 'tool-call-provisional') out.push(e.call.arguments);
+      }
+      return out;
+    };
+    expect(await calls()).toEqual(['{"n":"5"}']);
+  });
+
+  it('degrades to content-only when the profile pins no parser, or one the registry lacks', async () => {
+    for (const toolCallParser of [{ name: '', version: 0 }, { name: 'unknown-parser', version: 1 }]) {
+      const events = await drain({ toolCallParser });
+      expect(events.every((e) => e.kind === 'content')).toBe(true);
+      expect(text(events)).toBe('weather <tc>get_weather|{"city":"London"}</tc> done');
+    }
   });
 });

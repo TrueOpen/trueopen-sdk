@@ -63,22 +63,35 @@
  *                         forwarded verbatim to vLLM, which applies the model's chat
  *                         template), while anything else is the legacy raw-text inferV0
  *                         path.
- *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
- *                         winner_confirm lands on chain, verify signatures and the MMR
- *                         root frame by frame as output is generated, without waiting
- *                         for the receipt. Once frames arrive, skip the full-output fetch.
- *   --fast-stream         with --stream: wait for the winner with
- *                         waitForOutputTrustAnchors (chain poll plus the
- *                         ASSIGNMENT_FINALIZED event) on the connection OpenTask used, then
- *                         subscribe on that same connection. Reports ttft_client_ms, from
- *                         just before OpenTask to the first verified frame
- *   --early-subscribe     with --fast-stream: open SubscribeOutput right after OpenTask,
- *                         in parallel with the anchor wait (streamOutput pendingAnchors);
- *                         frames are held unverified until the anchors arrive
+ *   --system-prompt <t>   add a system message ahead of the user message on a chat input
+ *                         (default: none -- the input carries only the user message)
+ *   --tools-json <json>   OpenAI function tools (a JSON array) offered on a chat input; implies
+ *                         --chat. The chat body is encoded by the SDK (chatInferInputBytes).
+ *   --assistant           after the receipt confirms the streamed output, derive the assistant
+ *                         view with confirmAssistantMessage, using the profile's on-chain
+ *                         tool_call_parser and reasoning_parser. The parsers are unverified
+ *                         (no shared vectors yet), so this opts in with allowUnverified.
+ *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
+ *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
+ *                         into task_hash, and the profile's task_types must list it.
+ *   --stream              streaming retrieval: verify signatures and the MMR root frame by
+ *                         frame as output is generated, without waiting for the receipt.
+ *                         Once frames arrive, skip the full-output fetch. By default this is
+ *                         early subscribe on the connection OpenTask used: SubscribeOutput
+ *                         opens right after OpenTask while waitForOutputTrustAnchors (chain
+ *                         poll plus the ASSIGNMENT_FINALIZED event) runs, and frames are held
+ *                         unverified until the anchors arrive (streamOutput pendingAnchors).
+ *                         Reports ttft_client_ms, from just before OpenTask to the first
+ *                         verified frame
+ *   --fast-stream / --early-subscribe  accepted and ignored: both are the default now
+ *   --no-early-subscribe  with --stream: wait for the anchors first, then subscribe on the
+ *                         OpenTask connection (the former --fast-stream alone)
+ *   --legacy-stream       with --stream: the script's own poll loop waits for winner_worker,
+ *                         then subscribes on a new connection (the former default)
  *   --prewarm             open two TLS connections to every selected Builder before the
  *                         TTFT clock starts (prewarmNexusConnections), so OpenTask and the
  *                         stream reuse warm connections
- *   --anchor-poll-ms <n>  chain poll interval for --fast-stream (default: the SDK default)
+ *   --anchor-poll-ms <n>  chain poll interval for the anchor wait (default: the SDK default)
  *   --stream-idle <s>     idle timeout for a single stream, in seconds (default 20);
  *                         on timeout, resubscribe to another endpoint carrying the
  *                         verifier checkpoint
@@ -112,7 +125,7 @@ const {
   buildOpenTaskRequest, resolveTaskBuilderEndpoints,
   taskOrderHashHex, deriveTaskId,
   decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, prewarmNexusConnections, RestChainReader,
-  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom,
+  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom, chatInferInputBytes,
 } = await import(SDK);
 
 // ---- args ----
@@ -152,10 +165,15 @@ const PROMPT = flag('--prompt', 'trueopen e2e open-task');
 // OpenAI chat-completions-shaped input (see --chat in the header): cortex routes a JSON
 // object with a `messages` field to its /v1/chat/completions path instead of inferV0.
 const CHAT = has('--chat');
-// Overrides the chat system message (default "trueopen e2e chat").
+// Optional chat system message. Without it the chat input carries only the user message.
 const SYSTEM_PROMPT = flag('--system-prompt', undefined);
-// Full chat `messages` array (JSON) to send verbatim, for multi-turn history.
+// Full chat `messages` array (JSON) for multi-turn history.
 const MESSAGES_JSON = flag('--messages-json', undefined);
+// OpenAI function tools (JSON array) offered on a chat input; implies chat.
+const TOOLS_JSON = flag('--tools-json', undefined);
+// Derive the assistant view (reasoning / content / tool calls) from the confirmed output, through
+// TrueOpenClient.confirmAssistantMessage with the profile's on-chain parsers.
+const ASSISTANT = has('--assistant');
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
 // get hard-truncated mid-sentence (observed in practice), hence it's tunable.
@@ -168,12 +186,14 @@ const STREAM = has('--stream');
 // Wait for the winner with waitForOutputTrustAnchors on the OpenTask connection (chain poll
 // plus the ASSIGNMENT_FINALIZED event), then subscribe on that same connection, instead of
 // waiting for the script's own poll loop to see winner_worker.
-const FAST_STREAM = has('--fast-stream');
-// With --fast-stream: subscribe right after OpenTask, while the anchors are still pending.
-const EARLY_SUBSCRIBE = has('--early-subscribe');
+// The default for --stream; --legacy-stream restores the script's own poll loop.
+const FAST_STREAM = !has('--legacy-stream');
+// Subscribe right after OpenTask, while the anchors are still pending (default);
+// --no-early-subscribe waits for the anchors first.
+const EARLY_SUBSCRIBE = !has('--no-early-subscribe');
 // Prewarm TLS connections to every selected Builder before the TTFT clock starts.
 const PREWARM = has('--prewarm');
-// Chain poll interval for --fast-stream; unset means the SDK default.
+// Chain poll interval for the anchor wait; unset means the SDK default.
 const ANCHOR_POLL_MS = has('--anchor-poll-ms') ? Number(flag('--anchor-poll-ms', '')) : undefined;
 // Idle cap for a single stream. If the subscription starts before the Worker begins
 // producing output, nexus will keep the stream open without pushing data, so this is
@@ -346,6 +366,17 @@ log(`order_sequence=${ORDER_SEQ}${SEQ_OVERRIDE === undefined ? ' (read from chai
 // The payload is sent exactly as given, with nothing appended. Note nexus dedupes by content
 // hash, so re-running the same input collides with NEXUS_DATA_CONFLICT; vary the input
 // yourself (the caller owns uniqueness in the normal flow too).
+// Chat input is encoded once by the SDK (canonical_json_v1), so a rerun of the same request
+// yields the same bytes and the same input_hash.
+function chatTools() {
+  if (TOOLS_JSON === undefined) return {};
+  const tools = JSON.parse(TOOLS_JSON);
+  if (!Array.isArray(tools) || tools.length === 0) {
+    console.error('--tools-json must be a non-empty JSON array of OpenAI function tools');
+    process.exit(2);
+  }
+  return { tools };
+}
 let payload;
 if (MESSAGES_JSON !== undefined) {
   const raw = JSON.parse(MESSAGES_JSON);
@@ -354,19 +385,28 @@ if (MESSAGES_JSON !== undefined) {
     console.error('--messages-json must be a JSON array or an object with a messages array');
     process.exit(2);
   }
-  payload = new TextEncoder().encode(JSON.stringify({ messages: msgs }));
-} else if (CHAT) {
-  payload = new TextEncoder().encode(JSON.stringify({
+  payload = chatInferInputBytes({ messages: msgs, ...chatTools() });
+} else if (CHAT || TOOLS_JSON !== undefined) {
+  payload = chatInferInputBytes({
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT ?? 'trueopen e2e chat' },
+      ...(SYSTEM_PROMPT !== undefined ? [{ role: 'system', content: SYSTEM_PROMPT }] : []),
       { role: 'user', content: PROMPT },
     ],
-  }));
+    ...chatTools(),
+  });
 } else {
   payload = new TextEncoder().encode(PROMPT);
 }
 // Hash32 text, 0x + 64 lowercase hex, as the SDK and node spell it (ADR-0034).
 const payloadHash = `0x${hex(sha256(payload))}`;
+// The order declares what the payload is. A chat-shaped body defaults to TASK_TYPE_CHAT;
+// cortex routes on the body's shape either way, so a mismatch would still run but would
+// sign a task_type that misdescribes the input.
+const TASK_TYPE_NAME = flag('--task-type', CHAT || MESSAGES_JSON !== undefined || TOOLS_JSON !== undefined ? 'CHAT' : 'TEXT_GENERATION');
+if (!['TEXT_GENERATION', 'CHAT'].includes(TASK_TYPE_NAME)) {
+  console.error(`--task-type must be TEXT_GENERATION or CHAT, got ${TASK_TYPE_NAME}`);
+  process.exit(2);
+}
 
 // ---- 3) on-chain context (anchor / builder set / bucket version, all signed) ----
 const ctx = await resolveTaskOrderContext(hub, CHAIN_ID);
@@ -398,7 +438,7 @@ const order = buildTaskOrder(ctx, {
   userAddress: address, sessionId, orderSequence: ORDER_SEQ,
   modelId: activeModel.model_id,
   profileVersion: Number(activeModel.latest_profile_version || 1),
-  taskType: TASK_TYPE.TEXT_GENERATION,
+  taskType: TASK_TYPE[TASK_TYPE_NAME],
   payload,
   inputBucket: 1, outputBudgetBucket: 1,
   generationParams: defaultGenerationParams(MAX_OUTPUT_TOKENS, MAX_OUTPUT_DURATION_MS),
@@ -718,7 +758,7 @@ async function startStream(winnerWorker) {
 
 const chainReader = new RestChainReader({ baseUrl: REST, fetch: (u) => fetch(u) });
 
-/** --fast-stream: wait for the winner on the OpenTask connection, then subscribe on it. */
+/** Default --stream path: wait for the winner on the OpenTask connection and subscribe on it (early by default). */
 async function startClientStream() {
   const mode = 'fast';
   const t0 = Date.now();
@@ -925,6 +965,28 @@ if (streamInfo?.frame_count > 0 && streamCheckpoint !== null) {
         output_size_bytes: event.outputSizeBytes.toString(),
       };
       log(`Receipt confirmation: root/count/size all match`);
+      if (ASSISTANT) {
+        try {
+          const m = client.confirmAssistantMessage({
+            taskId, taskHash: built.taskHash, checkpoint: streamCheckpoint, receipt,
+            toolCallParser: profile.toolCallParser,
+            reasoningParser: profile.reasoningParser,
+            // The built-in registries (hermes@1 / qwen3_coder@1, qwen3@1) are unverified until wire
+            // publishes their vectors, so this opts in.
+            allowUnverified: true,
+          });
+          streamConfirmation.assistant = {
+            tool_call_parser: profile.toolCallParser,
+            reasoning_parser: profile.reasoningParser,
+            reasoning_content: m.reasoningContent ?? null,
+            content: m.content,
+            tool_calls: m.toolCalls,
+          };
+          log(`Assistant view: ${m.toolCalls.length} tool call(s)${m.reasoningContent !== undefined ? ', reasoning separated' : ''}`);
+        } catch (e) {
+          streamConfirmation.assistant = { error: String(e?.message || e).slice(0, 300) };
+        }
+      }
     } catch (e) {
       streamConfirmation = {
         confirmed: false,

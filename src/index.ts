@@ -28,7 +28,7 @@ export type { FetchLike, FetchResponse, RestChainReaderOptions, QueryRetryPolicy
 export { HubReader } from './transport/hub-reader';
 export type { HubReaderOptions } from './transport/hub-reader';
 export { BUILDER_DESCRIPTOR_SCHEMA_V1, SERVICE_ENDPOINT_KIND_NEXUS_GRPC, nexusGrpcUri, nexusGrpcEndpoint, nexusHttpBaseUri } from './types/hub';
-export type { ParticipantType, BuilderInfo, ServiceEndpointV1, ServiceDescriptorRef, BuilderDescriptorDoc, BuilderEndpoint, ModelState, ProfileInfo, ProfilePricing, TaskGenerationLimits, BeaconView, ParameterBucketView } from './types/hub';
+export type { ParticipantType, BuilderInfo, ServiceEndpointV1, ServiceDescriptorRef, BuilderDescriptorDoc, BuilderEndpoint, ModelState, ParserRefV1, ProfileInfo, ProfilePricing, TaskGenerationLimits, BeaconView, ParameterBucketView } from './types/hub';
 export { BUCKET_KIND, DEFAULT_PARAMETER_BUCKET_KEY, PARTICIPANT_TYPE } from './types/hub';
 export type { ParticipantTypeName, ServiceKeyBinding } from './types/hub';
 export { verifyAndParseBuilderDescriptor, resolveBuilderEndpoints } from './hub/builder-discovery';
@@ -190,6 +190,8 @@ export type {
   TaskOrderIntent,
   TaskOrderAmounts,
 } from './order/task-order-input';
+export { chatInferInputBytes } from './order/chat-input';
+export type { ChatInferInput, ChatMessage, ChatTool, ChatToolCall, ChatJsonObject, ChatJsonValue } from './order/chat-input';
 export {
   signAndEncodeOrder,
   encodeSignedOrder,
@@ -357,6 +359,8 @@ export type {
   OutputDeliveryMode,
   OpenAIFinishReason,
 } from './output/openai-sse';
+export { TOOL_CALL_ID_FORMATS, newToolCallId, openAIFinishReasonOf } from './output/openai-assistant';
+export type { OpenAIAssistantFinishReason, ToolCallIdFormat } from './output/openai-assistant';
 export { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
 export {
   OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,
@@ -371,6 +375,7 @@ export type {
   OutputStreamVerifierConfig,
   OutputStreamVerifierCheckpoint,
   OutputFrameAcceptance,
+  VerifiedOutputFin,
 } from './output/output-commitment';
 
 export {
@@ -382,7 +387,6 @@ export {
   DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS,
   DEFAULT_MAX_PENDING_FRAMES,
   MAX_OVERFLOW_RESUBSCRIBES,
-  stripChatTemplateEos,
   DEFAULT_ADMISSION_WAIT_MS,
   nextRetryIdempotencyKey,
   ABANDONED_REPORT,
@@ -394,6 +398,11 @@ export type {
   TrueOpenClientConfig,
   FacadeHubReader,
   OutputTaskReader,
+  FetchTaskOutputParams,
+  FetchAssistantMessageParams,
+  AssistantTurnParams,
+  AssistantTurnEvent,
+  ProfileParsers,
   OutputTrustAnchors,
   WaitForOutputTrustAnchorsOptions,
   OpenTaskBuilderResult,
@@ -403,6 +412,7 @@ export type {
   StreamOutputParams,
   OutputStreamEvent,
   ConfirmOutputParams,
+  ToolCallParams,
   SessionKeyOptions,
   RegisterSessionKeyOptions,
   CreateSessionOptions,
@@ -415,6 +425,56 @@ export type {
   RejectionReason,
   OrderWindowOffsets,
 } from './client';
+
+// --- Tool calling: derived views over committed output (ADR-0022). Never part of the protocol. ---
+export {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  unclosedCallRecovery,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
+export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan';
+export {
+  BUILTIN_TOOL_CALL_PARSERS,
+  createToolCallRegistry,
+  resolveToolCalling,
+  type ParserConformance,
+  type RegistryEntry,
+  type ToolCallRegistry,
+} from './toolcall/registry';
+export { hermesParser } from './toolcall/parsers/hermes';
+export { qwen3CoderParser } from './toolcall/parsers/qwen3-coder';
+export {
+  BUILTIN_REASONING_PARSERS,
+  createMarkerReasoningParser,
+  createReasoningRegistry,
+  qwen3ReasoningParser,
+  type ReasoningMarkers,
+  type ReasoningParser,
+  type ReasoningRegistry,
+  type ReasoningRegistryEntry,
+  type ReasoningSplit,
+  type ReasoningStartMarkerClass,
+  type ReasoningStreamEvent,
+  type ReasoningStreamState,
+  type ReasoningSupport,
+} from './toolcall/reasoning';
+export type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+  DerivedToolCall,
+  ParserRef,
+  ToolCallParseOptions,
+  ToolCallFinishOptions,
+  ToolCallParser,
+  ToolCallStreamEvent,
+  ToolCallStreamState,
+  ToolCallSupport,
+  UnsupportedReason,
+} from './toolcall/types';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----
 export {
@@ -443,6 +503,7 @@ export {
   DOMAIN_MODEL_CHAIN_PROJECTION_V3,
   DOMAIN_MODEL_REGISTRATION_DIGEST_V3,
   MAX_MANIFEST_BYTES,
+  toolCallIdFormatOf,
 } from './manifest/model-manifest';
 export type {
   ModelManifestV4,

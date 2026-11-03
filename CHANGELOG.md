@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Added: qwen3_coder@1 tool-call parser
+
+- `qwen3CoderParser` (`qwen3_coder@1`) parses Qwen3-Coder / Qwen3.5+ XML calls
+  (`<tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>`)
+  as specified in `docs/qwen3-coder-parser-v1.md`. It is built in, `unverified`
+  (pass `allowUnverified`), like `hermes@1`.
+- Every argument value is a JSON string: the raw text, less one wrapping newline each
+  side, verbatim (wire #46). No value is coerced and no tool schema is read, so the
+  parser takes no `tools`: its result depends on the committed output alone.
+- It defines no unclosed-call recovery: a final block without `</tool_call>` is
+  content, whatever the finish reason.
+- `MarkerStreamOptions` gains `quoteAware`, and `parseCall` may return several calls.
+
+### Changed: qwen3@1 has an implicit start marker
+
+- **Breaking:** a reasoning parser declares the class of its start marker,
+  `ReasoningParser.startMarkerClass: 'explicit' | 'implicit'` (Manifest S7.3 rule 6);
+  `createMarkerReasoningParser` requires `startMarkerClass` in its `ReasoningMarkers`.
+- **Breaking:** `qwen3@1` is implicit. The output opens in reasoning whether or not it
+  starts with `<think>` (one `<think>` at the head is absorbed), and reasoning runs to the
+  first `</think>`. With no `</think>`, no marker at all included, the whole output is
+  `reasoningContent`, `content` is empty and no tool call is parsed (rule 8). Before, output
+  without a leading `<think>` had no reasoning. A `<tool_call>` inside reasoning still never
+  ends it (rule 7). This also covers forced-thinking Qwen3 output whose `<think>` is in the
+  prompt. A profile whose template does not think pins no reasoning parser.
+
+### Changed: align the parsers with wire #46 @ 5760ab7
+
+- **Changed:** reasoning parsers treat only ASCII SP, HT, LF and CR as leading whitespace.
+  `\uFEFF<think>abc</think>ok` now gives `qwen3@1` reasoning `\uFEFF<think>abc` (the marker is not
+  absorbed); before, `\s` let a BOM or other Unicode space pass as whitespace.
+- **Changed:** `hermes@1` no longer drops a partial closing marker (`</tool_`) before recovering
+  an unclosed final call: the JSON is then invalid and the block is content.
+- **Changed:** when a profile pins a reasoning parser this SDK does not use (unknown, or
+  unverified without `allowUnverified`), its tool-call parser is not used either: the whole
+  output is content with no tool calls (TOOL_CALL_PARSER_V1, Support).
+
+### Changed: unclosed-call recovery is per parser, and STOP_TOKEN opens the gate
+
+- **Changed:** an unclosed final call may be recovered when the verified Fin says
+  `EOS_TOKEN`, `STOP_SEQUENCE` or `STOP_TOKEN` (`STOP_TOKEN` is new), and only if the parser
+  defines recovery (Manifest S7.2 rule 6). `hermes@1` does (a complete JSON object with a
+  string `name`); `qwen3_coder@1` does not. The body is judged on its raw committed bytes.
+- **Added:** `MarkerStreamOptions.recoverUnclosed`, a parser's recovery rule; the shared
+  state machine never recovers without one.
+
 ### Changed: the OpenAI chat SSE follows OpenAI's chunk shape
 
 - **Changed:** `toOpenAIChatSSE` / `toOpenAIChatSSEIterable` send a first chunk with
@@ -282,6 +328,106 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   addresses, signatures, the 33-byte service key, nonces and the beacon `randomness_hex` keep
   their spelling. No digest changes.
 - Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `v0.5.1` pin (see the registered session keys entry above).
+
+### Breaking: the SDK no longer strips a trailing EOS
+
+Cortex strips the trailing EOS before committing (ADR-0022 `output_decoding.strip_trailing_eos`),
+so the SDK's temporary tolerance is gone and the committed text is taken as is.
+
+- **Breaking:** `fetchTaskOutput().text` and `streamOutput` chunk `text` are the committed bytes
+  decoded, with no `<|im_end|>` stripped; `stripChatTemplateEos` is removed.
+- **Breaking:** the `trailingEosMarkers` option is removed from `DerivedViewOptions` and the tool
+  call / assistant-turn params, along with `stripTrailingEos`, `TrailingEosStripper`,
+  `assertNoEndMarkerCollision` and `ToolCallParser.endMarkers`, which existed only for that
+  stripping.
+
+### Changed: a final call missing its closing marker is recovered after a natural stop
+
+- **Changed:** when the Worker-signed Fin says the model stopped by itself (`EOS_TOKEN` /
+  `STOP_SEQUENCE`; `STOP_TOKEN` too since the per-parser recovery change above) and the output
+  ends inside a tool call whose body parses, the call is recovered instead of flushed as text, as
+  vLLM and Dynamo do for Hermes (design S7 requirement 6). A truncated (`MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION`), user-stopped or
+  reason-unavailable output, or a body that does not parse, still flushes as plain text.
+  `confirmAssistantMessage`, `assistantTurn`, `fetchAssistantMessage` and the provisional
+  stream all follow the Fin.
+- **Added:** `ToolCallParseOptions` (`recoverUnclosedAtEnd`), taken by
+  `ToolCallParser.parseComplete(text, opts?)` and `ToolCallStreamState.finish(opts?)`;
+  `DerivedViewOptions.finishReason` for `deriveAssistantMessage`; `unclosedCallRecovery`.
+
+### Added: assistantTurn and profileParsers
+
+- **Added:** `client.assistantTurn(params)`: one assistant turn, streamed then confirmed. It yields
+  `reasoning` / `content` events as frames verify (never a call from unconfirmed frames), waits for
+  the accepted InferReceipt (`receiptTimeoutMs`, `receiptPollIntervalMs`, `signal`), and yields
+  `{ kind: 'confirmed', message }` with the executable calls and `finishReason`. The checkpoint is
+  kept internally. Parsers default to the task profile's on-chain parsers; unverified ones need
+  `allowUnverified`. A receipt that does not arrive in time is `OUTPUT_RECEIPT_TIMEOUT` (retriable).
+- **Added:** `client.profileParsers(taskId)`: the `tool_call_parser` / `reasoning_parser` the task's
+  profile pins on chain.
+
+### Changed: hermes@1 ships in the built-in registry
+
+- **Changed:** `BUILTIN_TOOL_CALL_PARSERS` registers `hermes@1` as `unverified`, as
+  `BUILTIN_REASONING_PARSERS` already does for `qwen3@1`. Lookup still reports it unsupported unless
+  the caller passes `allowUnverified`; a profile's pinned parser now resolves without the caller
+  registering it.
+
+### Added: call_id_format from the verified manifest
+
+- **Added:** `toolCallIdFormatOf(manifest)` reads `tool_calling.call_id_format` from a verified V4
+  manifest (undefined for `tool_calling = {}`; a non-empty block without a closed-set format is
+  `MANIFEST_SCHEMA_INVALID`). `call_id_format` is not projected on chain (ADR-0028).
+- **Added:** `TrueOpenClientConfig.manifestSource` and `client.toolCallIdFormat(modelId,
+  profileVersion)`, which fetch the profile's manifest, verify it against the chain and read the
+  format. `ToolCallIdFormat` / `TOOL_CALL_ID_FORMATS` now live in the manifest module (still
+  exported from the package root).
+
+### Added: OpenAI rules for the assistant message (sdk_详细设计 §5.5)
+
+- **Added:** `openAIFinishReasonOf(confirmed)`: stop-class -> `"stop"` or `"tool_calls"` when the
+  confirmed parse has calls; `MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION` -> `"length"` even with
+  calls (closed calls stay in `toolCalls`); `undefined` when the protocol reason is unavailable.
+- **Added:** `newToolCallId(format)` with `ToolCallIdFormat` (`OPENAI_CALL_PREFIX` /
+  `MISTRAL_ALNUM_9`): a random id in the profile's `call_id_format`. The Provider decides when to
+  assign one and builds `type` / `index` / the envelope.
+
+### Breaking: fetchAssistantMessage returns the confirmed message and can choose the Builder
+
+- **Breaking:** `fetchAssistantMessage` returns a `ConfirmedAssistantMessage` (with `confirmation`
+  and the stored Fin's `finishReason`), the same type the streaming path confirms to. It confirms
+  against the accepted InferReceipt, so the anchors must carry it (resolved from chain when not
+  passed; otherwise `SDK_LOCAL_RECEIPT_REQUIRED`). It no longer takes `taskHash` / `outputHash` /
+  `workerServicePubKey`: they always come from the anchors.
+- **Added:** `builderAddress` is optional. Without it the SDK asks the task's frozen Task Builders
+  (`RestChainReader.queryTaskBuilders`, task.v1 `TaskBuilders`) concurrently: the first verified
+  output with the signed Fin wins without waiting for slower Builders; with none, the
+  highest-ranked verified output is returned with `finishReason` undefined. Every
+  Builder failing is `DATA_OUTPUT_ALL_BUILDERS_FAILED` (retriable). Needs `taskReader` with
+  `queryTaskBuilders`, `hub` and `ingressTransportFactory` (`SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED`).
+- **Added:** `OutputTaskReader.queryTaskBuilders` (optional), and the `FetchTaskOutputParams` /
+  `FetchAssistantMessageParams` types.
+
+### Added: finish reason on the confirmed stream (sdk_详细设计 §5.5)
+
+- **Added:** the stream keeps the Worker-signed Fin it verified: `OutputStreamVerifierCheckpoint` is
+  now `schemaVersion: 2` with an optional `fin` (`VerifiedOutputFin`), and `onCheckpoint` fires once
+  more after the Fin. Restoring a checkpoint re-verifies its Fin. Schema-1 checkpoints (and schema-1
+  checkpoint JSON) still restore; the JSON codec writes `schema_version: 2` with an optional `fin`,
+  whose `output_mmr_root` is Hash32 text (`0x` + 64 lowercase hex) and `worker_signature` bare hex.
+- **Added:** `confirmOutputWithReceipt` / `confirmOutput` re-verify a kept Fin against the receipt-
+  matched root and set `ConfirmedOutputEvent.finishReason`; `ConfirmedAssistantMessage.finishReason`
+  carries the same value. A kept Fin that fails is `DATA_OUTPUT_CONFIRMATION_FIN_INVALID`. Without a
+  kept Fin the reason is undefined (unavailable), never inferred.
+
+### Added: finish reason on non-streaming retrieval
+
+- **Added:** `fetchTaskOutput` returns `finishReason` from the Worker-signed Fin the Builder stores
+  with the object (`TaskDataObjectMetadataV1.fin`, ADR-0027). It is checked as the stream checks its
+  trailing frame -- `final_seq` is the last leaf, the root is the verified `output_hash`, and the
+  Worker's signature verifies -- and a signed Fin that fails any of these throws
+  (`DATA_OUTPUT_FIN_SIGNATURE_INVALID` / `_ROOT_MISMATCH` / `_SEQ_MISMATCH`). Without a Fin, or with
+  an unsigned one, `finishReason` is undefined: unavailable, never inferred. A new optional
+  `workerServicePubKey` parameter skips the chain read for the key.
 
 ### Breaking: session-signed OpenTask
 

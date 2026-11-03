@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added: OpenAI SSE for an assistant turn
+
+- **Added:** `toOpenAIAssistantSSEIterable` / `toOpenAIAssistantSSE` turn one
+  `assistantTurn` into OpenAI `chat.completion.chunk` SSE: content as it verifies, reasoning
+  dropped (OpenAI's Chat Completions returns none), then, after the confirmed message, one chunk
+  per tool call (`index`, an id in the required `toolCallIdFormat`, `type: "function"`, name and
+  arguments as written) and the finish_reason (`stop` / `length` / `tool_calls`). Same chunk shape
+  as `toOpenAIChatSSE`. It fails closed, with no terminal chunk and no `[DONE]`, when the turn has
+  no confirmed message, the confirmed message is for another task or its content differs from what
+  was streamed, or the protocol finish reason is unavailable.
+- `usage` (`include_usage`) is still not produced: the receipt carries only the Worker-signed
+  generated token count, and no prompt token count reaches the SDK.
+
 ### Added: qwen3_coder@1 tool-call parser
 
 - `qwen3CoderParser` (`qwen3_coder@1`) parses Qwen3-Coder / Qwen3.5+ XML calls

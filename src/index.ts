@@ -361,6 +361,8 @@ export type {
 } from './output/openai-sse';
 export { TOOL_CALL_ID_FORMATS, newToolCallId, openAIFinishReasonOf } from './output/openai-assistant';
 export type { OpenAIAssistantFinishReason, ToolCallIdFormat } from './output/openai-assistant';
+export { toOpenAIAssistantSSEIterable, toOpenAIAssistantSSE } from './output/openai-assistant-sse';
+export type { OpenAIAssistantSseEvent, OpenAIAssistantSseOptions } from './output/openai-assistant-sse';
 export { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
 export {
   OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,

@@ -793,8 +793,9 @@ is true). Build a `VerifiedOutputFinEvent` only from an `attested: true` fin.
 
 Chunk shape, as OpenAI sends it: a first chunk `delta: {"role":"assistant","content":""}`, the
 content chunks, a terminal chunk with `delta: {}` and the finish_reason, then `data: [DONE]`.
-Every choice carries `logprobs: null` (the chain keeps no logprobs). Not produced: `usage`
-(`include_usage`), `service_tier`, `tool_calls`, and reasoning separation.
+Every choice carries `logprobs: null` (the chain keeps no logprobs). This adapter passes the
+committed text through as `content`; for tool calls and reasoning separation use the assistant
+adapter in 8.8. Not produced by either: `usage` (`include_usage`) and `service_tier`.
 
 ### 8.7 Checkpoint codec
 
@@ -819,6 +820,12 @@ client.toolCallIdFormat(modelId: string, profileVersion: bigint): Promise<ToolCa
 // OpenAI rules (sdk_详细设计 §5.5)
 function openAIFinishReasonOf(m: ConfirmedAssistantMessage): 'stop' | 'length' | 'tool_calls' | undefined
 function newToolCallId(format: ToolCallIdFormat): string   // 'OPENAI_CALL_PREFIX' | 'MISTRAL_ALNUM_9'
+
+// OpenAI chat.completion.chunk SSE of one assistant turn
+async function* toOpenAIAssistantSSEIterable(events, context, options): AsyncIterable<Uint8Array>
+function toOpenAIAssistantSSE(events, context, options): ReadableStream<Uint8Array>
+// events: client.assistantTurn(...); context: OpenAIChatSseContext (8.6);
+// options: { toolCallIdFormat: ToolCallIdFormat, includeObfuscation?: boolean }
 ```
 
 The SDK parses the committed output with the parsers the task's profile pins on chain
@@ -851,7 +858,29 @@ manifest's `call_id_format` (read with `toolCallIdFormat`; needs `config.manifes
 Provider decides when to assign each id and builds `type`, `index` and the envelope. A turn cut
 off by `MAX_OUTPUT_TOKENS` keeps the calls it closed and reports `"length"`.
 
-An OpenAI Chat Completions reply from one turn:
+`toOpenAIAssistantSSE` turns one `assistantTurn` into OpenAI `chat.completion.chunk` SSE, in the
+same chunk shape as 8.6 (role chunk first, `logprobs: null`, `system_fingerprint`, optional
+`obfuscation`):
+
+- content is streamed as it verifies; **reasoning is dropped**, as OpenAI's Chat Completions
+  returns none;
+- tool calls and the finish_reason are sent only after the confirmed message, one chunk per call
+  (`index`, an id in `toolCallIdFormat`, `type: "function"`, the name and arguments as written);
+- the finish_reason is `stop`, `length`, or `tool_calls` when the confirmed parse has calls;
+- it fails closed, with no terminal chunk and no `[DONE]`, when the turn ends without a confirmed
+  message, the confirmed message is for another task, its content differs from what was streamed,
+  or the protocol finish reason is unavailable.
+
+```ts
+const callIdFormat = await client.toolCallIdFormat(modelId, profileVersion); // once per profile
+const sse = toOpenAIAssistantSSE(
+  client.assistantTurn({ sessionId, taskId, allowUnverified: true }),
+  { id: `chatcmpl-${taskId}`, taskId, taskHash, model, created: Math.floor(Date.now() / 1000) },
+  { toolCallIdFormat: callIdFormat ?? 'OPENAI_CALL_PREFIX' },
+);
+```
+
+To keep the reasoning (for example in `delta.reasoning_content`), build the chunks yourself:
 
 ```ts
 const callIdFormat = await client.toolCallIdFormat(modelId, profileVersion); // once per profile

@@ -103,7 +103,7 @@ function obfuscationPadding(): string {
   return out;
 }
 
-function sseError(code: string, message: string): TrueOpenError {
+export function sseError(code: string, message: string): TrueOpenError {
   return new TrueOpenError('DATA', code, message);
 }
 
@@ -153,7 +153,8 @@ export function openAIFinishReason(reason: FinishReasonV1): OpenAIFinishReason {
   }
 }
 
-function validateContext(context: OpenAIChatSseContext): number {
+/** Checks the envelope context and returns the choice index. Shared with the assistant adapter. */
+export function validateContext(context: OpenAIChatSseContext): number {
   if (context.id === '' || context.model === '' || !isHash32Text(context.taskId) || !isHash32Text(context.taskHash)) {
     throw sseError(
       'DATA_OPENAI_SSE_CONTEXT_INVALID',
@@ -174,12 +175,16 @@ function validateContext(context: OpenAIChatSseContext): number {
   return choiceIndex;
 }
 
-/** Field order follows OpenAI's chat.completion.chunk: index, delta, logprobs, finish_reason. */
-function jsonData(
+/**
+ * One `chat.completion.chunk` SSE line. Field order follows OpenAI's chat.completion.chunk:
+ * index, delta, logprobs, finish_reason. Shared with the assistant adapter, which adds
+ * `tool_calls` deltas and the `tool_calls` finish reason.
+ */
+export function jsonData(
   context: OpenAIChatSseContext,
   choiceIndex: number,
   delta: Record<string, unknown>,
-  finishReason: OpenAIFinishReason | null,
+  finishReason: OpenAIFinishReason | 'tool_calls' | null,
   obfuscate: boolean,
 ): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify({
@@ -194,11 +199,11 @@ function jsonData(
 }
 
 /** The first chunk of every stream, as OpenAI sends it: the role and an empty content. */
-function roleData(context: OpenAIChatSseContext, choiceIndex: number, obfuscate: boolean): Uint8Array {
+export function roleData(context: OpenAIChatSseContext, choiceIndex: number, obfuscate: boolean): Uint8Array {
   return jsonData(context, choiceIndex, { role: 'assistant', content: '' }, null, obfuscate);
 }
 
-function contentData(context: OpenAIChatSseContext, choiceIndex: number, text: string, obfuscate: boolean): Uint8Array {
+export function contentData(context: OpenAIChatSseContext, choiceIndex: number, text: string, obfuscate: boolean): Uint8Array {
   return jsonData(context, choiceIndex, { content: text }, null, obfuscate);
 }
 
@@ -211,7 +216,7 @@ function terminalData(
   return jsonData(context, choiceIndex, {}, reason, obfuscate);
 }
 
-const doneData = (): Uint8Array => encoder.encode('data: [DONE]\n\n');
+export const doneData = (): Uint8Array => encoder.encode('data: [DONE]\n\n');
 
 function validateFin(fin: VerifiedOutputFinEvent, expectedSeq: bigint, lastRoot: Uint8Array | undefined): void {
   if (lastRoot === undefined || expectedSeq === 0n) {

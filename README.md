@@ -448,6 +448,10 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
   UNSPECIFIED and unknown values fail closed.
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.
+- The chunks follow OpenAI's shape: a first chunk `{"role":"assistant","content":""}`, then the
+  content, then the terminal chunk; every choice has `logprobs: null` and every chunk has
+  `system_fingerprint` (the context's `systemFingerprint`, else `null`). `includeObfuscation: true`
+  adds a random `obfuscation` padding to every chunk (off by default).
 
 The SDK implements the digest and signature verification for `TRUEOPEN_OUTPUT_FIN_V1`
 (anchored to the official `fin_signing` vectors) and requires it in `streamOutput` by default.
@@ -903,7 +907,7 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to wire PR #47 (`602cb18`, untagged), carrying the
+pinned as a submodule at `third_party/wire` to wire `v0.5.1` (`1c9db9b`), carrying the
 signer-chosen `signature_chain_id`, the `0x`-prefixed Hash32 text form (wire #44) and registered session keys (ADR-0037). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
@@ -918,8 +922,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (wire PR #47 @ `602cb18`, untagged) |
-| `task.v1` / `shared.v1` | `third_party/wire` (wire PR #47 @ `602cb18`, untagged) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (wire `v0.5.1` @ `1c9db9b`) |
+| `task.v1` / `shared.v1` | `third_party/wire` (wire `v0.5.1` @ `1c9db9b`) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK

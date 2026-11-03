@@ -1,3 +1,4 @@
+import { randomBytes } from '@noble/hashes/utils';
 import { FinishReasonV1 } from '../gen/task/v1/evidence_pb.js';
 import { TrueOpenError } from '../errors/errors';
 import { bytesEqual } from '../util/bytes';
@@ -38,6 +39,12 @@ export interface OpenAIChatSseContext {
   readonly created: number;
   /** Defaults to 0. */
   readonly choiceIndex?: number;
+  /**
+   * OpenAI `system_fingerprint`, written on every chunk. The chain has no backend configuration
+   * fingerprint, so the caller chooses it (for example one fixed value per model / profile
+   * version); omitted or null writes `null`.
+   */
+  readonly systemFingerprint?: string | null;
 }
 
 export type OutputDeliveryMode = 'provisional' | 'confirmed-only';
@@ -49,6 +56,13 @@ export interface OpenAIChatSseOptions {
   readonly maxBufferedBytes?: number;
   /** Aborts consumption of upstream events; once aborted, fails closed and stops producing SSE. */
   readonly signal?: AbortSignal;
+  /**
+   * OpenAI `stream_options.include_obfuscation`: when true, every chunk carries an `obfuscation`
+   * field of random padding, so chunk sizes do not reveal token sizes on the wire. Defaults to
+   * false (OpenAI defaults to true): the padding is a network side-channel mitigation the caller
+   * opts into, and leaving it off keeps the output deterministic.
+   */
+  readonly includeObfuscation?: boolean;
 }
 
 export type OpenAIFinishReason = 'stop' | 'length';
@@ -59,6 +73,35 @@ interface BufferedChunk {
 
 const encoder = new TextEncoder();
 export const DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+
+/** Bounds of the random `obfuscation` padding length, in characters. */
+export const OPENAI_SSE_OBFUSCATION_MIN_LENGTH = 8;
+export const OPENAI_SSE_OBFUSCATION_MAX_LENGTH = 48;
+
+const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+/**
+ * Random alphanumeric padding of a random length in [MIN, MAX]. It is never derived from the
+ * content. 62 * 4 = 248, so bytes >= 248 are rejected rather than biasing the draw.
+ */
+function obfuscationPadding(): string {
+  const span = OPENAI_SSE_OBFUSCATION_MAX_LENGTH - OPENAI_SSE_OBFUSCATION_MIN_LENGTH + 1;
+  let length = OPENAI_SSE_OBFUSCATION_MIN_LENGTH;
+  for (;;) {
+    const byte = randomBytes(1)[0]!;
+    if (byte < 256 - (256 % span)) {
+      length += byte % span;
+      break;
+    }
+  }
+  let out = '';
+  while (out.length < length) {
+    for (const byte of randomBytes(length * 2)) {
+      if (byte < 248 && out.length < length) out += ALNUM[byte % 62];
+    }
+  }
+  return out;
+}
 
 function sseError(code: string, message: string): TrueOpenError {
   return new TrueOpenError('DATA', code, message);
@@ -124,29 +167,48 @@ function validateContext(context: OpenAIChatSseContext): number {
   if (!Number.isSafeInteger(choiceIndex) || choiceIndex < 0) {
     throw sseError('DATA_OPENAI_SSE_CONTEXT_INVALID', 'choiceIndex must be a non-negative safe integer');
   }
+  const fingerprint = context.systemFingerprint;
+  if (fingerprint !== undefined && fingerprint !== null && (typeof fingerprint !== 'string' || fingerprint === '')) {
+    throw sseError('DATA_OPENAI_SSE_CONTEXT_INVALID', 'systemFingerprint must be a non-empty string or null');
+  }
   return choiceIndex;
 }
 
-function jsonData(context: OpenAIChatSseContext, choiceIndex: number, choice: Record<string, unknown>): Uint8Array {
+/** Field order follows OpenAI's chat.completion.chunk: index, delta, logprobs, finish_reason. */
+function jsonData(
+  context: OpenAIChatSseContext,
+  choiceIndex: number,
+  delta: Record<string, unknown>,
+  finishReason: OpenAIFinishReason | null,
+  obfuscate: boolean,
+): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify({
     id: context.id,
     object: 'chat.completion.chunk',
     created: context.created,
     model: context.model,
-    choices: [{ index: choiceIndex, ...choice }],
+    system_fingerprint: context.systemFingerprint ?? null,
+    choices: [{ index: choiceIndex, delta, logprobs: null, finish_reason: finishReason }],
+    ...(obfuscate ? { obfuscation: obfuscationPadding() } : {}),
   })}\n\n`);
 }
 
-function contentData(context: OpenAIChatSseContext, choiceIndex: number, text: string): Uint8Array {
-  return jsonData(context, choiceIndex, { delta: { content: text }, finish_reason: null });
+/** The first chunk of every stream, as OpenAI sends it: the role and an empty content. */
+function roleData(context: OpenAIChatSseContext, choiceIndex: number, obfuscate: boolean): Uint8Array {
+  return jsonData(context, choiceIndex, { role: 'assistant', content: '' }, null, obfuscate);
+}
+
+function contentData(context: OpenAIChatSseContext, choiceIndex: number, text: string, obfuscate: boolean): Uint8Array {
+  return jsonData(context, choiceIndex, { content: text }, null, obfuscate);
 }
 
 function terminalData(
   context: OpenAIChatSseContext,
   choiceIndex: number,
   reason: OpenAIFinishReason,
+  obfuscate: boolean,
 ): Uint8Array {
-  return jsonData(context, choiceIndex, { delta: {}, finish_reason: reason });
+  return jsonData(context, choiceIndex, {}, reason, obfuscate);
 }
 
 const doneData = (): Uint8Array => encoder.encode('data: [DONE]\n\n');
@@ -204,6 +266,11 @@ function validateConfirmation(
  * provisional ends immediately after a verified Fin; confirmed-only emits no bytes at all
  * before the Receipt is confirmed. MMR, signature and confirmation metadata are only used
  * for local verification and are never written into assistant content.
+ *
+ * The stream follows OpenAI's chunk shape: a first chunk with `{role: "assistant", content: ""}`,
+ * then the content chunks, then a terminal chunk with an empty delta and the finish_reason, then
+ * `[DONE]`. Every choice carries `logprobs: null` (the chain keeps no logprobs) and every chunk
+ * carries `system_fingerprint` (the caller's value, else null).
  */
 export async function* toOpenAIChatSSEIterable(
   events: AsyncIterable<VerifiedOutputEvent>,
@@ -215,6 +282,7 @@ export async function* toOpenAIChatSSEIterable(
   if (delivery !== 'provisional' && delivery !== 'confirmed-only') {
     throw sseError('DATA_OPENAI_SSE_DELIVERY_INVALID', `unsupported delivery mode ${String(delivery)}`);
   }
+  const obfuscate = options.includeObfuscation === true;
   const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES;
   if (!Number.isSafeInteger(maxBufferedBytes) || maxBufferedBytes < 0) {
     throw sseError('DATA_OPENAI_SSE_BUFFER_LIMIT_INVALID', 'maxBufferedBytes must be a non-negative safe integer');
@@ -256,7 +324,8 @@ export async function* toOpenAIChatSSEIterable(
         lastRoot = Uint8Array.from(event.mmrRoot);
         expectedSeq += 1n;
         if (delivery === 'provisional') {
-          yield contentData(context, choiceIndex, event.text);
+          if (event.seq === 0n) yield roleData(context, choiceIndex, obfuscate);
+          yield contentData(context, choiceIndex, event.text, obfuscate);
         } else {
           buffered.push({ text: event.text });
         }
@@ -273,7 +342,7 @@ export async function* toOpenAIChatSSEIterable(
           finishReason: event.finishReason,
         };
         if (delivery === 'provisional') {
-          yield terminalData(context, choiceIndex, openAIFinishReason(fin.finishReason));
+          yield terminalData(context, choiceIndex, openAIFinishReason(fin.finishReason), obfuscate);
           yield doneData();
           return;
         }
@@ -288,8 +357,9 @@ export async function* toOpenAIChatSSEIterable(
           throw sseError('DATA_OPENAI_SSE_CONFIRMATION_BEFORE_FIN', 'confirmed event arrived before verified Fin');
         }
         validateConfirmation(event, fin, context, expectedSeq, sizeBytes);
-        for (const chunk of buffered) yield contentData(context, choiceIndex, chunk.text);
-        yield terminalData(context, choiceIndex, openAIFinishReason(fin.finishReason));
+        yield roleData(context, choiceIndex, obfuscate);
+        for (const chunk of buffered) yield contentData(context, choiceIndex, chunk.text, obfuscate);
+        yield terminalData(context, choiceIndex, openAIFinishReason(fin.finishReason), obfuscate);
         yield doneData();
         return;
       }

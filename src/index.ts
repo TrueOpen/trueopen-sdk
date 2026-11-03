@@ -344,6 +344,8 @@ export type {
 } from './output/output-confirmation';
 export {
   DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES,
+  OPENAI_SSE_OBFUSCATION_MIN_LENGTH,
+  OPENAI_SSE_OBFUSCATION_MAX_LENGTH,
   openAIFinishReason,
   toOpenAIChatSSEIterable,
   toOpenAIChatSSE,

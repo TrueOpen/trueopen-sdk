@@ -48,6 +48,18 @@
 - **Added:** `MarkerStreamOptions.recoverUnclosed`, a parser's recovery rule; the shared
   state machine never recovers without one.
 
+### Changed: the OpenAI chat SSE follows OpenAI's chunk shape
+
+- **Changed:** `toOpenAIChatSSE` / `toOpenAIChatSSEIterable` send a first chunk with
+  `delta: {"role":"assistant","content":""}` before the content (both delivery modes), every
+  choice carries `logprobs: null`, and every chunk carries `system_fingerprint`. A consumer
+  that counted chunks or read the first chunk as content sees one more leading chunk.
+- **Added:** `OpenAIChatSseContext.systemFingerprint` (written on every chunk, `null` when
+  omitted) and `OpenAIChatSseOptions.includeObfuscation` (a random alphanumeric `obfuscation`
+  padding on every chunk, 8 to 48 characters; off by default, unlike OpenAI).
+- **Fixed:** the reference doc listed the context as `{ id, model }`; it also requires `taskId`,
+  `taskHash` and `created`.
+
 ### Added: Web3 transactions for EIP-712 wallets
 
 - **Added:** `connectTrueOpenWeb3ChainClient({ rpcUrl, restUrl, wallet, signerAddress,
@@ -235,9 +247,9 @@ is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
   - **Added:** `updateSessionKey` `clear` and `rotate` (and `renew`) read the session first and send
     nothing for a CLOSED session (`SDK_LOCAL_SESSION_CLOSED`) or another user's
     (`SDK_LOCAL_SESSION_NOT_OWNER`).
-- Pinned to wire PR #47 @ `602cb18` (untagged, two commits after `v0.5.0`). Its proto is identical to
-  `88d1238`; `602cb18` adds the server-side request vectors and the session key Amino vectors.
-  Re-pin to the release tag once it ships.
+- Pinned to wire `v0.5.1` (`1c9db9b`), the release of wire #47. Its proto and vectors are identical
+  to the earlier `602cb18` pin (only wire's CHANGELOG and release metadata differ), so `src/gen` is
+  unchanged.
 
 ### Lower time to first token
 
@@ -315,7 +327,7 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   stay raw 32 bytes. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. Bech32 and EVM
   addresses, signatures, the 33-byte service key, nonces and the beacon `randomness_hex` keep
   their spelling. No digest changes.
-- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `602cb18` pin (see the registered session keys entry above).
+- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `v0.5.1` pin (see the registered session keys entry above).
 
 ### Breaking: the SDK no longer strips a trailing EOS
 

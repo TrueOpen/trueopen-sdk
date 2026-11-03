@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed: the OpenAI chat SSE follows OpenAI's chunk shape
+
+- **Changed:** `toOpenAIChatSSE` / `toOpenAIChatSSEIterable` send a first chunk with
+  `delta: {"role":"assistant","content":""}` before the content (both delivery modes), every
+  choice carries `logprobs: null`, and every chunk carries `system_fingerprint`. A consumer
+  that counted chunks or read the first chunk as content sees one more leading chunk.
+- **Added:** `OpenAIChatSseContext.systemFingerprint` (written on every chunk, `null` when
+  omitted) and `OpenAIChatSseOptions.includeObfuscation` (a random alphanumeric `obfuscation`
+  padding on every chunk, 8 to 48 characters; off by default, unlike OpenAI).
+- **Fixed:** the reference doc listed the context as `{ id, model }`; it also requires `taskId`,
+  `taskHash` and `created`.
+
 ### Added: Web3 transactions for EIP-712 wallets
 
 - **Added:** `connectTrueOpenWeb3ChainClient({ rpcUrl, restUrl, wallet, signerAddress,

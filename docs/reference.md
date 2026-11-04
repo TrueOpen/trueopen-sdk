@@ -181,7 +181,7 @@ function payloadRefFor(payload: Uint8Array): string          // "nexus://sha256/
 | `inputBucket` / `outputBudgetBucket` | `number`; `outputBudgetBucket` must be non-zero. |
 | `generationParams` | `GenerationParamsV1` — use `defaultGenerationParams`. |
 | `amounts` | `priceBid` / `maxFee` / `assignmentPriorityFee` / `txFeeReserve`, each `{ atomicUnits: string }`. |
-| `earliestSubmitHeight` / `orderExpireHeight` | `bigint`; `earliest < expire`. |
+| `earliestSubmitHeight` / `orderExpireHeight` | `bigint`; `earliest < expire`. `openTask` re-anchors the order at the latest height and keeps the lifetime `orderExpireHeight - earliestSubmitHeight`, which must be at most the Session's frozen `max_order_lifetime_blocks` (V1: 1..7200; `SDK_LOCAL_ORDER_LIFETIME_INVALID`). |
 | `latencyClass` | `DEADLINE_LATENCY_CLASS` numeric value. |
 
 `TaskOrderV3` is the frozen order (28 fields). Its `task_hash` is
@@ -826,7 +826,7 @@ const order = {
     txFeeReserve: { atomicUnits: '0' },
   },
   earliestSubmitHeight: ctx.latestHeight,
-  orderExpireHeight: ctx.latestHeight + 50_000n,
+  orderExpireHeight: ctx.latestHeight + 1_000n, // lifetime <= max_order_lifetime_blocks
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 };
 

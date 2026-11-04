@@ -136,6 +136,34 @@ describe('RestChainReader', () => {
     expect(s.status).toBe('IDLE');
   });
 
+  it('querySession reads the Session-frozen dispatch clocks, the params version and closed_height (wire #49)', async () => {
+    const r = new RestChainReader({ baseUrl: 'http://rest', fetch: stubFetch(okJson({
+        session: {
+          session_id: SID1, owner_user_address: 'trueopen1user', next_expected_sequence: '3',
+          last_active_height: '50', open_pending_count: 0, status: 'SESSION_STATUS_CLOSED', closed_height: '77',
+        },
+        params: { dispatch: { max_order_lifetime_blocks: '120', record_deadline_blocks: '60' } },
+        params_version: '0',
+      })).fetch });
+    const s = await r.querySession(SID1);
+    expect(s.frozenParams).toEqual({ maxOrderLifetimeBlocks: 120n, recordDeadlineBlocks: 60n });
+    expect(s.paramsVersion).toBe(0n);
+    expect(s.closedHeight).toBe(77n);
+  });
+
+  it('querySession leaves the frozen params undefined when the node does not return them', async () => {
+    const r = new RestChainReader({ baseUrl: 'http://rest', fetch: stubFetch(okJson({
+        session: {
+          session_id: SID1, owner_user_address: 'trueopen1user', next_expected_sequence: '3',
+          last_active_height: '50', open_pending_count: 0, status: 'SESSION_STATUS_ACTIVE',
+        },
+      })).fetch });
+    const s = await r.querySession(SID1);
+    expect(s.frozenParams).toBeUndefined();
+    expect(s.paramsVersion).toBeUndefined();
+    expect(s.closedHeight).toBeUndefined();
+  });
+
   it('querySession refuses a session_id in the retired bare 64-hex spelling', async () => {
     const { fetch } = stubFetch(
       okJson({

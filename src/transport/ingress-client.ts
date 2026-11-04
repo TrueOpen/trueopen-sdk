@@ -92,6 +92,8 @@ export interface OpenTaskAck {
   readonly boundBuilder?: string;
   readonly takeoverActivationHeight?: bigint;
   readonly dispatchAvailableHeight?: bigint;
+  /** With NEXUS_INGRESS_BUILDER_KEY_ROTATING: the height the Builder's pending service key activates. */
+  readonly serviceKeyRotationEffectiveHeight?: bigint;
   readonly taskId: string;
   readonly accepted: boolean;
   readonly reason: string;
@@ -234,6 +236,7 @@ export class IngressClient {
       ...(res.boundBuilder !== undefined ? { boundBuilder: res.boundBuilder } : {}),
       ...(res.takeoverActivationHeight !== undefined ? { takeoverActivationHeight: res.takeoverActivationHeight } : {}),
       ...(res.dispatchAvailableHeight !== undefined ? { dispatchAvailableHeight: res.dispatchAvailableHeight } : {}),
+      ...(res.serviceKeyRotationEffectiveHeight !== undefined ? { serviceKeyRotationEffectiveHeight: res.serviceKeyRotationEffectiveHeight } : {}),
       reason: res.reason,
       sessionId: responseHash32('OpenTaskResponse.session_id', res.sessionId),
       ...(res.inputMetadata !== undefined ? { inputMetadata: res.inputMetadata } : {}),

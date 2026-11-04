@@ -6,7 +6,7 @@ plugins:
       - target=ts
       - import_extension=js
 inputs:
-  # wire PR #49, 495ea3e: transitive SDK protocol closure.
+  # wire PR #49, b30fba8: transitive SDK protocol closure.
   - directory: third_party/wire/proto
     paths:
       - third_party/wire/proto/task/v1/msg_session.proto

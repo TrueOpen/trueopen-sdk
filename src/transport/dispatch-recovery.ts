@@ -39,6 +39,18 @@ export async function recoverDispatch(port: DispatchRecoveryPort, policy: Dispat
     checkAbort();
   };
   let builders = port.builders;
+  // Builders that answered NEXUS_INGRESS_BUILDER_KEY_ROTATING, with the activation height of their
+  // pending service key (undefined when they gave none). They take no new work until then.
+  const rotating = new Map<string, bigint | undefined>();
+  /** The next Builder after `from` in snapshot order that is not rotating, if any. */
+  const nextCandidate = (from: string | undefined): string | undefined => {
+    const start = from === undefined ? -1 : builders.indexOf(from);
+    for (let i = 1; i <= builders.length; i++) {
+      const b = builders[(start + i) % builders.length]!;
+      if (b !== from && !rotating.has(b)) return b;
+    }
+    return undefined;
+  };
   let target: string | undefined;
   let refresh = false;
   let lastError: unknown;
@@ -145,9 +157,32 @@ export async function recoverDispatch(port: DispatchRecoveryPort, policy: Dispat
           target = undefined;
           await sleep(policy.pollIntervalMs);
         }
+      } else if (error.code === 'NEXUS_INGRESS_BUILDER_KEY_ROTATING') {
+        // wire #49: route new work as for NO_CAPACITY, skip pending Builders, and when every
+        // candidate is pending wait for the earliest activation height.
+        const activation = error.details?.serviceKeyRotationEffectiveHeight;
+        rotating.set(target!, typeof activation === 'bigint' ? activation : undefined);
+        const next = nextCandidate(target);
+        if (next !== undefined) {
+          target = next;
+          refresh = false;
+          continue;
+        }
+        const heights = [...rotating.values()];
+        if (heights.some((h) => h === undefined)) throw error;
+        const earliest = (heights as bigint[]).reduce((a, b) => (b < a ? b : a));
+        let ready = false;
+        for (let poll = 0; poll < policy.maxPolls; poll++) {
+          if (await port.readHeight() >= earliest) { ready = true; break; }
+          await sleep(policy.pollIntervalMs);
+        }
+        if (!ready) throw error;
+        for (const [b, h] of rotating) if (h !== undefined && h <= earliest) rotating.delete(b);
+        target = [...builders].find((b) => !rotating.has(b) && b === state.boundBuilder) ?? nextCandidate(undefined);
+        refresh = true; // time has passed: fresh order context and envelope
       } else if ((error.category === 'transport' && error.retriable) || error.code === 'NEXUS_INGRESS_NO_CAPACITY' || error.code === 'NEXUS_CONNECT_DEADLINE_EXCEEDED') {
-        const next = builders[(builders.indexOf(target!) + 1) % builders.length];
-        if (!next || next === target) throw error;
+        const next = nextCandidate(target);
+        if (!next) throw error;
         target = next;
         refresh = false;
       } else throw error;

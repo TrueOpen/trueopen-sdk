@@ -500,3 +500,4 @@ export type MsgWithdrawSessionResponse = Message<"task.v1.MsgWithdrawSessionResp
  */
 export const MsgWithdrawSessionResponseSchema: GenMessage<MsgWithdrawSessionResponse> = /*@__PURE__*/
   messageDesc(file_task_v1_msg_session, 13);
+

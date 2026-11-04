@@ -126,3 +126,47 @@ it('uses the bound Builder hint for redirection when the chain Session view has 
   await recoverDispatch(port({ submit: async builder => { calls.push(builder); if (calls.length === 1) throw new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'moved', { details: { boundBuilder: 'b' } }); return ack; } }), policy);
   expect(calls).toEqual(['a', 'b']);
 });
+
+const rotating = (h?: bigint) => new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_BUILDER_KEY_ROTATING', 'key rotating', {
+  category: 'capacity', retriable: true, ...(h === undefined ? {} : { details: { serviceKeyRotationEffectiveHeight: h } }),
+});
+
+it('routes new work past a Builder whose service key is rotating (wire #49)', async () => {
+  const calls: [string, boolean][] = [];
+  await recoverDispatch(port({ submit: async (b, refresh) => {
+    calls.push([b, refresh]);
+    if (b === 'a') throw rotating(20n);
+    return ack;
+  } }), policy);
+  expect(calls).toEqual([['a', false], ['b', false]]);
+});
+
+it('skips every rotating Builder, and waits for the earliest activation when all are pending', async () => {
+  let height = 10n;
+  const calls: [string, boolean][] = [];
+  await recoverDispatch(port({
+    readHeight: async () => height,
+    submit: async (b, refresh) => {
+      calls.push([b, refresh]);
+      if (calls.length <= 3) {
+        if (b === 'c') height = 15n; // the chain advances while the last Builder answers
+        throw rotating(b === 'b' ? 15n : 30n);
+      }
+      return ack;
+    },
+  }), { ...policy, maxAttempts: 5 });
+  // a, b, c all rotating; the earliest activation is b's at 15, reached: retry there, re-signed.
+  expect(calls).toEqual([['a', false], ['b', false], ['c', false], ['b', true]]);
+});
+
+it('gives up when every Builder is rotating and one gave no activation height', async () => {
+  const error = rotating();
+  await expect(recoverDispatch(port({ submit: async (b) => { if (b === 'a') throw rotating(20n); throw error; } }), policy)).rejects.toBe(error);
+});
+
+it('gives up when the earliest activation is not reached within the poll budget', async () => {
+  const calls: string[] = [];
+  await expect(recoverDispatch(port({ submit: async (b) => { calls.push(b); throw rotating(99n); } }), { ...policy, maxAttempts: 6 }))
+    .rejects.toMatchObject({ code: 'NEXUS_INGRESS_BUILDER_KEY_ROTATING' });
+  expect(calls).toEqual(['a', 'b', 'c']);
+});

@@ -1,4 +1,5 @@
 import { recoverDispatch, type DispatchRecoveryPolicy } from './transport/dispatch-recovery';
+import { MAX_ORDER_LIFETIME_BLOCKS_V1, validateOrderLifetime } from './order/order-lifetime';
 import type { UpdateSessionKeyInput } from './transport/session-funding';
 import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } from './transport/session-funding';
 import type { Transport } from '@connectrpc/connect';
@@ -597,11 +598,24 @@ export class TrueOpenClient {
     }
     const orderSequence = params.orderSequence ?? (await this.nextOrderSequence(params.sessionId));
     const ctx = params.context ?? (await resolveTaskOrderContext(hub, this.cfg.chainId));
+    // The order is anchored at the latest height (preflight refuses one older than the freshness
+    // margin or ahead of the head), and keeps the lifetime the caller asked for, so a re-signed
+    // retry -- including after NOT_READY past the old expiry -- gets a later expiry too. The
+    // lifetime must fit the Session's frozen max_order_lifetime_blocks (wire #49), else the chain
+    // refuses it after the order was dispatched.
+    const lifetime = params.order.orderExpireHeight - params.order.earliestSubmitHeight;
+    const orderExpireHeight = ctx.latestHeight + lifetime;
+    validateOrderLifetime(
+      ctx.latestHeight,
+      orderExpireHeight,
+      sessionState.frozenParams?.maxOrderLifetimeBlocks ?? MAX_ORDER_LIFETIME_BLOCKS_V1,
+    );
     const order = buildTaskOrder(
       ctx,
       {
         ...params.order,
         earliestSubmitHeight: ctx.latestHeight,
+        orderExpireHeight,
         userAddress: this.cfg.userAddress,
         sessionId: params.sessionId,
         orderSequence,

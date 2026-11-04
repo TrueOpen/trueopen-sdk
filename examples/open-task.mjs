@@ -60,7 +60,7 @@ try {
         txFeeReserve: { atomicUnits: '0' },
       },
       earliestSubmitHeight: height,
-      orderExpireHeight: height + 50_000n,
+      orderExpireHeight: height + 1_000n, // lifetime <= max_order_lifetime_blocks (V1: 7200)
       latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
     },
   });

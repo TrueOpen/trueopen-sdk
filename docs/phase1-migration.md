@@ -1,8 +1,29 @@
 # Phase 1 SDK migration
 
-The wire submodule is pinned to PR #49 commit `495ea3e`. This is a breaking,
+The wire submodule is pinned to PR #49 commit `b30fba8`. This is a breaking,
 fresh-genesis contract. Recreate Sessions and checkpoints; do not reuse Phase 0
 signed orders or output signatures.
+
+## Order lifetime (wire #49 @ `b30fba8`)
+
+An order's lifetime, `order_expire_height - earliest_submit_height`, must be at most the
+Session's frozen `max_order_lifetime_blocks` (1..7200 in V1); admission refuses a longer one.
+`getSession` returns the frozen value as `frozenParams.maxOrderLifetimeBlocks` (and
+`paramsVersion`); when a node does not return it the SDK checks the protocol ceiling, 7200, and
+never substitutes the current parameters. `openTask` anchors the order at the latest height and
+keeps the requested lifetime, so a re-signed retry -- including after
+`NEXUS_INGRESS_DISPATCH_NOT_READY` past the old expiry -- gets a later expiry. A lifetime outside
+the bound is `SDK_LOCAL_ORDER_LIFETIME_INVALID` before anything is signed;
+`validateOrderLifetime` and `MAX_ORDER_LIFETIME_BLOCKS_V1` are exported.
+
+## Builder service-key rotation
+
+A Builder with a pending service-key rotation refuses new orders, same-sequence retries,
+takeovers and new Sessions with `NEXUS_INGRESS_BUILDER_KEY_ROTATING` and
+`serviceKeyRotationEffectiveHeight` (its activation height). `openTaskWithRecovery` routes the
+order to the next Builder as for `NO_CAPACITY`, skips every rotating Builder, and when all are
+rotating waits for the earliest activation height and re-signs. Existing orders keep their
+Builder. `getSession` also returns `closedHeight` for a CLOSED Session.
 
 ## Session funding and keys
 

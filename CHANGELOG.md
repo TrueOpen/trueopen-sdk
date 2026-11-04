@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Breaking: Phase 1 (wire #49 @ b30fba8)
+
+The SDK targets the fresh-genesis Phase 1 chain: direct dispatch, prefunded Sessions and
+output bound to dispatch tickets. See `docs/phase1-migration.md`. This entry covers the update
+from wire `495ea3e` to `b30fba8`:
+
+- **Breaking:** an order's lifetime (`orderExpireHeight - earliestSubmitHeight`) must be at most
+  the Session's frozen `max_order_lifetime_blocks` (1..7200 in V1), else
+  `SDK_LOCAL_ORDER_LIFETIME_INVALID` before signing. `openTask` anchors the order at the latest
+  height and keeps the requested lifetime, so a re-signed retry gets a later expiry. Orders built
+  with the old `+ 50_000` default must use a shorter lifetime. `validateOrderLifetime` and
+  `MAX_ORDER_LIFETIME_BLOCKS_V1` are exported and checked against `order_lifetime_v1.json`.
+- **Added:** `StreamStateView.frozenParams` (`maxOrderLifetimeBlocks`, `recordDeadlineBlocks`),
+  `paramsVersion` and `closedHeight` from the Session query.
+- **Added:** `NEXUS_INGRESS_BUILDER_KEY_ROTATING` with `serviceKeyRotationEffectiveHeight`.
+  `openTaskWithRecovery` routes past a rotating Builder as for `NO_CAPACITY` and, when every
+  Builder is rotating, waits for the earliest activation height and re-signs.
+- Regenerated `src/gen`: `service_authorization_nonce` on the retained dispatch messages and
+  the result header, `OpenTaskResponse.service_key_rotation_effective_height`,
+  `DispatchParamsV1.max_order_lifetime_blocks`, `StreamState.closed_height`,
+  `OrderSequenceState.compensation_paid`.
+
 ### Breaking: Hash32 text is 0x-prefixed (ADR-0034, wire #44)
 
 Every client-facing string form of a Hash32 (a 32-byte digest or ID) is now `0x` followed by

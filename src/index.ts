@@ -170,6 +170,7 @@ export {
 } from './codec/address';
 export { SIGN_DOMAINS } from './codec/domains';
 export { deriveTaskId } from './order/order-signing';
+export { MAX_ORDER_LIFETIME_BLOCKS_V1, validateOrderLifetime } from './order/order-lifetime';
 
 // ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme) ----
 export {

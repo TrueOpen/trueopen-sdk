@@ -54,7 +54,7 @@ const order: TaskOrderIntent = {
     priceBid: amount('100000'), maxFee: amount('1000'),
     assignmentPriorityFee: amount('0'), txFeeReserve: amount('0'),
   },
-  earliestSubmitHeight: 1_000n, orderExpireHeight: 51_000n,
+  earliestSubmitHeight: 1_000n, orderExpireHeight: 2_000n,
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 };
 

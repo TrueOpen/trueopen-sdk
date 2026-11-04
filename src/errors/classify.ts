@@ -24,6 +24,9 @@ const BY_NEXUS_CODE: Readonly<Record<string, Rule>> = {
   NEXUS_INGRESS_INFLIGHT_LIMIT: rule('capacity', true, false),
   NEXUS_INGRESS_ORDER_LOCKED: rule('conflict', false, false),
   NEXUS_INGRESS_NO_CAPACITY: rule('capacity', true, true),
+  // A Builder with a pending service-key rotation takes no new work until its activation height
+  // (service_key_rotation_effective_height); route new work elsewhere, as for NO_CAPACITY.
+  NEXUS_INGRESS_BUILDER_KEY_ROTATING: rule('capacity', true, true),
   NEXUS_OUTPUT_REPLICA_NOT_READY: rule('data-unavailable', true, true),
   NEXUS_INGRESS_ORDER_STALE: rule('expired', true, false),
   NEXUS_INGRESS_DISPATCH_NOT_READY: rule('data-unavailable', true, false),
@@ -244,5 +247,6 @@ function dispatchDetails(error: ConnectError): Record<string, unknown> {
     ...(d.boundBuilder === undefined ? {} : { boundBuilder: d.boundBuilder }),
     ...(d.takeoverActivationHeight === undefined ? {} : { takeoverActivationHeight: d.takeoverActivationHeight }),
     ...(d.dispatchAvailableHeight === undefined ? {} : { dispatchAvailableHeight: d.dispatchAvailableHeight }),
+    ...(d.serviceKeyRotationEffectiveHeight === undefined ? {} : { serviceKeyRotationEffectiveHeight: d.serviceKeyRotationEffectiveHeight }),
   };
 }

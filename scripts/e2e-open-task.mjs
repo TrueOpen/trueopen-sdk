@@ -390,7 +390,7 @@ const order = buildTaskOrder(ctx, {
     txFeeReserve: { atomicUnits: '0' },
   },
   earliestSubmitHeight: ctx.latestHeight,
-  orderExpireHeight: ctx.latestHeight + 50_000n,
+  orderExpireHeight: ctx.latestHeight + 1_000n, // lifetime <= max_order_lifetime_blocks
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 }, PRICING);
 

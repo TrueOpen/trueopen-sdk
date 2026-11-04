@@ -18,6 +18,8 @@ import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { hash32Text } from '../../src/codec/hash32';
+import { fromBinary } from '@bufbuild/protobuf';
+import { SignedOrderV2Schema } from '../../src/gen/task/v1/msg_assignment_pb.js';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const wallet = privateKeyTypedDataSigner(PRIV);
@@ -78,7 +80,7 @@ const order: TaskOrderIntent = {
     assignmentPriorityFee: amount('0'), txFeeReserve: amount('0'),
   },
   earliestSubmitHeight: 1_000n,
-  orderExpireHeight: 51_000n,
+  orderExpireHeight: 2_000n,
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 };
 
@@ -469,4 +471,57 @@ it('resolves a recorded-task error detail through QueryTask without sending the 
   expect(await client.openTaskWithRecovery({ sessionId: SESSION, order, idempotencyKey: 'recorded' }, { maxAttempts: 3, maxPolls: 2, pollIntervalMs: 0 })).toMatchObject({ status: 4, taskId, boundBuilder: ADDRS[1] });
   expect(contacted).toEqual([`grpc://${ADDRS[0]}:8080`]);
   expect(queried).toBe(1);
+});
+
+describe('order lifetime (wire #49 max_order_lifetime_blocks)', () => {
+  const signedOrder = (frames: OpenTaskRequest[]) => {
+    const header = frames.find((f) => f.frame.case === 'header')?.frame.value as { orderEnvelope: Uint8Array };
+    return fromBinary(SignedOrderV2Schema, header.orderEnvelope).order!;
+  };
+  const sessionWith = (frozenParams?: { maxOrderLifetimeBlocks: bigint; recordDeadlineBlocks: bigint }): ChainClient => ({
+    ...fakeChain(),
+    async querySession(id) {
+      return { boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', ...(frozenParams ? { frozenParams } : {}) };
+    },
+  });
+
+  it('anchors the order at the latest height and keeps the requested lifetime', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const res = await makeClient(seen).openTask({
+      sessionId: SESSION, orderSequence: 3n, idempotencyKey: 'idem-1',
+      order: { ...order, earliestSubmitHeight: 1n, orderExpireHeight: 601n }, // a 600-block lifetime
+    });
+    const signed = signedOrder(seen.frames);
+    expect(signed.earliestSubmitHeight).toBe(res.context.latestHeight);
+    expect(signed.orderExpireHeight).toBe(res.context.latestHeight + 600n);
+  });
+
+  it('refuses, before anything is sent, a lifetime above the Session\'s frozen maximum', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = makeClient(seen, sessionWith({ maxOrderLifetimeBlocks: 120n, recordDeadlineBlocks: 60n }));
+    await expect(client.openTask({
+      sessionId: SESSION, orderSequence: 3n, idempotencyKey: 'idem-1',
+      order: { ...order, earliestSubmitHeight: 1_000n, orderExpireHeight: 1_121n },
+    })).rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_LIFETIME_INVALID' });
+    expect(seen.calls).toBe(0);
+    await client.openTask({
+      sessionId: SESSION, orderSequence: 3n, idempotencyKey: 'idem-2',
+      order: { ...order, earliestSubmitHeight: 1_000n, orderExpireHeight: 1_120n },
+    });
+    expect(seen.calls).toBe(1);
+  });
+
+  it('without frozen params uses the protocol ceiling of 7200 blocks, never the current params', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = makeClient(seen);
+    await expect(client.openTask({
+      sessionId: SESSION, orderSequence: 3n, idempotencyKey: 'idem-1',
+      order: { ...order, earliestSubmitHeight: 1_000n, orderExpireHeight: 8_201n },
+    })).rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_LIFETIME_INVALID' });
+    await expect(client.openTask({
+      sessionId: SESSION, orderSequence: 3n, idempotencyKey: 'idem-2',
+      order: { ...order, earliestSubmitHeight: 1_000n, orderExpireHeight: 1_000n },
+    })).rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_LIFETIME_INVALID' });
+    expect(seen.calls).toBe(0);
+  });
 });

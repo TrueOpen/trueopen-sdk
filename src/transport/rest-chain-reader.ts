@@ -107,7 +107,7 @@ export class RestChainReader implements ChainReader {
     const body = await this.getJson(`/TrueOpen/task/v1/session/${encodeURIComponent(sessionId)}`);
     const s = body['session'];
     if (typeof s !== 'object' || s === null) throw malformed('session object');
-    return toStreamState(s as Record<string, unknown>);
+    return { ...toStreamState(s as Record<string, unknown>), ...sessionFrozenParams(body) };
   }
 
   async querySessionNonce(address: string): Promise<{ nextSessionNonce: bigint }> {
@@ -371,6 +371,25 @@ function malformed(what: string): TrueOpenError {
   return new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_MALFORMED', `chain query returned malformed ${what}`);
 }
 
+/**
+ * QuerySessionResponse.params / params_version: the parameters frozen for this Session's
+ * lifecycle (wire #49). Only the dispatch clocks the SDK checks are read. Absent on a node that
+ * predates them, and then left undefined: current parameters must not stand in for a missing
+ * historical body.
+ */
+function sessionFrozenParams(body: Record<string, unknown>): Partial<StreamStateView> {
+  const params = optObj(body, 'params');
+  if (params === undefined) return {};
+  const dispatch = obj(params, 'dispatch');
+  return {
+    frozenParams: {
+      maxOrderLifetimeBlocks: u64Field(dispatch, 'max_order_lifetime_blocks'),
+      recordDeadlineBlocks: u64Field(dispatch, 'record_deadline_blocks'),
+    },
+    ...(raw(body, 'params_version') !== undefined ? { paramsVersion: u64Field(body, 'params_version') } : {}),
+  };
+}
+
 function sessionFundingFields(s: Record<string, unknown>): Partial<StreamStateView> {
   const result: Record<string, unknown> = {};
   for (const [wire, name] of [['session_key_spend_cap', 'sessionKeySpendCap'], ['session_key_spent', 'sessionKeySpent'], ['balance', 'balance'], ['frozen_total', 'frozenTotal'], ['pending_withdraw_amount', 'pendingWithdrawAmount']]) {
@@ -382,7 +401,7 @@ function sessionFundingFields(s: Record<string, unknown>): Partial<StreamStateVi
       result[name!] = amount;
     }
   }
-  for (const [wire, name] of [['session_key_expiry_height', 'sessionKeyExpiryHeight'], ['session_key_set_height', 'sessionKeySetHeight'], ['pending_withdraw_effective_height', 'pendingWithdrawEffectiveHeight'], ['bound_change_height', 'boundChangeHeight'], ['last_record_height', 'lastRecordHeight']]) {
+  for (const [wire, name] of [['session_key_expiry_height', 'sessionKeyExpiryHeight'], ['session_key_set_height', 'sessionKeySetHeight'], ['pending_withdraw_effective_height', 'pendingWithdrawEffectiveHeight'], ['bound_change_height', 'boundChangeHeight'], ['last_record_height', 'lastRecordHeight'], ['closed_height', 'closedHeight']]) {
     if (raw(s, wire!) !== undefined) result[name!] = u64Field(s, wire!);
   }
   if (raw(s, 'pending_withdraw_kind') !== undefined) result.pendingWithdrawKind = enumField(s, 'pending_withdraw_kind', 'SESSION_WITHDRAW_KIND_V1_');

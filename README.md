@@ -154,7 +154,7 @@ const res = await client.openTask({
       txFeeReserve: { atomicUnits: '0' },
     },
     earliestSubmitHeight: height,
-    orderExpireHeight: height + 50_000n,
+    orderExpireHeight: height + 1_000n, // lifetime <= the Session's max_order_lifetime_blocks (V1: 7200)
     latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
   },
 });
@@ -766,7 +766,7 @@ from `--payload-file` and the on-chain height.
   "assignmentPriorityFee": "0",
   "txFeeReserve": "0",
   "earliestSubmitHeight": "100",
-  "orderExpireHeight": "50100",
+  "orderExpireHeight": "1100",
   "latencyClass": "STANDARD"
 }
 ```
@@ -819,7 +819,7 @@ Exit codes: 0 on success, 1 on error (with `--json`, errors are printed to stder
 
 ### Phase 1 migration (wire PR #49)
 
-This checkout pins wire commit `495ea3e`. It targets a fresh Phase 1 chain; old sessions,
+This checkout pins wire PR #49 commit `b30fba8`. It targets a fresh Phase 1 chain; old sessions,
 output checkpoints and signatures are incompatible. See [the migration guide](docs/phase1-migration.md)
 for funding, recovery and output trust requirements. A Builder acknowledgement or signed Fin
 is provisional; only chain admission and settlement establish the corresponding final facts.

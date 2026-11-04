@@ -354,3 +354,4 @@ export type SDKRequestEnvelopeV2 = Message<"nexus.v1.SDKRequestEnvelopeV2"> & {
  */
 export const SDKRequestEnvelopeV2Schema: GenMessage<SDKRequestEnvelopeV2> = /*@__PURE__*/
   messageDesc(file_nexus_v1_sdk_auth, 1);
+

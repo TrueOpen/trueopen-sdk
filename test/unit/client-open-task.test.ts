@@ -473,6 +473,20 @@ it('resolves a recorded-task error detail through QueryTask without sending the 
   expect(queried).toBe(1);
 });
 
+describe('request envelope expiry', () => {
+  it('counts from the current head even when a stale context is passed in (recovery moving Builders)', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = makeClient(seen);
+    const first = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    const stale = { ...first.context, latestHeight: first.context.latestHeight - 400n };
+    seen.frames.length = 0;
+    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1', context: stale });
+    const header = seen.frames.find((f) => f.frame.case === 'header')?.frame.value as { requestEnvelope?: { expiryHeightOrTime: bigint } };
+    // hub latest is 1000; the default request TTL is 10 blocks.
+    expect(header.requestEnvelope?.expiryHeightOrTime).toBe(1_010n);
+  });
+});
+
 describe('order lifetime (wire #49 max_order_lifetime_blocks)', () => {
   const signedOrder = (frames: OpenTaskRequest[]) => {
     const header = frames.find((f) => f.frame.case === 'header')?.frame.value as { orderEnvelope: Uint8Array };

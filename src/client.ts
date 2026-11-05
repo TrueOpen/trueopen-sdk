@@ -632,7 +632,11 @@ export class TrueOpenClient {
     }
     const taskId = deriveTaskId(params.sessionId, orderSequence);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
-    const expiryHeight = params.expiryHeight ?? ctx.latestHeight + BigInt(this.cfg.requestTtlBlocks ?? 10);
+    // The envelope is signed now, so its expiry counts from the current head. A context the caller
+    // (or recovery, moving to another Builder) passes in may be many blocks old: counting from its
+    // latestHeight would send an envelope that is already expired (NEXUS_DATA_EXPIRED).
+    const head = params.context === undefined ? ctx.latestHeight : await hub.getLatestHeight();
+    const expiryHeight = params.expiryHeight ?? head + BigInt(this.cfg.requestTtlBlocks ?? 10);
 
     const built = await buildOpenTaskRequest({
       order,

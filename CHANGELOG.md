@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+### Breaking: Phase 1 (wire #49 @ b30fba8)
+
+The SDK targets the fresh-genesis Phase 1 chain: direct dispatch, prefunded Sessions and
+output bound to dispatch tickets. See `docs/phase1-migration.md`. This entry covers the update
+from wire `495ea3e` to `b30fba8`:
+
+- **Breaking:** an order's lifetime (`orderExpireHeight - earliestSubmitHeight`) must be at most
+  the Session's frozen `max_order_lifetime_blocks` (1..7200 in V1), else
+  `SDK_LOCAL_ORDER_LIFETIME_INVALID` before signing. `openTask` anchors the order at the latest
+  height and keeps the requested lifetime, so a re-signed retry gets a later expiry. Orders built
+  with the old `+ 50_000` default must use a shorter lifetime. `validateOrderLifetime` and
+  `MAX_ORDER_LIFETIME_BLOCKS_V1` are exported and checked against `order_lifetime_v1.json`.
+- **Added:** `StreamStateView.frozenParams` (`maxOrderLifetimeBlocks`, `recordDeadlineBlocks`),
+  `paramsVersion` and `closedHeight` from the Session query.
+- **Added:** `NEXUS_INGRESS_BUILDER_KEY_ROTATING` with `serviceKeyRotationEffectiveHeight`.
+  `openTaskWithRecovery` routes past a rotating Builder as for `NO_CAPACITY` and, when every
+  Builder is rotating, waits for the earliest activation height and re-signs.
+- Regenerated `src/gen`: `service_authorization_nonce` on the retained dispatch messages and
+  the result header, `OpenTaskResponse.service_key_rotation_effective_height`,
+  `DispatchParamsV1.max_order_lifetime_blocks`, `StreamState.closed_height`,
+  `OrderSequenceState.compensation_paid`.
+
+### Merged main into Phase 1
+
+Phase 1 now carries main's registered session keys, Web3 transactions, tool-call and reasoning
+parsers, OpenAI SSE, early subscribe and connection prewarm. Where main's behavior assumed the
+pre-Phase-1 chain, Phase 1 wins:
+
+- **Breaking:** `createSession` takes main's options object, extended for Phase 1:
+  `createSession({ label?, initialBuilder, initialDeposit?, sessionKey? })` (a string is still
+  the label). The chain requires `initialBuilder`; a session key is registered in the same
+  `MsgCreateSession`. The Phase 1 `createSession(label, input)` form is gone.
+  `depositSession`, `withdrawSession` and `closeSession` are unchanged.
+- **Breaking:** `updateSessionKey` is main's `(sessionId, { renew } | { rotate } | { clear: true })`.
+  The Phase 1 `updateSessionKey(input)` and `openTask({ delegatedOrderSigner })` are removed: a
+  loaded registered key (`createSession({ sessionKey })`, `useSessionKey`) signs the orders.
+  Restrictive key changes are delayed (wire #49): when the chain answers with a pending change,
+  `rotate` keeps the old key loaded and returns the new one with `effectiveHeight`; load it with
+  `useSessionKey` once the chain applied it. `MsgUpdateSessionKeyResponse` gains
+  `effectiveHeight` and `pendingChange`.
+- **Removed:** `TaskOrderContextCache`, `orderContextReuse`, `DEFAULT_ANCHOR_REUSE_FRACTION`,
+  `DEFAULT_ANCHOR_LAG` and `HubReader.getAnchorFreshnessWindowBlocks()`. wire #49 removed
+  `anchor_freshness_window_blocks` and the session anchor block hash; the order is anchored at the
+  latest height, and `resolveTaskOrderContextWithBuilderSet` still saves the second BuilderSet read.
+- **Changed:** `openTask` sends to the Session's bound Builder only (or the recovery destination);
+  prewarm and `resolveTaskBuilders` return that Builder.
+- **Changed:** the task event hints follow Phase 1 nexus: `DISPATCH_RECORDED` triggers the chain
+  read in `waitForOutputTrustAnchors` and `waitForAdmission`; `RECORD_REJECTED`, `NO_CAPACITY`,
+  `ASSIGN_TIMEOUT` and `ORDER_EXPIRED` are a Builder's rejection report.
+- **Changed:** `streamOutput` early subscribe also waits for the dispatch ticket.
+  `admissionWait` is kept as `waitForAnchors` with the stream's `sessionId`; the Phase 1
+  `waitForOutputTrustAnchors(sessionId, taskId, opts)` overload is replaced by main's
+  `waitForOutputTrustAnchors(taskId, { sessionId, ... })`, and `OutputAdmissionWaitOptions` is
+  removed.
+- **Fixed:** every Fin check binds the dispatch ticket: the checkpoint's kept Fin
+  (`acceptFin`, confirmation) and the stored Fin of `fetchTaskOutput`, which must also be for the
+  chain's accepted attempt (`DATA_OUTPUT_ATTEMPT_MISMATCH`).
+- **Added:** the `reset` of a voided dispatch attempt reaches the derived views:
+  `deriveAssistantStream` / `streamAssistantMessage` and `assistantTurn` yield `{ kind: 'reset' }`
+  and parse the replacement attempt from scratch.
+- **Added:** Web3 (Amino JSON) transactions carry the Phase 1 `MsgCreateSession` fields and
+  `MsgDepositSession` / `MsgWithdrawSession` (`aminoMsgDepositSession`,
+  `aminoMsgWithdrawSession`), checked against wire `session_funding_amino_v1.json`.
+
 ### Added: OpenAI SSE for an assistant turn
 
 - **Added:** `toOpenAIAssistantSSEIterable` / `toOpenAIAssistantSSE` turn one

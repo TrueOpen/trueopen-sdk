@@ -1,3 +1,4 @@
+import { atomicAmount, validateInitialBuilder } from './session-funding';
 import { ProtoWriter, ProtoReader } from '../codec/protobuf';
 import { hash32Text, strictHash32 } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
@@ -88,15 +89,30 @@ function encodeGrant(g: SessionKeyGrant): Uint8Array {
     .finish();
 }
 
-// ---- MsgCreateSession (signer_address=1, session_key=2) ----
+// ---- MsgCreateSession (signer_address=1, session_key=2, initial_deposit=3, initial_builder=4) ----
+/**
+ * Phase 1 (wire #49): a Session is prefunded and bound to its first dispatching Builder when it is
+ * created. initial_deposit is a shared.v1.Amount (always written, like every Amount here);
+ * initial_builder is the Builder's canonical account address.
+ */
 export interface MsgCreateSession {
   readonly signer: string;
   /** Optional session key registered together with the session. */
   readonly sessionKey?: SessionKeyGrant;
+  /** Required: the Builder the Session is bound to from creation (no unbound state). */
+  readonly initialBuilder?: string;
+  /** Canonical decimal atomic units of the business denom; at least the frozen session_min_prefund. */
+  readonly initialDeposit?: string;
 }
 export function encodeMsgCreateSession(m: MsgCreateSession): Uint8Array {
+  if (m.initialBuilder === undefined || m.initialBuilder === '') {
+    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_INITIAL_BUILDER_REQUIRED', 'Phase 1 MsgCreateSession requires initial_builder');
+  }
+  validateInitialBuilder(m.initialBuilder);
   const w = new ProtoWriter().string(1, m.signer);
   if (m.sessionKey !== undefined) w.message(2, encodeGrant(m.sessionKey));
+  w.message(3, encodeAmount(atomicAmount(m.initialDeposit ?? '0').atomicUnits));
+  w.string(4, m.initialBuilder);
   return w.finish();
 }
 /**
@@ -161,6 +177,7 @@ export interface MsgCancelOrderResponse {
   readonly taskId: string;
   readonly cancelledSequence: bigint;
   readonly nextExpectedSequence: bigint;
+  readonly cancelEffectiveHeight?: bigint;
   readonly status: string;
 }
 export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderResponse {
@@ -168,18 +185,20 @@ export function decodeMsgCancelOrderResponse(bytes: Uint8Array): MsgCancelOrderR
   let taskId = '';
   let cancelledSequence = 0n;
   let nextExpectedSequence = 0n;
+  let cancelEffectiveHeight: bigint | undefined;
   let status = mutationStatus(0n);
   while (!r.eof) {
     const { field, wire } = r.tag();
     switch (field) {
-      case 1: taskId = hash32Text(r.bytes()); break;
+      case 1: { const b = r.bytes(); taskId = b.length === 0 ? '' : hash32Text(b); break; }
       case 2: cancelledSequence = r.uint64(); break;
       case 3: nextExpectedSequence = r.uint64(); break;
       case 4: status = mutationStatus(r.uint64()); break;
+      case 5: cancelEffectiveHeight = r.uint64(); break;
       default: r.skip(wire);
     }
   }
-  return { taskId, cancelledSequence, nextExpectedSequence, status };
+  return { taskId, cancelledSequence, nextExpectedSequence, status, ...(cancelEffectiveHeight !== undefined ? { cancelEffectiveHeight } : {}) };
 }
 
 /**
@@ -236,8 +255,14 @@ function invalidAction(why: string): TrueOpenError {
  * MsgUpdateSessionKeyResponse (node msg_session.proto):
  *   optional bytes session_key_or_empty = 1; uint64 expiry_height = 2; Amount spend_cap = 3;
  *   Amount spent = 4; uint64 set_height = 5; MutationStatusV1 status = 6;
- * The state after the update. An absent key means the session has no key; a present key
- * that is empty or not 20 bytes is a malformed response.
+ *   optional uint64 effective_height = 7; optional PendingSessionKeyChangeV1 pending_change = 8;
+ * The committed state. An absent key means the session has no key; a present key that is empty
+ * or not 20 bytes is a malformed response.
+ *
+ * Phase 1 (wire #49): a restrictive change -- a different key, CLEAR, or a lower cap or earlier
+ * expiry -- only registers: the fields above keep the current authorization, `pendingChange`
+ * describes what takes effect, and `effectiveHeight` says when. Only a nonrestrictive same-key
+ * renewal applies at once. Switch the signing key at `effectiveHeight`, not before.
  */
 export interface MsgUpdateSessionKeyResponse {
   readonly sessionKey?: Uint8Array;
@@ -246,6 +271,54 @@ export interface MsgUpdateSessionKeyResponse {
   readonly spent: string;
   readonly setHeight: bigint;
   readonly status: string;
+  /** The height the change takes (or took) effect. */
+  readonly effectiveHeight?: bigint;
+  /** A registered change that is not yet effective. */
+  readonly pendingChange?: PendingSessionKeyChange;
+}
+
+/** task.v1.PendingSessionKeyChangeV1: kind = 1 (SET = 1, CLEAR = 2); optional grant = 2; effective_height = 3. */
+export interface PendingSessionKeyChange {
+  readonly kind: 'SET' | 'CLEAR';
+  readonly grant?: SessionKeyGrant;
+  readonly effectiveHeight: bigint;
+}
+
+function decodeGrant(bytes: Uint8Array): SessionKeyGrant {
+  const r = new ProtoReader(bytes);
+  let sessionKey: Uint8Array = new Uint8Array(0);
+  let expiryHeight = 0n;
+  let spendCap = '0';
+  while (!r.eof) {
+    const { field, wire } = r.tag();
+    switch (field) {
+      case 1: sessionKey = r.bytes(); break;
+      case 2: expiryHeight = r.uint64(); break;
+      case 3: spendCap = decodeAmount(r.bytes()); break;
+      default: r.skip(wire);
+    }
+  }
+  return { sessionKey, expiryHeight, spendCap };
+}
+
+function decodePendingChange(bytes: Uint8Array): PendingSessionKeyChange {
+  const r = new ProtoReader(bytes);
+  let kind = 0n;
+  let grant: SessionKeyGrant | undefined;
+  let effectiveHeight = 0n;
+  while (!r.eof) {
+    const { field, wire } = r.tag();
+    switch (field) {
+      case 1: kind = r.uint64(); break;
+      case 2: grant = decodeGrant(r.bytes()); break;
+      case 3: effectiveHeight = r.uint64(); break;
+      default: r.skip(wire);
+    }
+  }
+  if (kind !== 1n && kind !== 2n) {
+    throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_MALFORMED', `chain response returned an unknown pending session key change kind ${kind}`);
+  }
+  return { kind: kind === 1n ? 'SET' : 'CLEAR', ...(grant !== undefined ? { grant } : {}), effectiveHeight };
 }
 
 function decodeAmount(bytes: Uint8Array): string {
@@ -268,6 +341,8 @@ export function decodeMsgUpdateSessionKeyResponse(bytes: Uint8Array): MsgUpdateS
   let spent = '0';
   let setHeight = 0n;
   let status = mutationStatus(0n);
+  let effectiveHeight: bigint | undefined;
+  let pendingChange: PendingSessionKeyChange | undefined;
   while (!r.eof) {
     const { field, wire } = r.tag();
     switch (field) {
@@ -290,8 +365,15 @@ export function decodeMsgUpdateSessionKeyResponse(bytes: Uint8Array): MsgUpdateS
       case 4: spent = decodeAmount(r.bytes()); break;
       case 5: setHeight = r.uint64(); break;
       case 6: status = mutationStatus(r.uint64()); break;
+      case 7: effectiveHeight = r.uint64(); break;
+      case 8: pendingChange = decodePendingChange(r.bytes()); break;
       default: r.skip(wire);
     }
   }
-  return { ...(sessionKey !== undefined ? { sessionKey } : {}), expiryHeight, spendCap, spent, setHeight, status };
+  return {
+    ...(sessionKey !== undefined ? { sessionKey } : {}),
+    expiryHeight, spendCap, spent, setHeight, status,
+    ...(effectiveHeight !== undefined ? { effectiveHeight } : {}),
+    ...(pendingChange !== undefined ? { pendingChange } : {}),
+  };
 }

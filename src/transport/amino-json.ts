@@ -3,6 +3,8 @@ import { strictHash32 } from '../codec/hash32';
 import { TrueOpenError } from '../errors/errors';
 import { TYPE_URL, sessionKeyAction, validateGrant } from './task-msgs';
 import type { MsgCancelOrder, MsgCreateSession, MsgUpdateSessionKey, SessionKeyGrant } from './task-msgs';
+import { SESSION_FUNDING_TYPE_URL, atomicAmount } from './session-funding';
+import type { DepositSessionInput, WithdrawSessionInput } from './session-funding';
 
 /**
  * Legacy Amino JSON for the task.v1 user Msgs and the canonical StdSignDoc the node signs
@@ -14,8 +16,8 @@ import type { MsgCancelOrder, MsgCreateSession, MsgUpdateSessionKey, SessionKeyG
  * sequence}` with every integer as a decimal string, and `sdk.SortJSON` re-encodes the result
  * with Go's encoding/json: keys sorted, no whitespace, and `<`, `>`, `&`, U+2028 and U+2029
  * escaped as \u003c, \u003e, \u0026, \u2028 and \u2029. The encoder below reproduces that byte for byte (wire
- * testdata/v1/task/session_key_amino_v1.json and the msg_create_session_transaction block of
- * testdata/v1/shared/account_signing_v1.json freeze it).
+ * testdata/v1/task/session_key_amino_v1.json, session_funding_amino_v1.json and the
+ * msg_create_session_transaction block of testdata/v1/shared/account_signing_v1.json freeze it).
  *
  * Amino JSON follows the Go struct tags: `omitempty` drops an empty string, a zero uint64 and
  * empty bytes; uint64 is a decimal string and bytes are standard (padded) Base64.
@@ -35,6 +37,8 @@ export const AMINO_NAME = {
   createSession: 'trueopen/x/task/MsgCreateSession',
   updateSessionKey: 'trueopen/x/task/MsgUpdateSessionKey',
   cancelOrder: 'trueopen/x/task/MsgCancelOrder',
+  depositSession: 'trueopen/x/task/MsgDepositSession',
+  withdrawSession: 'trueopen/x/task/MsgWithdrawSession',
 } as const;
 
 function local(code: string, message: string): TrueOpenError {
@@ -59,12 +63,47 @@ function aminoGrant(g: SessionKeyGrant): { [key: string]: AminoJsonValue } {
   };
 }
 
-/** `trueopen/x/task/MsgCreateSession`: `{signer_address, session_key?}`; no grant, no key. */
+/**
+ * `trueopen/x/task/MsgCreateSession`: `{signer_address, session_key?, initial_deposit,
+ * initial_builder}`; no grant, no key. initial_deposit is a non-nullable Amount, so it is always
+ * present ("0" when not prefunded).
+ */
 export function aminoMsgCreateSession(m: MsgCreateSession): AminoMsg {
   const value: { [key: string]: AminoJsonValue } = {};
   if (m.signer !== '') value.signer_address = m.signer;
   if (m.sessionKey !== undefined) value.session_key = aminoGrant(m.sessionKey);
+  value.initial_deposit = { atomic_units: atomicAmount(m.initialDeposit ?? '0').atomicUnits };
+  if (m.initialBuilder !== undefined && m.initialBuilder !== '') value.initial_builder = m.initialBuilder;
   return { type: AMINO_NAME.createSession, value };
+}
+
+/** `trueopen/x/task/MsgDepositSession`: `{signer_address, session_id, amount}`. */
+export function aminoMsgDepositSession(m: DepositSessionInput & { readonly signer: string }): AminoMsg {
+  return {
+    type: AMINO_NAME.depositSession,
+    value: {
+      signer_address: m.signer,
+      session_id: base64(strictHash32('session_id', m.sessionId)),
+      amount: { atomic_units: atomicAmount(m.amount).atomicUnits },
+    },
+  };
+}
+
+/**
+ * `trueopen/x/task/MsgWithdrawSession`: Amino flattens the oneof, so the action is either
+ * `amount: {amount: {atomic_units}}` (WithdrawAmountV1) or `close: true`.
+ */
+export function aminoMsgWithdrawSession(m: WithdrawSessionInput & { readonly signer: string }): AminoMsg {
+  if ((m.close === true) === (m.amount !== undefined)) {
+    throw local('SDK_LOCAL_TX_MSG_INVALID', 'MsgWithdrawSession needs exactly one of amount or close');
+  }
+  const value: { [key: string]: AminoJsonValue } = {
+    signer_address: m.signer,
+    session_id: base64(strictHash32('session_id', m.sessionId)),
+  };
+  if (m.close === true) value.close = true;
+  else value.amount = { amount: { atomic_units: atomicAmount(m.amount!).atomicUnits } };
+  return { type: AMINO_NAME.withdrawSession, value };
 }
 
 /**
@@ -109,6 +148,10 @@ export function aminoMsgFromEncodeObject(msg: { readonly typeUrl: string; readon
       return aminoMsgUpdateSessionKey(msg.value as MsgUpdateSessionKey);
     case TYPE_URL.cancelOrder:
       return aminoMsgCancelOrder(msg.value as MsgCancelOrder);
+    case SESSION_FUNDING_TYPE_URL.depositSession:
+      return aminoMsgDepositSession(msg.value as DepositSessionInput & { signer: string });
+    case SESSION_FUNDING_TYPE_URL.withdrawSession:
+      return aminoMsgWithdrawSession(msg.value as WithdrawSessionInput & { signer: string });
     default:
       throw local('SDK_LOCAL_TX_MSG_UNSUPPORTED', `no Amino JSON form for ${msg.typeUrl} on the Web3 path`);
   }

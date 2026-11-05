@@ -5,6 +5,7 @@ import { hash32Text, isHash32Text } from '../codec/hash32';
 import {
   OUTPUT_MMR_DOMAIN,
   outputHash,
+  requireDispatchTicket,
   OutputStreamVerifier,
   type OutputStreamVerifierCheckpoint,
 } from './output-commitment';
@@ -39,6 +40,7 @@ export interface OutputStreamCheckpointJsonV1 {
   readonly schema_version: 1 | 2;
   readonly chain_id: string;
   readonly task_hash: string;
+  readonly dispatch_ticket_hash: string;
   readonly worker_service_pubkey: string;
   readonly mmr: CheckpointJsonMmrV1;
   readonly chunks_base64: readonly string[];
@@ -110,6 +112,7 @@ function validateCheckpoint(checkpoint: OutputStreamVerifierCheckpoint): void {
     verifier = new OutputStreamVerifier({
       chainId: checkpoint.chainId,
       taskHash: checkpoint.taskHash,
+      dispatchTicketHash: requireDispatchTicket(checkpoint.dispatchTicketHash),
       workerServicePubKey: checkpoint.workerServicePubKey,
     }, checkpoint);
   } catch (cause) {
@@ -132,6 +135,7 @@ export function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifier
     schema_version: 2,
     chain_id: checkpoint.chainId,
     task_hash: hash32Text(checkpoint.taskHash),
+    dispatch_ticket_hash: hash32Text(checkpoint.dispatchTicketHash!),
     worker_service_pubkey: toHex(checkpoint.workerServicePubKey),
     mmr: {
       schema_version: 1,
@@ -164,7 +168,8 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
   const top = record(parsed, 'checkpoint');
   const schemaVersion = numberField(top, 'schema_version', 'checkpoint');
   if (schemaVersion !== 1 && schemaVersion !== 2) throw checkpointError('unsupported checkpoint schema');
-  const baseKeys = ['format', 'schema_version', 'chain_id', 'task_hash', 'worker_service_pubkey', 'mmr', 'chunks_base64'];
+  // Phase 1: every checkpoint binds its dispatch attempt; schema 2 may also keep the signed Fin.
+  const baseKeys = ['format', 'schema_version', 'chain_id', 'task_hash', 'dispatch_ticket_hash', 'worker_service_pubkey', 'mmr', 'chunks_base64'];
   exactKeys(top, schemaVersion === 2 && 'fin' in top ? [...baseKeys, 'fin'] : baseKeys, 'checkpoint');
   if (stringField(top, 'format', 'checkpoint') !== OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1) {
     throw checkpointError('unsupported checkpoint format');
@@ -173,6 +178,8 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
   if (chainId === '') throw checkpointError('checkpoint.chain_id must not be empty');
   const taskHashHex = stringField(top, 'task_hash', 'checkpoint');
   if (!isHash32Text(taskHashHex)) throw checkpointError('checkpoint.task_hash must be 0x followed by 64 lowercase hex characters');
+  const ticketHex = stringField(top, 'dispatch_ticket_hash', 'checkpoint');
+  if (!isHash32Text(ticketHex)) throw checkpointError('invalid dispatch_ticket_hash');
   const pubkeyHex = stringField(top, 'worker_service_pubkey', 'checkpoint');
   if (!PUBKEY33_HEX.test(pubkeyHex)) {
     throw checkpointError('checkpoint.worker_service_pubkey must be lowercase 66-hex');
@@ -235,6 +242,7 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
     schemaVersion: schemaVersion as 1 | 2,
     chainId,
     taskHash: fromHex(taskHashHex.slice(2)),
+    dispatchTicketHash: fromHex(ticketHex.slice(2)),
     workerServicePubKey: fromHex(pubkeyHex),
     mmr: { schemaVersion: 1, domain, leafCount, peaks },
     chunks,

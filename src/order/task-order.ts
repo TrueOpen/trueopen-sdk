@@ -93,14 +93,14 @@ export interface DeadlinePolicyV1 {
 }
 
 /**
- * task.v1.TaskOrderV3. Field names correspond to proto field numbers 1..28.
+ * task.v1.TaskOrderV3. There are 27 active fields; retired protobuf tags remain reserved.
  *
  * Changes relative to V2: model_id is the raw 32-byte Hash32 model ID instead of a text
  * slug, and three reserved encryption fields are appended (payload_mode,
  * input_key_commitment, user_recipient_pubkey). In plaintext Phase 0 they must be
  * PLAINTEXT, zero32 and empty respectively.
  *
- * task_id / task_hash / generation_params_digest / order_value / task_builder_seed /
+ * task_id / task_hash / generation_params_digest / order_value /
  * reward bucket / resource tier / Task Builders are all derived by the Keeper and
  * **must not** be submitted here.
  */
@@ -132,7 +132,7 @@ export interface TaskOrderV3 {
   readonly timeoutBucketVersion: bigint;
   readonly sessionAnchorHeight: bigint;
   /** Raw 32-byte Hash32. */
-  readonly sessionAnchorBlockHash: Uint8Array;
+  readonly sessionAnchorBlockHash?: Uint8Array;
   readonly builderSetId: string;
   /** Raw 32-byte Hash32. */
   readonly builderSetHash: Uint8Array;
@@ -170,7 +170,7 @@ export function taskOrderHashHex(order: TaskOrderV3): string {
   return hash32Text(taskOrderHash(order));
 }
 
-/** Flatten TaskOrderV3 in ascending order of proto field numbers 1..28 (the same order as the registry's fields array). */
+/** Flatten the active TaskOrderV3 fields in ascending protobuf tag order (the same order as the registry's fields array). */
 function canonicalTaskOrderFields(order: TaskOrderV3): Uint8Array[] {
   validateTaskOrderScalarScope(order);
 
@@ -206,7 +206,6 @@ function canonicalTaskOrderFields(order: TaskOrderV3): Uint8Array[] {
     deadline,
     uint64BE(order.timeoutBucketVersion),
     uint64BE(order.sessionAnchorHeight),
-    order.sessionAnchorBlockHash,
     utf8Field('builder_set_id', order.builderSetId),
     order.builderSetHash,
     enumBE(order.payloadMode),
@@ -293,7 +292,6 @@ function validateTaskOrderScalarScope(order: TaskOrderV3): void {
     order.deadlinePolicy.latencyClass !== DEADLINE_LATENCY_CLASS.UNSPECIFIED &&
     order.timeoutBucketVersion !== 0n &&
     order.sessionAnchorHeight !== 0n &&
-    order.sessionAnchorBlockHash.length === HASH32 &&
     order.builderSetId !== '' &&
     order.builderSetHash.length === HASH32 &&
     order.payloadMode === PAYLOAD_MODE.PLAINTEXT &&

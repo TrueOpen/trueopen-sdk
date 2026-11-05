@@ -118,6 +118,12 @@ export async function cmdOutputStream(
         text += e.text;
         continue;
       }
+      if (e.kind === 'reset') {
+        frames.length = 0;
+        text = '';
+        finishReason = undefined;
+        continue;
+      }
       finishReason = e.finishReason;
     }
     return {

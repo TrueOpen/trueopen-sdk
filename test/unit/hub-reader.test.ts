@@ -150,11 +150,4 @@ describe('HubReader (REST field mapping)', () => {
     const zero = readerFor({ '/task/v1/params': { params: { session: { max_session_key_blocks: '0' } } } });
     expect(await zero.getMaxSessionKeyBlocks()).toBe(0n);
   });
-
-  it('getAnchorFreshnessWindowBlocks reads task params.session.anchor_freshness_window_blocks', async () => {
-    const r = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '10000' } } } });
-    expect(await r.getAnchorFreshnessWindowBlocks()).toBe(10_000n);
-    const zero = readerFor({ '/task/v1/params': { params: { session: { anchor_freshness_window_blocks: '0' } } } });
-    await expect(zero.getAnchorFreshnessWindowBlocks()).rejects.toMatchObject({ code: 'CHAIN_QUERY_MALFORMED' });
-  });
 });

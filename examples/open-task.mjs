@@ -1,5 +1,5 @@
 // OpenTask example: read the on-chain context, assemble the frozen TaskOrderV3, sign it in three
-// layers, pick the Task Builders by task_builder_seed and submit to each of them.
+// layers, and submit to the Session-bound Builder.
 //
 // What the SDK reads from chain rather than taking on trust: the fee denom (params.phase0), the
 // anchor, Builder set and timeout bucket, the generation limits, the profile pricing (an order the
@@ -29,7 +29,7 @@ const payload = payloadFile
 
 try {
   console.log('user address:', id.address, '| fee denom (chain):', businessDenom);
-  const sessionId = needsSession ? (await client.createSession('example-open-task')).sessionId : env('TRUEOPEN_SESSION_ID');
+  const sessionId = needsSession ? (await client.createSession({ label: 'example-open-task', initialBuilder: env('TRUEOPEN_INITIAL_BUILDER'), initialDeposit: env('TRUEOPEN_INITIAL_DEPOSIT') })).sessionId : env('TRUEOPEN_SESSION_ID');
   // The chain is the only source of the next sequence; a new session starts at 0.
   const orderSequence = process.env.TRUEOPEN_ORDER_SEQUENCE !== undefined
     ? BigInt(process.env.TRUEOPEN_ORDER_SEQUENCE)
@@ -59,7 +59,7 @@ try {
         txFeeReserve: { atomicUnits: '0' },
       },
       earliestSubmitHeight: height,
-      orderExpireHeight: height + 50_000n,
+      orderExpireHeight: height + 1_000n, // lifetime <= max_order_lifetime_blocks (V1: 7200)
       latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
     },
   });

@@ -38,7 +38,7 @@ export type {
   ResolveBuilderEndpointsResult,
 } from './hub/builder-discovery';
 export type { BuilderSetSnapshot } from './types/hub';
-export { selectTaskBuilders, taskBuilderSeed, taskBuilderRank, BUILDERS_PER_TASK, DOMAIN_TASK_BUILDERS_V1, DOMAIN_TASK_BUILDER_RANK_V1 } from './hub/builder-selection';
+export { selectTaskBuilders } from './hub/builder-selection';
 export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } from './hub/builder-selection';
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
@@ -180,8 +180,6 @@ export {
   defaultGenerationParams,
   payloadRefFor,
 } from './order/task-order-input';
-export { TaskOrderContextCache, DEFAULT_ANCHOR_REUSE_FRACTION } from './order/task-order-context-cache';
-export type { TaskOrderContextCacheReader, TaskOrderContextCacheOptions } from './order/task-order-context-cache';
 export type {
   ResolvedTaskOrderContext,
   TaskOrderChainContext,
@@ -227,6 +225,7 @@ export {
 } from './codec/address';
 export { SIGN_DOMAINS } from './codec/domains';
 export { deriveTaskId } from './order/order-signing';
+export { MAX_ORDER_LIFETIME_BLOCKS_V1, validateOrderLifetime } from './order/order-lifetime';
 
 // ---- EVM-style identity and EIP-712 (on-chain accounts use this scheme) ----
 export {
@@ -521,3 +520,11 @@ export { isPublicAddress } from './manifest/address-policy';
 export { canonicalJsonBytes, parseStrictJson } from './codec/canonical-json';
 export type { CanonicalJsonValue } from './codec/canonical-json';
 export { framedHashV1, framedV1Preimage } from './codec/domain-hash';
+
+export type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, DepositSessionResult, WithdrawSessionResult } from './transport/session-funding';
+
+export { resumeOutputBodyDigest, getDispatchRosterBodyDigest } from './transport/sdk-request-body';
+
+
+export { recoverDispatch } from './transport/dispatch-recovery';
+export type { DispatchRecoveryPolicy, DispatchRecoveryPort } from './transport/dispatch-recovery';

@@ -64,7 +64,11 @@ export type ToolCallStreamEvent =
  * A tool-call stream event, or a piece of the leading reasoning span when a reasoning parser
  * runs (Manifest S7.3). Reasoning is as provisional as everything else before the receipt.
  */
-export type AssistantStreamEvent = ToolCallStreamEvent | { readonly kind: 'reasoning'; readonly text: string };
+export type AssistantStreamEvent =
+  | ToolCallStreamEvent
+  | { readonly kind: 'reasoning'; readonly text: string }
+  /** The dispatch attempt was voided (Phase 1): discard everything shown so far, provisional calls included. */
+  | { readonly kind: 'reset' };
 
 /**
  * How the end of the output is to be read. Given only by a caller that knows the verified

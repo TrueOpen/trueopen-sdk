@@ -94,7 +94,6 @@ export function fixtureOrder(): TaskOrderV3 {
     deadlinePolicy: { latencyClass: num(byName(f, 'deadline_policy').fields ?? [], 'latency_class') },
     timeoutBucketVersion: big(f, 'timeout_bucket_version'),
     sessionAnchorHeight: big(f, 'session_anchor_height'),
-    sessionAnchorBlockHash: bytes(f, 'session_anchor_block_hash'),
     builderSetId: str(f, 'builder_set_id'),
     builderSetHash: bytes(f, 'builder_set_hash'),
     payloadMode: num(f, 'payload_mode'),

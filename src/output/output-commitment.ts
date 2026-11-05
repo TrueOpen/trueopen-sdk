@@ -59,6 +59,7 @@ export interface OutputChunkSigningFields {
   readonly chainId: string;
   /** Raw 32 bytes. */
   readonly taskHash: Uint8Array;
+  readonly dispatchTicketHash?: Uint8Array;
   /** This chunk's MMR index, contiguous from 0. */
   readonly seq: bigint;
   /** The prefix root root_{seq+1} after appending this leaf, raw 32 bytes. */
@@ -86,6 +87,7 @@ export function outputChunkSigningDigest(f: OutputChunkSigningFields): Uint8Arra
     enc.encode(OUTPUT_CHUNK_DOMAIN),
     enc.encode(f.chainId),
     f.taskHash,
+    requireDispatchTicket(f.dispatchTicketHash),
     uint64BE(f.seq),
     f.mmrRoot,
   );
@@ -137,6 +139,7 @@ export interface OutputFinSigningFields {
   readonly chainId: string;
   /** Raw 32 bytes. */
   readonly taskHash: Uint8Array;
+  readonly dispatchTicketHash?: Uint8Array;
   /** The seq of the final leaf (= leafCount - 1). */
   readonly finalSeq: bigint;
   /** The final MMR root over all leaves, raw 32 bytes. */
@@ -176,6 +179,7 @@ export function outputFinSigningDigest(f: OutputFinSigningFields): Uint8Array {
     enc.encode(OUTPUT_FIN_DOMAIN),
     enc.encode(f.chainId),
     f.taskHash,
+    requireDispatchTicket(f.dispatchTicketHash),
     uint64BE(f.finalSeq),
     f.outputMmrRoot,
     uint32BE(f.finishReason),
@@ -201,6 +205,7 @@ export function verifyOutputFinSignature(
 }
 
 export interface OutputFrame {
+  readonly dispatchTicketHash?: Uint8Array;
   readonly seq: bigint;
   /** The UTF-8 bytes of this segment's TEXT component, i.e. one leaf of the MMR. */
   readonly text: Uint8Array;
@@ -213,6 +218,7 @@ export interface OutputFrame {
 export interface OutputStreamVerifierConfig {
   readonly chainId: string;
   readonly taskHash: Uint8Array;
+  readonly dispatchTicketHash?: Uint8Array;
   /** This Worker's current on-chain service key (33-byte compressed pubkey). */
   readonly workerServicePubKey: Uint8Array;
 }
@@ -231,6 +237,7 @@ export interface OutputStreamVerifierCheckpoint {
   readonly schemaVersion: 1 | 2;
   readonly chainId: string;
   readonly taskHash: Uint8Array;
+  readonly dispatchTicketHash?: Uint8Array;
   readonly workerServicePubKey: Uint8Array;
   readonly mmr: MmrAccumulatorCheckpoint;
   readonly chunks: readonly Uint8Array[];
@@ -276,6 +283,7 @@ export class OutputStreamVerifier {
     this.cfg = {
       chainId: cfg.chainId,
       taskHash: Uint8Array.from(cfg.taskHash),
+      dispatchTicketHash: Uint8Array.from(requireDispatchTicket(cfg.dispatchTicketHash)),
       workerServicePubKey: Uint8Array.from(cfg.workerServicePubKey),
     };
     if (checkpoint === undefined) {
@@ -310,8 +318,8 @@ export class OutputStreamVerifier {
     }
     const ok = verifyOutputFinSignature(
       {
-        chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, finalSeq: fin.finalSeq,
-        outputMmrRoot: fin.outputMmrRoot, finishReason: fin.finishReason,
+        chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, dispatchTicketHash: requireDispatchTicket(this.cfg.dispatchTicketHash),
+        finalSeq: fin.finalSeq, outputMmrRoot: fin.outputMmrRoot, finishReason: fin.finishReason,
       },
       fin.workerSignature,
       this.cfg.workerServicePubKey,
@@ -347,6 +355,7 @@ export class OutputStreamVerifier {
    * won't either, but reporting them separately makes it easier to pinpoint the problem.
    */
   accept(frame: OutputFrame): void {
+    this.assertTicket(frame);
     if (frame.seq !== this.acc.leafCount) {
       throw frameFault(`seq must be ${this.acc.leafCount}, got ${frame.seq} (the first frame must be 0, incrementing by 1 thereafter)`);
     }
@@ -357,7 +366,7 @@ export class OutputStreamVerifier {
       throw frameFault(`frame ${frame.seq} mmr_root mismatch: computed ${hash32Text(root)}, frame carries ${frame.mmrRoot.length === 32 ? hash32Text(frame.mmrRoot) : `${frame.mmrRoot.length} bytes`}`);
     }
     const ok = verifyOutputChunkSignature(
-      { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, seq: frame.seq, mmrRoot: frame.mmrRoot },
+      { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, dispatchTicketHash: requireDispatchTicket(this.cfg.dispatchTicketHash), seq: frame.seq, mmrRoot: frame.mmrRoot },
       frame.signature,
       this.cfg.workerServicePubKey,
     );
@@ -379,6 +388,7 @@ export class OutputStreamVerifier {
    * duplicate frame's text, prefix root, and Worker signature must all be fully re-verified.
    */
   acceptOrDeduplicate(frame: OutputFrame): OutputFrameAcceptance {
+    this.assertTicket(frame);
     if (frame.seq === this.acc.leafCount) {
       this.accept(frame);
       return 'accepted';
@@ -398,7 +408,7 @@ export class OutputStreamVerifier {
       throw frameFault(`duplicate frame ${frame.seq} mmr_root mismatch`);
     }
     const ok = verifyOutputChunkSignature(
-      { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, seq: frame.seq, mmrRoot: frame.mmrRoot },
+      { chainId: this.cfg.chainId, taskHash: this.cfg.taskHash, dispatchTicketHash: requireDispatchTicket(this.cfg.dispatchTicketHash), seq: frame.seq, mmrRoot: frame.mmrRoot },
       frame.signature,
       this.cfg.workerServicePubKey,
     );
@@ -429,6 +439,7 @@ export class OutputStreamVerifier {
       schemaVersion: 2,
       chainId: this.cfg.chainId,
       taskHash: Uint8Array.from(this.cfg.taskHash),
+      dispatchTicketHash: Uint8Array.from(requireDispatchTicket(this.cfg.dispatchTicketHash)),
       workerServicePubKey: Uint8Array.from(this.cfg.workerServicePubKey),
       mmr: this.acc.checkpoint(),
       chunks: this.chunks.map((chunk) => Uint8Array.from(chunk)),
@@ -441,7 +452,14 @@ export class OutputStreamVerifier {
     };
   }
 
+  private assertTicket(frame: OutputFrame): void {
+    if (!bytesEqual(requireDispatchTicket(frame.dispatchTicketHash), requireDispatchTicket(this.cfg.dispatchTicketHash))) {
+      throw frameFault('dispatch_ticket_hash mismatch');
+    }
+  }
+
   private assertCheckpointContext(checkpoint: OutputStreamVerifierCheckpoint): void {
+    if (!bytesEqual(requireDispatchTicket(checkpoint.dispatchTicketHash), requireDispatchTicket(this.cfg.dispatchTicketHash))) throw malformed('checkpoint dispatch_ticket_hash mismatch');
     if (checkpoint.schemaVersion !== 1 && checkpoint.schemaVersion !== 2) {
       throw malformed(`unsupported checkpoint schema ${String(checkpoint.schemaVersion)}`);
     }
@@ -452,4 +470,10 @@ export class OutputStreamVerifier {
       throw malformed('checkpoint worker_service_pubkey mismatch');
     }
   }
+}
+
+/** Phase 1 never verifies legacy signatures lacking attempt identity. */
+export function requireDispatchTicket(value: Uint8Array | undefined): Uint8Array {
+  if (value?.length !== 32) throw malformed('dispatch_ticket_hash must be 32 bytes');
+  return value;
 }

@@ -219,6 +219,7 @@ export function recover65(digest: Uint8Array, sig: Uint8Array): { address20: Uin
 export const BODY = {
   OpenTask: 'TRUEOPEN_SDK_BODY_OPEN_TASK_V1',
   SubscribeOutput: 'TRUEOPEN_SDK_BODY_SUBSCRIBE_OUTPUT_V1',
+  ResumeOutput: 'TRUEOPEN_SDK_BODY_RESUME_OUTPUT_V1',
   AckOutput: 'TRUEOPEN_SDK_BODY_ACK_OUTPUT_V1',
   GetTaskEvents: 'TRUEOPEN_SDK_BODY_GET_TASK_EVENTS_V1',
   PrepareChallenge: 'TRUEOPEN_SDK_BODY_PREPARE_CHALLENGE_V1',
@@ -226,8 +227,6 @@ export const BODY = {
 
 export interface OpenTaskHeaderLike {
   readonly payloadRef: string;
-  readonly signature: Uint8Array;
-  readonly signatureScheme: string;
   readonly sessionId: string;
   readonly orderSequence: bigint;
   readonly userAddress: string;
@@ -251,8 +250,8 @@ export function openTaskBody(h: OpenTaskHeaderLike, taskHash: Uint8Array): Uint8
     utf8(h.idempotencyKey),
   );
 }
-export function subscribeOutputBody(sessionId: string, taskId: string, resumeAfterSeq: bigint | undefined): Uint8Array {
-  return hFields(BODY.SubscribeOutput, raw32('session_id', sessionId), raw32('task_id', taskId), optional(resumeAfterSeq === undefined ? undefined : u64be(resumeAfterSeq)));
+export function subscribeOutputBody(sessionId: string, taskId: string, resumeAfterSeq: bigint | undefined, ticket?: Uint8Array, resume = false): Uint8Array {
+  return hFields(resume ? BODY.ResumeOutput : BODY.SubscribeOutput, raw32('session_id', sessionId), raw32('task_id', taskId), optional(resumeAfterSeq === undefined ? undefined : u64be(resumeAfterSeq)), optional(ticket));
 }
 export function ackOutputBody(sessionId: string, taskId: string, lastSeq: bigint): Uint8Array {
   return hFields(BODY.AckOutput, raw32('session_id', sessionId), raw32('task_id', taskId), u64be(lastSeq));
@@ -319,7 +318,6 @@ export interface TaskOrderLike {
   readonly deadlinePolicy?: undefined | { readonly latencyClass: number };
   readonly timeoutBucketVersion: bigint;
   readonly sessionAnchorHeight: bigint;
-  readonly sessionAnchorBlockHash: Uint8Array;
   readonly builderSetId: string;
   readonly builderSetHash: Uint8Array;
   readonly payloadMode: number;
@@ -378,7 +376,6 @@ export function taskOrderHash(o: TaskOrderLike): Uint8Array {
     frame8(u32be(o.deadlinePolicy?.latencyClass ?? 0)),
     u64be(o.timeoutBucketVersion),
     u64be(o.sessionAnchorHeight),
-    o.sessionAnchorBlockHash,
     utf8(o.builderSetId),
     o.builderSetHash,
     u32be(o.payloadMode),
@@ -424,7 +421,7 @@ export interface AuthContext {
 }
 
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;
-const SESSION_SDK_METHODS = ['SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
+const SESSION_SDK_METHODS = ['SubscribeOutput', 'ResumeOutput', 'GetDispatchRoster', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 const SESSION_SDK_METHODS_WITH_OPEN_TASK = ['OpenTask', ...SESSION_SDK_METHODS];
 const SESSION_DATA_METHODS = ['/nexus.v1.IngressAPI/GetTaskDataMetadata', '/nexus.v1.IngressAPI/FetchTaskData'];
 const zero32 = new Uint8Array(32);

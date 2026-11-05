@@ -7,6 +7,7 @@ import { TrueOpenClient } from '../../src/client';
 import type { FacadeHubReader, TrueOpenClientConfig } from '../../src/client';
 import type { ChainClient, UpdateSessionKeyInput } from '../../src/transport/chain-client';
 import type { SessionKeyGrant } from '../../src/transport/task-msgs';
+import type { CreateSessionInput } from '../../src/transport/session-funding';
 import type { StreamStateView } from '../../src/types/node';
 import type { TaskOrderIntent, TaskOrderChainContext } from '../../src/order/task-order-input';
 import { buildTaskOrder, defaultGenerationParams } from '../../src/order/task-order-input';
@@ -14,7 +15,7 @@ import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import { decodeSignedOrder, taskOrderEip712Digest } from '../../src/order/signed-order';
 import { sdkRequestEip712Digest } from '../../src/transport/sdk-request-envelope';
 import { sessionGrantHash } from '../../src/session/session-grant';
-import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
+import type { BuilderSetSnapshot, ServiceDescriptorRef, ParameterBucketView } from '../../src/types/hub';
 import { secp256k1PublicKey } from '../../src/signer/secp256k1';
 import { ethSecp256k1Address, ethAddressBytes, recoverEip712PubKey } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
@@ -33,12 +34,13 @@ const ORDER_EIP712 = { signatureChainId: EVM, feeDenom: 'utrueopen' };
 const hexOf = (b: number): string => hash32Text(new Uint8Array(32).fill(b));
 const SESSION = '0xb793a05ff8441795fca46a890b906b0c81af9d8d7a4d53e82de53a1c917b9883';
 const SET_HASH = hexOf(0x15);
-const ANCHOR_HASH = hexOf(0x14);
 const ADDRS = [
   'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl',
   'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg',
   'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man',
 ];
+/** The Builder every fake session is bound to (Phase 1: the only Builder openTask contacts). */
+const BOUND = ADDRS[0]!;
 const snapshot: BuilderSetSnapshot = {
   builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDRS.join(','), setHash: SET_HASH,
 };
@@ -58,8 +60,9 @@ const intent: TaskOrderIntent = {
     priceBid: { atomicUnits: '100000' }, maxFee: { atomicUnits: MAX_FEE },
     assignmentPriorityFee: { atomicUnits: '0' }, txFeeReserve: { atomicUnits: '0' },
   },
+  // A 1000-block lifetime (within MAX_ORDER_LIFETIME_BLOCKS_V1); openTask rebases it on the latest height.
   earliestSubmitHeight: 1_000n,
-  orderExpireHeight: 51_000n,
+  orderExpireHeight: 2_000n,
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 };
 const PRICING = { minOrderValue: 0n, verifyRatioBps: 0n, initialOutputPrice: 0n };
@@ -69,17 +72,17 @@ interface HubState {
   /** Each latest-height read moves the chain one block on (a chain producing blocks during a wait). */
   advance?: boolean;
   maxKeyBlocks: bigint | undefined;
-  beaconReads: bigint[];
+  /** How many times the latest height was read. */
+  latestReads: number;
 }
 
 function makeHub(state: HubState): FacadeHubReader {
   const hub = {
-    getLatestHeight: async (): Promise<bigint> => (state.advance === true ? (state.latest += 1n) : state.latest),
-    getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
-    getBeacon: async (height: bigint): Promise<BeaconView> => {
-      state.beaconReads.push(height);
-      return { height, blockHash: ANCHOR_HASH, randomnessHex: toHex(new Uint8Array(32).fill(0x01)), sourceTag: 'proposer_vrf_v1', verified: true };
+    getLatestHeight: async (): Promise<bigint> => {
+      state.latestReads += 1;
+      return state.advance === true ? (state.latest += 1n) : state.latest;
     },
+    getBuilderSetAtHeight: async (): Promise<BuilderSetSnapshot> => snapshot,
     getTaskGenerationLimits: async () => ({
       maxOutputTokens: 131_072n, topKMax: 1000n, stopSequenceMaxItems: 16n,
       stopSequenceMaxBytesEach: 128n, stopSequenceMaxTotalBytes: 1024n, stopTokenMaxItems: 64n,
@@ -89,7 +92,6 @@ function makeHub(state: HubState): FacadeHubReader {
     }),
     getBusinessDenom: async (): Promise<string> => 'utrueopen',
     getProfile: async () => ({ pricing: PRICING }),
-    getAnchorFreshnessWindowBlocks: async (): Promise<bigint> => 100n,
     getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => ({
       participantType: 'PARTICIPANT_TYPE_BUILDER', participantId: id, descriptorVersion: 2n,
       endpoints: [{ endpointKind: 'SERVICE_ENDPOINT_KIND_NEXUS_GRPC', uri: `grpc://${id}:8080`, protocolVersion: 'v1' }],
@@ -104,9 +106,9 @@ function makeHub(state: HubState): FacadeHubReader {
 class FakeChain implements ChainClient {
   stream: StreamStateView = {
     sessionId: SESSION, owner: USER, nextExpectedSequence: 7n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE',
-    sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
+    sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n, boundBuilder: BOUND,
   };
-  creates: ({ readonly sessionKey?: SessionKeyGrant } | undefined)[] = [];
+  creates: (CreateSessionInput | undefined)[] = [];
   updates: UpdateSessionKeyInput[] = [];
   sessionReads = 0;
 
@@ -117,7 +119,7 @@ class FakeChain implements ChainClient {
     return { ...this.stream, sessionId: id };
   }
   async querySessionNonce() { return { nextSessionNonce: 0n }; }
-  async createSession(input?: { readonly sessionKey?: SessionKeyGrant }) {
+  async createSession(input?: CreateSessionInput) {
     this.creates.push(input);
     if (input?.sessionKey !== undefined) this.applySet(input.sessionKey);
     return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' };
@@ -177,7 +179,7 @@ function setup(opts: { maxKeyBlocks?: bigint | undefined; latest?: bigint; ancho
   const hubState: HubState = {
     latest: opts.latest ?? 1_000n,
     maxKeyBlocks: 'maxKeyBlocks' in opts ? opts.maxKeyBlocks : 100n,
-    beaconReads: [],
+    latestReads: 0,
   };
   const chain = new FakeChain(hubState);
   const headers: OpenTaskHeader[] = [];
@@ -214,7 +216,12 @@ function envelopeSigner(env: NonNullable<AckOutputRequest['requestEnvelope']>): 
 
 /** What a header's order signature and request envelope recover to. */
 function recovered(header: OpenTaskHeader, ctx: TaskOrderChainContext, orderSequence: bigint): { order: string; envelope: string; grant: boolean } {
-  const order = buildTaskOrder(ctx, { ...intent, userAddress: USER, sessionId: SESSION, orderSequence }, PRICING);
+  // openTask anchors the window at the context's latest height and keeps the intent's lifetime.
+  const window = {
+    earliestSubmitHeight: ctx.latestHeight,
+    orderExpireHeight: ctx.latestHeight + (intent.orderExpireHeight - intent.earliestSubmitHeight),
+  };
+  const order = buildTaskOrder(ctx, { ...intent, ...window, userAddress: USER, sessionId: SESSION, orderSequence }, PRICING);
   const sig = decodeSignedOrder(header.orderEnvelope).userSignature;
   const env = header.requestEnvelope!;
   const envDigest = sdkRequestEip712Digest(
@@ -230,7 +237,7 @@ function recovered(header: OpenTaskHeader, ctx: TaskOrderChainContext, orderSequ
 
 function context(latestHeight: bigint, anchorHeight: bigint): TaskOrderChainContext {
   return {
-    chainId: 'trueopen-localnet-1', sessionAnchorHeight: anchorHeight, sessionAnchorBlockHash: ANCHOR_HASH,
+    chainId: 'trueopen-localnet-1', sessionAnchorHeight: anchorHeight,
     builderSetId: 'genesis-1', builderSetHash: SET_HASH, timeoutBucketVersion: 1n,
     generationLimits: {
       maxOutputTokens: 131_072n, topKMax: 1000n, stopSequenceMaxItems: 16n,
@@ -246,7 +253,7 @@ const open = (client: TrueOpenClient, extra: { context?: TaskOrderChainContext; 
 describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
   it('generates a key, registers it in MsgCreateSession and returns its 32-byte private key once', async () => {
     const { client, chain } = setup();
-    const h = await client.createSession({ label: 'k', sessionKey: {} });
+    const h = await client.createSession({ label: 'k', sessionKey: {}, initialBuilder: BOUND, initialDeposit: '5000' });
     const sk = h.sessionKey!;
     expect(sk.privateKey).toHaveLength(32);
     const address = sessionKeyFromPrivateKey(sk.privateKey).address;
@@ -255,6 +262,8 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     expect(sk.expiryHeight).toBe(1_098n);
     expect(sk.spendCap).toBe('0');
     expect(chain.creates).toHaveLength(1);
+    // Phase 1: the binding and the prefund go into the same MsgCreateSession.
+    expect(chain.creates[0]).toMatchObject({ initialBuilder: BOUND, initialDeposit: '5000' });
     const grant = chain.creates[0]!.sessionKey!;
     expect(toHex(grant.sessionKey)).toBe(toHex(address));
     expect(toHex(grant.sessionKey)).not.toBe(USER_ADDRESS_HEX);
@@ -278,7 +287,8 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
     const h = await client.createSession('plain');
     expect(h.label).toBe('plain');
     expect(h.sessionKey).toBeUndefined();
-    expect(chain.creates).toEqual([undefined]);
+    expect(chain.creates).toHaveLength(1);
+    expect(chain.creates[0]!.sessionKey).toBeUndefined();
   });
 
   it('refuses a chain without session keys: max_session_key_blocks 0 (or 1, which no registration can land with), or a hub that cannot read it', async () => {
@@ -349,7 +359,7 @@ describe('TrueOpenClient.createSession with a session key (ADR-0037)', () => {
 describe('TrueOpenClient config: the session-key anchor wait', () => {
   const make = (extra: Record<string, number>) => () => new TrueOpenClient({
     chainId: 'trueopen-localnet-1', userAddress: USER, wallet: privateKeyTypedDataSigner(PRIV),
-    chain: new FakeChain({ latest: 1n, maxKeyBlocks: 100n, beaconReads: [] }), ingressTransport: acceptTransport([]),
+    chain: new FakeChain({ latest: 1n, maxKeyBlocks: 100n, latestReads: 0 }), ingressTransport: acceptTransport([]),
     ...extra,
   });
 
@@ -377,7 +387,8 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
     chain.sessionReads = 0;
     const res = await open(client, { context: context(1_000n, 1_000n) });
     expect(chain.sessionReads).toBe(1);
-    expect(headers).toHaveLength(3);
+    // Phase 1: only the bound Builder is contacted.
+    expect(headers).toHaveLength(1);
     for (const header of headers) {
       expect(header.orderSequence).toBe(7n);
       expect(header.userAddress).toBe(USER);
@@ -412,7 +423,8 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
       ERR_SESSION_KEY_INVALID: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
       // No key registered: on chain the signature simply does not match the user.
       SIGNATURE_MISMATCH: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED',
-      SESSION_CLOSED: 'SDK_LOCAL_SESSION_CLOSED',
+      // Phase 1 openTask refuses a CLOSED (or closing) session before any key check.
+      SESSION_CLOSED: 'SDK_LOCAL_SESSION_CLOSING',
       ERR_SESSION_KEY_SPEND_CAP_EXCEEDED: 'SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED',
       // spent + max_fee past u64, even with cap 0 (unlimited): the same local code, details.overflow.
       AMOUNT_OVERFLOW: 'SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED',
@@ -440,7 +452,7 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
         chain.stream = {
           sessionId: SESSION, owner: USER, nextExpectedSequence: BigInt(rest.next_sequence), lastActiveHeight: 0n, openPendingCount: 0n,
           status: rest.status, sessionKeyExpiryHeight: BigInt(rest.expiry), sessionKeySpendCap: rest.cap, sessionKeySpent: rest.spent,
-          sessionKeySetHeight: BigInt(rest.set_height), ...(c.state.key !== '' ? { sessionKey: fromHex(c.state.key) } : {}),
+          sessionKeySetHeight: BigInt(rest.set_height), boundBuilder: BOUND, ...(c.state.key !== '' ? { sessionKey: fromHex(c.state.key) } : {}),
         };
         const run = open(client, { context: context(BigInt(c.current_height), BigInt(c.anchor_height)) });
         const want = BY_NAME[name] ?? SDK_CODE[c.expected];
@@ -458,46 +470,43 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
     }
   });
 
-  it('a reused anchor older than the key registration is replaced by a fresh one, once', async () => {
-    const { client, chain, hubState, headers } = setup();
-    // Cache an anchor at 998 (latest 1000 - 2).
-    await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 0n });
+  // Phase 1 anchors every order at the latest height (no anchor lag, no reused context), so a key
+  // registered at that height signs the very next order without waiting.
+  it('the anchor is the latest height: a key registered at it signs at once, without waiting', async () => {
+    const { client, chain, hubState, headers, prompts } = setup();
     hubState.latest = 1_003n;
-    await client.createSession({ sessionKey: {} }); // registered at 1003
-    chain.stream = { ...chain.stream, sessionKeySetHeight: 1_001n };
-    hubState.beaconReads = [];
+    const h = await client.createSession({ sessionKey: {} }); // registered at 1003
+    expect(chain.stream.sessionKeySetHeight).toBe(1_003n);
     const res = await open(client);
-    // The reused 998 predates 1001: one fresh context at 1003 - 2.
-    expect(res.context.sessionAnchorHeight).toBe(1_001n);
-    expect(hubState.beaconReads).toEqual([1_001n]);
-    expect(headers).toHaveLength(3);
+    expect(res.context.sessionAnchorHeight).toBe(1_003n);
+    const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
+    expect(recovered(headers[0]!, res.context, 7n)).toEqual({ order: key, envelope: key, grant: false });
+    expect(headers).toHaveLength(1);
+    expect(prompts).toHaveLength(0);
   });
 
-  it('right after registration: waits for a fresh anchor at or after set_height, then signs with the key', async () => {
+  it('a set_height past the latest height read (a lagging reader): waits for the latest height to reach it, then signs with the key', async () => {
     const { client, chain, hubState, headers, prompts } = setup();
-    await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 0n });
-    hubState.latest = 1_003n;
     const h = await client.createSession({ sessionKey: {} });
-    expect(chain.stream.sessionKeySetHeight).toBe(1_003n);
+    // The session read already shows a registration two blocks past what the hub reports.
+    chain.stream = { ...chain.stream, sessionKeySetHeight: 1_002n };
     // The chain keeps producing blocks while openTask waits.
     hubState.advance = true;
     const res = await open(client);
-    expect(res.context.sessionAnchorHeight).toBeGreaterThanOrEqual(1_003n);
+    expect(res.context.sessionAnchorHeight).toBeGreaterThanOrEqual(1_002n);
     const key = toHex(sessionKeyFromPrivateKey(h.sessionKey!.privateKey).address);
     expect(recovered(headers[0]!, res.context, 7n)).toMatchObject({ order: key, envelope: key, grant: false });
     expect(prompts).toHaveLength(0);
   });
 
   it('the wait is bounded: past it, a retriable SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT with the heights, nothing signed', async () => {
-    const { client, chain, hubState, headers, prompts } = setup({ anchorWaitMs: 20 });
-    await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 0n });
-    hubState.latest = 1_003n;
+    const { client, chain, headers, prompts } = setup({ anchorWaitMs: 20 });
     await client.createSession({ sessionKey: {} });
-    expect(chain.stream.sessionKeySetHeight).toBe(1_003n);
+    chain.stream = { ...chain.stream, sessionKeySetHeight: 1_003n };
     await expect(open(client)).rejects.toMatchObject({
       code: 'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT',
       retriable: true,
-      details: { setHeight: 1_003n, anchorHeight: 998n },
+      details: { setHeight: 1_003n, anchorHeight: 1_000n },
     });
     expect(headers).toHaveLength(0);
     expect(prompts).toHaveLength(0);
@@ -506,17 +515,17 @@ describe('TrueOpenClient.openTask with a registered session key', () => {
   it("a caller's stale context is refused at once, not retriable, without waiting or a fresh anchor", async () => {
     const { client, chain, hubState, headers } = setup();
     await client.createSession({ sessionKey: {} });
-    hubState.beaconReads = [];
     hubState.advance = true;
     const before = hubState.latest;
+    const reads = hubState.latestReads;
     await expect(open(client, { context: context(1_000n, 999n) })).rejects.toMatchObject({
       code: 'SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT',
       retriable: false,
       details: { setHeight: 1_000n, anchorHeight: 999n },
       message: expect.stringContaining('pass a newer context'),
     });
-    expect(hubState.beaconReads).toEqual([]);
-    // No latest-height polling happened.
+    // No latest-height polling and no fresh context happened.
+    expect(hubState.latestReads).toBe(reads);
     expect(hubState.latest).toBe(before);
     expect(chain.stream.sessionKeySetHeight).toBe(1_000n);
     expect(headers).toHaveLength(0);

@@ -1,3 +1,4 @@
+import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, DepositSessionResult, WithdrawSessionResult } from './session-funding';
 import type { StreamStateView } from '../types/node';
 import type { SessionKeyGrant, MsgUpdateSessionKeyResponse } from './task-msgs';
 
@@ -15,9 +16,16 @@ export interface ChainReader {
  * Adapters implement this separately; business logic and mocks depend on this interface only.
  */
 export interface ChainClient extends ChainReader {
-  /** With `sessionKey`, the key is registered in the same tx that creates the session. */
-  createSession(input?: { readonly sessionKey?: SessionKeyGrant }): Promise<CreateSessionResult>;
-  /** Registers, replaces or clears the session's registered key. */
+  /**
+   * Phase 1: the Session is prefunded and bound to its first Builder in the same tx; with
+   * `sessionKey`, the key is registered there too.
+   */
+  createSession(input?: CreateSessionInput): Promise<CreateSessionResult>;
+  /** Adds funds to the Session (owner wallet only). */
+  depositSession?(input: DepositSessionInput): Promise<DepositSessionResult>;
+  /** Registers a delayed withdrawal or CLOSE (owner wallet only). */
+  withdrawSession?(input: WithdrawSessionInput): Promise<WithdrawSessionResult>;
+  /** Registers, replaces or clears the session's registered key (restrictive changes are delayed). */
   updateSessionKey(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse>;
   cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult>;
 }
@@ -54,6 +62,7 @@ export interface CancelOrderResult {
   /** Hash32 text, `0x` + 64 lowercase hex; the node returns task_id here, not session_id. */
   readonly taskId: string;
   readonly cancelledSequence: bigint;
+  readonly cancelEffectiveHeight?: bigint;
   readonly nextExpectedSequence: bigint;
   /** Enum name from hub.v1.MutationStatusV1. */
   readonly status: string;

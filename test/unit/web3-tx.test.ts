@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { AuthInfo, TxBody, TxRaw } from 'cosmjs-types/cosmos/tx/v1beta1/tx';
 import { SignMode } from 'cosmjs-types/cosmos/tx/signing/v1beta1/signing';
 import type { Account, IndexedTx } from '@cosmjs/stargate';
@@ -25,7 +26,12 @@ const WRONG_PUB = fromHex(ACCOUNT_SIGNING.wrong_key.pub_compressed);
 const GRANT = { sessionKey: new Uint8Array(20).fill(3), expiryHeight: 200n, spendCap: '0' };
 const SESSION_ID = `0x${'07'.repeat(32)}`;
 const FEE = { amount: [{ denom: 'uusdc', amount: '12345' }], gas: '200000' };
-const CREATE = { typeUrl: TYPE_URL.createSession, value: { signer: OWNER, sessionKey: GRANT } };
+// The wire session_key_amino_v1 "create" inputs: a grant, the owner's address as initial_builder, 1000 prefunded.
+const CREATE_INPUT = { sessionKey: GRANT, initialBuilder: OWNER, initialDeposit: '1000' };
+const CREATE = { typeUrl: TYPE_URL.createSession, value: { signer: OWNER, ...CREATE_INPUT } };
+const CREATE_VECTOR = (JSON.parse(readFileSync('third_party/wire/testdata/v1/task/session_key_amino_v1.json', 'utf8')) as {
+  cases: { name: string; signature_65: string }[];
+}).cases.find((c) => c.name === 'create')!;
 const wallet = privateKeyTypedDataSigner(fixtureKey('account'));
 
 /** Counts calls so a test can tell the wallet was never asked to sign. */
@@ -54,15 +60,6 @@ function decodeWeb3Extension(value: Uint8Array): { chainId: bigint; fields: numb
   }
   return { chainId, fields };
 }
-
-/**
- * Exact TxRaw bytes the deployed node's full ante handler (TrueOpen/node 8ea59f3, app
- * AnteHandler on chain "node-simapp") accepted: MsgCreateSession with a grant, account number 1,
- * sequence 0, an account with no stored public key (so SetPubKeyDecorator stored the recovered
- * one and the strict Web3 verifier passed). Built by signWeb3Tx with the fixture account key.
- */
-const NODE_ACCEPTED_CREATE =
-  '0aa7010a6e0a192f7461736b2e76312e4d736743726561746553657373696f6e12510a2f747275656f70656e3172666a7a3772337538743635746561766835757471756a336b7776736a39383370336a636c7a121e0a14030303030303030303030303030303030303030310c8011a030a0130fa3f340a2c2f636f736d6f732e65766d2e6569703731322e76312e457874656e73696f6e4f7074696f6e73576562335478120408b2f21912700a580a500a292f636f736d6f732e65766d2e63727970746f2e76312e657468736563703235366b312e5075624b657912230a21031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f12040a02087f12140a0e0a0575757364631205313233343510c09a0c1a4102c9e91f0e3d9984ce57f7898592b48105075cec309ca39349edb70c47c5d73019c14f22244417b38b02643f0ee410691a6abe2c906ec61c52f3b350cca3e5661b';
 
 describe('signWeb3Tx: TxRaw layout', () => {
   it('body, critical Web3 extension, auth info, LEGACY_AMINO_JSON, pubkey and 65-byte signature', async () => {
@@ -102,14 +99,7 @@ describe('signWeb3Tx: TxRaw layout', () => {
   it('the create transaction signs the session_key_amino_v1 create digest', async () => {
     const signed = await signWeb3Tx(base());
     // Same sign doc, chain ids and key as the wire "create" case.
-    expect(toHex(signed.signature)).toBe(
-      'dbe0c0328d81acd808efed34516a7dbb57863aea44d08583e6b34fc8e745cd10459fdbd673f23435580150cc094b7538a711f8b0c2fc9e586c45bcd9abb7494e1b',
-    );
-  });
-
-  it('reproduces bytes the node ante handler accepted', async () => {
-    const signed = await signWeb3Tx(base({ chainId: 'node-simapp', accountNumber: 1n, sequence: 0n }));
-    expect(toHex(signed.txBytes)).toBe(NODE_ACCEPTED_CREATE);
+    expect(toHex(signed.signature)).toBe(CREATE_VECTOR.signature_65);
   });
 
   it('recovers the public key when the chain account has none', async () => {
@@ -196,15 +186,13 @@ describe('Web3 chain client (CosmjsChainWriter + Web3TxBroadcaster)', () => {
   it('createSession: one broadcast of a Web3 TxRaw, then polls for inclusion and decodes the response', async () => {
     const resp = new ProtoWriter().bytes(1, fromHex('33'.repeat(32))).uint64(2, 4n).uint64(3, 1n).finish();
     const rpc = new FakeRpc(account(null), { typeUrl: TYPE_URL.createSession, value: resp });
-    const r = await client(rpc).createSession({ sessionKey: GRANT });
+    const r = await client(rpc).createSession(CREATE_INPUT);
     expect(r).toEqual({ sessionId: `0x${'33'.repeat(32)}`, owner: OWNER, nonce: 4n, status: 'MUTATION_STATUS_V1_APPLIED' });
     expect(rpc.broadcasts).toHaveLength(1);
     expect(rpc.lookups).toBe(2);
     const tx = TxRaw.decode(rpc.broadcasts[0]!);
     expect(TxBody.decode(tx.bodyBytes).extensionOptions[0]!.typeUrl).toBe(WEB3_EXTENSION_TYPE_URL);
-    expect(toHex(tx.signatures[0]!)).toBe(
-      'dbe0c0328d81acd808efed34516a7dbb57863aea44d08583e6b34fc8e745cd10459fdbd673f23435580150cc094b7538a711f8b0c2fc9e586c45bcd9abb7494e1b',
-    );
+    expect(toHex(tx.signatures[0]!)).toBe(CREATE_VECTOR.signature_65);
   });
 
   it('updateSessionKey (set / clear) and cancelOrder go through the composed ChainClient', async () => {
@@ -228,20 +216,20 @@ describe('Web3 chain client (CosmjsChainWriter + Web3TxBroadcaster)', () => {
   it('an account missing on chain is CHAIN_ACCOUNT_NOT_FOUND and nothing is signed or sent', async () => {
     const rpc = new FakeRpc(null);
     const w = countingWallet(wallet);
-    await expect(client(rpc, w).createSession()).rejects.toMatchObject({ code: 'CHAIN_ACCOUNT_NOT_FOUND' });
+    await expect(client(rpc, w).createSession(CREATE_INPUT)).rejects.toMatchObject({ code: 'CHAIN_ACCOUNT_NOT_FOUND' });
     expect(w.calls).toBe(0);
     expect(rpc.broadcasts).toHaveLength(0);
   });
 
   it('a stored key of another account is refused locally', async () => {
     const rpc = new FakeRpc(account({ type: 'tendermint/PubKeySecp256k1', value: Buffer.from(WRONG_PUB).toString('base64') }));
-    await expect(client(rpc).createSession()).rejects.toMatchObject({ code: 'SDK_LOCAL_TX_PUBKEY_MISMATCH' });
+    await expect(client(rpc).createSession(CREATE_INPUT)).rejects.toMatchObject({ code: 'SDK_LOCAL_TX_PUBKEY_MISMATCH' });
     expect(rpc.broadcasts).toHaveLength(0);
   });
 
   it('a CheckTx rejection is classified like the DIRECT path', async () => {
     const rpc = new FakeRpc(account(stored), undefined, new BroadcastTxError(4, 'sdk', 'signature verification failed'));
-    await expect(client(rpc).createSession()).rejects.toMatchObject({ code: 'CHAIN_TX_REJECTED' });
+    await expect(client(rpc).createSession(CREATE_INPUT)).rejects.toMatchObject({ code: 'CHAIN_TX_REJECTED' });
   });
 
   it("fee 'auto' is refused when the client is built and by the broadcaster", async () => {

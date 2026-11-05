@@ -45,8 +45,11 @@ describe.skipIf(!enabled)('e2e: examples/*.mjs against the simulated network', (
       TRUEOPEN_REST_URL: world.node.restUrl,
       TRUEOPEN_RPC_URL: world.node.rpcUrl,
       TRUEOPEN_CHAIN_ID: w.CHAIN_ID,
+      TRUEOPEN_SIGNATURE_CHAIN_ID: w.EVM_CHAIN_ID.toString(),
       TRUEOPEN_MNEMONIC: MNEMONIC,
       TRUEOPEN_MODEL_ID: w.MODEL_ID,
+      TRUEOPEN_INITIAL_BUILDER: w.BUILDERS[0]!.address,
+      TRUEOPEN_INITIAL_DEPOSIT: '100000',
     };
   });
   afterAll(async () => { await world?.close(); });
@@ -76,7 +79,8 @@ describe.skipIf(!enabled)('e2e: examples/*.mjs against the simulated network', (
     taskId = /TRUEOPEN_TASK_ID=(0x[0-9a-f]{64})/.exec(r.stdout)?.[1] ?? '';
     const taskHash = /"taskHash": "(0x[0-9a-f]{64})"/.exec(r.stdout)?.[1] ?? '';
     expect(taskId).toMatch(/^0x[0-9a-f]{64}$/);
-    for (const n of world.nexus.slice(0, 3)) expect(n.opened.map((o) => o.taskId)).toContain(taskId);
+    expect(world.nexus[0]!.opened.map(o => o.taskId)).toContain(taskId);
+    for (const n of world.nexus.slice(1)) expect(n.opened).toEqual([]);
 
     // The chain accepts it, a winner runs it and its receipt lands; the Builders hold the output.
     world.node.tasks.set(taskId, { taskId, sessionId, orderSequence: 0n, taskHash, inputHash: w.labelHash32('example-input'), winner: w.WORKER_OPERATOR });

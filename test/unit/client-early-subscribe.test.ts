@@ -30,6 +30,9 @@ const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d
 const WORKER_PRIV = fromHex('0302030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(WORKER_PRIV);
 const OTHER_PRIV = fromHex('0402030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
+// Phase 1: every frame and Fin is bound to the dispatch attempt (the dispatch ticket).
+const TICKET = `0x${'5a'.repeat(32)}`;
+const OTHER_TICKET = `0x${'6b'.repeat(32)}`;
 
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -43,35 +46,39 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const anchors = { taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB };
+const anchors = { taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, dispatchTicketHash: TICKET };
 
-/** Frames for `n` chunks, each signed by `signer` over the prefix root, plus a signed Fin. */
-function frames(n: number, signer = WORKER_PRIV): SubscribeOutputResponse[] {
+/** Frames for `n` chunks of attempt `ticket`, each signed by `signer` over the prefix root, plus a signed Fin. */
+function frames(n: number, signer = WORKER_PRIV, ticket = TICKET): SubscribeOutputResponse[] {
   const chunks = Array.from({ length: n }, (_, i) => new TextEncoder().encode(`t${i} `));
   const th = fromHex(TASK_HASH.slice(2));
+  const dispatchTicketHash = fromHex(ticket.slice(2));
   const out = chunks.map((text, i) => {
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, chunks, i + 1);
-    const workerSignature = secp256k1.sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: th, seq: BigInt(i), mmrRoot }), signer).toCompactRawBytes();
+    const workerSignature = secp256k1.sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: th, dispatchTicketHash, seq: BigInt(i), mmrRoot }), signer).toCompactRawBytes();
     return {
       frame: {
         case: 'chunk',
-        value: { seq: BigInt(i), text, mmrRoot, workerSignature, attachment: new Uint8Array(), attachmentSignature: new Uint8Array() },
+        value: { seq: BigInt(i), text, mmrRoot, dispatchTicketHash, workerSignature, attachment: new Uint8Array(), attachmentSignature: new Uint8Array() },
       },
     } as unknown as SubscribeOutputResponse;
   });
   const finalSeq = BigInt(n - 1);
   const outputMmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, chunks, n);
   const finSig = secp256k1
-    .sign(outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: th, finalSeq, outputMmrRoot, finishReason: 1 }), signer)
+    .sign(outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: th, dispatchTicketHash, finalSeq, outputMmrRoot, finishReason: 1 }), signer)
     .toCompactRawBytes();
-  out.push({ frame: { case: 'fin', value: { finalSeq, outputMmrRoot, finishReason: 1, workerSignature: finSig } } } as unknown as SubscribeOutputResponse);
+  out.push({ frame: { case: 'fin', value: { finalSeq, outputMmrRoot, dispatchTicketHash, finishReason: 1, workerSignature: finSig } } } as unknown as SubscribeOutputResponse);
   return out;
 }
 
 const seqOf = (f: SubscribeOutputResponse): bigint | undefined => (f.frame.case === 'chunk' ? f.frame.value.seq : undefined);
 
 interface Subscription {
+  /** SubscribeOutput starts from the first frame; Phase 1 resumes through ResumeOutput. */
+  readonly rpc: 'subscribe' | 'resume';
   readonly resumeAfterSeq: bigint | undefined;
+  readonly dispatchTicketHash: Uint8Array | undefined;
   readonly signal: AbortSignal;
   pulled: number;
 }
@@ -86,35 +93,38 @@ function scriptedSource(
 ) {
   const subs: Subscription[] = [];
   const acks: bigint[] = [];
-  const source: OutputStreamSource = {
-    id: 'scripted',
-    ingress: {
-      subscribeOutput(p: { resumeAfterSeq?: bigint; signal?: AbortSignal }) {
-        const sub: Subscription = { resumeAfterSeq: p.resumeAfterSeq, signal: p.signal!, pulled: 0 };
-        const n = subs.length;
-        subs.push(sub);
-        const { frames: fs, then = 'hang' } = script(n, p.resumeAfterSeq);
-        const queue = fs.filter((f) => p.resumeAfterSeq === undefined || seqOf(f) === undefined || seqOf(f)! > p.resumeAfterSeq);
+  type Request = { resumeAfterSeq?: bigint; dispatchTicketHash?: Uint8Array; signal?: AbortSignal };
+  function open<T>(rpc: Subscription['rpc'], p: Request, wrap: (f: SubscribeOutputResponse) => T): AsyncIterable<T> {
+    const sub: Subscription = { rpc, resumeAfterSeq: p.resumeAfterSeq, dispatchTicketHash: p.dispatchTicketHash, signal: p.signal!, pulled: 0 };
+    const n = subs.length;
+    subs.push(sub);
+    const { frames: fs, then = 'hang' } = script(n, p.resumeAfterSeq);
+    const queue = fs.filter((f) => p.resumeAfterSeq === undefined || seqOf(f) === undefined || seqOf(f)! > p.resumeAfterSeq);
+    return {
+      [Symbol.asyncIterator]() {
         return {
-          [Symbol.asyncIterator]() {
-            return {
-              async next(): Promise<IteratorResult<SubscribeOutputResponse>> {
-                sub.pulled += 1;
-                if (sub.signal.aborted) throw new ConnectError('aborted', Code.Canceled);
-                const f = queue.shift();
-                if (f !== undefined) return { done: false, value: f };
-                if (then === 'end') return { done: true, value: undefined };
-                if (then instanceof Error) throw then;
-                await new Promise<void>((r) => sub.signal.addEventListener('abort', () => r(), { once: true }));
-                throw new ConnectError('aborted', Code.Canceled);
-              },
-              async return(): Promise<IteratorResult<SubscribeOutputResponse>> {
-                return { done: true, value: undefined };
-              },
-            };
+          async next(): Promise<IteratorResult<T>> {
+            sub.pulled += 1;
+            if (sub.signal.aborted) throw new ConnectError('aborted', Code.Canceled);
+            const f = queue.shift();
+            if (f !== undefined) return { done: false, value: wrap(f) };
+            if (then === 'end') return { done: true, value: undefined };
+            if (then instanceof Error) throw then;
+            await new Promise<void>((r) => sub.signal.addEventListener('abort', () => r(), { once: true }));
+            throw new ConnectError('aborted', Code.Canceled);
+          },
+          async return(): Promise<IteratorResult<T>> {
+            return { done: true, value: undefined };
           },
         };
       },
+    };
+  }
+  const source: OutputStreamSource = {
+    id: 'scripted',
+    ingress: {
+      subscribeOutput: (p: Request) => open('subscribe', p, (f) => f),
+      resumeOutput: (p: Request) => open('resume', p, (f) => ({ frame: f })),
       async ackOutput(p: { lastSeq: bigint }) {
         acks.push(p.lastSeq);
         return { acked: true, alreadyAcked: false, ackedAt: 1n } as never;
@@ -142,7 +152,8 @@ function chain(opts: { assignAfter?: number; failed?: boolean } = {}) {
       return {
         view: 'active', taskId, acceptedTaskHash: TASK_HASH, winnerWorker: winner,
         modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
-        acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: opts.failed ? 'FAILED' : 'WORKER_ASSIGNMENT_PENDING',
+        acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: opts.failed ? 'FAILED' : 'INFER_PENDING',
+        ...(winner !== '' ? { dispatchTicketHash: TICKET } : {}),
       };
     },
     async queryInferReceipt(): Promise<InferReceiptView | undefined> {
@@ -223,6 +234,48 @@ describe('streamOutput early subscribe', () => {
     expect(subs).toHaveLength(1);
   });
 
+  it('Phase 1: holds frames while the dispatch ticket is unknown, then verifies them against the ticket the anchors name', async () => {
+    const { source, subs, acks } = scriptedSource(() => ({ frames: frames(2), then: 'end' }));
+    const pending = deferred<typeof anchors>();
+    const it = stream(makeClient(), { sources: [source], pendingAnchors: pending.promise })[Symbol.asyncIterator]();
+    const first = it.next();
+    await tick(30);
+    // Subscribed before the attempt is known: no ticket on the request, every frame held.
+    expect(subs).toHaveLength(1);
+    expect(subs[0]!).toMatchObject({ rpc: 'subscribe', resumeAfterSeq: undefined, dispatchTicketHash: undefined, pulled: 3 });
+    await expect(Promise.race([first, tick(20).then(() => 'held')])).resolves.toBe('held');
+
+    pending.resolve(anchors);
+    const events: OutputStreamEvent[] = [(await first).value as OutputStreamEvent];
+    for (let r = await it.next(); !r.done; r = await it.next()) events.push(r.value);
+    expect(events.map((e) => (e.kind === 'chunk' ? `c${e.seq}` : 'fin'))).toEqual(['c0', 'c1', 'fin']);
+    expect(acks).toEqual([1n]);
+  });
+
+  it('Phase 1: held frames of another dispatch attempt are refused once the anchors name the ticket', async () => {
+    const { source } = scriptedSource(() => ({ frames: frames(2, WORKER_PRIV, OTHER_TICKET), then: 'end' }));
+    const pending = deferred<typeof anchors>();
+    const delivered: OutputStreamEvent[] = [];
+    const done = (async () => {
+      for await (const e of stream(makeClient(), { sources: [source], pendingAnchors: pending.promise, maxAttempts: 1 })) delivered.push(e);
+    })().catch((e: unknown) => e);
+    await tick(30);
+    pending.resolve(anchors);
+    const err = await done;
+    expect(err).toMatchObject({ code: 'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED' });
+    expect(String((err as Error).message)).toContain('dispatch_ticket_hash mismatch');
+    expect(delivered).toEqual([]);
+  });
+
+  it('Phase 1: anchors that name no dispatch ticket end the stream, closing the subscription', async () => {
+    const { source, subs } = scriptedSource(() => ({ frames: frames(1) }));
+    const { dispatchTicketHash: _none, ...noTicket } = anchors;
+    await expect(collect(stream(makeClient(), { sources: [source], pendingAnchors: Promise.resolve(noTicket) })))
+      .rejects.toMatchObject({ code: 'SDK_LOCAL_NOT_HASH32' });
+    expect(subs).toHaveLength(1);
+    expect(subs[0]!.signal.aborted).toBe(true);
+  });
+
   it('runs held frames through the same verification: a frame the winner did not sign is never delivered', async () => {
     const { source } = scriptedSource(() => ({ frames: frames(2, OTHER_PRIV), then: 'end' }));
     const delivered: OutputStreamEvent[] = [];
@@ -261,6 +314,9 @@ describe('streamOutput early subscribe', () => {
     const events = await done;
     expect(events.filter((e) => e.kind === 'chunk').map((e) => (e.kind === 'chunk' ? e.seq : -1n))).toEqual([0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n]);
     expect(subs.map((s) => s.resumeAfterSeq)).toEqual([undefined, 4n]);
+    // Phase 1 resumes through ResumeOutput, naming the attempt the cursor belongs to.
+    expect(subs.map((s) => s.rpc)).toEqual(['subscribe', 'resume']);
+    expect(subs[1]!.dispatchTicketHash).toEqual(fromHex(TICKET.slice(2)));
   });
 
   it('a ResourceExhausted with no new verified frame still counts as a failed attempt', async () => {
@@ -371,6 +427,9 @@ describe('streamOutput early subscribe', () => {
     const done = collect(stream(makeClient(), { sources: [source], pendingAnchors: pending.promise, checkpoint: checkpoint!, resumeAfterSeq: 1n }));
     await tick(30);
     expect(subs[0]!.resumeAfterSeq).toBe(1n);
+    // The checkpoint carries its dispatch ticket, so the resume names it before the anchors arrive.
+    expect(subs[0]!.rpc).toBe('resume');
+    expect(subs[0]!.dispatchTicketHash).toEqual(fromHex(TICKET.slice(2)));
     pending.resolve(anchors);
     const events = await done;
     expect(events.map((e) => (e.kind === 'chunk' ? `c${e.seq}` : 'fin'))).toEqual(['c2', 'fin']);
@@ -432,7 +491,7 @@ describe('streamOutput early subscribe', () => {
 
   it('an explicit taskHash wins over what pendingAnchors resolves to', async () => {
     const { source } = scriptedSource(() => ({ frames: frames(2), then: 'end' }));
-    const wrong = { taskHash: `0x${'d'.repeat(64)}`, workerServicePubKey: WORKER_PUB };
+    const wrong = { taskHash: `0x${'d'.repeat(64)}`, workerServicePubKey: WORKER_PUB, dispatchTicketHash: TICKET };
     const events = await collect(stream(makeClient(), { sources: [source], taskHash: TASK_HASH, pendingAnchors: Promise.resolve(wrong) }));
     expect(events.map((e) => e.kind)).toEqual(['chunk', 'chunk', 'fin']);
   });
@@ -446,11 +505,12 @@ describe('streamOutput early subscribe', () => {
       ingress: {
         ...source.ingress,
         subscribeOutput: source.ingress.subscribeOutput.bind(source.ingress),
+        resumeOutput: source.ingress.resumeOutput!.bind(source.ingress),
         ackOutput: source.ingress.ackOutput.bind(source.ingress),
         async *getTaskEvents() {
           hinted += 1;
           await tick(30);
-          yield { cursor: '1', state: '', taskPhase: '', eventCode: 'ASSIGNMENT_FINALIZED', chainHeight: 0n };
+          yield { cursor: '1', state: '', taskPhase: '', eventCode: 'DISPATCH_RECORDED', chainHeight: 0n };
         },
       } as unknown as OutputStreamSource['ingress'],
     };

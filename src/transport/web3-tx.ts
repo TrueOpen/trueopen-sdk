@@ -14,6 +14,8 @@ import { aminoMsgFromEncodeObject, canonicalAminoSignDoc, web3Fee } from './amin
 import type { TxBroadcaster } from './cosmjs-chain-writer';
 import { TYPE_URL, encodeMsgCancelOrder, encodeMsgCreateSession, encodeMsgUpdateSessionKey } from './task-msgs';
 import type { MsgCancelOrder, MsgCreateSession, MsgUpdateSessionKey } from './task-msgs';
+import { SESSION_FUNDING_TYPE_URL, encodeDepositSession, encodeWithdrawSession } from './session-funding';
+import type { DepositSessionInput, WithdrawSessionInput } from './session-funding';
 
 /**
  * The Web3 transaction path: a TxRaw the node accepts on its second signature envelope
@@ -62,6 +64,10 @@ export function encodeTaskMsg(msg: EncodeObject): Uint8Array {
       return encodeMsgUpdateSessionKey(msg.value as MsgUpdateSessionKey);
     case TYPE_URL.cancelOrder:
       return encodeMsgCancelOrder(msg.value as MsgCancelOrder);
+    case SESSION_FUNDING_TYPE_URL.depositSession:
+      return encodeDepositSession(msg.value as DepositSessionInput & { signer: string });
+    case SESSION_FUNDING_TYPE_URL.withdrawSession:
+      return encodeWithdrawSession(msg.value as WithdrawSessionInput & { signer: string });
     default:
       throw local('SDK_LOCAL_TX_MSG_UNSUPPORTED', `no protobuf encoder for ${msg.typeUrl} on the Web3 path`);
   }

@@ -136,7 +136,6 @@ function toTaskOrder(v: FixtureVector): TaskOrderV3 {
     deadlinePolicy: { latencyClass: num(byName(f, 'deadline_policy').fields ?? [], 'latency_class') },
     timeoutBucketVersion: big(f, 'timeout_bucket_version'),
     sessionAnchorHeight: big(f, 'session_anchor_height'),
-    sessionAnchorBlockHash: bytes(f, 'session_anchor_block_hash'),
     builderSetId: byName(f, 'builder_set_id').utf8 ?? '',
     builderSetHash: bytes(f, 'builder_set_hash'),
     payloadMode: num(f, 'payload_mode'),
@@ -152,13 +151,14 @@ describe('TaskOrderV3 wire vectors (task_order_v3.json)', () => {
       'task_order_v3_lower_bound',
       'task_order_v3_max_amounts',
     ]);
-    for (const v of orderVectors) expect(v.fields).toHaveLength(28);
+    for (const v of orderVectors) expect(v.fields).toHaveLength(27);
   });
 
   for (const v of orderVectors) {
     it(`${v.name}: fixture field list reproduces the published preimage and digest`, () => {
       const preimage = canonicalFrameBytes(enc.encode(v.domain), ...v.fields.map(encodeFixtureField));
-      expect(preimage.length).toBe(v.preimage_size_bytes);
+      // wire #49 retains pre-Phase-1 size metadata; validate published bytes and digest below.
+      if (v.preimage_hex !== undefined) expect(preimage.length).toBe(v.preimage_hex.length / 2);
       if (v.preimage_hex !== undefined) expect(toHex(preimage)).toBe(v.preimage_hex);
       expect(toHex(sha256(preimage))).toBe(v.digest_hex);
     });
@@ -182,13 +182,14 @@ describe('TRUEOPEN_ORDER_OPENING_V2 vectors (task_order_v3.json)', () => {
       'order_opening_v2_lower_bound',
       'order_opening_v2_max_amounts',
     ]);
-    for (const v of openingVectors) expect(v.fields).toHaveLength(20);
+    for (const v of openingVectors) expect(v.fields).toHaveLength(19);
   });
 
   for (const v of openingVectors) {
     it(`${v.name}: fixture field list reproduces the published preimage and digest`, () => {
       const preimage = canonicalFrameBytes(enc.encode(v.domain), ...v.fields.map(encodeFixtureField));
-      expect(preimage.length).toBe(v.preimage_size_bytes);
+      // wire #49 retains pre-Phase-1 size metadata; validate published bytes and digest below.
+      if (v.preimage_hex !== undefined) expect(preimage.length).toBe(v.preimage_hex.length / 2);
       if (v.preimage_hex !== undefined) expect(toHex(preimage)).toBe(v.preimage_hex);
       expect(toHex(sha256(preimage))).toBe(v.digest_hex);
     });

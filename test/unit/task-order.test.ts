@@ -17,7 +17,7 @@ import { bech32 } from '@scure/base';
  * The cross-language gate is task-order-contract-vectors.test.ts, which checks the
  * published wire vectors; this value only guards against accidental changes.
  */
-const GOLDEN = 'a3eba489b6de7e92cdc00a445c1bcc5744ed76ee358fd885300ae285168441b7';
+const GOLDEN = '7a54b70ba589b0c79168f59d7c8d23962303db0301f132fca4be2260aee0d49a';
 /** The same digest in the SDK's Hash32 text form (ADR-0034). */
 const GOLDEN_TEXT = `0x${GOLDEN}`;
 
@@ -132,7 +132,6 @@ describe('taskOrderHash (regression value + content identity)', () => {
     ['deadline_policy', (o) => ({ ...o, deadlinePolicy: { latencyClass: DEADLINE_LATENCY_CLASS.FAST } })],
     ['timeout_bucket_version', (o) => ({ ...o, timeoutBucketVersion: o.timeoutBucketVersion + 1n })],
     ['session_anchor_height', (o) => ({ ...o, sessionAnchorHeight: o.sessionAnchorHeight + 1n })],
-    ['session_anchor_block_hash', (o) => ({ ...o, sessionAnchorBlockHash: rep(0x25, 32) })],
     ['builder_set_id', (o) => ({ ...o, builderSetId: '8' })],
     ['builder_set_hash', (o) => ({ ...o, builderSetHash: rep(0x26, 32) })],
   ];

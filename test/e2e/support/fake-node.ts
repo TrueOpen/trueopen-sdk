@@ -307,6 +307,7 @@ export class FakeNode {
           session: {
             session_id: p[4],
             owner_user_address: s.owner,
+            bound_builder: w.BUILDERS[0]!.address,
             next_expected_sequence: s.nextExpectedSequence.toString(),
             last_active_height: this.height.toString(),
             open_pending_count: s.openPendingCount,
@@ -389,6 +390,7 @@ export class FakeNode {
         assignment_status: 'ASSIGNMENT_STATUS_ASSIGNED',
         // Optional fields (oneofs): present once the winner is drawn.
         winner_worker: t.winner,
+        dispatch_ticket_hash: `0x${'33'.repeat(32)}`,
         winner_confirm_height: this.height.toString(),
         infer_deadline_height: (this.height + 50n).toString(),
         winner_draw_digest: w.labelHash32(`e2e-draw-${t.taskId}`),

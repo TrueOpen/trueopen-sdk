@@ -69,7 +69,7 @@ describe('buildTaskOrder', () => {
     expect(order.inputSizeBytes).toBe(BigInt(PAYLOAD.length));
     // The on-chain context is signed in as-is.
     expect(order.builderSetId).toBe('genesis-1');
-    expect(hash32Text(order.sessionAnchorBlockHash)).toBe(hexOf(0x14));
+    expect(order.sessionAnchorBlockHash).toBeUndefined();
     expect(order.timeoutBucketVersion).toBe(1n);
     // Being able to compute the digest means the scalar scope is fully satisfied.
     expect(taskOrderHashHex(order)).toMatch(/^0x[0-9a-f]{64}$/);
@@ -81,10 +81,10 @@ describe('buildTaskOrder', () => {
     expect(b).not.toBe(a);
   });
 
-  it('on-chain context change → task_hash changes (anchor is part of the signature)', () => {
+  it('retired selection anchor does not enter the order hash', () => {
     const a = taskOrderHashHex(buildTaskOrder(ctx, req));
     const b = taskOrderHashHex(buildTaskOrder({ ...ctx, sessionAnchorBlockHash: hexOf(0x99) }, req));
-    expect(b).not.toBe(a);
+    expect(b).toBe(a);
   });
 
   // Assert on TrueOpenError.code rather than message: code is the stable contract, wording can change.
@@ -157,22 +157,22 @@ const bucketBody = (kind: string) => ({
 });
 
 describe('resolveTaskOrderContext', () => {
-  it('anchor uses latest-lag, gets block_hash from beacon and the current effective version from bucket', async () => {
+  it('uses the current set and parameters without reading a retired selection beacon', async () => {
     const hub = readerFor(1000, {
-      'builder_set/by_height/998': SET_BODY,
+      'builder_set/by_height/1000': SET_BODY,
       'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14), randomness_hex: toHex(rep(0x01, 32)), source_tag: 'proposer_vrf_v1', verified: true } },
       'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
     });
     const c = await resolveTaskOrderContext(hub, 'trueopen-localnet-1');
     expect(c.latestHeight).toBe(1000n);
-    expect(c.sessionAnchorHeight).toBe(998n);
-    expect(c.sessionAnchorBlockHash).toBe(hexOf(0x14));
+    expect(c.sessionAnchorHeight).toBe(1000n);
+    expect(c.sessionAnchorBlockHash).toBeUndefined();
     expect(c.builderSetId).toBe('genesis-1');
     expect(c.builderSetHash).toBe(hexOf(0x15));
     expect(c.timeoutBucketVersion).toBe(1n);
   });
 
-  it('reads the BuilderSet at the anchor height, not the latest height, when the set changes in between', async () => {
+  it('uses a newly effective BuilderSet', async () => {
     const hub = readerFor(1000, {
       // A new set took effect at 999: after the anchor, before the latest height.
       'builder_set/by_height/1000': {
@@ -183,14 +183,14 @@ describe('resolveTaskOrderContext', () => {
       'timeout_bucket/default': bucketBody('BUCKET_KIND_TIMEOUT'),
     });
     const c = await resolveTaskOrderContext(hub, 'trueopen-localnet-1');
-    expect(c.sessionAnchorHeight).toBe(998n);
-    expect(c.builderSetId).toBe('genesis-1');
-    expect(c.builderSetHash).toBe(hexOf(0x15));
+    expect(c.sessionAnchorHeight).toBe(1000n);
+    expect(c.builderSetId).toBe('rotation-2');
+    expect(c.builderSetHash).toBe(hexOf(0x99));
   });
 
   it('anchor earlier than the builder set effective height → blocked locally', async () => {
     const hub = readerFor(1000, {
-      'builder_set/by_height/998': {
+      'builder_set/by_height/1000': {
         set: { ...SET_BODY.set, effective_height: '9999' },
       },
       'beacon/998': { beacon: { height: '998', block_hash: hexOf(0x14) } },

@@ -143,7 +143,6 @@ function viewFromProto(bytes: Uint8Array): TaskOrderV3 {
     deadlinePolicy: { latencyClass: o.deadlinePolicy?.latencyClass ?? 0 },
     timeoutBucketVersion: o.timeoutBucketVersion,
     sessionAnchorHeight: o.sessionAnchorHeight,
-    sessionAnchorBlockHash: o.sessionAnchorBlockHash,
     builderSetId: o.builderSetId,
     builderSetHash: o.builderSetHash,
     payloadMode: o.payloadMode,
@@ -154,7 +153,7 @@ function viewFromProto(bytes: Uint8Array): TaskOrderV3 {
 
 describe('SignedOrderV2 encoding', () => {
   // Same self-consistent regression value as task-order.test.ts (not a cross-language golden value; see that file for details).
-  const GOLDEN = 'a3eba489b6de7e92cdc00a445c1bcc5744ed76ee358fd885300ae285168441b7';
+  const GOLDEN = '7a54b70ba589b0c79168f59d7c8d23962303db0301f132fca4be2260aee0d49a';
 
   it('task_hash is unchanged after a proto round trip (a drift gate between the hand-written view and the generated type)', () => {
     const bytes = encodeSignedOrder(fixture(), ORDER_EIP712, rep(0xaa, 64));

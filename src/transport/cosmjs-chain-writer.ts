@@ -1,14 +1,17 @@
+import { SESSION_FUNDING_TYPE_URL, decodeDepositSession, decodeWithdrawSession } from './session-funding';
+import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } from './session-funding';
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { TrueOpenError } from '../errors/errors';
 import { classifyBroadcastError, sessionTxFailureCode } from '../errors/classify';
 import {
   TYPE_URL,
+  encodeMsgCreateSession,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
   decodeMsgUpdateSessionKeyResponse,
 } from './task-msgs';
-import type { SessionKeyGrant, MsgUpdateSessionKeyResponse } from './task-msgs';
+import type { MsgUpdateSessionKeyResponse } from './task-msgs';
 import type {
   ChainReader,
   ChainClient,
@@ -150,20 +153,27 @@ export class CosmjsChainWriter {
     );
   }
 
-  async createSession(input?: { readonly sessionKey?: SessionKeyGrant }): Promise<CreateSessionResult> {
+  async createSession(input?: CreateSessionInput): Promise<CreateSessionResult> {
+    encodeMsgCreateSession({ ...input, signer: this.opts.signerAddress });
     const res = await this.broadcast([
-      {
-        typeUrl: TYPE_URL.createSession,
-        value: {
-          signer: this.opts.signerAddress,
-          ...(input?.sessionKey !== undefined ? { sessionKey: input.sessionKey } : {}),
-        },
-      },
+      { typeUrl: TYPE_URL.createSession, value: { ...input, signer: this.opts.signerAddress } },
     ]);
     const r = decodeMsgCreateSessionResponse(firstResponse(res, TYPE_URL.createSession));
     // The node response has no owner field; MsgCreateSession.signer_address is the session
     // owner, so use it to fill the field in.
     return { sessionId: r.sessionId, owner: this.opts.signerAddress, nonce: r.sessionNonce, status: r.status };
+  }
+
+  async depositSession(input: DepositSessionInput) {
+    const typeUrl = SESSION_FUNDING_TYPE_URL.depositSession;
+    const tx = await this.broadcast([{ typeUrl, value: { ...input, signer: this.opts.signerAddress } }]);
+    return decodeDepositSession(firstResponse(tx, typeUrl));
+  }
+
+  async withdrawSession(input: WithdrawSessionInput) {
+    const typeUrl = SESSION_FUNDING_TYPE_URL.withdrawSession;
+    const tx = await this.broadcast([{ typeUrl, value: { ...input, signer: this.opts.signerAddress } }]);
+    return decodeWithdrawSession(firstResponse(tx, typeUrl));
   }
 
   async cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult> {
@@ -199,6 +209,8 @@ export function composeChainClient(reader: ChainReader, writer: CosmjsChainWrite
     querySession: (id) => reader.querySession(id),
     querySessionNonce: (a) => reader.querySessionNonce(a),
     createSession: (i) => writer.createSession(i),
+    depositSession: (i) => writer.depositSession(i),
+    withdrawSession: (i) => writer.withdrawSession(i),
     cancelOrder: (i) => writer.cancelOrder(i),
     updateSessionKey: (i) => writer.updateSessionKey(i),
   };

@@ -10,22 +10,20 @@ import { file_cosmos_proto_cosmos } from "../../cosmos_proto/cosmos_pb.js";
 import { file_gogoproto_gogo } from "../../gogoproto/gogo_pb.js";
 import type { Amount } from "../../shared/v1/amount_pb.js";
 import { file_shared_v1_amount } from "../../shared/v1/amount_pb.js";
-import type { Duty } from "../../shared/v1/common_pb.js";
 import { file_shared_v1_common } from "../../shared/v1/common_pb.js";
 import type { TaskType } from "../../shared/v1/model_profile_pb.js";
 import { file_shared_v1_model_profile } from "../../shared/v1/model_profile_pb.js";
-import type { PayloadModeV1, TaskCandidateStageStatusV1 } from "./assignment_pb.js";
-import { file_task_v1_assignment } from "./assignment_pb.js";
-import type { CandidateMemberRefV1 } from "./open_verify_pb.js";
-import { file_task_v1_open_verify } from "./open_verify_pb.js";
 import { file_shared_v1_rest_encoding } from "../../shared/v1/rest_encoding_pb.js";
+import type { PayloadModeV1 } from "./assignment_pb.js";
+import { file_task_v1_assignment } from "./assignment_pb.js";
+import { file_task_v1_open_verify } from "./open_verify_pb.js";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file task/v1/msg_assignment.proto.
  */
 export const file_task_v1_msg_assignment: GenFile = /*@__PURE__*/
-  fileDesc("Chx0YXNrL3YxL21zZ19hc3NpZ25tZW50LnByb3RvEgd0YXNrLnYxIkgKEERlYWRsaW5lUG9saWN5VjESNAoNbGF0ZW5jeV9jbGFzcxgBIAEoDjIdLnRhc2sudjEuRGVhZGxpbmVMYXRlbmN5Q2xhc3MiiAIKEERlY29kaW5nUGFyYW1zVjESGAoQc2FtcGxpbmdfZW5hYmxlZBgBIAEoCBIZChF0ZW1wZXJhdHVyZV9taWxsaRgCIAEoDRIRCgl0b3BfcF9wcG0YAyABKA0SDQoFdG9wX2sYBCABKA0SDAoEc2VlZBgFIAEoBBIeChZwcmVzZW5jZV9wZW5hbHR5X21pbGxpGAYgASgFEh8KF2ZyZXF1ZW5jeV9wZW5hbHR5X21pbGxpGAcgASgFEh4KFnJlcGV0aXRpb25fcGVuYWx0eV9wcG0YCCABKA0SFgoOc3RvcF9zZXF1ZW5jZXMYCSADKAkSFgoOc3RvcF90b2tlbl9pZHMYCiADKA0isAEKEkdlbmVyYXRpb25QYXJhbXNWMRIoCiBnZW5lcmF0aW9uX3BhcmFtc19zY2hlbWFfdmVyc2lvbhgBIAEoDRIZChFtYXhfb3V0cHV0X3Rva2VucxgCIAEoBBIbChNtYXhfb3V0cHV0X2R1cmF0aW9uGAMgASgEEjgKD2RlY29kaW5nX3BhcmFtcxgEIAEoCzIZLnRhc2sudjEuRGVjb2RpbmdQYXJhbXNWMUIEyN4fACLnBwoLVGFza09yZGVyVjMSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSLgoMdXNlcl9hZGRyZXNzGAMgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSGAoKc2Vzc2lvbl9pZBgEIAEoDEIEyPMYAhIWCg5vcmRlcl9zZXF1ZW5jZRgFIAEoBBIWCghtb2RlbF9pZBgGIAEoDEIEyPMYAhIXCg9wcm9maWxlX3ZlcnNpb24YByABKA0SJgoJdGFza190eXBlGAggASgOMhMuc2hhcmVkLnYxLlRhc2tUeXBlEhgKCmlucHV0X2hhc2gYCSABKAxCBMjzGAISGAoQaW5wdXRfc2l6ZV9ieXRlcxgKIAEoBBIUCgxpbnB1dF9idWNrZXQYCyABKA0SHAoUb3V0cHV0X2J1ZGdldF9idWNrZXQYDCABKA0SPAoRZ2VuZXJhdGlvbl9wYXJhbXMYDSABKAsyGy50YXNrLnYxLkdlbmVyYXRpb25QYXJhbXNWMUIEyN4fABIqCglwcmljZV9iaWQYDiABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEigKB21heF9mZWUYDyABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEjgKF2Fzc2lnbm1lbnRfcHJpb3JpdHlfZmVlGBAgASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABIvCg50eF9mZWVfcmVzZXJ2ZRgRIAEoCzIRLnNoYXJlZC52MS5BbW91bnRCBMjeHwASHgoWZWFybGllc3Rfc3VibWl0X2hlaWdodBgSIAEoBBIbChNvcmRlcl9leHBpcmVfaGVpZ2h0GBMgASgEEjgKD2RlYWRsaW5lX3BvbGljeRgUIAEoCzIZLnRhc2sudjEuRGVhZGxpbmVQb2xpY3lWMUIEyN4fABIeChZ0aW1lb3V0X2J1Y2tldF92ZXJzaW9uGBUgASgEEh0KFXNlc3Npb25fYW5jaG9yX2hlaWdodBgWIAEoBBInChlzZXNzaW9uX2FuY2hvcl9ibG9ja19oYXNoGBcgASgMQgTI8xgCEhYKDmJ1aWxkZXJfc2V0X2lkGBggASgJEh4KEGJ1aWxkZXJfc2V0X2hhc2gYGSABKAxCBMjzGAISLAoMcGF5bG9hZF9tb2RlGBogASgOMhYudGFzay52MS5QYXlsb2FkTW9kZVYxEiIKFGlucHV0X2tleV9jb21taXRtZW50GBsgASgMQgTI8xgCEiMKFXVzZXJfcmVjaXBpZW50X3B1YmtleRgcIAEoDEIEyPMYASKOAQoNU2lnbmVkT3JkZXJWMhIpCgVvcmRlchgBIAEoCzIULnRhc2sudjEuVGFza09yZGVyVjNCBMjeHwASGAoQc2lnbmF0dXJlX3NjaGVtZRgCIAEoCRIcCg51c2VyX3NpZ25hdHVyZRgDIAEoDEIEyPMYARIaChJzaWduYXR1cmVfY2hhaW5faWQYBCABKAQiQwoRRXhpc3RpbmdUYXNrUmVmVjESFQoHdGFza19pZBgBIAEoDEIEyPMYAhIXCgl0YXNrX2hhc2gYAiABKAxCBMjzGAIihgEKFldvcmtlckhhbmRyYWlzZVNjb3BlVjESLgoMc2lnbmVkX29yZGVyGAEgASgLMhYudGFzay52MS5TaWduZWRPcmRlclYySAASMwoNZXhpc3RpbmdfdGFzaxgCIAEoCzIaLnRhc2sudjEuRXhpc3RpbmdUYXNrUmVmVjFIAEIHCgVzY29wZSLvAgoRV29ya2VySGFuZHJhaXNlVjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSFQoHdGFza19pZBgDIAEoDEIEyPMYAhIXCgl0YXNrX2hhc2gYBCABKAxCBMjzGAISFgoIbW9kZWxfaWQYBSABKAxCBMjzGAISFwoPcHJvZmlsZV92ZXJzaW9uGAYgASgNEjMKBm1lbWJlchgHIAEoCzIdLnRhc2sudjEuQ2FuZGlkYXRlTWVtYmVyUmVmVjFCBMjeHwASHQoEZHV0eRgIIAEoDjIPLnNoYXJlZC52MS5EdXR5EiMKG3NlcnZpY2VfYXV0aG9yaXphdGlvbl9ub25jZRgJIAEoBBIVCg1leHBpcnlfaGVpZ2h0GAogASgEEh8KEXNlcnZpY2Vfc2lnbmF0dXJlGAsgASgMQgTI8xgBEh4KEHJlY2lwaWVudF9wdWJrZXkYDCABKAxCBMjzGAEiggIKGU1zZ1N1Ym1pdFdvcmtlckhhbmRyYWlzZXMSNAoFc2NvcGUYASABKAsyHy50YXNrLnYxLldvcmtlckhhbmRyYWlzZVNjb3BlVjFCBMjeHwASNAoKaGFuZHJhaXNlcxgCIAMoCzIaLnRhc2sudjEuV29ya2VySGFuZHJhaXNlVjFCBMjeHwASMwoRc3VibWl0dGVyX2FkZHJlc3MYAyABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZzpEguewKhFzdWJtaXR0ZXJfYWRkcmVzc4rnsCopdHJ1ZW9wZW4veC90YXNrL01zZ1N1Ym1pdFdvcmtlckhhbmRyYWlzZXMixQEKIU1zZ1N1Ym1pdFdvcmtlckhhbmRyYWlzZXNSZXNwb25zZRIVCgd0YXNrX2lkGAEgASgMQgTI8xgCEh0KD3Byb3Bvc2FsX2RpZ2VzdBgCIAEoDEIEyPMYAhIaChJhZGRlZF9tZW1iZXJfY291bnQYAyABKA0SEwoLdW5pb25fY291bnQYBCABKA0SOQoMc3RhZ2Vfc3RhdHVzGAUgASgOMiMudGFzay52MS5UYXNrQ2FuZGlkYXRlU3RhZ2VTdGF0dXNWMSrMAQoURGVhZGxpbmVMYXRlbmN5Q2xhc3MSJgoiREVBRExJTkVfTEFURU5DWV9DTEFTU19VTlNQRUNJRklFRBAAEiIKHkRFQURMSU5FX0xBVEVOQ1lfQ0xBU1NfRUNPTk9NWRABEiMKH0RFQURMSU5FX0xBVEVOQ1lfQ0xBU1NfU1RBTkRBUkQQAhIfChtERUFETElORV9MQVRFTkNZX0NMQVNTX0ZBU1QQAxIiCh5ERUFETElORV9MQVRFTkNZX0NMQVNTX0VYUFJFU1MQBEInWiVnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC90YXNrL3R5cGVzYgZwcm90bzM", [file_amino_amino, file_cosmos_msg_v1_msg, file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_amount, file_shared_v1_common, file_shared_v1_model_profile, file_task_v1_assignment, file_task_v1_open_verify, file_shared_v1_rest_encoding]);
+  fileDesc("Chx0YXNrL3YxL21zZ19hc3NpZ25tZW50LnByb3RvEgd0YXNrLnYxIkgKEERlYWRsaW5lUG9saWN5VjESNAoNbGF0ZW5jeV9jbGFzcxgBIAEoDjIdLnRhc2sudjEuRGVhZGxpbmVMYXRlbmN5Q2xhc3MiiAIKEERlY29kaW5nUGFyYW1zVjESGAoQc2FtcGxpbmdfZW5hYmxlZBgBIAEoCBIZChF0ZW1wZXJhdHVyZV9taWxsaRgCIAEoDRIRCgl0b3BfcF9wcG0YAyABKA0SDQoFdG9wX2sYBCABKA0SDAoEc2VlZBgFIAEoBBIeChZwcmVzZW5jZV9wZW5hbHR5X21pbGxpGAYgASgFEh8KF2ZyZXF1ZW5jeV9wZW5hbHR5X21pbGxpGAcgASgFEh4KFnJlcGV0aXRpb25fcGVuYWx0eV9wcG0YCCABKA0SFgoOc3RvcF9zZXF1ZW5jZXMYCSADKAkSFgoOc3RvcF90b2tlbl9pZHMYCiADKA0isAEKEkdlbmVyYXRpb25QYXJhbXNWMRIoCiBnZW5lcmF0aW9uX3BhcmFtc19zY2hlbWFfdmVyc2lvbhgBIAEoDRIZChFtYXhfb3V0cHV0X3Rva2VucxgCIAEoBBIbChNtYXhfb3V0cHV0X2R1cmF0aW9uGAMgASgEEjgKD2RlY29kaW5nX3BhcmFtcxgEIAEoCzIZLnRhc2sudjEuRGVjb2RpbmdQYXJhbXNWMUIEyN4fACLfBwoLVGFza09yZGVyVjMSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SEAoIY2hhaW5faWQYAiABKAkSLgoMdXNlcl9hZGRyZXNzGAMgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSGAoKc2Vzc2lvbl9pZBgEIAEoDEIEyPMYAhIWCg5vcmRlcl9zZXF1ZW5jZRgFIAEoBBIWCghtb2RlbF9pZBgGIAEoDEIEyPMYAhIXCg9wcm9maWxlX3ZlcnNpb24YByABKA0SJgoJdGFza190eXBlGAggASgOMhMuc2hhcmVkLnYxLlRhc2tUeXBlEhgKCmlucHV0X2hhc2gYCSABKAxCBMjzGAISGAoQaW5wdXRfc2l6ZV9ieXRlcxgKIAEoBBIUCgxpbnB1dF9idWNrZXQYCyABKA0SHAoUb3V0cHV0X2J1ZGdldF9idWNrZXQYDCABKA0SPAoRZ2VuZXJhdGlvbl9wYXJhbXMYDSABKAsyGy50YXNrLnYxLkdlbmVyYXRpb25QYXJhbXNWMUIEyN4fABIqCglwcmljZV9iaWQYDiABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEigKB21heF9mZWUYDyABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEjgKF2Fzc2lnbm1lbnRfcHJpb3JpdHlfZmVlGBAgASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABIvCg50eF9mZWVfcmVzZXJ2ZRgRIAEoCzIRLnNoYXJlZC52MS5BbW91bnRCBMjeHwASHgoWZWFybGllc3Rfc3VibWl0X2hlaWdodBgSIAEoBBIbChNvcmRlcl9leHBpcmVfaGVpZ2h0GBMgASgEEjgKD2RlYWRsaW5lX3BvbGljeRgUIAEoCzIZLnRhc2sudjEuRGVhZGxpbmVQb2xpY3lWMUIEyN4fABIeChZ0aW1lb3V0X2J1Y2tldF92ZXJzaW9uGBUgASgEEh0KFXNlc3Npb25fYW5jaG9yX2hlaWdodBgWIAEoBBIWCg5idWlsZGVyX3NldF9pZBgYIAEoCRIeChBidWlsZGVyX3NldF9oYXNoGBkgASgMQgTI8xgCEiwKDHBheWxvYWRfbW9kZRgaIAEoDjIWLnRhc2sudjEuUGF5bG9hZE1vZGVWMRIiChRpbnB1dF9rZXlfY29tbWl0bWVudBgbIAEoDEIEyPMYAhIjChV1c2VyX3JlY2lwaWVudF9wdWJrZXkYHCABKAxCBMjzGAFKBAgXEBhSGXNlc3Npb25fYW5jaG9yX2Jsb2NrX2hhc2gijgEKDVNpZ25lZE9yZGVyVjISKQoFb3JkZXIYASABKAsyFC50YXNrLnYxLlRhc2tPcmRlclYzQgTI3h8AEhgKEHNpZ25hdHVyZV9zY2hlbWUYAiABKAkSHAoOdXNlcl9zaWduYXR1cmUYAyABKAxCBMjzGAESGgoSc2lnbmF0dXJlX2NoYWluX2lkGAQgASgEIkMKEUV4aXN0aW5nVGFza1JlZlYxEhUKB3Rhc2tfaWQYASABKAxCBMjzGAISFwoJdGFza19oYXNoGAIgASgMQgTI8xgCKswBChREZWFkbGluZUxhdGVuY3lDbGFzcxImCiJERUFETElORV9MQVRFTkNZX0NMQVNTX1VOU1BFQ0lGSUVEEAASIgoeREVBRExJTkVfTEFURU5DWV9DTEFTU19FQ09OT01ZEAESIwofREVBRExJTkVfTEFURU5DWV9DTEFTU19TVEFOREFSRBACEh8KG0RFQURMSU5FX0xBVEVOQ1lfQ0xBU1NfRkFTVBADEiIKHkRFQURMSU5FX0xBVEVOQ1lfQ0xBU1NfRVhQUkVTUxAEQidaJWdpdGh1Yi5jb20vVHJ1ZU9wZW4vbm9kZS94L3Rhc2svdHlwZXNiBnByb3RvMw", [file_amino_amino, file_cosmos_msg_v1_msg, file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_amount, file_shared_v1_common, file_shared_v1_model_profile, file_shared_v1_rest_encoding, file_task_v1_assignment, file_task_v1_open_verify]);
 
 /**
  * DeadlinePolicyV1 carries only the protocol-allowed latency class.
@@ -318,11 +316,6 @@ export type TaskOrderV3 = Message<"task.v1.TaskOrderV3"> & {
   sessionAnchorHeight: bigint;
 
   /**
-   * @generated from field: bytes session_anchor_block_hash = 23;
-   */
-  sessionAnchorBlockHash: Uint8Array;
-
-  /**
    * @generated from field: string builder_set_id = 24;
    */
   builderSetId: string;
@@ -449,208 +442,6 @@ export type ExistingTaskRefV1 = Message<"task.v1.ExistingTaskRefV1"> & {
  */
 export const ExistingTaskRefV1Schema: GenMessage<ExistingTaskRefV1> = /*@__PURE__*/
   messageDesc(file_task_v1_msg_assignment, 5);
-
-/**
- * WorkerHandraiseScopeV1 is the exactly-one proposal scope of this contract. The first
- * proposal must carry signed_order; any later proposal must carry existing_task.
- * Both filled or both empty is rejected.
- * WorkerHandraiseScopeV1 defines the WorkerHandraiseScopeV1 wire type.
- *
- * @generated from message task.v1.WorkerHandraiseScopeV1
- */
-export type WorkerHandraiseScopeV1 = Message<"task.v1.WorkerHandraiseScopeV1"> & {
-  /**
-   * Exactly one branch must be present.
-   * scope selects one supported variant.
-   *
-   * @generated from oneof task.v1.WorkerHandraiseScopeV1.scope
-   */
-  scope: {
-    /**
-     * @generated from field: task.v1.SignedOrderV2 signed_order = 1;
-     */
-    value: SignedOrderV2;
-    case: "signedOrder";
-  } | {
-    /**
-     * @generated from field: task.v1.ExistingTaskRefV1 existing_task = 2;
-     */
-    value: ExistingTaskRefV1;
-    case: "existingTask";
-  } | { case: undefined; value?: undefined };
-};
-
-/**
- * Describes the message task.v1.WorkerHandraiseScopeV1.
- * Use `create(WorkerHandraiseScopeV1Schema)` to create a new message.
- */
-export const WorkerHandraiseScopeV1Schema: GenMessage<WorkerHandraiseScopeV1> = /*@__PURE__*/
-  messageDesc(file_task_v1_msg_assignment, 6);
-
-/**
- * WorkerHandraiseV1 is one Cortex-signed Worker handraise (the wire API). Its
- * `member` field uses the single module-wide CandidateMemberRefV1, declared in
- * task/v1/open_verify.proto. The
- * signing digest is H_FIELDS_V1("TRUEOPEN_WORKER_HANDRAISE_V1", all fields except
- * service_signature) in exactly this field order. service_authorization_nonce
- * must equal the operator's current service binding nonce; it is not a
- * per-message counter. Raw handraises are never persisted.
- *
- * schema_version is 1: this contract writes `schema_version: uint32 = 1` literally for this
- * wire. Handraise schema versions are independent of receipt versions.
- * WorkerHandraiseV1 defines the WorkerHandraiseV1 wire type.
- *
- * @generated from message task.v1.WorkerHandraiseV1
- */
-export type WorkerHandraiseV1 = Message<"task.v1.WorkerHandraiseV1"> & {
-  /**
-   * Always 1; this contract pins it literally.
-   *
-   * @generated from field: uint32 schema_version = 1;
-   */
-  schemaVersion: number;
-
-  /**
-   * @generated from field: string chain_id = 2;
-   */
-  chainId: string;
-
-  /**
-   * @generated from field: bytes task_id = 3;
-   */
-  taskId: Uint8Array;
-
-  /**
-   * @generated from field: bytes task_hash = 4;
-   */
-  taskHash: Uint8Array;
-
-  /**
-   * @generated from field: bytes model_id = 5;
-   */
-  modelId: Uint8Array;
-
-  /**
-   * @generated from field: uint32 profile_version = 6;
-   */
-  profileVersion: number;
-
-  /**
-   * @generated from field: task.v1.CandidateMemberRefV1 member = 7;
-   */
-  member?: CandidateMemberRefV1 | undefined;
-
-  /**
-   * @generated from field: shared.v1.Duty duty = 8;
-   */
-  duty: Duty;
-
-  /**
-   * @generated from field: uint64 service_authorization_nonce = 9;
-   */
-  serviceAuthorizationNonce: bigint;
-
-  /**
-   * @generated from field: uint64 expiry_height = 10;
-   */
-  expiryHeight: bigint;
-
-  /**
-   * @generated from field: bytes service_signature = 11;
-   */
-  serviceSignature: Uint8Array;
-
-  /**
-   * Reserved recipient key: empty in plaintext Phase 0.
-   *
-   * @generated from field: bytes recipient_pubkey = 12;
-   */
-  recipientPubkey: Uint8Array;
-};
-
-/**
- * Describes the message task.v1.WorkerHandraiseV1.
- * Use `create(WorkerHandraiseV1Schema)` to create a new message.
- */
-export const WorkerHandraiseV1Schema: GenMessage<WorkerHandraiseV1> = /*@__PURE__*/
-  messageDesc(file_task_v1_msg_assignment, 7);
-
-/**
- * MsgSubmitWorkerHandraises accepts the order plus Worker handraises and ORs the
- * legal bits into the authoritative stage union (the wire API).
- * submitter_address is the Cosmos signer only: it pays gas, never enters the
- * proposal digest or any frozen candidate fact. Builder operator, BuilderSet,
- * Task Builders, pool hash, candidate weights, legal-set hash and deadlines are
- * all Keeper-derived and must not appear as request copies.
- * MsgSubmitWorkerHandraises defines the MsgSubmitWorkerHandraises wire type.
- *
- * @generated from message task.v1.MsgSubmitWorkerHandraises
- */
-export type MsgSubmitWorkerHandraises = Message<"task.v1.MsgSubmitWorkerHandraises"> & {
-  /**
-   * @generated from field: task.v1.WorkerHandraiseScopeV1 scope = 1;
-   */
-  scope?: WorkerHandraiseScopeV1 | undefined;
-
-  /**
-   * @generated from field: repeated task.v1.WorkerHandraiseV1 handraises = 2;
-   */
-  handraises: WorkerHandraiseV1[];
-
-  /**
-   * @generated from field: string submitter_address = 3;
-   */
-  submitterAddress: string;
-};
-
-/**
- * Describes the message task.v1.MsgSubmitWorkerHandraises.
- * Use `create(MsgSubmitWorkerHandraisesSchema)` to create a new message.
- */
-export const MsgSubmitWorkerHandraisesSchema: GenMessage<MsgSubmitWorkerHandraises> = /*@__PURE__*/
-  messageDesc(file_task_v1_msg_assignment, 8);
-
-/**
- * MsgSubmitWorkerHandraisesResponse reports the Keeper-derived proposal receipt
- * . added_member_count is the number of 0->1 bits in this proposal and is
- * 0 for an exact replay noop; union_count is the committed authoritative count.
- * MsgSubmitWorkerHandraisesResponse defines the MsgSubmitWorkerHandraisesResponse wire type.
- *
- * @generated from message task.v1.MsgSubmitWorkerHandraisesResponse
- */
-export type MsgSubmitWorkerHandraisesResponse = Message<"task.v1.MsgSubmitWorkerHandraisesResponse"> & {
-  /**
-   * @generated from field: bytes task_id = 1;
-   */
-  taskId: Uint8Array;
-
-  /**
-   * @generated from field: bytes proposal_digest = 2;
-   */
-  proposalDigest: Uint8Array;
-
-  /**
-   * @generated from field: uint32 added_member_count = 3;
-   */
-  addedMemberCount: number;
-
-  /**
-   * @generated from field: uint32 union_count = 4;
-   */
-  unionCount: number;
-
-  /**
-   * @generated from field: task.v1.TaskCandidateStageStatusV1 stage_status = 5;
-   */
-  stageStatus: TaskCandidateStageStatusV1;
-};
-
-/**
- * Describes the message task.v1.MsgSubmitWorkerHandraisesResponse.
- * Use `create(MsgSubmitWorkerHandraisesResponseSchema)` to create a new message.
- */
-export const MsgSubmitWorkerHandraisesResponseSchema: GenMessage<MsgSubmitWorkerHandraisesResponse> = /*@__PURE__*/
-  messageDesc(file_task_v1_msg_assignment, 9);
 
 /**
  * DeadlineLatencyClass is the only latency class set. Values are frozen by

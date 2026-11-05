@@ -141,7 +141,7 @@ function absorb(acc: Acc, events: readonly AssistantStreamEvent[]): void {
   for (const e of events) {
     if (e.kind === 'content') acc.content += e.text;
     else if (e.kind === 'reasoning') acc.reasoning += e.text;
-    else acc.calls.push({ name: e.call.name, arguments: e.call.arguments });
+    else if (e.kind === 'tool-call-provisional') acc.calls.push({ name: e.call.name, arguments: e.call.arguments });
   }
 }
 

@@ -5,8 +5,8 @@ import { TYPE_URL, encodeMsgCreateSession, encodeMsgCancelOrder, encodeMsgUpdate
 describe('taskRegistry', () => {
   it('registry.encode matches the hand-written encoder byte-for-byte (CreateSession)', () => {
     const reg = taskRegistry();
-    const bytes = reg.encode({ typeUrl: TYPE_URL.createSession, value: { signer: 'trueopen1x' } });
-    expect(bytes).toEqual(encodeMsgCreateSession({ signer: 'trueopen1x' }));
+    const bytes = reg.encode({ typeUrl: TYPE_URL.createSession, value: { signer: 'trueopen1x', initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' } });
+    expect(bytes).toEqual(encodeMsgCreateSession({ signer: 'trueopen1x', initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' }));
   });
 
   it('registry.encode matches (CancelOrder, includes uint64)', () => {
@@ -28,6 +28,8 @@ describe('taskRegistry', () => {
     const create = {
       signer: 'trueopen1x',
       sessionKey: { sessionKey: new Uint8Array(20).fill(7), expiryHeight: 9n, spendCap: '0' },
+      initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl',
+      initialDeposit: '1000',
     };
     expect(reg.encode({ typeUrl: TYPE_URL.createSession, value: create })).toEqual(encodeMsgCreateSession(create));
   });

@@ -51,34 +51,22 @@ const stream = (sources: OutputStreamSource[], extra: { maxAttempts?: number } =
 const text = (events: OutputStreamEvent[]): string => events.flatMap((e) => (e.kind === 'chunk' ? [e.text] : [])).join('');
 
 describe('e2e failures: Builders', () => {
-  it('one Builder down: openTask succeeds and reports that Builder\'s transport error', async () => {
+  it('an unavailable unbound Builder does not affect dispatch to the bound Builder', async () => {
     await world.nexus[2]!.close();
     const res = await open();
     expect(res.accepted).toBe(true);
-    const byAddr = new Map(res.builders.map((b) => [b.address, b]));
-    const down = byAddr.get(w.BUILDERS[2]!.address)!;
-    expect(down.ack).toBeUndefined();
-    expect(down.error).toBeInstanceOf(TrueOpenError);
-    expect(down.error).toMatchObject({ code: 'NEXUS_TRANSPORT_FAILED', category: 'transport', retriable: true, switchSource: true });
-    for (const i of [0, 1]) expect(byAddr.get(w.BUILDERS[i]!.address)!.ack?.accepted).toBe(true);
-    // Ranks are the 1-based selection ranks.
-    expect(res.builders.map((b) => b.rank).sort()).toEqual([1, 2, 3]);
-
-    // Streaming from the down Builder first moves on to the next one.
+    expect(res.builders.map(b => b.address)).toEqual([w.BUILDERS[0]!.address]);
+    expect(world.nexus[1]!.calls).toEqual([]);
     acceptOnChain(world);
     drawWinner(world);
-    const events = await stream(world.sources([2, 0]));
-    expect(text(events)).toBe(outputText(STREAM));
-    expect(world.nexus[0]!.acks).toHaveLength(1);
+    expect(text(await stream(world.sources([2, 0])))).toBe(outputText(STREAM));
   });
 
-  it('a Builder whose certificate does not match the chain pin is refused before any request byte', async () => {
-    world.node.descriptors.set(w.BUILDERS[1]!.address, { uri: world.nexus[1]!.url, tlsPubkeyHash: `0x${'ab'.repeat(32)}` });
-    const res = await open();
-    expect(res.accepted).toBe(true);
-    const pinned = res.builders.find((b) => b.address === w.BUILDERS[1]!.address)!;
-    expect(pinned.error).toMatchObject({ category: 'transport', retriable: false, switchSource: true });
-    expect(world.nexus[1]!.calls).toEqual([]);
+  it('a bound Builder with a wrong TLS pin is refused before any request byte', async () => {
+    world.node.descriptors.set(w.BUILDERS[0]!.address, { uri: world.nexus[0]!.url, tlsPubkeyHash: `0x${'ab'.repeat(32)}` });
+    const error = await caught(open());
+    expect(error).toMatchObject({ results: [{ error: { category: 'transport', retriable: false, switchSource: true } }] });
+    for (const n of world.nexus) expect(n.calls).toEqual([]);
   });
 
   it('a Builder that truncates with an unsigned Fin is left for another; delivery resumes without duplicates', async () => {
@@ -163,17 +151,11 @@ describe('e2e failures: chain facts', () => {
     for (const n of world.nexus) expect(n.calls).toEqual([]);
   });
 
-  it('Builder set changed between anchor and latest: the order signs and routes by the anchor-height set', async () => {
+  it('a newly effective set excludes the old bound Builder and requires binding recovery', async () => {
     world.node.builderSets = [w.SET_A, w.SET_B];
     expect((await world.hub.getActiveBuilderSet()).builderSetId).toBe(w.SET_B.id);
-    const res = await open();
-    expect(res.context.builderSetId).toBe(w.SET_A.id);
-    expect(res.context.builderSetHash).toBe(w.SET_A.hash);
-    expect(res.builders.map((b) => b.address).sort()).toEqual([...w.SET_A.members].sort());
-    expect(res.builders.every((b) => b.ack?.accepted === true)).toBe(true);
-    for (const n of world.nexus.slice(3)) expect(n.calls).toEqual([]);
-    // Same order and task as without the change.
-    expect(res.taskHash).toBe(STREAM.task_hash);
+    await expect(open()).rejects.toMatchObject({ code: 'SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT' });
+    for (const n of world.nexus) expect(n.calls).toEqual([]);
   });
 
   it('winner, then receipt, not on chain yet: OUTPUT_TRUST_ANCHOR_PENDING until they appear', async () => {
@@ -249,8 +231,8 @@ describe('e2e failures: nexus error codes map to typed categories', () => {
       let err: unknown;
       switch (c.method) {
         case 'OpenTask': {
-          const res = await open(client);
-          err = res.builders.find((b) => b.address === w.BUILDERS[0]!.address)?.error;
+          const failure = await caught(open(client));
+          err = (failure as unknown as { results: { error: unknown }[] }).results[0]!.error;
           break;
         }
         case 'AckOutput':
@@ -298,14 +280,14 @@ describe('e2e failures: nexus error codes map to typed categories', () => {
   });
 });
 
-describe('e2e: a stream captured from a real Worker', () => {
+describe('e2e: Phase 1 signatures over captured Worker output', () => {
   it('streams and fetches through the fake nexus and verifies with explicit anchors', async () => {
     const ref = REFERENCE_STREAM;
     world.outputs.set(ref.task_id, ref);
     world.node.sessions.set(ref.session_id, { owner: w.USER.address, nextExpectedSequence: 0n, openPendingCount: 0 });
     const workerServicePubKey = Uint8Array.from(Buffer.from(ref.worker_pubkey_hex, 'hex'));
     const client = world.client(1);
-    const events = await drain(client.streamOutput({ sessionId: ref.session_id, taskId: ref.task_id, taskHash: ref.task_hash, workerServicePubKey }));
+    const events = await drain(client.streamOutput({ sessionId: ref.session_id, taskId: ref.task_id, taskHash: ref.task_hash, dispatchTicketHash: `0x${ref.dispatch_ticket_hash}`, workerServicePubKey }));
     expect(text(events)).toBe(outputText(ref));
     expect(events.at(-1)).toMatchObject({ kind: 'fin', attested: true });
 

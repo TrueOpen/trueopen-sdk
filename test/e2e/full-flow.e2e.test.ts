@@ -16,7 +16,7 @@ beforeEach(async () => { world = await startWorld(); });
 afterEach(async () => { await world.close(); });
 
 describe('e2e: full flow through the SDK facade', () => {
-  it('reads params, creates a session, opens a task on 3 Builders, streams, fetches and sees it settle', async () => {
+  it('reads params, creates a session, opens a task on the bound Builder, streams, fetches and sees it settle', async () => {
     // 1. Chain params: the fee denom comes from chain, never from constants.
     expect(await world.hub.getBusinessDenom()).toBe(w.BUSINESS_DENOM);
 
@@ -25,7 +25,7 @@ describe('e2e: full flow through the SDK facade', () => {
     const client = world.client(0, { chain: writer.chain });
     let sessionId: string;
     try {
-      const session = await client.createSession('e2e');
+      const session = await client.createSession({ label: 'e2e', initialBuilder: w.BUILDERS[0]!.address, initialDeposit: '100000' });
       sessionId = session.sessionId;
       expect(session.owner).toBe(w.USER.address);
       expect(session.nextExpectedSequence).toBe(0n);
@@ -47,28 +47,28 @@ describe('e2e: full flow through the SDK facade', () => {
     const opened = await client.openTask({ sessionId, idempotencyKey: `${sessionId}:0`, order: w.orderIntent() });
     expect(opened.accepted).toBe(true);
     expect(opened.feeDenom).toBe(w.BUSINESS_DENOM);
-    expect(opened.context.sessionAnchorHeight).toBe(w.ANCHOR_HEIGHT);
+    expect(opened.context.sessionAnchorHeight).toBe(w.LATEST_HEIGHT);
     expect(opened.context.builderSetId).toBe(w.SET_A.id);
     expect(opened.context.timeoutBucketVersion).toBe(w.TIMEOUT_BUCKET_VERSION);
     expect(opened.taskId).toBe(STREAM.task_id);
     // The Worker-signed stream fixture was generated for exactly this task_hash.
     expect(opened.taskHash, 'order changed: regenerate fixtures/output-stream.json (fixtures/gen)').toBe(STREAM.task_hash);
     expect(opened.unresolvedBuilders).toEqual([]);
-    expect(opened.builders.map((b) => b.address).sort()).toEqual([...w.SET_A.members].sort());
+    expect(opened.builders.map((b) => b.address).sort()).toEqual([w.BUILDERS[0]!.address]);
     for (const b of opened.builders) {
       expect(b.error).toBeUndefined();
       expect(b.ack?.accepted).toBe(true);
       expect(b.ack?.taskId).toBe(STREAM.task_id);
       expect(b.tlsPubkeyHash).toMatch(/^0x[0-9a-f]{64}$/);
     }
-    for (const n of world.nexus.slice(0, 3)) {
+    for (const n of world.nexus.slice(0, 1)) {
       expect(n.verifications.filter((x) => x.method === 'OpenTask')).toEqual([{ method: 'OpenTask', outcome: 'ok' }]);
       // Each Builder recomputed the same task_hash from the order it received.
       expect(n.taskHashes).toEqual([STREAM.task_hash]);
       expect(n.opened[0]!.payload).toEqual(w.PAYLOAD);
       expect(n.opened[0]!.idempotencyKey).toBe(`${sessionId}:0`);
     }
-    for (const n of world.nexus.slice(3)) expect(n.calls).toEqual([]);
+    for (const n of world.nexus.slice(1)) expect(n.calls).toEqual([]);
 
     // 4. The chain accepts the order and draws a winner; the receipt is not there yet.
     acceptOnChain(world);
@@ -111,7 +111,6 @@ describe('e2e: full flow through the SDK facade', () => {
       .replace(/trueopen1[0-9a-z]{38}/g, '{address}')
       .replace(/\/\d+(?=\/|$)/g, '/{n}')))].sort();
     expect(routes).toEqual([
-      'GET /TrueOpen/hub/v1/beacon/{n}',
       'GET /TrueOpen/hub/v1/builder_set/by_height/{n}',
       'GET /TrueOpen/hub/v1/current_service_key/PARTICIPANT_TYPE_CORTEX/{address}',
       'GET /TrueOpen/hub/v1/params',

@@ -22,6 +22,9 @@ const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 const CHAIN_ID = 'trueopen-localnet-1';
 const TASK_ID = `0x${'aa'.repeat(32)}`;
 const TASK_HASH = `0x${'bb'.repeat(32)}`;
+// Phase 1: every chunk, Fin and checkpoint is bound to the dispatch attempt.
+const TICKET_HEX = `0x${'dd'.repeat(32)}`;
+const TICKET = fromHex(TICKET_HEX.slice(2));
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const OTHER = fromHex('0302030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(PRIV);
@@ -29,7 +32,7 @@ const CHUNKS = [utf8('<tool_call>\n{"name": "f", '), utf8('"arguments": {}}\n</t
 const ROOT = outputHash(CHUNKS);
 const MAX_OUTPUT_TOKENS = 3;
 
-const config = () => ({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
+const config = () => ({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, workerServicePubKey: WORKER_PUB });
 
 async function streamed(): Promise<OutputStreamVerifier> {
   const sign = privKeySecp256k1DigestSigner(PRIV);
@@ -38,8 +41,8 @@ async function streamed(): Promise<OutputStreamVerifier> {
     const seq = BigInt(i);
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
     verifier.accept({
-      seq, text: CHUNKS[i]!, mmrRoot,
-      signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq, mmrRoot })),
+      seq, text: CHUNKS[i]!, mmrRoot, dispatchTicketHash: TICKET,
+      signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, seq, mmrRoot })),
     });
   }
   return verifier;
@@ -47,7 +50,7 @@ async function streamed(): Promise<OutputStreamVerifier> {
 
 /** A Fin as the Worker signs it; `over` tampers with what is presented after signing. */
 async function fin(finishReason = 1, over: Partial<VerifiedOutputFin> = {}, signer = PRIV): Promise<VerifiedOutputFin> {
-  const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 1n, outputMmrRoot: ROOT, finishReason };
+  const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, finalSeq: 1n, outputMmrRoot: ROOT, finishReason };
   const workerSignature = await privKeySecp256k1DigestSigner(signer)(outputFinSigningDigest(fields));
   return { finalSeq: 1n, outputMmrRoot: ROOT, finishReason, workerSignature, ...over };
 }
@@ -62,7 +65,7 @@ function receipt(over: Partial<InferReceiptView> = {}): InferReceiptView {
 }
 
 const confirm = (checkpoint: OutputStreamVerifierCheckpoint) =>
-  confirmOutputWithReceipt({ chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint, receipt: receipt() });
+  confirmOutputWithReceipt({ dispatchTicketHash: TICKET_HEX, chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint, receipt: receipt() });
 
 describe('OutputStreamVerifier.acceptFin', () => {
   it('keeps a Fin that ends the verified stream, and exports it in a schema-2 checkpoint', async () => {
@@ -130,15 +133,15 @@ describe('confirmation recovers an unclosed final call by the signed Fin (design
       const seq = BigInt(i);
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, UNCLOSED, i + 1);
       verifier.accept({
-        seq, text: UNCLOSED[i]!, mmrRoot,
-        signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq, mmrRoot })),
+        seq, text: UNCLOSED[i]!, mmrRoot, dispatchTicketHash: TICKET,
+        signature: await sign(outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, seq, mmrRoot })),
       });
     }
-    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 1n, outputMmrRoot: root, finishReason };
+    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, finalSeq: 1n, outputMmrRoot: root, finishReason };
     verifier.acceptFin({ finalSeq: 1n, outputMmrRoot: root, finishReason, workerSignature: await sign(outputFinSigningDigest(fields)) });
     return confirmAssistantMessageWithReceipt(
       {
-        chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: verifier.checkpoint(),
+        dispatchTicketHash: TICKET_HEX, chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: verifier.checkpoint(),
         receipt: receipt({
           outputHash: hash32Text(root), outputLeafCount: 2n,
           outputSizeBytes: UNCLOSED.reduce((n, c) => n + BigInt(c.length), 0n),
@@ -184,7 +187,7 @@ describe('confirmation carries the Fin\'s finish reason', () => {
     const v = await streamed();
     v.acceptFin(await fin(MAX_OUTPUT_TOKENS));
     const m = confirmAssistantMessageWithReceipt(
-      { chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: v.checkpoint(), receipt: receipt() },
+      { dispatchTicketHash: TICKET_HEX, chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: v.checkpoint(), receipt: receipt() },
       { parser: hermesParser },
     );
     expect(m.finishReason).toBe(MAX_OUTPUT_TOKENS);

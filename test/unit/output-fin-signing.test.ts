@@ -28,6 +28,7 @@ const VECTORS = JSON.parse(
     fields: string[];
     chain_id: string;
     task_hash_hex: string;
+    dispatch_ticket_hash_hex: string;
     final_seq: number;
     output_mmr_root_hex: string;
     accepted_finish_reasons: { value: number; enum: string; digest_hex: string }[];
@@ -43,6 +44,7 @@ const FIN = VECTORS.fin_signing;
 const BASE = {
   chainId: FIN.chain_id,
   taskHash: fromHex(FIN.task_hash_hex),
+  dispatchTicketHash: fromHex(FIN.dispatch_ticket_hash_hex),
   finalSeq: BigInt(FIN.final_seq),
   outputMmrRoot: fromHex(FIN.output_mmr_root_hex),
 };
@@ -51,7 +53,7 @@ describe('TRUEOPEN_OUTPUT_FIN_V1 (anchored to official wire vectors)', () => {
   it('domain name and field order match the registry', () => {
     expect(OUTPUT_FIN_DOMAIN).toBe(FIN.domain);
     expect(FIN.framing).toBe('H_FIELDS_V1');
-    expect(FIN.fields).toEqual(['chain_id', 'task_hash', 'final_seq', 'output_mmr_root', 'finish_reason']);
+    expect(FIN.fields).toEqual(['chain_id', 'task_hash', 'dispatch_ticket_hash', 'final_seq', 'output_mmr_root', 'finish_reason']);
   });
 
   it('each of the six accepted finish_reason values matches the official digest', () => {
@@ -97,6 +99,8 @@ describe('TRUEOPEN_OUTPUT_FIN_V1 (anchored to official wire vectors)', () => {
       const next =
         m.field === 'chain_id'
           ? { ...mutated, chainId: String(m.value) }
+          : m.field === 'dispatch_ticket_hash'
+          ? { ...mutated, dispatchTicketHash: fromHex(m.value_hex!) }
           : m.field === 'task_hash'
             ? { ...mutated, taskHash: fromHex(m.value_hex!) }
             : m.field === 'final_seq'

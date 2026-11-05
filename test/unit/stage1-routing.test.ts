@@ -62,12 +62,12 @@ describe('resolveTaskBuilderEndpoints', () => {
     expect(endpoints[0]?.serviceEndpoint).toBe(`grpc://${expected[0]?.address}:8080`);
   });
 
-  it('anchor change -> routing result changes accordingly (bound to the anchor recorded in the order)', async () => {
+  it('retired anchor hash does not alter frozen snapshot order', async () => {
     const a = await resolveTaskBuilderEndpoints(reader, input);
     const b = await resolveTaskBuilderEndpoints(reader, { ...input, sessionAnchorBlockHash: hexOf(0x77) });
     expect(b.endpoints).toHaveLength(3);
     // At least the ranking distribution differs (choosing 3 of 3 gives the same set, but the ranking order is determined by rank).
-    expect(b.endpoints.map((e) => e.address)).not.toEqual(a.endpoints.map((e) => e.address));
+    expect(b.endpoints.map((e) => e.address)).toEqual(a.endpoints.map((e) => e.address));
   });
 
   it('records an error when a builder\'s descriptor has no NEXUS_GRPC endpoint, without blocking the rest', async () => {

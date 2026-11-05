@@ -57,6 +57,9 @@
  *   --prompt <text>       the input body, sent exactly as given (default
  *                         "trueopen e2e open-task"). Nothing is appended; nexus dedupes by
  *                         content hash, so re-running the same text is rejected.
+ *   --initial-builder <a> the Builder (operator address) a new session is bound to; required
+ *                         without --session
+ *   --initial-deposit <n> a new session's prefunded balance, atomic units (default 0)
  *   --chat                send an OpenAI chat-completions-shaped `messages` object instead
  *                         of raw text. cortex routes by input shape: a JSON object carrying
  *                         a `messages` field is served over /v1/chat/completions (messages
@@ -157,6 +160,9 @@ const MODEL_ID = await (async () => {
   return active.model_id;
 })();
 const REUSE_SESSION = flag('--session', undefined);
+// Phase 1: a new session is bound to this Builder (operator address) and prefunded.
+const INITIAL_BUILDER = flag('--initial-builder', undefined);
+const INITIAL_DEPOSIT = flag('--initial-deposit', '0');
 const SEQ_OVERRIDE = flag('--seq', undefined);
 const POLL_TIMES = Number(flag('--poll', '18'));
 // The input body, sent verbatim. Nothing is appended: nexus dedupes by content hash, so
@@ -350,7 +356,11 @@ if (REUSE_SESSION) {
   sessionId = REUSE_SESSION;
   log(`Reusing session ${sessionId}`);
 } else {
-  const session = await client.createSession('e2e-open-task');
+  if (INITIAL_BUILDER === undefined) {
+    console.error('creating a session needs --initial-builder <trueopen1...> (or pass --session)');
+    process.exit(2);
+  }
+  const session = await client.createSession({ label: 'e2e-open-task', initialBuilder: INITIAL_BUILDER, initialDeposit: INITIAL_DEPOSIT });
   sessionId = session.sessionId;
   log(`Created session ${sessionId}`);
 }
@@ -452,7 +462,7 @@ const order = buildTaskOrder(ctx, {
     txFeeReserve: { atomicUnits: '0' },
   },
   earliestSubmitHeight: ctx.latestHeight,
-  orderExpireHeight: ctx.latestHeight + 50_000n,
+  orderExpireHeight: ctx.latestHeight + 1_000n, // lifetime <= max_order_lifetime_blocks
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 }, PRICING);
 

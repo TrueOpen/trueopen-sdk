@@ -19,7 +19,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file task/v1/assignment.proto.
  */
 export const file_task_v1_assignment: GenFile = /*@__PURE__*/
-  fileDesc("Chh0YXNrL3YxL2Fzc2lnbm1lbnQucHJvdG8SB3Rhc2sudjEi1AcKDVRhc2tDb3JlU3RhdGUSFQoHdGFza19pZBgBIAEoDEIEyPMYAhIuCgx1c2VyX2FkZHJlc3MYAiABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIYCgpzZXNzaW9uX2lkGAMgASgMQgTI8xgCEhYKDm9yZGVyX3NlcXVlbmNlGAQgASgEEiAKEmFjY2VwdGVkX3Rhc2tfaGFzaBgFIAEoDEIEyPMYAhIhChNhY2NlcHRlZF9pbnB1dF9oYXNoGAYgASgMQgTI8xgCEikKG2FjY2VwdGVkX29yZGVyX29wZW5pbmdfaGFzaBgHIAEoDEIEyPMYAhIWCghtb2RlbF9pZBgIIAEoDEIEyPMYAhIXCg9wcm9maWxlX3ZlcnNpb24YCSABKA0SJgoJdGFza190eXBlGAogASgOMhMuc2hhcmVkLnYxLlRhc2tUeXBlEiwKC29yZGVyX3ZhbHVlGAsgASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABImCgp0YXNrX3BoYXNlGAwgASgOMhIudGFzay52MS5UYXNrUGhhc2USNAoRYXNzaWdubWVudF9zdGF0dXMYDSABKA4yGS50YXNrLnYxLkFzc2lnbm1lbnRTdGF0dXMSLgoOcmVjZWlwdF9zdGF0dXMYDiABKA4yFi50YXNrLnYxLlJlY2VpcHRTdGF0dXMSOAoTdmVyaWZpY2F0aW9uX3N0YXR1cxgPIAEoDjIbLnRhc2sudjEuVmVyaWZpY2F0aW9uU3RhdHVzEjQKEXNldHRsZW1lbnRfc3RhdHVzGBAgASgOMhkudGFzay52MS5TZXR0bGVtZW50U3RhdHVzEjgKD2ZpbmFsaXR5X3N0YXR1cxgRIAEoDjIfLnNoYXJlZC52MS5UYXNrRmluYWxpdHlTdGF0dXNWMRIeChZlZmZlY3RpdmVfdmVyaWZ5X3JvdW5kGBIgASgNEiEKFHRhc2tfZmluYWxpdHlfaGVpZ2h0GBMgASgESACIAQESFgoOY3JlYXRlZF9oZWlnaHQYFCABKAQSFgoOdXBkYXRlZF9oZWlnaHQYFSABKAQSKgoiZXZpZGVuY2VfcmV0ZW50aW9uX2Jsb2Nrc19zbmFwc2hvdBgWIAEoBBIsCiRvYmplY3RpdmVfZm9yZ2VyeV9zbGFzaF9icHNfc25hcHNob3QYFyABKA0SNQoVYWNjZXB0ZWRfcGF5bG9hZF9tb2RlGBggASgOMhYudGFzay52MS5QYXlsb2FkTW9kZVYxQhcKFV90YXNrX2ZpbmFsaXR5X2hlaWdodCKfBwoTVGFza0Fzc2lnbm1lbnRTdGF0ZRIVCgd0YXNrX2lkGAEgASgMQgTI8xgCEhwKFGFzc2lnbl9hY2NlcHRfaGVpZ2h0GAIgASgEEiQKHGFzc2lnbm1lbnRfcmFuZG9tbmVzc19oZWlnaHQYAyABKAQSHQoVd2lubmVyX2NvbmZpcm1faGVpZ2h0GAQgASgEEh0KFWluZmVyX2RlYWRsaW5lX2hlaWdodBgFIAEoBBJAChZhc3NpZ25tZW50X2ZhaWxfcmVhc29uGAYgASgOMiAudGFzay52MS5Bc3NpZ25tZW50RmFpbHVyZVJlYXNvbhIoChpjYW5kaWRhdGVfcG9vbF9zbmFwc2hvdF9pZBgHIAEoDEIEyPMYAhIhChNjYW5kaWRhdGVfcG9vbF9oYXNoGAggASgMQgTI8xgCEisKHWFzc2lnbm1lbnRfY2FuZGlkYXRlX3NldF9oYXNoGAkgASgMQgTI8xgCEi8KDXdpbm5lcl93b3JrZXIYCiABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIgChJ3aW5uZXJfZHJhd19kaWdlc3QYCyABKAxCBMjzGAISLQofcHJvZmlsZV9leGVjdXRpb25fc25hcHNob3RfaGFzaBgMIAEoDEIEyPMYAhIhChlqdWRnbWVudF9mdW5jdGlvbl92ZXJzaW9uGA0gASgJEiIKFGV2aWRlbmNlX3NjaGVtYV9oYXNoGA4gASgMQgTI8xgCEiIKGmNhbm9uaWNhbF9lbmNvZGluZ192ZXJzaW9uGA8gASgJEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgQIAEoDEIEyPMYAhImCh5tZXRyaWNfYWdncmVnYXRlX3Byb29mX3ZlcnNpb24YESABKAkSIwobY2FuZGlkYXRlX3Bvb2xfcmVmX3JlbGVhc2VkGBIgASgIEhwKFGluZmVyX3RpbWVvdXRfYmxvY2tzGBMgASgEEi0KJWNoYWxsZW5nZV9vcGVuX3dpbmRvd19ibG9ja3Nfc25hcHNob3QYFCABKAQSJgoed29ya2VyX2luZmVyX3RpbWVvdXRfc2xhc2hfYnBzGBUgASgNEicKH3Jlc3VsdF9yZXZlYWxfbWlzc2luZ19zbGFzaF9icHMYFiABKA0SMwoSbWluX3N0YWtlX3NuYXBzaG90GBcgASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fACKZAgobQXNzaWdubWVudENhbmRpZGF0ZVNldFN0YXRlEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISFwoJdGFza19oYXNoGAMgASgMQgTI8xgCEigKGmNhbmRpZGF0ZV9wb29sX3NuYXBzaG90X2lkGAQgASgMQgTI8xgCEiEKE2NhbmRpZGF0ZV9wb29sX2hhc2gYBSABKAxCBMjzGAISHwoRdW5pb25fYml0bWFwX2hhc2gYBiABKAxCBMjzGAISFwoPY2FuZGlkYXRlX2NvdW50GAcgASgNEisKHWFzc2lnbm1lbnRfY2FuZGlkYXRlX3NldF9oYXNoGAggASgMQgTI8xgCIvMFChZUYXNrQ2FuZGlkYXRlRmFjdFN0YXRlEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISKgoFc3RhZ2UYAyABKA4yGy50YXNrLnYxLlRhc2tDYW5kaWRhdGVTdGFnZRIMCgRzbG90GAQgASgNEhQKDHNsb3RfdmVyc2lvbhgFIAEoBBIyChBvcGVyYXRvcl9hZGRyZXNzGAYgASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSHQoEZHV0eRgHIAEoDjIPLnNoYXJlZC52MS5EdXR5EjUKFGFjdGl2ZV9ib25kX3NuYXBzaG90GAggASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABI4ChdhdmFpbGFibGVfYm9uZF9zbmFwc2hvdBgJIAEoCzIRLnNoYXJlZC52MS5BbW91bnRCBMjeHwASQQogcmVxdWlyZWRfdGFza19saWFiaWxpdHlfc25hcHNob3QYCiABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEjMKEm1pbl9zdGFrZV9zbmFwc2hvdBgLIAEoCzIRLnNoYXJlZC52MS5BbW91bnRCBMjeHwASJgoecGVyZm9ybWFuY2Vfc2NvcmVfc25hcHNob3RfcHBtGAwgASgNEiIKGnBlcmZvcm1hbmNlX21ldGhvZF92ZXJzaW9uGA0gASgNEioKImNhbmRpZGF0ZV9qYWlsX2ZhY3Rvcl9zbmFwc2hvdF9wcG0YDiABKA0SHQoVYm9uZF92ZXJzaW9uX3NuYXBzaG90GA8gASgEEiAKGHN1cHBvcnRfdmVyc2lvbl9zbmFwc2hvdBgQIAEoBBIYChBjYW5kaWRhdGVfd2VpZ2h0GBEgASgNEiYKGGhhbmRyYWlzZV9zaWduaW5nX2RpZ2VzdBgSIAEoDEIEyPMYAhIjChtjYXBhYmlsaXR5X3ZlcnNpb25fc25hcHNob3QYEyABKAQinQIKGUJ1aWxkZXJTdGFnZVByb3Bvc2FsU3RhdGUSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SFQoHdGFza19pZBgCIAEoDEIEyPMYAhIqCgVzdGFnZRgDIAEoDjIbLnRhc2sudjEuVGFza0NhbmRpZGF0ZVN0YWdlEh0KD3Byb3Bvc2FsX2RpZ2VzdBgEIAEoDEIEyPMYAhIzChFwcm9wb3Nlcl9vcGVyYXRvchgFIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEhcKD2FjY2VwdGVkX2hlaWdodBgGIAEoBBIYChBuZXdfbWVtYmVyX2NvdW50GAcgASgNEh4KFmRhdGFfcmVhZHlfYXR0ZXN0YXRpb24YCCABKAgitAQKHFRhc2tTdGFnZUhhbmRyYWlzZVVuaW9uU3RhdGUSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SFQoHdGFza19pZBgCIAEoDEIEyPMYAhIqCgVzdGFnZRgDIAEoDjIbLnRhc2sudjEuVGFza0NhbmRpZGF0ZVN0YWdlEigKGmNhbmRpZGF0ZV9wb29sX3NuYXBzaG90X2lkGAQgASgMQgTI8xgCEiEKE2NhbmRpZGF0ZV9wb29sX2hhc2gYBSABKAxCBMjzGAISEwoLdW5pb25fY291bnQYBiABKA0SHwoXYWNjZXB0ZWRfcHJvcG9zYWxfY291bnQYByABKA0SMwoGc3RhdHVzGAggASgOMiMudGFzay52MS5UYXNrQ2FuZGlkYXRlU3RhZ2VTdGF0dXNWMRIbChN3aW5kb3dfY2xvc2VfaGVpZ2h0GAkgASgEEh8KEXVuaW9uX2JpdG1hcF9oYXNoGAogASgMQgTI8xgCEioKF3ZlcmlmaWVyX2xlZ2FsX3NldF9oYXNoGAsgASgMQgTI8xgCSACIAQESKAobc2VsZWN0aW9uX3JhbmRvbW5lc3NfaGVpZ2h0GAwgASgESAGIAQESMQojZGF0YV9yZWFkeV9hdHRlc3RpbmdfYnVpbGRlcl9iaXRtYXAYDSABKAxCBMjzGAFCGgoYX3ZlcmlmaWVyX2xlZ2FsX3NldF9oYXNoQh4KHF9zZWxlY3Rpb25fcmFuZG9tbmVzc19oZWlnaHQirQEKI1Rhc2tTdGFnZUhhbmRyYWlzZVVuaW9uU2VnbWVudFN0YXRlEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISKgoFc3RhZ2UYAyABKA4yGy50YXNrLnYxLlRhc2tDYW5kaWRhdGVTdGFnZRIVCg1zZWdtZW50X2luZGV4GAQgASgNEhQKBmJpdG1hcBgFIAEoDEIEyPMYASKzAwoZVGFza0J1aWxkZXJTZWxlY3Rpb25TdGF0ZRIVCgd0YXNrX2lkGAEgASgMQgTI8xgCEicKGXNlc3Npb25fYW5jaG9yX2Jsb2NrX2hhc2gYAiABKAxCBMjzGAISFgoOYnVpbGRlcl9zZXRfaWQYAyABKAkSHgoQYnVpbGRlcl9zZXRfaGFzaBgEIAEoDEIEyPMYAhI4ChZzZWxlY3RlZF90YXNrX2J1aWxkZXJzGAUgAygJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSIwobc2VsZWN0ZWRfdGFza19idWlsZGVyX2NvdW50GAYgASgNEikKG3NlbGVjdGVkX3Rhc2tfYnVpbGRlcnNfaGFzaBgHIAEoDEIEyPMYAhIWCg5jcmVhdGVkX2hlaWdodBgIIAEoBBIwCgtib2R5X3N0YXR1cxgJIAEoDjIbLnNoYXJlZC52MS5TdG9yZWRCb2R5U3RhdHVzEiAKGGJ1aWxkZXJfc2V0X3JlZl9yZWxlYXNlZBgKIAEoCBIoCiBidWlsZGVyX2ZhdWx0X3NsYXNoX2Jwc19zbmFwc2hvdBgLIAEoDSL0AgogVGFza0NhbmRpZGF0ZUZpbmFsaXplQ3Vyc29yU3RhdGUSFgoOc2NoZW1hX3ZlcnNpb24YASABKA0SFQoHdGFza19pZBgCIAEoDEIEyPMYAhIqCgVzdGFnZRgDIAEoDjIbLnRhc2sudjEuVGFza0NhbmRpZGF0ZVN0YWdlEhEKCW5leHRfc2xvdBgEIAEoDRIVCg12aXNpdGVkX2NvdW50GAUgASgEEhoKEm1hdGVyaWFsaXplZF9jb3VudBgGIAEoDRIgChJydW5uaW5nX2NvbW1pdG1lbnQYByABKAxCBMjzGAISHgoRcmFuZG9tbmVzc19oZWlnaHQYCCABKARIAIgBARIvCgZzdGF0dXMYCSABKA4yHy50YXNrLnYxLkZpbmFsaXplQ3Vyc29yU3RhdHVzVjESJgoYbWF0ZXJpYWxpemVkX2ZhY3RfY2h1bmtzGAogAygMQgTI8xgBQhQKEl9yYW5kb21uZXNzX2hlaWdodCqyAgoJVGFza1BoYXNlEhoKFlRBU0tfUEhBU0VfVU5TUEVDSUZJRUQQABIoCiRUQVNLX1BIQVNFX1dPUktFUl9BU1NJR05NRU5UX1BFTkRJTkcQARIeChpUQVNLX1BIQVNFX1dPUktFUl9BU1NJR05FRBACEiAKHFRBU0tfUEhBU0VfUkVDRUlQVF9DT01NSVRURUQQAxIgChxUQVNLX1BIQVNFX1ZFUklGSUVSX0FTU0lHTkVEEAQSGQoVVEFTS19QSEFTRV9DT01NSVRUSU5HEAUSGAoUVEFTS19QSEFTRV9SRVZFQUxJTkcQBhIXChNUQVNLX1BIQVNFX1NFVFRMSU5HEAcSFgoSVEFTS19QSEFTRV9TRVRUTEVEEAgSFQoRVEFTS19QSEFTRV9GQUlMRUQQCSruAQoQQXNzaWdubWVudFN0YXR1cxIhCh1BU1NJR05NRU5UX1NUQVRVU19VTlNQRUNJRklFRBAAEhoKFkFTU0lHTk1FTlRfU1RBVFVTX05PTkUQARIoCiRBU1NJR05NRU5UX1NUQVRVU19SQU5ET01ORVNTX1BFTkRJTkcQAhIlCiFBU1NJR05NRU5UX1NUQVRVU19XT1JLRVJfQVNTSUdORUQQAxIkCiBBU1NJR05NRU5UX1NUQVRVU19BU1NJR05fVElNRU9VVBAEEiQKIEFTU0lHTk1FTlRfU1RBVFVTX1dPUktFUl9USU1FT1VUEAUqkQEKDVJlY2VpcHRTdGF0dXMSHgoaUkVDRUlQVF9TVEFUVVNfVU5TUEVDSUZJRUQQABIXChNSRUNFSVBUX1NUQVRVU19OT05FEAESIwofUkVDRUlQVF9TVEFUVVNfUkVDRUlQVF9BQ0NFUFRFRBACEiIKHlJFQ0VJUFRfU1RBVFVTX1JFQ0VJUFRfVElNRU9VVBADKtgDChJWZXJpZmljYXRpb25TdGF0dXMSIwofVkVSSUZJQ0FUSU9OX1NUQVRVU19VTlNQRUNJRklFRBAAEhwKGFZFUklGSUNBVElPTl9TVEFUVVNfTk9ORRABEi4KKlZFUklGSUNBVElPTl9TVEFUVVNfVkVSSUZZX0NPTExFQ1RJT05fT1BFThACEikKJVZFUklGSUNBVElPTl9TVEFUVVNfVkVSSUZJRVJfQVNTSUdORUQQAxIiCh5WRVJJRklDQVRJT05fU1RBVFVTX0NPTU1JVFRJTkcQBBIhCh1WRVJJRklDQVRJT05fU1RBVFVTX1JFVkVBTElORxAFEiQKIFZFUklGSUNBVElPTl9TVEFUVVNfTk9fQ09OU0VOU1VTEAYSJQohVkVSSUZJQ0FUSU9OX1NUQVRVU19WRVJJRllfRkFJTEVEEAcSKwonVkVSSUZJQ0FUSU9OX1NUQVRVU19WRVJJRklDQVRJT05fUEFTU0VEEAgSLworVkVSSUZJQ0FUSU9OX1NUQVRVU19WRVJJRklFUl9XSU5ET1dfUEVORElORxAJEjIKLlZFUklGSUNBVElPTl9TVEFUVVNfVkVSSUZJRVJfU0VMRUNUSU9OX1BFTkRJTkcQCiqSAQoQU2V0dGxlbWVudFN0YXR1cxIhCh1TRVRUTEVNRU5UX1NUQVRVU19VTlNQRUNJRklFRBAAEhoKFlNFVFRMRU1FTlRfU1RBVFVTX05PTkUQARIfChtTRVRUTEVNRU5UX1NUQVRVU19GSU5BTElaRUQQAhIeChpTRVRUTEVNRU5UX1NUQVRVU19SRUZVTkRFRBADKpICChdBc3NpZ25tZW50RmFpbHVyZVJlYXNvbhIpCiVBU1NJR05NRU5UX0ZBSUxVUkVfUkVBU09OX1VOU1BFQ0lGSUVEEAASLQopQVNTSUdOTUVOVF9GQUlMVVJFX1JFQVNPTl9FTVBUWV9MRUdBTF9TRVQQARI0CjBBU1NJR05NRU5UX0ZBSUxVUkVfUkVBU09OX1JBTkRPTU5FU1NfVU5BVkFJTEFCTEUQAhI6CjZBU1NJR05NRU5UX0ZBSUxVUkVfUkVBU09OX1dJTk5FUl9MSUFCSUxJVFlfVU5BVkFJTEFCTEUQAxIrCidBU1NJR05NRU5UX0ZBSUxVUkVfUkVBU09OX09SREVSX0VYUElSRUQQBCqEAQoSVGFza0NhbmRpZGF0ZVN0YWdlEiQKIFRBU0tfQ0FORElEQVRFX1NUQUdFX1VOU1BFQ0lGSUVEEAASIgoeVEFTS19DQU5ESURBVEVfU1RBR0VfT1BFTl9UQVNLEAESJAogVEFTS19DQU5ESURBVEVfU1RBR0VfT1BFTl9WRVJJRlkQAirSAQoaVGFza0NhbmRpZGF0ZVN0YWdlU3RhdHVzVjESLgoqVEFTS19DQU5ESURBVEVfU1RBR0VfU1RBVFVTX1YxX1VOU1BFQ0lGSUVEEAASJwojVEFTS19DQU5ESURBVEVfU1RBR0VfU1RBVFVTX1YxX09QRU4QARItCilUQVNLX0NBTkRJREFURV9TVEFHRV9TVEFUVVNfVjFfRklOQUxJWklORxACEiwKKFRBU0tfQ0FORElEQVRFX1NUQUdFX1NUQVRVU19WMV9GSU5BTElaRUQQAypuCg1QYXlsb2FkTW9kZVYxEh8KG1BBWUxPQURfTU9ERV9WMV9VTlNQRUNJRklFRBAAEh0KGVBBWUxPQURfTU9ERV9WMV9QTEFJTlRFWFQQARIdChlQQVlMT0FEX01PREVfVjFfRU5DUllQVEVEEAIqnAEKFkZpbmFsaXplQ3Vyc29yU3RhdHVzVjESKQolRklOQUxJWkVfQ1VSU09SX1NUQVRVU19WMV9VTlNQRUNJRklFRBAAEiUKIUZJTkFMSVpFX0NVUlNPUl9TVEFUVVNfVjFfUlVOTklORxABEjAKLEZJTkFMSVpFX0NVUlNPUl9TVEFUVVNfVjFfV0FJVElOR19SQU5ET01ORVNTEAJCJ1olZ2l0aHViLmNvbS9UcnVlT3Blbi9ub2RlL3gvdGFzay90eXBlc2IGcHJvdG8z", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_amount, file_shared_v1_common, file_shared_v1_model_profile, file_shared_v1_rest_encoding]);
+  fileDesc("Chh0YXNrL3YxL2Fzc2lnbm1lbnQucHJvdG8SB3Rhc2sudjEi1AcKDVRhc2tDb3JlU3RhdGUSFQoHdGFza19pZBgBIAEoDEIEyPMYAhIuCgx1c2VyX2FkZHJlc3MYAiABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIYCgpzZXNzaW9uX2lkGAMgASgMQgTI8xgCEhYKDm9yZGVyX3NlcXVlbmNlGAQgASgEEiAKEmFjY2VwdGVkX3Rhc2tfaGFzaBgFIAEoDEIEyPMYAhIhChNhY2NlcHRlZF9pbnB1dF9oYXNoGAYgASgMQgTI8xgCEikKG2FjY2VwdGVkX29yZGVyX29wZW5pbmdfaGFzaBgHIAEoDEIEyPMYAhIWCghtb2RlbF9pZBgIIAEoDEIEyPMYAhIXCg9wcm9maWxlX3ZlcnNpb24YCSABKA0SJgoJdGFza190eXBlGAogASgOMhMuc2hhcmVkLnYxLlRhc2tUeXBlEiwKC29yZGVyX3ZhbHVlGAsgASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABImCgp0YXNrX3BoYXNlGAwgASgOMhIudGFzay52MS5UYXNrUGhhc2USNAoRYXNzaWdubWVudF9zdGF0dXMYDSABKA4yGS50YXNrLnYxLkFzc2lnbm1lbnRTdGF0dXMSLgoOcmVjZWlwdF9zdGF0dXMYDiABKA4yFi50YXNrLnYxLlJlY2VpcHRTdGF0dXMSOAoTdmVyaWZpY2F0aW9uX3N0YXR1cxgPIAEoDjIbLnRhc2sudjEuVmVyaWZpY2F0aW9uU3RhdHVzEjQKEXNldHRsZW1lbnRfc3RhdHVzGBAgASgOMhkudGFzay52MS5TZXR0bGVtZW50U3RhdHVzEjgKD2ZpbmFsaXR5X3N0YXR1cxgRIAEoDjIfLnNoYXJlZC52MS5UYXNrRmluYWxpdHlTdGF0dXNWMRIeChZlZmZlY3RpdmVfdmVyaWZ5X3JvdW5kGBIgASgNEiEKFHRhc2tfZmluYWxpdHlfaGVpZ2h0GBMgASgESACIAQESFgoOY3JlYXRlZF9oZWlnaHQYFCABKAQSFgoOdXBkYXRlZF9oZWlnaHQYFSABKAQSKgoiZXZpZGVuY2VfcmV0ZW50aW9uX2Jsb2Nrc19zbmFwc2hvdBgWIAEoBBIsCiRvYmplY3RpdmVfZm9yZ2VyeV9zbGFzaF9icHNfc25hcHNob3QYFyABKA0SNQoVYWNjZXB0ZWRfcGF5bG9hZF9tb2RlGBggASgOMhYudGFzay52MS5QYXlsb2FkTW9kZVYxQhcKFV90YXNrX2ZpbmFsaXR5X2hlaWdodCLGBwoTVGFza0Fzc2lnbm1lbnRTdGF0ZRIVCgd0YXNrX2lkGAEgASgMQgTI8xgCEh0KFXdpbm5lcl9jb25maXJtX2hlaWdodBgEIAEoBBIdChVpbmZlcl9kZWFkbGluZV9oZWlnaHQYBSABKAQSKAoaY2FuZGlkYXRlX3Bvb2xfc25hcHNob3RfaWQYByABKAxCBMjzGAISIQoTY2FuZGlkYXRlX3Bvb2xfaGFzaBgIIAEoDEIEyPMYAhIvCg13aW5uZXJfd29ya2VyGAogASgJQhjStC0UY29zbW9zLkFkZHJlc3NTdHJpbmcSLQofcHJvZmlsZV9leGVjdXRpb25fc25hcHNob3RfaGFzaBgMIAEoDEIEyPMYAhIhChlqdWRnbWVudF9mdW5jdGlvbl92ZXJzaW9uGA0gASgJEiIKFGV2aWRlbmNlX3NjaGVtYV9oYXNoGA4gASgMQgTI8xgCEiIKGmNhbm9uaWNhbF9lbmNvZGluZ192ZXJzaW9uGA8gASgJEiYKGGdlbmVyYXRpb25fcGFyYW1zX2RpZ2VzdBgQIAEoDEIEyPMYAhImCh5tZXRyaWNfYWdncmVnYXRlX3Byb29mX3ZlcnNpb24YESABKAkSIwobY2FuZGlkYXRlX3Bvb2xfcmVmX3JlbGVhc2VkGBIgASgIEhwKFGluZmVyX3RpbWVvdXRfYmxvY2tzGBMgASgEEi0KJWNoYWxsZW5nZV9vcGVuX3dpbmRvd19ibG9ja3Nfc25hcHNob3QYFCABKAQSJgoed29ya2VyX2luZmVyX3RpbWVvdXRfc2xhc2hfYnBzGBUgASgNEicKH3Jlc3VsdF9yZXZlYWxfbWlzc2luZ19zbGFzaF9icHMYFiABKA0SMwoSbWluX3N0YWtlX3NuYXBzaG90GBcgASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABIVCg1yZWNvcmRfaGVpZ2h0GBggASgEEiIKFGRpc3BhdGNoX3JlY29yZF9oYXNoGBkgASgMQgTI8xgCEiIKFGRpc3BhdGNoX3RpY2tldF9oYXNoGBogASgMQgTI8xgCSgQIAhADSgQIAxAESgQIBhAHSgQICRAKSgQICxAMUhRhc3NpZ25fYWNjZXB0X2hlaWdodFIcYXNzaWdubWVudF9yYW5kb21uZXNzX2hlaWdodFIWYXNzaWdubWVudF9mYWlsX3JlYXNvblIdYXNzaWdubWVudF9jYW5kaWRhdGVfc2V0X2hhc2hSEndpbm5lcl9kcmF3X2RpZ2VzdCLzBQoWVGFza0NhbmRpZGF0ZUZhY3RTdGF0ZRIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIVCgd0YXNrX2lkGAIgASgMQgTI8xgCEioKBXN0YWdlGAMgASgOMhsudGFzay52MS5UYXNrQ2FuZGlkYXRlU3RhZ2USDAoEc2xvdBgEIAEoDRIUCgxzbG90X3ZlcnNpb24YBSABKAQSMgoQb3BlcmF0b3JfYWRkcmVzcxgGIAEoCUIY0rQtFGNvc21vcy5BZGRyZXNzU3RyaW5nEh0KBGR1dHkYByABKA4yDy5zaGFyZWQudjEuRHV0eRI1ChRhY3RpdmVfYm9uZF9zbmFwc2hvdBgIIAEoCzIRLnNoYXJlZC52MS5BbW91bnRCBMjeHwASOAoXYXZhaWxhYmxlX2JvbmRfc25hcHNob3QYCSABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEkEKIHJlcXVpcmVkX3Rhc2tfbGlhYmlsaXR5X3NuYXBzaG90GAogASgLMhEuc2hhcmVkLnYxLkFtb3VudEIEyN4fABIzChJtaW5fc3Rha2Vfc25hcHNob3QYCyABKAsyES5zaGFyZWQudjEuQW1vdW50QgTI3h8AEiYKHnBlcmZvcm1hbmNlX3Njb3JlX3NuYXBzaG90X3BwbRgMIAEoDRIiChpwZXJmb3JtYW5jZV9tZXRob2RfdmVyc2lvbhgNIAEoDRIqCiJjYW5kaWRhdGVfamFpbF9mYWN0b3Jfc25hcHNob3RfcHBtGA4gASgNEh0KFWJvbmRfdmVyc2lvbl9zbmFwc2hvdBgPIAEoBBIgChhzdXBwb3J0X3ZlcnNpb25fc25hcHNob3QYECABKAQSGAoQY2FuZGlkYXRlX3dlaWdodBgRIAEoDRImChhoYW5kcmFpc2Vfc2lnbmluZ19kaWdlc3QYEiABKAxCBMjzGAISIwobY2FwYWJpbGl0eV92ZXJzaW9uX3NuYXBzaG90GBMgASgEIp0CChlCdWlsZGVyU3RhZ2VQcm9wb3NhbFN0YXRlEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISKgoFc3RhZ2UYAyABKA4yGy50YXNrLnYxLlRhc2tDYW5kaWRhdGVTdGFnZRIdCg9wcm9wb3NhbF9kaWdlc3QYBCABKAxCBMjzGAISMwoRcHJvcG9zZXJfb3BlcmF0b3IYBSABKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIXCg9hY2NlcHRlZF9oZWlnaHQYBiABKAQSGAoQbmV3X21lbWJlcl9jb3VudBgHIAEoDRIeChZkYXRhX3JlYWR5X2F0dGVzdGF0aW9uGAggASgIIrQEChxUYXNrU3RhZ2VIYW5kcmFpc2VVbmlvblN0YXRlEhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEhUKB3Rhc2tfaWQYAiABKAxCBMjzGAISKgoFc3RhZ2UYAyABKA4yGy50YXNrLnYxLlRhc2tDYW5kaWRhdGVTdGFnZRIoChpjYW5kaWRhdGVfcG9vbF9zbmFwc2hvdF9pZBgEIAEoDEIEyPMYAhIhChNjYW5kaWRhdGVfcG9vbF9oYXNoGAUgASgMQgTI8xgCEhMKC3VuaW9uX2NvdW50GAYgASgNEh8KF2FjY2VwdGVkX3Byb3Bvc2FsX2NvdW50GAcgASgNEjMKBnN0YXR1cxgIIAEoDjIjLnRhc2sudjEuVGFza0NhbmRpZGF0ZVN0YWdlU3RhdHVzVjESGwoTd2luZG93X2Nsb3NlX2hlaWdodBgJIAEoBBIfChF1bmlvbl9iaXRtYXBfaGFzaBgKIAEoDEIEyPMYAhIqChd2ZXJpZmllcl9sZWdhbF9zZXRfaGFzaBgLIAEoDEIEyPMYAkgAiAEBEigKG3NlbGVjdGlvbl9yYW5kb21uZXNzX2hlaWdodBgMIAEoBEgBiAEBEjEKI2RhdGFfcmVhZHlfYXR0ZXN0aW5nX2J1aWxkZXJfYml0bWFwGA0gASgMQgTI8xgBQhoKGF92ZXJpZmllcl9sZWdhbF9zZXRfaGFzaEIeChxfc2VsZWN0aW9uX3JhbmRvbW5lc3NfaGVpZ2h0Iq0BCiNUYXNrU3RhZ2VIYW5kcmFpc2VVbmlvblNlZ21lbnRTdGF0ZRIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIVCgd0YXNrX2lkGAIgASgMQgTI8xgCEioKBXN0YWdlGAMgASgOMhsudGFzay52MS5UYXNrQ2FuZGlkYXRlU3RhZ2USFQoNc2VnbWVudF9pbmRleBgEIAEoDRIUCgZiaXRtYXAYBSABKAxCBMjzGAEiqwMKGVRhc2tCdWlsZGVyU2VsZWN0aW9uU3RhdGUSFQoHdGFza19pZBgBIAEoDEIEyPMYAhIWCg5idWlsZGVyX3NldF9pZBgDIAEoCRIeChBidWlsZGVyX3NldF9oYXNoGAQgASgMQgTI8xgCEjgKFnNlbGVjdGVkX3Rhc2tfYnVpbGRlcnMYBSADKAlCGNK0LRRjb3Ntb3MuQWRkcmVzc1N0cmluZxIjChtzZWxlY3RlZF90YXNrX2J1aWxkZXJfY291bnQYBiABKA0SKQobc2VsZWN0ZWRfdGFza19idWlsZGVyc19oYXNoGAcgASgMQgTI8xgCEhYKDmNyZWF0ZWRfaGVpZ2h0GAggASgEEjAKC2JvZHlfc3RhdHVzGAkgASgOMhsuc2hhcmVkLnYxLlN0b3JlZEJvZHlTdGF0dXMSIAoYYnVpbGRlcl9zZXRfcmVmX3JlbGVhc2VkGAogASgIEigKIGJ1aWxkZXJfZmF1bHRfc2xhc2hfYnBzX3NuYXBzaG90GAsgASgNSgQIAhADUhlzZXNzaW9uX2FuY2hvcl9ibG9ja19oYXNoIvQCCiBUYXNrQ2FuZGlkYXRlRmluYWxpemVDdXJzb3JTdGF0ZRIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIVCgd0YXNrX2lkGAIgASgMQgTI8xgCEioKBXN0YWdlGAMgASgOMhsudGFzay52MS5UYXNrQ2FuZGlkYXRlU3RhZ2USEQoJbmV4dF9zbG90GAQgASgNEhUKDXZpc2l0ZWRfY291bnQYBSABKAQSGgoSbWF0ZXJpYWxpemVkX2NvdW50GAYgASgNEiAKEnJ1bm5pbmdfY29tbWl0bWVudBgHIAEoDEIEyPMYAhIeChFyYW5kb21uZXNzX2hlaWdodBgIIAEoBEgAiAEBEi8KBnN0YXR1cxgJIAEoDjIfLnRhc2sudjEuRmluYWxpemVDdXJzb3JTdGF0dXNWMRImChhtYXRlcmlhbGl6ZWRfZmFjdF9jaHVua3MYCiADKAxCBMjzGAFCFAoSX3JhbmRvbW5lc3NfaGVpZ2h0KtQCCglUYXNrUGhhc2USGgoWVEFTS19QSEFTRV9VTlNQRUNJRklFRBAAEhwKGFRBU0tfUEhBU0VfSU5GRVJfUEVORElORxAKEiAKHFRBU0tfUEhBU0VfUkVDRUlQVF9DT01NSVRURUQQAxIgChxUQVNLX1BIQVNFX1ZFUklGSUVSX0FTU0lHTkVEEAQSGQoVVEFTS19QSEFTRV9DT01NSVRUSU5HEAUSGAoUVEFTS19QSEFTRV9SRVZFQUxJTkcQBhIXChNUQVNLX1BIQVNFX1NFVFRMSU5HEAcSFgoSVEFTS19QSEFTRV9TRVRUTEVEEAgSFQoRVEFTS19QSEFTRV9GQUlMRUQQCSIECAEQASIECAIQAiokVEFTS19QSEFTRV9XT1JLRVJfQVNTSUdOTUVOVF9QRU5ESU5HKhpUQVNLX1BIQVNFX1dPUktFUl9BU1NJR05FRCqbAgoQQXNzaWdubWVudFN0YXR1cxIhCh1BU1NJR05NRU5UX1NUQVRVU19VTlNQRUNJRklFRBAAEhoKFkFTU0lHTk1FTlRfU1RBVFVTX05PTkUQARIlCiFBU1NJR05NRU5UX1NUQVRVU19XT1JLRVJfUkVDT1JERUQQBhIkCiBBU1NJR05NRU5UX1NUQVRVU19XT1JLRVJfVElNRU9VVBAFIgQIAhACIgQIAxADIgQIBBAEKiRBU1NJR05NRU5UX1NUQVRVU19SQU5ET01ORVNTX1BFTkRJTkcqIUFTU0lHTk1FTlRfU1RBVFVTX1dPUktFUl9BU1NJR05FRCogQVNTSUdOTUVOVF9TVEFUVVNfQVNTSUdOX1RJTUVPVVQqkQEKDVJlY2VpcHRTdGF0dXMSHgoaUkVDRUlQVF9TVEFUVVNfVU5TUEVDSUZJRUQQABIXChNSRUNFSVBUX1NUQVRVU19OT05FEAESIwofUkVDRUlQVF9TVEFUVVNfUkVDRUlQVF9BQ0NFUFRFRBACEiIKHlJFQ0VJUFRfU1RBVFVTX1JFQ0VJUFRfVElNRU9VVBADKtgDChJWZXJpZmljYXRpb25TdGF0dXMSIwofVkVSSUZJQ0FUSU9OX1NUQVRVU19VTlNQRUNJRklFRBAAEhwKGFZFUklGSUNBVElPTl9TVEFUVVNfTk9ORRABEi4KKlZFUklGSUNBVElPTl9TVEFUVVNfVkVSSUZZX0NPTExFQ1RJT05fT1BFThACEikKJVZFUklGSUNBVElPTl9TVEFUVVNfVkVSSUZJRVJfQVNTSUdORUQQAxIiCh5WRVJJRklDQVRJT05fU1RBVFVTX0NPTU1JVFRJTkcQBBIhCh1WRVJJRklDQVRJT05fU1RBVFVTX1JFVkVBTElORxAFEiQKIFZFUklGSUNBVElPTl9TVEFUVVNfTk9fQ09OU0VOU1VTEAYSJQohVkVSSUZJQ0FUSU9OX1NUQVRVU19WRVJJRllfRkFJTEVEEAcSKwonVkVSSUZJQ0FUSU9OX1NUQVRVU19WRVJJRklDQVRJT05fUEFTU0VEEAgSLworVkVSSUZJQ0FUSU9OX1NUQVRVU19WRVJJRklFUl9XSU5ET1dfUEVORElORxAJEjIKLlZFUklGSUNBVElPTl9TVEFUVVNfVkVSSUZJRVJfU0VMRUNUSU9OX1BFTkRJTkcQCiqSAQoQU2V0dGxlbWVudFN0YXR1cxIhCh1TRVRUTEVNRU5UX1NUQVRVU19VTlNQRUNJRklFRBAAEhoKFlNFVFRMRU1FTlRfU1RBVFVTX05PTkUQARIfChtTRVRUTEVNRU5UX1NUQVRVU19GSU5BTElaRUQQAhIeChpTRVRUTEVNRU5UX1NUQVRVU19SRUZVTkRFRBADKoYBChJUYXNrQ2FuZGlkYXRlU3RhZ2USJAogVEFTS19DQU5ESURBVEVfU1RBR0VfVU5TUEVDSUZJRUQQABIkCiBUQVNLX0NBTkRJREFURV9TVEFHRV9PUEVOX1ZFUklGWRACIgQIARABKh5UQVNLX0NBTkRJREFURV9TVEFHRV9PUEVOX1RBU0sq0gEKGlRhc2tDYW5kaWRhdGVTdGFnZVN0YXR1c1YxEi4KKlRBU0tfQ0FORElEQVRFX1NUQUdFX1NUQVRVU19WMV9VTlNQRUNJRklFRBAAEicKI1RBU0tfQ0FORElEQVRFX1NUQUdFX1NUQVRVU19WMV9PUEVOEAESLQopVEFTS19DQU5ESURBVEVfU1RBR0VfU1RBVFVTX1YxX0ZJTkFMSVpJTkcQAhIsCihUQVNLX0NBTkRJREFURV9TVEFHRV9TVEFUVVNfVjFfRklOQUxJWkVEEAMqbgoNUGF5bG9hZE1vZGVWMRIfChtQQVlMT0FEX01PREVfVjFfVU5TUEVDSUZJRUQQABIdChlQQVlMT0FEX01PREVfVjFfUExBSU5URVhUEAESHQoZUEFZTE9BRF9NT0RFX1YxX0VOQ1JZUFRFRBACKpwBChZGaW5hbGl6ZUN1cnNvclN0YXR1c1YxEikKJUZJTkFMSVpFX0NVUlNPUl9TVEFUVVNfVjFfVU5TUEVDSUZJRUQQABIlCiFGSU5BTElaRV9DVVJTT1JfU1RBVFVTX1YxX1JVTk5JTkcQARIwCixGSU5BTElaRV9DVVJTT1JfU1RBVFVTX1YxX1dBSVRJTkdfUkFORE9NTkVTUxACQidaJWdpdGh1Yi5jb20vVHJ1ZU9wZW4vbm9kZS94L3Rhc2svdHlwZXNiBnByb3RvMw", [file_cosmos_proto_cosmos, file_gogoproto_gogo, file_shared_v1_amount, file_shared_v1_common, file_shared_v1_model_profile, file_shared_v1_rest_encoding]);
 
 /**
  * TaskCoreState is the only primary of the six task sub-states (public storage contract
@@ -171,8 +171,7 @@ export const TaskCoreStateSchema: GenMessage<TaskCoreState> = /*@__PURE__*/
 
 /**
  * TaskAssignmentState holds Worker assignment facts only (key = task_id).
- * assignment_status is NOT duplicated here. winner_draw_digest is derived at
- * winner finalize by TRUEOPEN_WINNER_DRAW_V1 (the wire API).
+ * assignment_status is joined from TaskCoreState, never duplicated here.
  * candidate_pool_ref_released makes the CandidatePoolTaskRefState release
  * idempotent (the public storage contract).
  * TaskAssignmentState defines the TaskAssignmentState wire type.
@@ -186,16 +185,6 @@ export type TaskAssignmentState = Message<"task.v1.TaskAssignmentState"> & {
   taskId: Uint8Array;
 
   /**
-   * @generated from field: uint64 assign_accept_height = 2;
-   */
-  assignAcceptHeight: bigint;
-
-  /**
-   * @generated from field: uint64 assignment_randomness_height = 3;
-   */
-  assignmentRandomnessHeight: bigint;
-
-  /**
    * @generated from field: uint64 winner_confirm_height = 4;
    */
   winnerConfirmHeight: bigint;
@@ -204,11 +193,6 @@ export type TaskAssignmentState = Message<"task.v1.TaskAssignmentState"> & {
    * @generated from field: uint64 infer_deadline_height = 5;
    */
   inferDeadlineHeight: bigint;
-
-  /**
-   * @generated from field: task.v1.AssignmentFailureReason assignment_fail_reason = 6;
-   */
-  assignmentFailReason: AssignmentFailureReason;
 
   /**
    * @generated from field: bytes candidate_pool_snapshot_id = 7;
@@ -221,19 +205,9 @@ export type TaskAssignmentState = Message<"task.v1.TaskAssignmentState"> & {
   candidatePoolHash: Uint8Array;
 
   /**
-   * @generated from field: bytes assignment_candidate_set_hash = 9;
-   */
-  assignmentCandidateSetHash: Uint8Array;
-
-  /**
    * @generated from field: string winner_worker = 10;
    */
   winnerWorker: string;
-
-  /**
-   * @generated from field: bytes winner_draw_digest = 11;
-   */
-  winnerDrawDigest: Uint8Array;
 
   /**
    * @generated from field: bytes profile_execution_snapshot_hash = 12;
@@ -303,6 +277,21 @@ export type TaskAssignmentState = Message<"task.v1.TaskAssignmentState"> & {
    * @generated from field: shared.v1.Amount min_stake_snapshot = 23;
    */
   minStakeSnapshot?: Amount | undefined;
+
+  /**
+   * @generated from field: uint64 record_height = 24;
+   */
+  recordHeight: bigint;
+
+  /**
+   * @generated from field: bytes dispatch_record_hash = 25;
+   */
+  dispatchRecordHash: Uint8Array;
+
+  /**
+   * @generated from field: bytes dispatch_ticket_hash = 26;
+   */
+  dispatchTicketHash: Uint8Array;
 };
 
 /**
@@ -311,66 +300,6 @@ export type TaskAssignmentState = Message<"task.v1.TaskAssignmentState"> & {
  */
 export const TaskAssignmentStateSchema: GenMessage<TaskAssignmentState> = /*@__PURE__*/
   messageDesc(file_task_v1_assignment, 1);
-
-/**
- * AssignmentCandidateSetState is the task-local dual commitment header
- * (the public storage contract, key = task_id). The pool commitment and the task legal-set
- * commitment are separate: candidate_pool_snapshot_id/pool_hash commit to the
- * public candidate source, union_bitmap_hash plus
- * assignment_candidate_set_hash commit to the accepted handraise subset. No
- * second candidate vector is materialized; rows stay in TaskCandidateFactState.
- * AssignmentCandidateSetState defines the AssignmentCandidateSetState wire type.
- *
- * @generated from message task.v1.AssignmentCandidateSetState
- */
-export type AssignmentCandidateSetState = Message<"task.v1.AssignmentCandidateSetState"> & {
-  /**
-   * @generated from field: uint32 schema_version = 1;
-   */
-  schemaVersion: number;
-
-  /**
-   * @generated from field: bytes task_id = 2;
-   */
-  taskId: Uint8Array;
-
-  /**
-   * @generated from field: bytes task_hash = 3;
-   */
-  taskHash: Uint8Array;
-
-  /**
-   * @generated from field: bytes candidate_pool_snapshot_id = 4;
-   */
-  candidatePoolSnapshotId: Uint8Array;
-
-  /**
-   * @generated from field: bytes candidate_pool_hash = 5;
-   */
-  candidatePoolHash: Uint8Array;
-
-  /**
-   * @generated from field: bytes union_bitmap_hash = 6;
-   */
-  unionBitmapHash: Uint8Array;
-
-  /**
-   * @generated from field: uint32 candidate_count = 7;
-   */
-  candidateCount: number;
-
-  /**
-   * @generated from field: bytes assignment_candidate_set_hash = 8;
-   */
-  assignmentCandidateSetHash: Uint8Array;
-};
-
-/**
- * Describes the message task.v1.AssignmentCandidateSetState.
- * Use `create(AssignmentCandidateSetStateSchema)` to create a new message.
- */
-export const AssignmentCandidateSetStateSchema: GenMessage<AssignmentCandidateSetState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 2);
 
 /**
  * TaskCandidateFactState is the immutable accepted-time frozen fact for one
@@ -511,7 +440,7 @@ export type TaskCandidateFactState = Message<"task.v1.TaskCandidateFactState"> &
  * Use `create(TaskCandidateFactStateSchema)` to create a new message.
  */
 export const TaskCandidateFactStateSchema: GenMessage<TaskCandidateFactState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 3);
+  messageDesc(file_task_v1_assignment, 2);
 
 /**
  * BuilderStageProposalState is one accepted proposal receipt (the public storage contract,
@@ -568,7 +497,7 @@ export type BuilderStageProposalState = Message<"task.v1.BuilderStageProposalSta
  * Use `create(BuilderStageProposalStateSchema)` to create a new message.
  */
 export const BuilderStageProposalStateSchema: GenMessage<BuilderStageProposalState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 4);
+  messageDesc(file_task_v1_assignment, 3);
 
 /**
  * TaskStageHandraiseUnionState is the authoritative stage union header
@@ -658,7 +587,7 @@ export type TaskStageHandraiseUnionState = Message<"task.v1.TaskStageHandraiseUn
  * Use `create(TaskStageHandraiseUnionStateSchema)` to create a new message.
  */
 export const TaskStageHandraiseUnionStateSchema: GenMessage<TaskStageHandraiseUnionState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 5);
+  messageDesc(file_task_v1_assignment, 4);
 
 /**
  * TaskStageHandraiseUnionSegmentState is one fixed-width union bitmap segment
@@ -700,7 +629,7 @@ export type TaskStageHandraiseUnionSegmentState = Message<"task.v1.TaskStageHand
  * Use `create(TaskStageHandraiseUnionSegmentStateSchema)` to create a new message.
  */
 export const TaskStageHandraiseUnionSegmentStateSchema: GenMessage<TaskStageHandraiseUnionSegmentState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 6);
+  messageDesc(file_task_v1_assignment, 5);
 
 /**
  * TaskBuilderSelectionState is the frozen Task Builder selection of one Task.
@@ -751,11 +680,6 @@ export type TaskBuilderSelectionState = Message<"task.v1.TaskBuilderSelectionSta
   taskId: Uint8Array;
 
   /**
-   * @generated from field: bytes session_anchor_block_hash = 2;
-   */
-  sessionAnchorBlockHash: Uint8Array;
-
-  /**
    * @generated from field: string builder_set_id = 3;
    */
   builderSetId: string;
@@ -766,7 +690,7 @@ export type TaskBuilderSelectionState = Message<"task.v1.TaskBuilderSelectionSta
   builderSetHash: Uint8Array;
 
   /**
-   * Frozen order; length equals builders_per_task while body_status is ACTIVE
+   * Frozen order; length equals the locked BuilderSet snapshot size while body_status is ACTIVE
    * and is empty once the body is pruned.
    *
    * @generated from field: repeated string selected_task_builders = 5;
@@ -820,7 +744,7 @@ export type TaskBuilderSelectionState = Message<"task.v1.TaskBuilderSelectionSta
  * Use `create(TaskBuilderSelectionStateSchema)` to create a new message.
  */
 export const TaskBuilderSelectionStateSchema: GenMessage<TaskBuilderSelectionState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 7);
+  messageDesc(file_task_v1_assignment, 6);
 
 /**
  * TaskCandidateFinalizeCursorState is the shared EndBlock / public runner cursor
@@ -895,12 +819,12 @@ export type TaskCandidateFinalizeCursorState = Message<"task.v1.TaskCandidateFin
  * Use `create(TaskCandidateFinalizeCursorStateSchema)` to create a new message.
  */
 export const TaskCandidateFinalizeCursorStateSchema: GenMessage<TaskCandidateFinalizeCursorState> = /*@__PURE__*/
-  messageDesc(file_task_v1_assignment, 8);
+  messageDesc(file_task_v1_assignment, 7);
 
 /**
  * TaskPhase is the aggregate task phase. Numeric values are frozen by
- * the wire API; ascending order is the mandatory forward order, so
- * transition checks are monotonic with no rollback and no skipping.
+ * the wire API. Consumers validate explicit allowed transitions; numeric order
+ * does not express the lifecycle after retired values have been reserved.
  * TaskPhase defines the TaskPhase wire type.
  *
  * @generated from enum task.v1.TaskPhase
@@ -915,20 +839,12 @@ export enum TaskPhase {
   UNSPECIFIED = 0,
 
   /**
-   * First Worker proposal accepted; candidate union still open.
-   * TASK_PHASE_WORKER_ASSIGNMENT_PENDING identifies the corresponding protocol value.
+   * Dispatch accepted, inference in progress.
+   * TASK_PHASE_INFER_PENDING identifies the corresponding protocol value.
    *
-   * @generated from enum value: TASK_PHASE_WORKER_ASSIGNMENT_PENDING = 1;
+   * @generated from enum value: TASK_PHASE_INFER_PENDING = 10;
    */
-  WORKER_ASSIGNMENT_PENDING = 1,
-
-  /**
-   * Winner Worker finalized from the frozen legal set.
-   * TASK_PHASE_WORKER_ASSIGNED identifies the corresponding protocol value.
-   *
-   * @generated from enum value: TASK_PHASE_WORKER_ASSIGNED = 2;
-   */
-  WORKER_ASSIGNED = 2,
+  INFER_PENDING = 10,
 
   /**
    * Infer receipt accepted.
@@ -1019,28 +935,12 @@ export enum AssignmentStatus {
   NONE = 1,
 
   /**
-   * Legal set frozen, waiting for the future beacon.
-   * ASSIGNMENT_STATUS_RANDOMNESS_PENDING identifies the corresponding protocol value.
+   * Dispatch accepted and liability reserved.
+   * ASSIGNMENT_STATUS_WORKER_RECORDED identifies the corresponding protocol value.
    *
-   * @generated from enum value: ASSIGNMENT_STATUS_RANDOMNESS_PENDING = 2;
+   * @generated from enum value: ASSIGNMENT_STATUS_WORKER_RECORDED = 6;
    */
-  RANDOMNESS_PENDING = 2,
-
-  /**
-   * Winner finalized and liability reserved.
-   * ASSIGNMENT_STATUS_WORKER_ASSIGNED identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_STATUS_WORKER_ASSIGNED = 3;
-   */
-  WORKER_ASSIGNED = 3,
-
-  /**
-   * Assignment could not be completed.
-   * ASSIGNMENT_STATUS_ASSIGN_TIMEOUT identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_STATUS_ASSIGN_TIMEOUT = 4;
-   */
-  ASSIGN_TIMEOUT = 4,
+  WORKER_RECORDED = 6,
 
   /**
    * Winner missed the inference deadline.
@@ -1249,61 +1149,6 @@ export const SettlementStatusSchema: GenEnum<SettlementStatus> = /*@__PURE__*/
   enumDesc(file_task_v1_assignment, 4);
 
 /**
- * AssignmentFailureReason is the single closed reason for a failed Worker
- * assignment, frozen by this contract.
- * AssignmentFailureReason defines the AssignmentFailureReason wire type.
- *
- * @generated from enum task.v1.AssignmentFailureReason
- */
-export enum AssignmentFailureReason {
-  /**
-   * No failure recorded.
-   * ASSIGNMENT_FAILURE_REASON_UNSPECIFIED identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_FAILURE_REASON_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * Frozen union bitmap held no usable candidate.
-   * ASSIGNMENT_FAILURE_REASON_EMPTY_LEGAL_SET identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_FAILURE_REASON_EMPTY_LEGAL_SET = 1;
-   */
-  EMPTY_LEGAL_SET = 1,
-
-  /**
-   * Required future beacon never became available.
-   * ASSIGNMENT_FAILURE_REASON_RANDOMNESS_UNAVAILABLE identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_FAILURE_REASON_RANDOMNESS_UNAVAILABLE = 2;
-   */
-  RANDOMNESS_UNAVAILABLE = 2,
-
-  /**
-   * Drawn winner could no longer reserve task liability.
-   * ASSIGNMENT_FAILURE_REASON_WINNER_LIABILITY_UNAVAILABLE identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_FAILURE_REASON_WINNER_LIABILITY_UNAVAILABLE = 3;
-   */
-  WINNER_LIABILITY_UNAVAILABLE = 3,
-
-  /**
-   * Order expired before assignment completed.
-   * ASSIGNMENT_FAILURE_REASON_ORDER_EXPIRED identifies the corresponding protocol value.
-   *
-   * @generated from enum value: ASSIGNMENT_FAILURE_REASON_ORDER_EXPIRED = 4;
-   */
-  ORDER_EXPIRED = 4,
-}
-
-/**
- * Describes the enum task.v1.AssignmentFailureReason.
- */
-export const AssignmentFailureReasonSchema: GenEnum<AssignmentFailureReason> = /*@__PURE__*/
-  enumDesc(file_task_v1_assignment, 5);
-
-/**
  * TaskCandidateStage selects the handraise stage of one task.
  *
  * The bitmap domains use OPEN_TASK=1 and OPEN_VERIFY=2. SETTLE is not a
@@ -1322,14 +1167,6 @@ export enum TaskCandidateStage {
   UNSPECIFIED = 0,
 
   /**
-   * Worker handraise stage.
-   * TASK_CANDIDATE_STAGE_OPEN_TASK identifies the corresponding protocol value.
-   *
-   * @generated from enum value: TASK_CANDIDATE_STAGE_OPEN_TASK = 1;
-   */
-  OPEN_TASK = 1,
-
-  /**
    * Verifier handraise stage.
    * TASK_CANDIDATE_STAGE_OPEN_VERIFY identifies the corresponding protocol value.
    *
@@ -1342,7 +1179,7 @@ export enum TaskCandidateStage {
  * Describes the enum task.v1.TaskCandidateStage.
  */
 export const TaskCandidateStageSchema: GenEnum<TaskCandidateStage> = /*@__PURE__*/
-  enumDesc(file_task_v1_assignment, 6);
+  enumDesc(file_task_v1_assignment, 5);
 
 /**
  * TaskCandidateStageStatusV1 is the handraise window status, frozen by this contract.
@@ -1387,7 +1224,7 @@ export enum TaskCandidateStageStatusV1 {
  * Describes the enum task.v1.TaskCandidateStageStatusV1.
  */
 export const TaskCandidateStageStatusV1Schema: GenEnum<TaskCandidateStageStatusV1> = /*@__PURE__*/
-  enumDesc(file_task_v1_assignment, 7);
+  enumDesc(file_task_v1_assignment, 6);
 
 /**
  * PayloadModeV1 reserves encrypted payload selection for a later activation.
@@ -1430,7 +1267,7 @@ export enum PayloadModeV1 {
  * Describes the enum task.v1.PayloadModeV1.
  */
 export const PayloadModeV1Schema: GenEnum<PayloadModeV1> = /*@__PURE__*/
-  enumDesc(file_task_v1_assignment, 8);
+  enumDesc(file_task_v1_assignment, 7);
 
 /**
  * FinalizeCursorStatusV1 is the bounded finalize cursor status.
@@ -1467,5 +1304,5 @@ export enum FinalizeCursorStatusV1 {
  * Describes the enum task.v1.FinalizeCursorStatusV1.
  */
 export const FinalizeCursorStatusV1Schema: GenEnum<FinalizeCursorStatusV1> = /*@__PURE__*/
-  enumDesc(file_task_v1_assignment, 9);
+  enumDesc(file_task_v1_assignment, 8);
 

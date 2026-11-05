@@ -1,6 +1,26 @@
 
 /** SDK view of node task.v1.StreamState (camelCase mapping). */
 export interface StreamStateView {
+  readonly pendingSessionKeyChange?: { readonly kind: string; readonly effectiveHeight: bigint; readonly grant?: { readonly sessionKey: Uint8Array; readonly expiryHeight: bigint; readonly spendCap: string } };
+  readonly balance?: string;
+  readonly frozenTotal?: string;
+  readonly pendingWithdrawKind?: string;
+  readonly pendingWithdrawAmount?: string;
+  readonly pendingWithdrawEffectiveHeight?: bigint;
+  readonly boundChangeHeight?: bigint;
+  readonly lastRecordHeight?: bigint;
+  readonly pendingTakeover?: { readonly candidateBuilder: string; readonly orderSequence: bigint; readonly orderTaskHash: string; readonly registeredHeight: bigint; readonly activationHeight: bigint };
+  /** Set once the Session is CLOSED: the height it closed at. */
+  readonly closedHeight?: bigint;
+  /**
+   * The dispatch clocks frozen for this Session (QuerySessionResponse.params). Undefined when the
+   * node does not return them; never filled from the current parameters.
+   */
+  readonly frozenParams?: { readonly maxOrderLifetimeBlocks: bigint; readonly recordDeadlineBlocks: bigint };
+  /** QuerySessionResponse.params_version; 0 is a valid version. */
+  readonly paramsVersion?: bigint;
+
+  readonly boundBuilder?: string;
   readonly sessionId: string;
   readonly owner: string; // owner_user_address
   readonly nextExpectedSequence: bigint;
@@ -27,6 +47,7 @@ export interface StreamStateView {
  * which no longer carries accepted_input_hash, receipt_status or assignment_status.
  */
 export interface ChainTaskSnapshot {
+  readonly dispatchTicketHash?: string;
   /**
    * Which TaskViewV1 arm the chain returned. Branch on this before reading any field
    * marked "active arm only" below: on the terminal arm they are `undefined`, not "", so

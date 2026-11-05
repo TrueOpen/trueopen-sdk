@@ -12,6 +12,8 @@ import {
 } from './output-commitment';
 
 export interface ConfirmOutputWithReceiptInput {
+  /** The authoritative ticket from QueryTask, not the provisional stream. */
+  readonly dispatchTicketHash: string;
   readonly chainId: string;
   readonly taskId: string;
   /** The on-chain accepted_task_hash, Hash32 text (`0x` + 64 lowercase hex). */
@@ -83,6 +85,9 @@ export function confirmOutputWithReceipt(input: ConfirmOutputWithReceiptInput): 
       'DATA_OUTPUT_CONFIRMATION_TASK_ID_MISMATCH',
       `receipt task_id ${receipt.taskId} does not match ${input.taskId}`,
     );
+  }
+  if (!isHash32Text(input.dispatchTicketHash) || checkpoint.dispatchTicketHash?.length !== 32 || hash32Text(checkpoint.dispatchTicketHash) !== input.dispatchTicketHash) {
+    throw confirmationError('DATA_OUTPUT_ATTEMPT_MISMATCH', 'Checkpoint does not belong to the chain-recorded dispatch attempt');
   }
   if (checkpoint.chunks.length === 0) {
     throw confirmationError(
@@ -169,7 +174,7 @@ function confirmedFinishReason(
   const ok = fin.finalSeq === leafCount - 1n
     && bytesEqual(fin.outputMmrRoot, outputMmrRoot)
     && verifyOutputFinSignature(
-      { chainId: checkpoint.chainId, taskHash: checkpoint.taskHash, finalSeq: fin.finalSeq, outputMmrRoot: fin.outputMmrRoot, finishReason: fin.finishReason },
+      { chainId: checkpoint.chainId, taskHash: checkpoint.taskHash, ...(checkpoint.dispatchTicketHash !== undefined ? { dispatchTicketHash: checkpoint.dispatchTicketHash } : {}), finalSeq: fin.finalSeq, outputMmrRoot: fin.outputMmrRoot, finishReason: fin.finishReason },
       fin.workerSignature,
       checkpoint.workerServicePubKey,
     );

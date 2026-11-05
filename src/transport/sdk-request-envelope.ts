@@ -42,7 +42,7 @@ export const INGRESS_SERVICE_PATH = '/nexus.v1.IngressAPI';
  * a grant whose user is the order's user. The same set is what a registered session key
  * (ADR-0037) may sign, without a grant.
  */
-export const SESSION_SDK_METHODS: readonly string[] = ['OpenTask', 'SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
+export const SESSION_SDK_METHODS: readonly string[] = ['OpenTask', 'ResumeOutput', 'GetDispatchRoster', 'SubscribeOutput', 'AckOutput', 'GetTaskEvents', 'PrepareChallenge'];
 
 /** Values of 10^12 and above are Unix milliseconds; smaller values are a chain height (OpenTask only). */
 export const HEIGHT_EXPIRY_THRESHOLD = 1_000_000_000_000n;

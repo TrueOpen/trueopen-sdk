@@ -13,27 +13,12 @@ import type { AmountV1, GenerationParamsV1, TaskOrderV3 } from './task-order';
 import { BUCKET_KIND } from '../types/hub';
 import type { BuilderSetSnapshot, BeaconView, ParameterBucketView, ProfilePricing, TaskGenerationLimits } from '../types/hub';
 
-/**
- * On-chain-derived order context - **every field feeds into the user's signature**, so
- * each one must be read individually from an authoritative source, never guessed. The
- * Keeper's validation rules for each field (node x/task/keeper/
- * task_builder_selection_runtime.go:51-71, msg_server_worker_handraises.go:486-502):
- *
- *  - builder_set_id / builder_set_hash must equal the BuilderSet in effect **at
- *    session_anchor_height** (the Keeper reads GetBuilderSetForHeight(anchor), not the
- *    latest set). The id looks like "genesis-1", no longer a decimal term.
- *  - session_anchor_height must not be earlier than that set's effective_height.
- *  - session_anchor_block_hash must equal GetBlockAnchorHash(height), i.e. the
- *    block_hash recorded by the on-chain **beacon** (not a block header read directly).
- *  - timeout_bucket_version must equal the currently effective version.
- *    (reference_bucket_version was removed from the order and no longer feeds the
- *    signature, so it is no longer read.)
- */
+/** Current chain context for a Phase 1 signed order. */
 export interface TaskOrderChainContext {
   readonly chainId: string;
   readonly sessionAnchorHeight: bigint;
   /** Hash32 text, `0x` + 64 lowercase hex. */
-  readonly sessionAnchorBlockHash: string;
+  readonly sessionAnchorBlockHash?: string;
   readonly builderSetId: string;
   /** Hash32 text, `0x` + 64 lowercase hex. */
   readonly builderSetHash: string;
@@ -53,7 +38,7 @@ export interface TaskOrderContextReader {
   getLatestHeight(): Promise<bigint>;
   /** The BuilderSet in effect at `height` (node `builder_set/by_height/{height}`). */
   getBuilderSetAtHeight(height: bigint): Promise<BuilderSetSnapshot>;
-  getBeacon(height: bigint): Promise<BeaconView>;
+  getBeacon?(height: bigint): Promise<BeaconView>;
   getParameterBucket(
     kind: typeof BUCKET_KIND[keyof typeof BUCKET_KIND],
     bucketKey?: string,
@@ -145,85 +130,50 @@ export function defaultGenerationParams(maxOutputTokens: bigint, maxOutputDurati
 }
 
 /**
- * Read the full context an order needs from the chain.
- *
- * The anchor is `latestHeight - anchorLag`: since the beacon is written block by block,
- * using a slightly older height avoids racing the latest block (whose beacon record may
- * not be queryable yet), while still staying at or after the set's effective height.
- *
- * The BuilderSet is read **at the anchor height**, not the latest height: the chain checks
- * the signed builder_set_id / builder_set_hash against the set in effect at
- * session_anchor_height, and a set change between the anchor and the latest block would
- * otherwise sign a set the chain rejects.
+ * Read the currently effective BuilderSet and parameters. Phase 1 anchors the order at the
+ * latest height: selection beacons and the anchor block hash are retired.
  */
 export async function resolveTaskOrderContext(
   hub: TaskOrderContextReader,
   chainId: string,
-  opts?: { readonly anchorLag?: bigint },
 ): Promise<TaskOrderChainContext> {
-  return (await resolveTaskOrderContextWithBuilderSet(hub, chainId, opts)).context;
+  return (await resolveTaskOrderContextWithBuilderSet(hub, chainId)).context;
 }
 
 /** An order context together with the BuilderSet it was read from (the set at the anchor height). */
 export interface ResolvedTaskOrderContext {
   readonly context: TaskOrderChainContext;
-  /** The BuilderSet in effect at context.sessionAnchorHeight; Task Builder routing selects from it. */
+  /** The BuilderSet in effect at context.sessionAnchorHeight; Task Builder routing uses this snapshot. */
   readonly builderSet: BuilderSetSnapshot;
 }
-
-/** Default lag of a fresh session anchor behind the latest height (see resolveTaskOrderContext). */
-export const DEFAULT_ANCHOR_LAG = 2n;
 
 /** resolveTaskOrderContext, also returning the BuilderSet it read, so routing need not read it again. */
 export async function resolveTaskOrderContextWithBuilderSet(
   hub: TaskOrderContextReader,
   chainId: string,
-  opts?: { readonly anchorLag?: bigint },
 ): Promise<ResolvedTaskOrderContext> {
   const latestHeight = await hub.getLatestHeight();
-  const lag = opts?.anchorLag ?? DEFAULT_ANCHOR_LAG;
-  const anchorHeight = latestHeight > lag ? latestHeight - lag : latestHeight;
+  const anchorHeight = latestHeight;
 
-  const [set, beacon, timeout, generationLimits] = await Promise.all([
+  const [set, timeout, generationLimits] = await Promise.all([
     hub.getBuilderSetAtHeight(anchorHeight),
-    hub.getBeacon(anchorHeight),
     hub.getParameterBucket(BUCKET_KIND.TIMEOUT),
     hub.getTaskGenerationLimits(),
   ]);
 
-  if (beacon.height !== anchorHeight) {
-    throw invalid('SDK_LOCAL_ANCHOR_HEIGHT_MISMATCH', `beacon height ${beacon.height} != requested ${anchorHeight}`);
-  }
-  return assembleTaskOrderContext(chainId, { height: anchorHeight, blockHash: beacon.blockHash }, set, timeout, generationLimits, latestHeight);
-}
-
-/**
- * Checks an anchor against the BuilderSet read at its height and builds the context. Shared
- * by a fresh resolution and by TaskOrderContextCache reusing an anchor.
- */
-export function assembleTaskOrderContext(
-  chainId: string,
-  anchor: { readonly height: bigint; readonly blockHash: string },
-  set: BuilderSetSnapshot,
-  timeout: ParameterBucketView,
-  generationLimits: TaskGenerationLimits,
-  latestHeight: bigint,
-): ResolvedTaskOrderContext {
   // The anchor must not be earlier than that set's effective height - otherwise the
   // builder_set_hash signed into the order wouldn't be authoritative at that height.
-  // The old term window (start/end/snapshot) was removed along with the term model.
-  if (set.effectiveHeight > anchor.height) {
+  if (set.effectiveHeight > anchorHeight) {
     throw invalid(
       'SDK_LOCAL_ANCHOR_BEFORE_BUILDER_SET',
-      `anchor height ${anchor.height} is before builder set ${set.builderSetId} takes effect at ${set.effectiveHeight}`,
+      `anchor height ${anchorHeight} is before builder set ${set.builderSetId} takes effect at ${set.effectiveHeight}`,
     );
   }
 
   return {
     context: {
       chainId,
-      sessionAnchorHeight: anchor.height,
-      sessionAnchorBlockHash: anchor.blockHash,
+      sessionAnchorHeight: anchorHeight,
       builderSetId: set.builderSetId,
       builderSetHash: set.setHash,
       // What gets signed in must be the **currently effective version**, not the version recorded on the bucket itself.
@@ -357,7 +307,6 @@ export function buildTaskOrder(
     deadlinePolicy: { latencyClass: req.latencyClass },
     timeoutBucketVersion: ctx.timeoutBucketVersion,
     sessionAnchorHeight: ctx.sessionAnchorHeight,
-    sessionAnchorBlockHash: strictHash32('session_anchor_block_hash', ctx.sessionAnchorBlockHash),
     builderSetId: ctx.builderSetId,
     builderSetHash: strictHash32('builder_set_hash', ctx.builderSetHash),
     // Plaintext Phase 0: the reserved encryption fields are fixed.

@@ -1,3 +1,4 @@
+import { SESSION_FUNDING_TYPE_URL, encodeDepositSession, encodeWithdrawSession } from './session-funding';
 import { Registry } from '@cosmjs/proto-signing';
 import type { GeneratedType } from '@cosmjs/proto-signing';
 import { defaultRegistryTypes } from '@cosmjs/stargate';
@@ -28,5 +29,7 @@ export function taskRegistry(): Registry {
   registry.register(TYPE_URL.createSession, outgoingType(encodeMsgCreateSession));
   registry.register(TYPE_URL.cancelOrder, outgoingType(encodeMsgCancelOrder));
   registry.register(TYPE_URL.updateSessionKey, outgoingType(encodeMsgUpdateSessionKey));
+  registry.register(SESSION_FUNDING_TYPE_URL.depositSession, outgoingType(encodeDepositSession));
+  registry.register(SESSION_FUNDING_TYPE_URL.withdrawSession, outgoingType(encodeWithdrawSession));
   return registry;
 }

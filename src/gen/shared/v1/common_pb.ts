@@ -11,7 +11,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file shared/v1/common.proto.
  */
 export const file_shared_v1_common: GenFile = /*@__PURE__*/
-  fileDesc("ChZzaGFyZWQvdjEvY29tbW9uLnByb3RvEglzaGFyZWQudjEiGgoGQnlJRFYxEhAKAmlkGAEgASgMQgTI8xgCIhwKB0JhdGNoVjESEQoJbWF4X2l0ZW1zGAEgASgNKnMKEE11dGF0aW9uU3RhdHVzVjESIgoeTVVUQVRJT05fU1RBVFVTX1YxX1VOU1BFQ0lGSUVEEAASHgoaTVVUQVRJT05fU1RBVFVTX1YxX0FQUExJRUQQARIbChdNVVRBVElPTl9TVEFUVVNfVjFfTk9PUBACKm4KD1BhcnRpY2lwYW50VHlwZRIgChxQQVJUSUNJUEFOVF9UWVBFX1VOU1BFQ0lGSUVEEAASGwoXUEFSVElDSVBBTlRfVFlQRV9DT1JURVgQARIcChhQQVJUSUNJUEFOVF9UWVBFX0JVSUxERVIQAipACgREdXR5EhQKEERVVFlfVU5TUEVDSUZJRUQQABIPCgtEVVRZX1dPUktFUhABEhEKDURVVFlfVkVSSUZJRVIQAiqSAgobRmFpbHVyZUNsYXNzaWZpY2F0aW9uU291cmNlEi0KKUZBSUxVUkVfQ0xBU1NJRklDQVRJT05fU09VUkNFX1VOU1BFQ0lGSUVEEAASKgomRkFJTFVSRV9DTEFTU0lGSUNBVElPTl9TT1VSQ0VfREVBRExJTkUQARIsCihGQUlMVVJFX0NMQVNTSUZJQ0FUSU9OX1NPVVJDRV9TRVRUTEVNRU5UEAISNAowRkFJTFVSRV9DTEFTU0lGSUNBVElPTl9TT1VSQ0VfVkVSSUZJQ0FUSU9OX1JPVU5EEAMSNAowRkFJTFVSRV9DTEFTU0lGSUNBVElPTl9TT1VSQ0VfT0JKRUNUSVZFX0VWSURFTkNFEAQqdAoQU3RvcmVkQm9keVN0YXR1cxIiCh5TVE9SRURfQk9EWV9TVEFUVVNfVU5TUEVDSUZJRUQQABIdChlTVE9SRURfQk9EWV9TVEFUVVNfQUNUSVZFEAESHQoZU1RPUkVEX0JPRFlfU1RBVFVTX1BSVU5FRBACKkIKCkJ1Y2tldEtpbmQSGwoXQlVDS0VUX0tJTkRfVU5TUEVDSUZJRUQQABIXChNCVUNLRVRfS0lORF9USU1FT1VUEAEqhwEKFFRhc2tGaW5hbGl0eVN0YXR1c1YxEicKI1RBU0tfRklOQUxJVFlfU1RBVFVTX1YxX1VOU1BFQ0lGSUVEEAASIwofVEFTS19GSU5BTElUWV9TVEFUVVNfVjFfUEVORElORxABEiEKHVRBU0tfRklOQUxJVFlfU1RBVFVTX1YxX0ZJTkFMEAIqigIKE0J1aWxkZXJFdmlkZW5jZUtpbmQSJQohQlVJTERFUl9FVklERU5DRV9LSU5EX1VOU1BFQ0lGSUVEEAASLworQlVJTERFUl9FVklERU5DRV9LSU5EX1BST1BPU0FMX0VRVUlWT0NBVElPThABEjIKLkJVSUxERVJfRVZJREVOQ0VfS0lORF9JTlZBTElEX1NUQUdFX1NVQk1JU1NJT04QAhI0CjBCVUlMREVSX0VWSURFTkNFX0tJTkRfT0JKRUNUSVZFX0RBVEFfVU5BVkFJTEFCTEUQBCIECAMQAyorQlVJTERFUl9FVklERU5DRV9LSU5EX09CSkVDVElWRV9NSVNTRURfRFVUWUIpWidnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC9zaGFyZWQvdHlwZXNiBnByb3RvMw", [file_shared_v1_rest_encoding]);
+  fileDesc("ChZzaGFyZWQvdjEvY29tbW9uLnByb3RvEglzaGFyZWQudjEiGgoGQnlJRFYxEhAKAmlkGAEgASgMQgTI8xgCIhwKB0JhdGNoVjESEQoJbWF4X2l0ZW1zGAEgASgNKpQBChBNdXRhdGlvblN0YXR1c1YxEiIKHk1VVEFUSU9OX1NUQVRVU19WMV9VTlNQRUNJRklFRBAAEh4KGk1VVEFUSU9OX1NUQVRVU19WMV9BUFBMSUVEEAESGwoXTVVUQVRJT05fU1RBVFVTX1YxX05PT1AQAhIfChtNVVRBVElPTl9TVEFUVVNfVjFfUkVKRUNURUQQAyqOAQoPUGFydGljaXBhbnRUeXBlEiAKHFBBUlRJQ0lQQU5UX1RZUEVfVU5TUEVDSUZJRUQQABIbChdQQVJUSUNJUEFOVF9UWVBFX0NPUlRFWBABEhwKGFBBUlRJQ0lQQU5UX1RZUEVfQlVJTERFUhACEh4KGlBBUlRJQ0lQQU5UX1RZUEVfVkFMSURBVE9SEAMqQAoERHV0eRIUChBEVVRZX1VOU1BFQ0lGSUVEEAASDwoLRFVUWV9XT1JLRVIQARIRCg1EVVRZX1ZFUklGSUVSEAIqkgIKG0ZhaWx1cmVDbGFzc2lmaWNhdGlvblNvdXJjZRItCilGQUlMVVJFX0NMQVNTSUZJQ0FUSU9OX1NPVVJDRV9VTlNQRUNJRklFRBAAEioKJkZBSUxVUkVfQ0xBU1NJRklDQVRJT05fU09VUkNFX0RFQURMSU5FEAESLAooRkFJTFVSRV9DTEFTU0lGSUNBVElPTl9TT1VSQ0VfU0VUVExFTUVOVBACEjQKMEZBSUxVUkVfQ0xBU1NJRklDQVRJT05fU09VUkNFX1ZFUklGSUNBVElPTl9ST1VORBADEjQKMEZBSUxVUkVfQ0xBU1NJRklDQVRJT05fU09VUkNFX09CSkVDVElWRV9FVklERU5DRRAEKnQKEFN0b3JlZEJvZHlTdGF0dXMSIgoeU1RPUkVEX0JPRFlfU1RBVFVTX1VOU1BFQ0lGSUVEEAASHQoZU1RPUkVEX0JPRFlfU1RBVFVTX0FDVElWRRABEh0KGVNUT1JFRF9CT0RZX1NUQVRVU19QUlVORUQQAipCCgpCdWNrZXRLaW5kEhsKF0JVQ0tFVF9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTQlVDS0VUX0tJTkRfVElNRU9VVBABKocBChRUYXNrRmluYWxpdHlTdGF0dXNWMRInCiNUQVNLX0ZJTkFMSVRZX1NUQVRVU19WMV9VTlNQRUNJRklFRBAAEiMKH1RBU0tfRklOQUxJVFlfU1RBVFVTX1YxX1BFTkRJTkcQARIhCh1UQVNLX0ZJTkFMSVRZX1NUQVRVU19WMV9GSU5BTBACKooCChNCdWlsZGVyRXZpZGVuY2VLaW5kEiUKIUJVSUxERVJfRVZJREVOQ0VfS0lORF9VTlNQRUNJRklFRBAAEi8KK0JVSUxERVJfRVZJREVOQ0VfS0lORF9QUk9QT1NBTF9FUVVJVk9DQVRJT04QARIyCi5CVUlMREVSX0VWSURFTkNFX0tJTkRfSU5WQUxJRF9TVEFHRV9TVUJNSVNTSU9OEAISNAowQlVJTERFUl9FVklERU5DRV9LSU5EX09CSkVDVElWRV9EQVRBX1VOQVZBSUxBQkxFEAQiBAgDEAMqK0JVSUxERVJfRVZJREVOQ0VfS0lORF9PQkpFQ1RJVkVfTUlTU0VEX0RVVFkqmwIKF0Rpc3BhdGNoQ2hhbGxlbmdlS2luZFYxEioKJkRJU1BBVENIX0NIQUxMRU5HRV9LSU5EX1YxX1VOU1BFQ0lGSUVEEAASJwojRElTUEFUQ0hfQ0hBTExFTkdFX0tJTkRfVjFfT01JU1NJT04QARIjCh9ESVNQQVRDSF9DSEFMTEVOR0VfS0lORF9WMV9EUkFXEAISIwofRElTUEFUQ0hfQ0hBTExFTkdFX0tJTkRfVjFfU0tJUBADEjEKLURJU1BBVENIX0NIQUxMRU5HRV9LSU5EX1YxX1JPU1RFUl9VTkFWQUlMQUJMRRAEEi4KKkRJU1BBVENIX0NIQUxMRU5HRV9LSU5EX1YxX0RPVUJMRV9ESVNQQVRDSBAFKu0CCglGYXVsdEtpbmQSGgoWRkFVTFRfS0lORF9VTlNQRUNJRklFRBAAEhYKEkZBVUxUX0tJTkRfVElNRU9VVBABEh0KGUZBVUxUX0tJTkRfSU5WQUxJRF9SRVNVTFQQAhIbChdGQVVMVF9LSU5EX0VRVUlWT0NBVElPThADEiYKIkZBVUxUX0tJTkRfQlVJTERFUl9PQkpFQ1RJVkVfRkFVTFQQBRImCiJGQVVMVF9LSU5EX1ZFUklGSUVSX1ZBTFVFX01JU01BVENIEAYSJAogRkFVTFRfS0lORF9XT1JLRVJfVkFMVUVTX0lOVkFMSUQQBxIpCiVGQVVMVF9LSU5EX1dPUktFUl9ESVNQQVRDSF9JTkVMSUdJQkxFEAgSLAooRkFVTFRfS0lORF9XT1JLRVJfRElTUEFUQ0hfQ09OVFJBRElDVElPThAJIgQIBBAEKhtGQVVMVF9LSU5EX0VWSURFTkNFX0RFRkFVTFRCKVonZ2l0aHViLmNvbS9UcnVlT3Blbi9ub2RlL3gvc2hhcmVkL3R5cGVzYgZwcm90bzM", [file_shared_v1_rest_encoding]);
 
 /**
  * ByIDV1 selects exactly one object by its canonical 32-byte ID (9.6b).
@@ -52,7 +52,7 @@ export const BatchV1Schema: GenMessage<BatchV1> = /*@__PURE__*/
   messageDesc(file_shared_v1_common, 1);
 
 /**
- * MutationStatusV1 is the accepted-mutation outcome of every ACTIVE Msg response; only APPLIED and NOOP may be returned and a reject uses a gRPC error instead (9.6a/9.6b).
+ * MutationStatusV1 is the accepted-mutation outcome of every ACTIVE Msg response; APPLIED and NOOP describe successful mutations. Only independently admitted dispatch items may return REJECTED; ordinary Msg rejection uses a gRPC error.
  *
  * @generated from enum shared.v1.MutationStatusV1
  */
@@ -80,6 +80,13 @@ export enum MutationStatusV1 {
    * @generated from enum value: MUTATION_STATUS_V1_NOOP = 2;
    */
   NOOP = 2,
+
+  /**
+   * REJECTED is used only by independently admitted dispatch batch items.
+   *
+   * @generated from enum value: MUTATION_STATUS_V1_REJECTED = 3;
+   */
+  REJECTED = 3,
 }
 
 /**
@@ -117,6 +124,13 @@ export enum ParticipantType {
    * @generated from enum value: PARTICIPANT_TYPE_BUILDER = 2;
    */
   BUILDER = 2,
+
+  /**
+   * Validator is accepted only by the VRF registry, not service-key methods.
+   *
+   * @generated from enum value: PARTICIPANT_TYPE_VALIDATOR = 3;
+   */
+  VALIDATOR = 3,
 }
 
 /**
@@ -372,4 +386,140 @@ export enum BuilderEvidenceKind {
  */
 export const BuilderEvidenceKindSchema: GenEnum<BuilderEvidenceKind> = /*@__PURE__*/
   enumDesc(file_shared_v1_common, 7);
+
+/**
+ * DispatchChallengeKindV1 is the closed DispatchChallengeKindV1 registry.
+ *
+ * @generated from enum shared.v1.DispatchChallengeKindV1
+ */
+export enum DispatchChallengeKindV1 {
+  /**
+   * UNSPECIFIED is the unspecified value.
+   *
+   * @generated from enum value: DISPATCH_CHALLENGE_KIND_V1_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * OMISSION is the omission value.
+   *
+   * @generated from enum value: DISPATCH_CHALLENGE_KIND_V1_OMISSION = 1;
+   */
+  OMISSION = 1,
+
+  /**
+   * DRAW is the draw value.
+   *
+   * @generated from enum value: DISPATCH_CHALLENGE_KIND_V1_DRAW = 2;
+   */
+  DRAW = 2,
+
+  /**
+   * SKIP is the skip value.
+   *
+   * @generated from enum value: DISPATCH_CHALLENGE_KIND_V1_SKIP = 3;
+   */
+  SKIP = 3,
+
+  /**
+   * ROSTER_UNAVAILABLE is the roster unavailable value.
+   *
+   * @generated from enum value: DISPATCH_CHALLENGE_KIND_V1_ROSTER_UNAVAILABLE = 4;
+   */
+  ROSTER_UNAVAILABLE = 4,
+
+  /**
+   * DOUBLE_DISPATCH is the double dispatch value.
+   *
+   * @generated from enum value: DISPATCH_CHALLENGE_KIND_V1_DOUBLE_DISPATCH = 5;
+   */
+  DOUBLE_DISPATCH = 5,
+}
+
+/**
+ * Describes the enum shared.v1.DispatchChallengeKindV1.
+ */
+export const DispatchChallengeKindV1Schema: GenEnum<DispatchChallengeKindV1> = /*@__PURE__*/
+  enumDesc(file_shared_v1_common, 8);
+
+/**
+ * FaultKind is the closed objective fault kind of one role fault receipt (9.6b).
+ *
+ * @generated from enum shared.v1.FaultKind
+ */
+export enum FaultKind {
+  /**
+   * Never written; rejects zero-value receipts.
+   * FAULT_KIND_UNSPECIFIED identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FAULT_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * Assigned duty missed its deadline.
+   * FAULT_KIND_TIMEOUT identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FAULT_KIND_TIMEOUT = 1;
+   */
+  TIMEOUT = 1,
+
+  /**
+   * Submitted material was objectively invalid.
+   * FAULT_KIND_INVALID_RESULT identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FAULT_KIND_INVALID_RESULT = 2;
+   */
+  INVALID_RESULT = 2,
+
+  /**
+   * Two conflicting accepted submissions for one scope.
+   * FAULT_KIND_EQUIVOCATION identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FAULT_KIND_EQUIVOCATION = 3;
+   */
+  EQUIVOCATION = 3,
+
+  /**
+   * Builder objective evidence was accepted against the operator.
+   * FAULT_KIND_BUILDER_OBJECTIVE_FAULT identifies the corresponding protocol value.
+   *
+   * @generated from enum value: FAULT_KIND_BUILDER_OBJECTIVE_FAULT = 5;
+   */
+  BUILDER_OBJECTIVE_FAULT = 5,
+
+  /**
+   * Active bounded verifier value-evidence fault.
+   *
+   * @generated from enum value: FAULT_KIND_VERIFIER_VALUE_MISMATCH = 6;
+   */
+  VERIFIER_VALUE_MISMATCH = 6,
+
+  /**
+   * Active objectively invalid Worker value evidence.
+   *
+   * @generated from enum value: FAULT_KIND_WORKER_VALUES_INVALID = 7;
+   */
+  WORKER_VALUES_INVALID = 7,
+
+  /**
+   * Signed Worker dispatch cannot reserve its required liability.
+   *
+   * @generated from enum value: FAULT_KIND_WORKER_DISPATCH_INELIGIBLE = 8;
+   */
+  WORKER_DISPATCH_INELIGIBLE = 8,
+
+  /**
+   * Worker signs both reject and accept for the same ticket.
+   *
+   * @generated from enum value: FAULT_KIND_WORKER_DISPATCH_CONTRADICTION = 9;
+   */
+  WORKER_DISPATCH_CONTRADICTION = 9,
+}
+
+/**
+ * Describes the enum shared.v1.FaultKind.
+ */
+export const FaultKindSchema: GenEnum<FaultKind> = /*@__PURE__*/
+  enumDesc(file_shared_v1_common, 9);
 

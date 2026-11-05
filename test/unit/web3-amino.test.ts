@@ -5,7 +5,10 @@ import {
   AMINO_NAME,
   aminoMsgCancelOrder,
   aminoMsgCreateSession,
+  aminoMsgDepositSession,
+  aminoMsgFromEncodeObject,
   aminoMsgUpdateSessionKey,
+  aminoMsgWithdrawSession,
   canonicalAminoSignDoc,
   canonicalJson,
   web3Fee,
@@ -17,6 +20,8 @@ import { privateKeyTypedDataSigner, typedDataDigest } from '../../src/signer/typ
 import { ethAddressBytes, recoverEip712PubKey } from '../../src/signer/eth-secp256k1';
 import { encodeMsgUpdateSessionKey } from '../../src/transport/task-msgs';
 import type { MsgUpdateSessionKey } from '../../src/transport/task-msgs';
+import { SESSION_FUNDING_TYPE_URL, encodeWithdrawSession } from '../../src/transport/session-funding';
+import type { WithdrawSessionInput } from '../../src/transport/session-funding';
 import { ACCOUNT_SIGNING, fixtureKey } from '../helpers/account-signing';
 import { fromHex, toHex } from '../../src/util/bytes';
 
@@ -44,6 +49,13 @@ const AMINO = JSON.parse(readFileSync('third_party/wire/testdata/v1/task/session
   typed_data_chain_id: string;
 };
 
+type AminoVectorCase = (typeof AMINO.cases)[number];
+
+const FUNDING = JSON.parse(readFileSync('third_party/wire/testdata/v1/task/session_funding_amino_v1.json', 'utf8')) as {
+  cases: (AminoVectorCase & { signer: string })[];
+  negative_cases: { name: string; expected: string }[];
+};
+
 const OWNER: string = ACCOUNT_SIGNING.account.account_bech32;
 const GRANT = { sessionKey: new Uint8Array(20).fill(3), expiryHeight: 200n, spendCap: '0' };
 const SESSION_ID = `0x${'07'.repeat(32)}`;
@@ -62,7 +74,8 @@ function signDoc(msg: AminoMsg, over: { memo?: string; chainId?: string } = {}):
 }
 
 const SDK_MSGS: Record<string, AminoMsg> = {
-  create: aminoMsgCreateSession({ signer: OWNER, sessionKey: GRANT }),
+  // The vector binds the session to the owner's own address as initial_builder and prefunds 1000.
+  create: aminoMsgCreateSession({ signer: OWNER, sessionKey: GRANT, initialBuilder: OWNER, initialDeposit: '1000' }),
   set: aminoMsgUpdateSessionKey({ signer: OWNER, sessionId: SESSION_ID, action: { set: GRANT } }),
   clear: aminoMsgUpdateSessionKey({ signer: OWNER, sessionId: SESSION_ID, action: { clear: true } }),
 };
@@ -118,10 +131,116 @@ describe('session_key_amino_v1 cases', () => {
   });
 });
 
+/**
+ * testdata/v1/task/session_funding_amino_v1.json: the Phase 1 MsgDepositSession and
+ * MsgWithdrawSession (amount / CLOSE) wallet documents. fund_builder is the hub
+ * MsgFundBuilderCompensation, which the SDK does not build.
+ */
+describe('session_funding_amino_v1 cases', () => {
+  // Wire b30fba8 lists the msg value fields of these vectors in an order cosmos-evm v0.6.3
+  // WrapTxToTypedData (sortedJSONKeys: descending) cannot produce, e.g. deposit's
+  // TypeValue(session_id, amount, signer_address) where the node's derivation gives
+  // TypeValue(signer_address, session_id, amount). session_key_amino_v1, account_signing_v1 and
+  // the node-checked MsgCancelOrder digests all follow the descending order. Everything else is
+  // pinned byte for byte: the Amino document, the typed message and the domain from the SDK, and the
+  // digest and wallet signature over the vector's own graph.
+  function vectorTypes(encodeType: string): Record<string, { name: string; type: string }[]> {
+    const out: Record<string, { name: string; type: string }[]> = {};
+    for (const m of encodeType.matchAll(/(\w+)\(([^)]*)\)/g)) {
+      out[m[1]!] = m[2]!.split(',').map((f) => {
+        const [type, name] = f.split(' ');
+        return { name: name!, type: type! };
+      });
+    }
+    return out;
+  }
+
+  const FUNDING_MSGS: Record<string, AminoMsg> = {
+    deposit: aminoMsgDepositSession({ signer: OWNER, sessionId: SESSION_ID, amount: '1000' }),
+    withdraw_amount: aminoMsgWithdrawSession({ signer: OWNER, sessionId: SESSION_ID, amount: '1000' }),
+    close: aminoMsgWithdrawSession({ signer: OWNER, sessionId: SESSION_ID, close: true }),
+  };
+  expect(FUNDING.cases.map((c) => c.name)).toEqual(['deposit', 'withdraw_amount', 'close', 'fund_builder']);
+  for (const c of FUNDING.cases.filter((v) => v.name in FUNDING_MSGS)) {
+    describe(c.name, () => {
+      const doc = signDoc(FUNDING_MSGS[c.name]!);
+      const typed = cosmosWeb3TypedData(TYPED_CHAIN_ID, doc);
+
+      it('canonical_amino_json byte for byte, and its sha256', () => {
+        expect(doc).toBe(c.canonical_amino_json);
+        expect(toHex(sha256(new TextEncoder().encode(doc)))).toBe(c.sha256);
+      });
+      it('typed data message is the flattened sign doc', () => {
+        expect(typed.message).toEqual(c.message);
+      });
+      it('typed graph: the vector\'s types and fields (field order: see the note above)', () => {
+        const vector = vectorTypes(c.encode_type);
+        const sdk = Object.fromEntries(Object.keys(vector).map((n) => [n, typed.types[n]]));
+        expect(Object.keys(typed.types).filter((n) => n !== 'EIP712Domain').sort()).toEqual(Object.keys(vector).sort());
+        const bySet = (t: Record<string, readonly { name: string; type: string }[] | undefined>) =>
+          Object.fromEntries(Object.entries(t).map(([n, f]) => [n, [...(f ?? [])].map((x) => `${x.type} ${x.name}`).sort()]));
+        expect(bySet(sdk)).toEqual(bySet(vector));
+        // The SDK keeps the node's (cosmos-evm) descending field order.
+        const names = typed.types.TypeValue!.map((f) => f.name);
+        expect(names).toEqual([...names].sort().reverse());
+        expect(toHex(eip712DomainSeparator(typed.types, typed.domain))).toBe(c.domain_separator);
+      });
+      it('over the vector\'s field order, the SDK message reproduces hash_struct, signing_digest, signature_65', async () => {
+        const pinned = { ...typed, types: { ...typed.types, ...vectorTypes(c.encode_type) } };
+        expect(eip712EncodeType('Tx', pinned.types)).toBe(c.encode_type);
+        expect(toHex(eip712HashStruct('Tx', pinned.types, pinned.message))).toBe(c.hash_struct);
+        expect(toHex(typedDataDigest(pinned))).toBe(c.signing_digest);
+        expect(c.signer).toBe('account');
+        const sig = await privateKeyTypedDataSigner(fixtureKey('account')).signTypedData(pinned);
+        expect(toHex(sig)).toBe(c.signature_65);
+        expect(toHex(ethAddressBytes(recoverEip712PubKey(typedDataDigest(pinned), sig)))).toBe(c.recovered_address);
+      });
+      it.todo('the SDK-derived graph (cosmos-evm descending field order) yields the vector signing_digest: blocked on the wire vector order');
+    });
+  }
+
+  it('the writer path maps the funding type URLs to the same Amino Msgs', () => {
+    expect(aminoMsgFromEncodeObject({
+      typeUrl: SESSION_FUNDING_TYPE_URL.depositSession,
+      value: { signer: OWNER, sessionId: SESSION_ID, amount: '1000' },
+    })).toEqual(FUNDING_MSGS.deposit);
+    expect(aminoMsgFromEncodeObject({
+      typeUrl: SESSION_FUNDING_TYPE_URL.withdrawSession,
+      value: { signer: OWNER, sessionId: SESSION_ID, close: true },
+    })).toEqual(FUNDING_MSGS.close);
+  });
+
+  describe('negative_cases are refused by the builders', () => {
+    const inputs: Record<string, unknown> = {
+      missing_action: {},
+      both_actions: { amount: '1000', close: true },
+      close_false: { close: false },
+      close_null: { close: null },
+      close_empty_object: { close: {} },
+    };
+    it('covers every vector negative case', () => {
+      expect(FUNDING.negative_cases.every((n) => n.expected === 'reject')).toBe(true);
+      expect(Object.keys(inputs).sort()).toEqual(FUNDING.negative_cases.map((n) => n.name).sort());
+    });
+    for (const { name } of FUNDING.negative_cases) {
+      it(name, () => {
+        const m = { signer: OWNER, sessionId: SESSION_ID, ...(inputs[name] as object) } as unknown as WithdrawSessionInput & { signer: string };
+        expect(() => aminoMsgWithdrawSession(m)).toThrow(expect.objectContaining({ code: 'SDK_LOCAL_TX_MSG_INVALID' }));
+        // The protobuf encoder refuses the same ambiguous action, so DIRECT cannot commit it either.
+        expect(() => encodeWithdrawSession(m)).toThrow(/exactly one/);
+      });
+    }
+  });
+});
+
 describe('account_signing_v1 msg_create_session_transaction (Cosmos Web3)', () => {
   const t = ACCOUNT_SIGNING.msg_create_session_transaction;
   const d = ACCOUNT_SIGNING.transaction_domain;
-  const msg = aminoMsgCreateSession({ signer: t.signer_address });
+  // This shared vector still carries a signer-only MsgCreateSession (no initial_deposit, no
+  // initial_builder): it freezes the Cosmos Web3 Tx projection and the account key, not the Phase 1
+  // Msg shape (session_key_amino_v1 "create" does). The Phase 1 builder always commits
+  // initial_deposit, so the signer-only value is written directly here.
+  const msg: AminoMsg = { type: AMINO_NAME.createSession, value: { signer_address: t.signer_address } };
   const doc = canonicalAminoSignDoc({
     chainId: t.cosmos_chain_id,
     accountNumber: BigInt(t.account_number),
@@ -132,9 +251,12 @@ describe('account_signing_v1 msg_create_session_transaction (Cosmos Web3)', () =
   });
   const typed = cosmosWeb3TypedData(BigInt(t.typed_data_chain_id), doc);
 
-  it('amino name, and no session_key without a grant', () => {
-    expect(msg).toEqual({ type: t.amino_name, value: { signer_address: t.signer_address } });
+  it('amino name; without a grant there is no session_key, and initial_deposit is always committed', () => {
     expect(AMINO_NAME.createSession).toBe(t.amino_name);
+    expect(aminoMsgCreateSession({ signer: t.signer_address })).toEqual({
+      type: t.amino_name,
+      value: { signer_address: t.signer_address, initial_deposit: { atomic_units: '0' } },
+    });
   });
   it('canonical_amino_json', () => expect(doc).toBe(t.canonical_amino_json));
   it('encode_type, type_hash and every type_graph line', () => {

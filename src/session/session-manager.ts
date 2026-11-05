@@ -1,5 +1,5 @@
+import type { CreateSessionInput } from '../transport/session-funding';
 import type { ChainClient } from '../transport/chain-client';
-import type { SessionKeyGrant } from '../transport/task-msgs';
 import type { StreamStateView } from '../types/node';
 
 /**
@@ -21,7 +21,7 @@ export interface SessionKeyHandle {
   readonly spendCap: string;
 }
 
-export interface SessionHandle {
+export interface SessionHandle extends Partial<Omit<StreamStateView, 'sessionKey'>> {
   readonly sessionId: string;
   readonly owner: string;
   readonly nextExpectedSequence: bigint;
@@ -45,9 +45,9 @@ export class SessionManager {
 
   constructor(private readonly chain: ChainClient) {}
 
-  /** With `sessionKey`, the key is registered in the same MsgCreateSession. */
-  async create(label?: string, sessionKey?: SessionKeyGrant): Promise<SessionHandle> {
-    const r = await (sessionKey !== undefined ? this.chain.createSession({ sessionKey }) : this.chain.createSession());
+  /** Phase 1 funding fields and, with `sessionKey`, the key registered in the same MsgCreateSession. */
+  async create(label?: string, input?: CreateSessionInput): Promise<SessionHandle> {
+    const r = await this.chain.createSession(input);
     const handle: SessionHandle = {
       sessionId: r.sessionId,
       owner: r.owner,
@@ -60,8 +60,6 @@ export class SessionManager {
   }
 
   async get(sessionId: string): Promise<SessionHandle> {
-    const cached = this.cache.get(sessionId);
-    if (cached) return cached;
     return this.rebuild(sessionId);
   }
 
@@ -74,7 +72,10 @@ export class SessionManager {
 }
 
 function toHandle(s: StreamStateView, label?: string): SessionHandle {
+  // The chain's key address is not the SDK's key handle (SessionHandle.sessionKey).
+  const { sessionKey: _key, ...state } = s;
   return {
+    ...state,
     sessionId: s.sessionId,
     owner: s.owner,
     nextExpectedSequence: s.nextExpectedSequence,

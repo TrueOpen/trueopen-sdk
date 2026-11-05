@@ -1,3 +1,4 @@
+import { bech32 } from '@scure/base';
 import { describe, it, expect } from 'vitest';
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
@@ -46,6 +47,7 @@ class FakeBroadcaster implements TxBroadcaster {
 
 /** Nothing in these tests should spend real time asleep. */
 const instant = { attempts: 30, intervalMs: 0, sleep: async () => {} };
+const BUILDER = bech32.encode('trueopen', bech32.toWords(new Uint8Array(20).fill(9)));
 
 const fee: StdFee = { amount: [{ denom: 'utrueopen', amount: '1' }], gas: '200000' };
 
@@ -57,7 +59,7 @@ describe('CosmjsChainWriter', () => {
       .finish();
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, respBytes));
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    const r = await w.createSession();
+    const r = await w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(r).toEqual({
       sessionId: SESSION_ID, owner: 'trueopen1me', nonce: 7n, status: 'MUTATION_STATUS_V1_APPLIED',
     });
@@ -82,8 +84,8 @@ describe('CosmjsChainWriter', () => {
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, new ProtoWriter().bytes(1, fromHex(SESSION_HEX)).uint64(2, 1n).uint64(3, 1n).finish()));
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
     const sessionKey = { sessionKey: new Uint8Array(20).fill(3), expiryHeight: 50n, spendCap: '0' };
-    await w.createSession({ sessionKey });
-    expect(bc.last?.messages[0]?.value).toEqual({ signer: 'trueopen1me', sessionKey });
+    await w.createSession({ sessionKey, initialBuilder: BUILDER, initialDeposit: '0' });
+    expect(bc.last?.messages[0]?.value).toEqual({ signer: 'trueopen1me', sessionKey, initialBuilder: BUILDER, initialDeposit: '0' });
   });
 
   // node MsgUpdateSessionKeyResponse: optional bytes key=1, expiry=2, Amount cap=3, Amount spent=4, set_height=5, status=6.
@@ -105,7 +107,7 @@ describe('CosmjsChainWriter', () => {
   it('throws when the tx was included but the state machine rejected it (code != 0)', async () => {
     const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), 5);
     const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
-    await expect(w.createSession()).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
+    await expect(w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
   });
 
   // node x/task/types/errors.go registrations, wrapped as DeliverTx raw logs carry them.
@@ -130,7 +132,7 @@ describe('CosmjsChainWriter', () => {
     for (const [code, rawLog] of [[1144, 'something else'], [1105, 'failed: session not found: invalid session id'], [7, 'x: invalid session key']] as const) {
       const failed = indexedTx(TYPE_URL.createSession, new Uint8Array(), code, rawLog);
       const w = new CosmjsChainWriter({ broadcaster: new FakeBroadcaster(failed), signerAddress: 'trueopen1me', fee, inclusion: instant });
-      await expect(w.createSession()).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
+      await expect(w.createSession({ initialBuilder: BUILDER, initialDeposit: '0' })).rejects.toMatchObject({ code: 'CHAIN_TX_FAILED' });
     }
   });
 
@@ -144,7 +146,7 @@ describe('CosmjsChainWriter', () => {
   it('broadcasts exactly once no matter how long inclusion takes', async () => {
     const bc = new FakeBroadcaster(indexedTx(TYPE_URL.createSession, new ProtoWriter().bytes(1, fromHex(SESSION_HEX)).uint64(2, 7n).uint64(3, 1n).finish()), 5);
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    await w.createSession();
+    await w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(bc.broadcasts).toBe(1);
     expect(bc.lookups).toBe(6); // five "not yet", then found
   });
@@ -158,7 +160,7 @@ describe('CosmjsChainWriter', () => {
       3,
     );
     const w = new CosmjsChainWriter({ broadcaster: bc, signerAddress: 'trueopen1me', fee, inclusion: instant });
-    const r = await w.createSession();
+    const r = await w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' });
     expect(r.sessionId).toBe(SESSION_ID);
     expect(bc.broadcasts).toBe(1);
     expect(bc.lookups).toBe(4); // three throws, then found
@@ -172,11 +174,11 @@ describe('CosmjsChainWriter', () => {
       broadcaster: bc, signerAddress: 'trueopen1me', fee,
       inclusion: { attempts: 3, intervalMs: 0, sleep: async () => {} },
     });
-    await expect(w.createSession()).rejects.toMatchObject({
+    await expect(w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toMatchObject({
       code: 'CHAIN_TX_INCLUSION_UNKNOWN',
       retriable: false,
     });
-    await expect(w.createSession()).rejects.toThrow(/TXHASH/);
+    await expect(w.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toThrow(/TXHASH/);
     expect(bc.broadcasts).toBe(2); // one per call, never more
     expect(bc.lookups).toBe(6); // three per call
   });

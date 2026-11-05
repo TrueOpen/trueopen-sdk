@@ -1,10 +1,10 @@
+const dispatchTicketHash = new Uint8Array(32).fill(3);
+const ticketText = `0x${'03'.repeat(32)}`;
 import { describe, it, expect } from 'vitest';
 import { createRouterTransport } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import { IngressAPI } from '../../src/gen/nexus/v1/ingress_pb.js';
 import type {
-  SubmitOrderRequest as GenSubmitOrderRequest,
-  FetchOutputRefRequest,
   PrepareChallengeRequest,
   GetTaskEventsRequest,
   SubscribeOutputRequest,
@@ -64,13 +64,14 @@ const TASK_HASH = `0x${'c'.repeat(64)}`;
 function signedFrames(chainId: string, chunks: readonly Uint8Array[] = OUTPUT_CHUNKS) {
   return chunks.map((text, i) => {
     const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, chunks, i + 1);
-    const digest = outputChunkSigningDigest({
+    const digest = outputChunkSigningDigest({ dispatchTicketHash,
       chainId,
       taskHash: fromHex(TASK_HASH.slice(2)),
       seq: BigInt(i),
       mmrRoot,
     });
     return {
+      dispatchTicketHash,
       seq: BigInt(i),
       text,
       mmrRoot,
@@ -84,12 +85,13 @@ function signedFrames(chainId: string, chunks: readonly Uint8Array[] = OUTPUT_CH
 /** A Worker-signed Fin for the given last frame (finish_reason defaults to EOS_TOKEN). */
 function signFin(chainId: string, last: { seq: bigint; mmrRoot: Uint8Array }, finishReason = 1) {
   return {
+    dispatchTicketHash,
     finalSeq: last.seq,
     outputMmrRoot: last.mmrRoot,
     finishReason,
     workerSignature: secp256k1
       .sign(
-        outputFinSigningDigest({ chainId, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason }),
+        outputFinSigningDigest({ dispatchTicketHash, chainId, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason }),
         WORKER_PRIV,
       )
       .toCompactRawBytes(),
@@ -99,22 +101,8 @@ function signFin(chainId: string, last: { seq: bigint; mmrRoot: Uint8Array }, fi
 function fakeTransport(cap: { submitted?: unknown; fetch?: unknown; prepare?: unknown; events?: unknown; subscribe?: unknown; ack?: AckOutputRequest } = {}): Transport {
   return createRouterTransport(({ service }) => {
     service(IngressAPI, {
-      submitOrder(req: GenSubmitOrderRequest) {
-        cap.submitted = req;
-        return { taskId: '', accepted: true, reason: '', sessionId: req.sessionId };
-      },
       getTaskStatus() {
         return { state: 'PENDING', stage: 'ASSIGN', setId: 'set-1', updatedAt: 0n, taskPhase: 'ASSIGN_RANDOMNESS_PENDING' };
-      },
-      fetchOutputRef(req: FetchOutputRefRequest) {
-        cap.fetch = req;
-        return {
-          credential: {
-            credentialId: 'cred-1', sessionId: req.sessionId, taskId: req.taskId,
-            recipient: req.requester, usage: req.usage, accessLevel: req.accessLevel,
-            validUntil: 0n, issuer: 'trueopen1builder', issuerSig: new Uint8Array(),
-          },
-        };
       },
       prepareChallenge(req: PrepareChallengeRequest) {
         cap.prepare = req;
@@ -160,6 +148,10 @@ function scriptedStreamTransport(
 ): Transport {
   return createRouterTransport(({ service }) => {
     service(IngressAPI, {
+      async *resumeOutput(req: SubscribeOutputRequest) {
+        (cap.subscribes ??= []).push(req);
+        for await (const frame of script(req)) yield { frame };
+      },
       async *subscribeOutput(req: SubscribeOutputRequest) {
         (cap.subscribes ??= []).push(req);
         yield* script(req);
@@ -204,7 +196,7 @@ describe('TrueOpenClient facade', () => {
   it('streamOutput verifies each frame signature + root, and reports progress by default once done', async () => {
     const cap: { subscribe?: SubscribeOutputRequest; ack?: AckOutputRequest } = {};
     const got: string[] = [];
-    for await (const f of makeClient({}, cap).streamOutput({
+    for await (const f of makeClient({}, cap).streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
     })) {
       if (f.kind === 'chunk') got.push(f.text);
@@ -241,7 +233,7 @@ describe('TrueOpenClient facade', () => {
 
   const drain = async (c: TrueOpenClient, extra: Record<string, unknown> = {}): Promise<string> => {
     let out = '';
-    for await (const f of c.streamOutput({
+    for await (const f of c.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
     })) { if (f.kind === 'chunk') out += f.text; }
@@ -256,11 +248,11 @@ describe('TrueOpenClient facade', () => {
       const frames = signedFrames('trueopen-devnet-1').slice(0, 2);
       for (const f of frames) yield { frame: { case: 'chunk' as const, value: f } };
       const last = frames[frames.length - 1]!;
-      yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
+      yield { frame: { case: 'fin' as const, value: { dispatchTicketHash, finalSeq: last.seq, outputMmrRoot: last.mmrRoot } } };
     }, cap));
     const kinds: string[] = [];
     await expect((async () => {
-      for await (const e of c.streamOutput({
+      for await (const e of c.streamOutput({ dispatchTicketHash: ticketText,
         sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
       })) kinds.push(e.kind);
     })()).rejects.toMatchObject({
@@ -275,7 +267,7 @@ describe('TrueOpenClient facade', () => {
     const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1), cap));
     const events = [];
-    for await (const e of c.streamOutput({
+    for await (const e of c.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, maxAttempts: 1,
     })) events.push(e);
     expect(events.at(-1)).toEqual({ kind: 'fin', attested: true, finishReason: 1 });
@@ -287,7 +279,7 @@ describe('TrueOpenClient facade', () => {
     const c = makeClientWithTransport(streamWithFin((last) => ({
       ...signedFin(last, 1),
       workerSignature: secp256k1
-        .sign(outputFinSigningDigest({
+        .sign(outputFinSigningDigest({ dispatchTicketHash,
           chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1,
         }), otherPriv)
         .toCompactRawBytes(),
@@ -296,7 +288,7 @@ describe('TrueOpenClient facade', () => {
   });
 
   it("an unsigned Fin is rejected under finSignaturePolicy:'require'", async () => {
-    const c = makeClientWithTransport(streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot })));
+    const c = makeClientWithTransport(streamWithFin((last) => ({ dispatchTicketHash, finalSeq: last.seq, outputMmrRoot: last.mmrRoot })));
     // A bad Fin is treated as retryable (the Builder is just replaying the Worker's Fin as-is,
     // so trying a different one might work), so the outer error is RETRIES_EXHAUSTED, with the
     // specific reason in the message.
@@ -351,7 +343,7 @@ describe('TrueOpenClient facade', () => {
     const kinds: string[] = [];
     let finishReason: FinishReasonV1 | undefined;
     let attested: boolean | undefined;
-    for await (const e of c.streamOutput({
+    for await (const e of c.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, ack: false, maxAttempts: 1, ...extra,
     })) {
@@ -381,11 +373,11 @@ describe('TrueOpenClient facade', () => {
   it("under the opt-in 'accept-unsigned', an unsigned Fin surfaces as unattested and is never acked", async () => {
     const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(
-      streamWithFin((last) => ({ finalSeq: last.seq, outputMmrRoot: last.mmrRoot }), cap),
+      streamWithFin((last) => ({ dispatchTicketHash, finalSeq: last.seq, outputMmrRoot: last.mmrRoot }), cap),
     );
     const events = [];
     // ack is left at its default (true): an unattested Fin must still not be acked.
-    for await (const e of c.streamOutput({
+    for await (const e of c.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
       maxAttempts: 1, finSignaturePolicy: 'accept-unsigned',
     })) events.push(e);
@@ -397,7 +389,7 @@ describe('TrueOpenClient facade', () => {
   it("under the opt-in 'accept-unsigned', a signed Fin is still attested and acked", async () => {
     const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 2), cap));
-    for await (const e of c.streamOutput({
+    for await (const e of c.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
       maxAttempts: 1, finSignaturePolicy: 'accept-unsigned',
     })) {
@@ -411,7 +403,7 @@ describe('TrueOpenClient facade', () => {
   it('acks before yielding fin, so breaking on fin still reports progress', async () => {
     const cap: { ack?: AckOutputRequest } = {};
     const c = makeClientWithTransport(streamWithFin((last) => signedFin(last, 1), cap));
-    for await (const e of c.streamOutput({
+    for await (const e of c.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, maxAttempts: 1,
     })) {
@@ -422,7 +414,7 @@ describe('TrueOpenClient facade', () => {
 
   it('streamOutput does not report progress when ack:false', async () => {
     const cap: { ack?: AckOutputRequest } = {};
-    for await (const _ of makeClient({}, cap).streamOutput({
+    for await (const _ of makeClient({}, cap).streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, ack: false,
     })) { /* just drain */ }
     expect(cap.ack).toBeUndefined();
@@ -430,7 +422,7 @@ describe('TrueOpenClient facade', () => {
 
   it('streamOutput rejects a bare resumeAfterSeq that has no verifier checkpoint', async () => {
     const cap: { subscribe?: SubscribeOutputRequest } = {};
-    const iterator = makeClient({}, cap).streamOutput({
+    const iterator = makeClient({}, cap).streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH,
       workerServicePubKey: WORKER_PUB, resumeAfterSeq: 1n,
     })[Symbol.asyncIterator]();
@@ -458,7 +450,7 @@ describe('TrueOpenClient facade', () => {
     let lastCheckpoint: { fin?: { finalSeq: bigint } } | undefined;
     const got: string[] = [];
 
-    for await (const frame of a.streamOutput({
+    for await (const frame of a.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION,
       taskId: TASK,
       taskHash: TASK_HASH,
@@ -494,7 +486,7 @@ describe('TrueOpenClient facade', () => {
     const b = makeClientWithTransport(transportB);
     const got: string[] = [];
 
-    for await (const frame of a.streamOutput({
+    for await (const frame of a.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION,
       taskId: TASK,
       taskHash: TASK_HASH,
@@ -509,10 +501,10 @@ describe('TrueOpenClient facade', () => {
 
   it('streamOutput can resume from a persisted checkpoint, delivering only the frames not yet consumed', async () => {
     const frames = signedFrames('trueopen-devnet-1');
-    const verifier = new OutputStreamVerifier({
+    const verifier = new OutputStreamVerifier({ dispatchTicketHash,
       chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB,
     });
-    verifier.accept({
+    verifier.accept({ dispatchTicketHash,
       seq: frames[0]!.seq,
       text: frames[0]!.text,
       mmrRoot: frames[0]!.mmrRoot,
@@ -527,7 +519,7 @@ describe('TrueOpenClient facade', () => {
     }, cap);
     const client = makeClientWithTransport(transport);
     const got: string[] = [];
-    for await (const frame of client.streamOutput({
+    for await (const frame of client.streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION,
       taskId: TASK,
       taskHash: TASK_HASH,
@@ -543,11 +535,11 @@ describe('TrueOpenClient facade', () => {
 
   it('confirmOutput produces a confirmed event from the on-chain Receipt root/count/size', () => {
     const frames = signedFrames('trueopen-devnet-1');
-    const verifier = new OutputStreamVerifier({
+    const verifier = new OutputStreamVerifier({ dispatchTicketHash,
       chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB,
     });
     for (const frame of frames) {
-      verifier.accept({
+      verifier.accept({ dispatchTicketHash,
         seq: frame.seq,
         text: frame.text,
         mmrRoot: frame.mmrRoot,
@@ -555,7 +547,7 @@ describe('TrueOpenClient facade', () => {
       });
     }
     const size = OUTPUT_CHUNKS.reduce((total, chunk) => total + BigInt(chunk.length), 0n);
-    const event = makeClient().confirmOutput({
+    const event = makeClient().confirmOutput({ dispatchTicketHash: hash32Text(dispatchTicketHash),
       taskId: TASK,
       taskHash: TASK_HASH,
       checkpoint: verifier.checkpoint(),
@@ -575,14 +567,14 @@ describe('TrueOpenClient facade', () => {
 
   it('a different Worker public key fails frame signature verification', async () => {
     const other = secp256k1PublicKey(fromHex('0402030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'));
-    const it = makeClient({}, {}).streamOutput({
+    const it = makeClient({}, {}).streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: other,
     })[Symbol.asyncIterator]();
     await expect(it.next()).rejects.toThrow(/signature invalid/);
   });
 
   it('flipping one bit in task_hash changes the frame digest and fails signature verification', async () => {
-    const it = makeClient({}, {}).streamOutput({
+    const it = makeClient({}, {}).streamOutput({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: `0xd${TASK_HASH.slice(3)}`, workerServicePubKey: WORKER_PUB,
     })[Symbol.asyncIterator]();
     await expect(it.next()).rejects.toThrow(/signature invalid/);
@@ -637,7 +629,7 @@ describe('TrueOpenClient tool-call views', () => {
 
   const drain = async (p: { parser: ToolCallParser } | { toolCallParser: ParserRef }): Promise<AssistantStreamEvent[]> => {
     const events: AssistantStreamEvent[] = [];
-    for await (const e of makeClientWithTransport(toolCallTransport()).streamAssistantMessage({
+    for await (const e of makeClientWithTransport(toolCallTransport()).streamAssistantMessage({ dispatchTicketHash: ticketText,
       sessionId: SESSION,
       taskId: TASK,
       taskHash: TASK_HASH,
@@ -676,7 +668,7 @@ describe('TrueOpenClient tool-call views', () => {
       yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
     });
     const events: AssistantStreamEvent[] = [];
-    for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+    for await (const e of makeClientWithTransport(transport).streamAssistantMessage({ dispatchTicketHash: ticketText,
       sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
       toolCallParser: { name: 'hermes', version: 1 },
       registry: createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]),
@@ -695,9 +687,10 @@ describe('TrueOpenClient tool-call views', () => {
     const chunks = [OUTPUT.slice(0, 20), OUTPUT.slice(20)].map((t) => new TextEncoder().encode(t));
     const confirm = (extra: Record<string, unknown>) => {
       const frames = signedFrames('trueopen-devnet-1', chunks);
-      const verifier = new OutputStreamVerifier({ chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
-      for (const f of frames) verifier.accept({ seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
+      const verifier = new OutputStreamVerifier({ dispatchTicketHash, chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
+      for (const f of frames) verifier.accept({ dispatchTicketHash: f.dispatchTicketHash, seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
       return makeClient().confirmAssistantMessage({
+        dispatchTicketHash: ticketText,
         taskId: TASK,
         taskHash: TASK_HASH,
         checkpoint: verifier.checkpoint(),
@@ -746,7 +739,7 @@ describe('TrueOpenClient tool-call views', () => {
         yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
       });
       const streamed: string[] = [];
-      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({ dispatchTicketHash: ticketText,
         sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, ...opts,
       })) {
         if (e.kind === 'tool-call-provisional') streamed.push(e.call.name);
@@ -758,9 +751,10 @@ describe('TrueOpenClient tool-call views', () => {
       const CODER = '<tool_call>\n<function=f>\n<parameter=n>\n5\n</parameter>\n</function>\n</tool_call>';
       const coderChunks = [CODER.slice(0, 15), CODER.slice(15)].map((t) => new TextEncoder().encode(t));
       const frames = signedFrames('trueopen-devnet-1', coderChunks);
-      const verifier = new OutputStreamVerifier({ chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
-      for (const f of frames) verifier.accept({ seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
+      const verifier = new OutputStreamVerifier({ dispatchTicketHash, chainId: 'trueopen-devnet-1', taskHash: fromHex(TASK_HASH.slice(2)), workerServicePubKey: WORKER_PUB });
+      for (const f of frames) verifier.accept({ dispatchTicketHash: f.dispatchTicketHash, seq: f.seq, text: f.text, mmrRoot: f.mmrRoot, signature: f.workerSignature });
       const m = makeClient().confirmAssistantMessage({
+        dispatchTicketHash: ticketText,
         taskId: TASK,
         taskHash: TASK_HASH,
         checkpoint: verifier.checkpoint(),
@@ -786,7 +780,7 @@ describe('TrueOpenClient tool-call views', () => {
         yield { frame: { case: 'fin' as const, value: signFin('trueopen-devnet-1', built[built.length - 1]!) } };
       });
       const out: string[] = [];
-      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({
+      for await (const e of makeClientWithTransport(transport).streamAssistantMessage({ dispatchTicketHash: ticketText,
         sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
         toolCallParser: { name: 'qwen3_coder', version: 1 }, allowUnverified: true,
       })) {

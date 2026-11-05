@@ -47,6 +47,9 @@ const enc = new TextEncoder();
 const CHUNKS = ['hello ', 'final ', 'output'].map((t) => enc.encode(t));
 const BYTES = enc.encode('hello final output');
 const ROOT = hash32Text(outputMmrRoot(CHUNKS));
+// Phase 1: the chain's accepted dispatch ticket; chunks and Fins are signed over it.
+const TICKET_HEX = `0x${'33'.repeat(32)}`;
+const TICKET = fromHex(TICKET_HEX.slice(2));
 
 function receiptFor(root: string, size: bigint, leaves: bigint): InferReceiptView {
   return { taskId: TASK, winnerWorker: WINNER, inferReceiptHash: `0x${'e'.repeat(64)}`, outputHash: root, outputSizeBytes: size, outputLeafCount: leaves };
@@ -57,7 +60,7 @@ function taskReader(over: { task?: Partial<ChainTaskSnapshot>; receipt?: InferRe
     receiptReads: 0,
     async queryTask(taskId: string): Promise<ChainTaskSnapshot> {
       return {
-        view: 'active', taskId, acceptedTaskHash: TASK_HASH, acceptedInputHash: `0x${'a'.repeat(64)}`, winnerWorker: WINNER,
+        view: 'active', taskId, dispatchTicketHash: TICKET_HEX, acceptedTaskHash: TASK_HASH, acceptedInputHash: `0x${'a'.repeat(64)}`, winnerWorker: WINNER,
         receiptStatus: 'RECEIPT_ACCEPTED', assignmentStatus: 'ASSIGNED', modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
         ...over.task,
       };
@@ -331,10 +334,10 @@ describe('fetchTaskOutput', () => {
 
   describe('stored Fin (ADR-0027)', () => {
     /** A Fin for BYTES as the Worker signs it; `over` tampers with what is served after signing. */
-    function storedFin(finishReason = 3, over: Record<string, unknown> = {}, signer = WORKER_PRIV) {
-      const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason };
+    function storedFin(finishReason = 3, over: Record<string, unknown> = {}, signer = WORKER_PRIV, ticket = TICKET) {
+      const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: ticket, finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason };
       const workerSignature = secp256k1.sign(outputFinSigningDigest(fields), signer).toCompactRawBytes();
-      return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason, workerSignature, ...over };
+      return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), dispatchTicketHash: ticket, finishReason, workerSignature, ...over };
     }
     const fetchWith = (fin: Record<string, unknown> | undefined) =>
       makeClient(dataTransport(BYTES, [6, 6, 6], newLog(), fin !== undefined ? { fin } : {}))
@@ -363,6 +366,17 @@ describe('fetchTaskOutput', () => {
       await expect(fetchWith(storedFin(3, { outputMmrRoot: new Uint8Array(32) }))).rejects.toMatchObject({ code: 'DATA_OUTPUT_FIN_ROOT_MISMATCH' });
       await expect(fetchWith(storedFin(3, { finalSeq: 1n }))).rejects.toMatchObject({ code: 'DATA_OUTPUT_FIN_SEQ_MISMATCH' });
     });
+
+    it('refuses a validly signed Fin of another dispatch attempt than the chain recorded (Phase 1)', async () => {
+      const other = new Uint8Array(32).fill(0x44);
+      await expect(fetchWith(storedFin(3, {}, WORKER_PRIV, other))).rejects.toMatchObject({ code: 'DATA_OUTPUT_ATTEMPT_MISMATCH' });
+      // Without the chain's ticket (explicit anchors), the Fin is checked over the ticket it carries.
+      const got = await makeClient(dataTransport(BYTES, [6, 6, 6], newLog(), { fin: storedFin(3, {}, WORKER_PRIV, other) }), null).fetchTaskOutput({
+        sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, outputHash: ROOT, builderAddress: BUILDER,
+        expiresAtHeight: 42n, workerServicePubKey: WORKER_PUB,
+      });
+      expect(got.finishReason).toBe(3);
+    });
   });
 
   it('explicit hashes override the chain and need no chain reads', async () => {
@@ -380,14 +394,14 @@ describe('streamOutput trust anchors', () => {
   it('verifies frames against the chain-derived task_hash and winner key when none are passed', async () => {
     const frames = CHUNKS.map((text, i) => {
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CHUNKS, i + 1);
-      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, dispatchTicketHash: TICKET, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
       return {
-        seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(),
+        dispatchTicketHash: TICKET, seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(),
         attachment: new Uint8Array(), attachmentSignature: new Uint8Array(),
       };
     });
     const last = frames[frames.length - 1]!;
-    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, dispatchTicketHash: TICKET, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1 });
     const transport = createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async *subscribeOutput(_req: SubscribeOutputRequest) {
@@ -395,7 +409,7 @@ describe('streamOutput trust anchors', () => {
           yield {
             frame: {
               case: 'fin' as const,
-              value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() },
+              value: { dispatchTicketHash: TICKET, finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason: 1, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() },
             },
           };
         },
@@ -408,7 +422,7 @@ describe('streamOutput trust anchors', () => {
     let attested = false;
     for await (const e of makeClient(transport, reader).streamOutput({ sessionId: SESSION, taskId: TASK })) {
       if (e.kind === 'chunk') text.push(e.text);
-      else attested = e.attested;
+      else if (e.kind === 'fin') attested = e.attested;
     }
     expect(text.join('')).toBe('hello final output');
     expect(attested).toBe(true);
@@ -519,8 +533,8 @@ describe('fetchAssistantMessage confirmation and Builder choice (sdk_详细设�
   const NO_PARSER = { toolCallParser: { name: '', version: 0 } };
   /** A Fin over BYTES (chunks 6/6/6) as the Worker signs it. */
   function storedFin(finishReason: number) {
-    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason };
-    return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason, workerSignature: secp256k1.sign(outputFinSigningDigest(fields), WORKER_PRIV).toCompactRawBytes() };
+    const fields = { chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), finishReason };
+    return { finalSeq: 2n, outputMmrRoot: fromHex(ROOT.slice(2)), dispatchTicketHash: TICKET, finishReason, workerSignature: secp256k1.sign(outputFinSigningDigest(fields), WORKER_PRIV).toCompactRawBytes() };
   }
   const B1 = 'trueopen1builder0000000000000000000000000001';
   const B2 = 'trueopen1builder0000000000000000000000000002';
@@ -634,16 +648,16 @@ describe('assistantTurn (sdk_详细设计 §5.2, §5.5)', () => {
   function streamTransport(finishReason = 1) {
     const frames = CH.map((text, i) => {
       const mmrRoot = mmrPrefixRoot(OUTPUT_MMR_DOMAIN, CH, i + 1);
-      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), seq: BigInt(i), mmrRoot });
-      return { seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(), attachment: new Uint8Array(), attachmentSignature: new Uint8Array() };
+      const digest = outputChunkSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, seq: BigInt(i), mmrRoot });
+      return { dispatchTicketHash: TICKET, seq: BigInt(i), text, mmrRoot, workerSignature: secp256k1.sign(digest, WORKER_PRIV).toCompactRawBytes(), attachment: new Uint8Array(), attachmentSignature: new Uint8Array() };
     });
     const last = frames[frames.length - 1]!;
-    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason });
+    const finDigest = outputFinSigningDigest({ chainId: CHAIN_ID, taskHash: fromHex(TASK_HASH.slice(2)), dispatchTicketHash: TICKET, finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason });
     return createRouterTransport(({ service }) => {
       service(IngressAPI, {
         async *subscribeOutput() {
           for (const f of frames) yield { frame: { case: 'chunk' as const, value: f } };
-          yield { frame: { case: 'fin' as const, value: { finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() } } };
+          yield { frame: { case: 'fin' as const, value: { dispatchTicketHash: TICKET, finalSeq: last.seq, outputMmrRoot: last.mmrRoot, finishReason, workerSignature: secp256k1.sign(finDigest, WORKER_PRIV).toCompactRawBytes() } } };
         },
         ackOutput() { return { acked: true, alreadyAcked: false, ackedAt: 1n }; },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

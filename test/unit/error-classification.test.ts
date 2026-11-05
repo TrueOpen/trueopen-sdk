@@ -176,9 +176,23 @@ describe('classifyBroadcastError', () => {
         getTx: async (): Promise<IndexedTx | null> => null,
       },
     });
-    await expect(writer.createSession()).rejects.toMatchObject({
+    await expect(writer.createSession({ initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' })).rejects.toMatchObject({
       code: 'CHAIN_TX_REJECTED',
       details: { codespace: 'sdk', code: 5, log: 'insufficient funds' },
     });
   });
+});
+
+it('decodes binary OpenTaskResponse error details without conflating activation and readiness', async () => {
+  const { create, toBinary } = await import('@bufbuild/protobuf');
+  const { OpenTaskResponseSchema } = await import('../../src/gen/nexus/v1/ingress_pb.js');
+  const taskId = `0x${'19'.repeat(32)}`;
+  for (const code of ['NEXUS_INGRESS_SESSION_BOUND_ELSEWHERE', 'NEXUS_INGRESS_TAKEOVER_PENDING']) {
+    const error = new ConnectError(code, Code.FailedPrecondition);
+    error.details.push({ type: OpenTaskResponseSchema.typeName, value: toBinary(OpenTaskResponseSchema, create(OpenTaskResponseSchema, {
+      taskId, boundBuilder: 'builder-b', status: 2, takeoverActivationHeight: 45n,
+    })) });
+    expect(classify(error)).toMatchObject({ code, details: { taskId, boundBuilder: 'builder-b', status: 2, takeoverActivationHeight: 45n } });
+    expect(classify(error).details?.dispatchAvailableHeight).toBeUndefined();
+  }
 });

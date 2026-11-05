@@ -107,6 +107,29 @@ describe('toOpenAIAssistantSSEIterable', () => {
     expect(frames.join('')).not.toContain('The user asks');
   });
 
+  it('a reset before any content is ignored (only reasoning was dropped)', async () => {
+    const frames = await collect(toOpenAIAssistantSSEIterable(source([
+      { kind: 'reasoning', text: 'voided attempt' },
+      { kind: 'reset' },
+      { kind: 'content', text: 'ok' },
+      { kind: 'confirmed', message: message({ content: 'ok' }) },
+    ]), context, options));
+    expect(choice(frames[1]!)).toEqual({ index: 0, delta: { content: 'ok' }, logprobs: null, finish_reason: null });
+    expect(frames.at(-1)).toBe(DONE);
+  });
+
+  it('a reset after content was streamed fails closed, with no terminal chunk', async () => {
+    const seen: string[] = [];
+    await expectCode(async () => {
+      for await (const bytes of toOpenAIAssistantSSEIterable(source([
+        { kind: 'content', text: 'voided' },
+        { kind: 'reset' },
+        { kind: 'content', text: 'replacement' },
+      ]), context, options)) seen.push(dec.decode(bytes));
+    }, 'DATA_OPENAI_SSE_ATTEMPT_RESET');
+    expect(seen.join('')).not.toContain('[DONE]');
+  });
+
   it('sends the confirmed tool calls, one chunk each, then tool_calls', async () => {
     const calls = [
       { name: 'get_weather', arguments: '{"city": "London"}' },

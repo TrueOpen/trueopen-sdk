@@ -29,9 +29,13 @@ describe('typeUrls', () => {
 
 describe('encode Msg (verify field layout using the reader)', () => {
   it('MsgCreateSession', () => {
-    const r = new ProtoReader(encodeMsgCreateSession({ signer: 'trueopen1abc' }));
+    const r = new ProtoReader(encodeMsgCreateSession({ signer: 'trueopen1abc', initialBuilder: 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl', initialDeposit: '0' }));
     expect(r.tag()).toEqual({ field: 1, wire: 2 });
     expect(r.string()).toBe('trueopen1abc');
+    expect(r.tag()).toEqual({ field: 3, wire: 2 });
+    expect(new ProtoReader(r.bytes()).tag()).toEqual({ field: 1, wire: 2 });
+    expect(r.tag()).toEqual({ field: 4, wire: 2 });
+    expect(r.string()).toBe('trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl');
     expect(r.eof).toBe(true);
   });
 
@@ -114,31 +118,49 @@ function readGrant(bytes: Uint8Array): { key: Uint8Array; expiry: bigint; cap: s
 }
 
 describe('MsgCreateSession with a session key grant', () => {
-  it('without a key it is unchanged (signer only)', () => {
-    expect(toHex(encodeMsgCreateSession({ signer: 'trueopen1abc' }))).toBe(
-      toHex(new ProtoWriter().string(1, 'trueopen1abc').finish()),
+  // Phase 1: every MsgCreateSession carries initial_deposit (field 3) and initial_builder (field 4).
+  const BUILDER = 'trueopen1yfse4c367uc2rja5g3905ynmnuv2hjk8gcgvfl';
+  const tail = (deposit = '0') =>
+    toHex(new ProtoWriter().message(3, new ProtoWriter().string(1, deposit).finish()).string(4, BUILDER).finish());
+
+  it('without a key there is no field 2 (signer, deposit, builder only)', () => {
+    expect(toHex(encodeMsgCreateSession({ signer: 'trueopen1abc', initialBuilder: BUILDER }))).toBe(
+      toHex(new ProtoWriter().string(1, 'trueopen1abc').finish()) + tail(),
     );
   });
 
+  it('requires initial_builder', () => {
+    for (const m of [{ signer: 'trueopen1abc' }, { signer: 'trueopen1abc', initialBuilder: '' }]) {
+      expect(() => encodeMsgCreateSession(m)).toThrowError(
+        expect.objectContaining({ code: 'SDK_LOCAL_SESSION_INITIAL_BUILDER_REQUIRED' }),
+      );
+    }
+  });
+
   it('writes the grant as field 2 with key=1, expiry=2, Amount{atomic_units}=3', () => {
-    const r = new ProtoReader(encodeMsgCreateSession({ signer: 'trueopen1abc', sessionKey: grant() }));
+    const r = new ProtoReader(encodeMsgCreateSession({ signer: 'trueopen1abc', sessionKey: grant(), initialBuilder: BUILDER, initialDeposit: '1000' }));
     expect(r.tag()).toEqual({ field: 1, wire: 2 });
     expect(r.string()).toBe('trueopen1abc');
     expect(r.tag()).toEqual({ field: 2, wire: 2 });
     expect(readGrant(r.bytes())).toEqual({ key: KEY, expiry: 1000n, cap: '5000' });
+    expect(r.tag()).toEqual({ field: 3, wire: 2 });
+    expect(r.bytes()).toEqual(new ProtoWriter().string(1, '1000').finish());
+    expect(r.tag()).toEqual({ field: 4, wire: 2 });
+    expect(r.string()).toBe(BUILDER);
     expect(r.eof).toBe(true);
   });
 
   it('byte-exact for a small grant, with an explicit "0" cap still present', () => {
     const key = new Uint8Array(20).fill(1);
-    const bytes = encodeMsgCreateSession({ signer: 'a', sessionKey: { sessionKey: key, expiryHeight: 5n, spendCap: '0' } });
-    // 0a 01 'a' | 12 len | 0a 14 <20x01> | 10 05 | 1a 03 0a 01 '0'
-    const expected = '0a0161' + '12' + '1d' + '0a14' + '01'.repeat(20) + '1005' + '1a030a0130';
+    const bytes = encodeMsgCreateSession({ signer: 'a', sessionKey: { sessionKey: key, expiryHeight: 5n, spendCap: '0' }, initialBuilder: BUILDER });
+    // 0a 01 'a' | 12 len | 0a 14 <20x01> | 10 05 | 1a 03 0a 01 '0' || 1a 03 0a 01 '0' (deposit) | 22 2f <builder>
+    const expected = '0a0161' + '12' + '1d' + '0a14' + '01'.repeat(20) + '1005' + '1a030a0130' + '1a030a0130' + '222f' + toHex(new TextEncoder().encode(BUILDER));
     expect(toHex(bytes)).toBe(expected);
+    expect(expected.endsWith(tail())).toBe(true);
   });
 
   it('accepts the bounds: spend_cap u64 max, expiry_height 2^63 - 1', () => {
-    expect(() => encodeMsgCreateSession({ signer: 's', sessionKey: grant({ spendCap: ((1n << 64n) - 1n).toString(), expiryHeight: (1n << 63n) - 1n }) })).not.toThrow();
+    expect(() => encodeMsgCreateSession({ signer: 's', sessionKey: grant({ spendCap: ((1n << 64n) - 1n).toString(), expiryHeight: (1n << 63n) - 1n }), initialBuilder: BUILDER })).not.toThrow();
   });
 
   it('rejects an invalid grant with SDK_LOCAL_SESSION_KEY_INVALID', () => {
@@ -156,7 +178,7 @@ describe('MsgCreateSession with a session key grant', () => {
       { expiryHeight: 1n << 63n },
     ];
     for (const b of bad) {
-      expect(() => encodeMsgCreateSession({ signer: 's', sessionKey: grant(b) })).toThrowError(
+      expect(() => encodeMsgCreateSession({ signer: 's', sessionKey: grant(b), initialBuilder: BUILDER })).toThrowError(
         expect.objectContaining({ code: 'SDK_LOCAL_SESSION_KEY_INVALID' }),
       );
     }

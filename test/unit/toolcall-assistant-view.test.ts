@@ -26,6 +26,9 @@ import { qwen3CoderParser } from '../../src/toolcall/parsers/qwen3-coder';
 const CHAIN_ID = 'trueopen-localnet-1';
 const TASK_ID = `0x${'aa'.repeat(32)}`;
 const TASK_HASH = `0x${'bb'.repeat(32)}`;
+// Phase 1: chunks and checkpoints are bound to the dispatch attempt.
+const TICKET_HEX = `0x${'ee'.repeat(32)}`;
+const TICKET = fromHex(TICKET_HEX.slice(2));
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
 const WORKER_PUB = secp256k1PublicKey(PRIV);
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -81,6 +84,7 @@ function checkpointOver(chunks: readonly Uint8Array[]) {
   const verifier = new OutputStreamVerifier({
     chainId: CHAIN_ID,
     taskHash: fromHex(TASK_HASH.slice(2)),
+    dispatchTicketHash: TICKET,
     workerServicePubKey: WORKER_PUB,
   });
   chunks.forEach((text, i) => {
@@ -88,6 +92,7 @@ function checkpointOver(chunks: readonly Uint8Array[]) {
     const digest = outputChunkSigningDigest({
       chainId: CHAIN_ID,
       taskHash: fromHex(TASK_HASH.slice(2)),
+      dispatchTicketHash: TICKET,
       seq: BigInt(i),
       mmrRoot,
     });
@@ -95,6 +100,7 @@ function checkpointOver(chunks: readonly Uint8Array[]) {
       seq: BigInt(i),
       text,
       mmrRoot,
+      dispatchTicketHash: TICKET,
       signature: secp256k1.sign(digest, PRIV).toCompactRawBytes(),
     });
   });
@@ -128,6 +134,37 @@ describe('deriveAssistantStream', () => {
   it('takes the committed text as is: Cortex strips the EOS, the SDK strips nothing', async () => {
     const events = await collect(deriveAssistantStream(frames('sunny', '<|im_end|>'), { parser }));
     expect(events.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join('')).toBe('sunny<|im_end|>');
+  });
+
+  it('a reset drops the voided attempt and parses the replacement from scratch', async () => {
+    // The voided attempt left a call half open; after the reset only the replacement's text counts.
+    async function* source(): AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'reset' } | { kind: 'fin' }> {
+      yield { kind: 'chunk', text: 'old <tc>stale|' };
+      yield { kind: 'reset' };
+      yield { kind: 'chunk', text: 'new <tc>get_' };
+      yield { kind: 'chunk', text: 'weather|{"c":1}</tc>' };
+      yield { kind: 'fin' };
+    }
+    const events = await collect(deriveAssistantStream(source(), { parser }));
+    expect(events).toEqual([
+      { kind: 'content', text: 'old ' },
+      { kind: 'reset' },
+      { kind: 'content', text: 'new ' },
+      { kind: 'tool-call-provisional', call: { name: 'get_weather', arguments: '{"c":1}' } },
+    ]);
+  });
+
+  it('a reset also restarts the reasoning split', async () => {
+    async function* source(): AsyncIterable<{ kind: 'chunk'; text: string } | { kind: 'reset' } | { kind: 'fin' }> {
+      yield { kind: 'chunk', text: '<think>\nold plan' };
+      yield { kind: 'reset' };
+      yield { kind: 'chunk', text: '<think>\nnew\n</think>\n\nanswer' };
+      yield { kind: 'fin' };
+    }
+    const events = await collect(deriveAssistantStream(source(), { parser, reasoning: qwen3ReasoningParser }));
+    const after = events.slice(events.findIndex((e) => e.kind === 'reset') + 1);
+    expect(after.flatMap((e) => (e.kind === 'reasoning' ? [e.text] : [])).join('')).toBe('new');
+    expect(after.flatMap((e) => (e.kind === 'content' ? [e.text] : [])).join('')).toBe('answer');
   });
 
   it('flushes an unclosed segment at fin rather than dropping it', async () => {
@@ -200,6 +237,7 @@ describe('confirmAssistantMessageWithReceipt', () => {
   it('returns the full list once the receipt reconciles', () => {
     const message = confirmAssistantMessageWithReceipt(
       {
+        dispatchTicketHash: TICKET_HEX,
         chainId: CHAIN_ID,
         taskId: TASK_ID,
         taskHash: TASK_HASH,
@@ -218,6 +256,7 @@ describe('confirmAssistantMessageWithReceipt', () => {
     expect(() =>
       confirmAssistantMessageWithReceipt(
         {
+          dispatchTicketHash: TICKET_HEX,
           chainId: CHAIN_ID,
           taskId: TASK_ID,
           taskHash: TASK_HASH,
@@ -233,6 +272,7 @@ describe('confirmAssistantMessageWithReceipt', () => {
     expect(() =>
       confirmAssistantMessageWithReceipt(
         {
+          dispatchTicketHash: TICKET_HEX,
           chainId: CHAIN_ID,
           taskId: TASK_ID,
           taskHash: TASK_HASH,
@@ -248,6 +288,7 @@ describe('confirmAssistantMessageWithReceipt', () => {
     expect(() =>
       confirmAssistantMessageWithReceipt(
         {
+          dispatchTicketHash: TICKET_HEX,
           chainId: CHAIN_ID,
           taskId: TASK_ID,
           taskHash: TASK_HASH,
@@ -264,6 +305,7 @@ describe('confirmAssistantMessageWithReceipt', () => {
     const split = [bytes.slice(0, 5), bytes.slice(5)];
     const message = confirmAssistantMessageWithReceipt(
       {
+        dispatchTicketHash: TICKET_HEX,
         chainId: CHAIN_ID,
         taskId: TASK_ID,
         taskHash: TASK_HASH,
@@ -303,7 +345,7 @@ describe('qwen3_coder@1 values are JSON strings on every path (wire #46)', () =>
   it('confirmation', () => {
     const chunks = [utf8(text.slice(0, 40)), utf8(text.slice(40))];
     const message = confirmAssistantMessageWithReceipt(
-      { chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: checkpointOver(chunks), receipt: receiptFor(chunks) },
+      { dispatchTicketHash: TICKET_HEX, chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: checkpointOver(chunks), receipt: receiptFor(chunks) },
       opts,
     );
     expect(message.toolCalls).toEqual(strings);

@@ -41,10 +41,14 @@ const ADDRS = [
   'trueopen1870sqtdru7dj3xgwpzcexry0dwvyz2ku7xv9mg',
   'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man',
 ];
+/** The Session's bound Builder: in Phase 1 the only Builder openTask contacts. */
+const BOUND = ADDRS[0]!;
 const snapshot: BuilderSetSnapshot = {
   builderSetId: 'genesis-1', builderSetVersion: 1n, effectiveHeight: 1n, builders: ADDRS.join(','), setHash: SET_HASH,
 };
 const MAX_FEE = 1_000_000n;
+/** The order lifetime the intent asks for (within MAX_ORDER_LIFETIME_BLOCKS_V1). */
+const LIFETIME = 7_000n;
 
 const intent: TaskOrderIntent = {
   modelId: '0xad410b3157d13dbfb8263e92914cfe5a75868ce68fd722d2f73c75ff8cc7378b',
@@ -59,7 +63,7 @@ const intent: TaskOrderIntent = {
     assignmentPriorityFee: { atomicUnits: '0' }, txFeeReserve: { atomicUnits: '0' },
   },
   earliestSubmitHeight: 1_000n,
-  orderExpireHeight: 51_000n,
+  orderExpireHeight: 1_000n + LIFETIME,
   latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
 };
 const PRICING = { minOrderValue: 0n, verifyRatioBps: 0n, initialOutputPrice: 0n };
@@ -81,7 +85,6 @@ function makeHub(state: { latest: bigint }): FacadeHubReader {
     }),
     getBusinessDenom: async (): Promise<string> => 'utrueopen',
     getProfile: async () => ({ pricing: PRICING }),
-    getAnchorFreshnessWindowBlocks: async (): Promise<bigint> => 100n,
     getServiceDescriptor: async (id: string): Promise<ServiceDescriptorRef> => ({
       participantType: 'PARTICIPANT_TYPE_BUILDER', participantId: id, descriptorVersion: 2n,
       endpoints: [{ endpointKind: 'SERVICE_ENDPOINT_KIND_NEXUS_GRPC', uri: `grpc://${id}:8080`, protocolVersion: 'v1' }],
@@ -94,7 +97,7 @@ function makeHub(state: { latest: bigint }): FacadeHubReader {
 
 class FakeChain implements ChainClient {
   stream: StreamStateView = {
-    sessionId: SESSION, owner: USER, nextExpectedSequence: 7n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE',
+    sessionId: SESSION, owner: USER, boundBuilder: BOUND, nextExpectedSequence: 7n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE',
     sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
   };
   sessionReads = 0;
@@ -254,7 +257,7 @@ function setup(extra: Partial<ConstructorParameters<typeof TrueOpenClient>[0]> =
 
 function context(latestHeight: bigint, anchorHeight: bigint): TaskOrderChainContext {
   return {
-    chainId: 'trueopen-localnet-1', sessionAnchorHeight: anchorHeight, sessionAnchorBlockHash: ANCHOR_HASH,
+    chainId: 'trueopen-localnet-1', sessionAnchorHeight: anchorHeight,
     builderSetId: 'genesis-1', builderSetHash: SET_HASH, timeoutBucketVersion: 1n,
     generationLimits: {
       maxOutputTokens: 131_072n, topKMax: 1000n, stopSequenceMaxItems: 16n,
@@ -277,8 +280,21 @@ async function withKey(s: ReturnType<typeof setup>): Promise<Uint8Array> {
   return m.address;
 }
 
-const rejectAll = (b: Builders, res: OpenTaskResult, code = 'ASSIGN_REJECTED'): void => {
+const rejectAll = (b: Builders, res: OpenTaskResult, code = 'RECORD_REJECTED'): void => {
   for (const x of res.builders) b.emit(x.address, code);
+};
+
+/**
+ * `res` as if every BuilderSet member had acked it. Phase 1 dispatches to the bound Builder only,
+ * but waitForAdmission's per-Builder report rules (every acked Builder must report) still apply
+ * to several acked results, so these tests build them.
+ */
+const ackedByAll = (res: OpenTaskResult): OpenTaskResult => {
+  const [bound] = res.builders;
+  return {
+    ...res,
+    builders: ADDRS.map((address, rank) => ({ ...bound!, address, rank, serviceEndpoint: `grpc://${address}:8080` })),
+  };
 };
 
 describe('openTask result: sequence, signer, max fee and retry params', () => {
@@ -299,7 +315,7 @@ describe('openTask result: sequence, signer, max fee and retry params', () => {
     expect(r.order.payload).toBe(intent.payload);
     expect(r.pricing).toBe(PRICING);
     // The window is kept relative to the context's latest height (1000).
-    expect(r.orderWindow).toEqual({ earliestSubmitBlocks: 0n, orderExpireBlocks: 50_000n });
+    expect(r.orderWindow).toEqual({ earliestSubmitBlocks: 0n, orderExpireBlocks: LIFETIME });
     expect(res.earliestSubmitHeight).toBe(1_000n);
 
     // A retry's own retry counts up; its window is rebased on its context.
@@ -307,8 +323,8 @@ describe('openTask result: sequence, signer, max fee and retry params', () => {
     expect(res2.orderSequence).toBe(7n);
     expect(res2.retryParams.idempotencyKey).toBe('k#retry2');
     expect(res2.earliestSubmitHeight).toBe(1_001n);
-    expect(res2.orderExpireHeight).toBe(51_001n);
-    expect(res2.retryParams.orderWindow).toEqual({ earliestSubmitBlocks: 0n, orderExpireBlocks: 50_000n });
+    expect(res2.orderExpireHeight).toBe(1_001n + LIFETIME);
+    expect(res2.retryParams.orderWindow).toEqual({ earliestSubmitBlocks: 0n, orderExpireBlocks: LIFETIME });
   });
 
   it('nextRetryIdempotencyKey', () => {
@@ -341,10 +357,12 @@ describe("openTask orderSigner: 'wallet'", () => {
     await expect(s.client.openTask(BASE)).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_NOT_REGISTERED' });
     s.chain.sessionReads = 0;
     const res = await s.client.openTask({ ...BASE, orderSequence: 7n, orderSigner: 'wallet' });
-    expect(s.chain.sessionReads).toBe(0);
+    // Phase 1 always reads the session once (bound Builder, closing, frozen lifetime); with
+    // 'wallet' that read runs no key precheck.
+    expect(s.chain.sessionReads).toBe(1);
     expect(res.orderSignedBy).toBe('wallet');
     expect(res.orderSignerAddress).toBeUndefined();
-    expect(s.builders.headers).toHaveLength(3);
+    expect(s.builders.headers).toHaveLength(1);
     const header = s.builders.headers[0]!;
     const order = buildTaskOrder(res.context, { ...intent, userAddress: USER, sessionId: SESSION, orderSequence: 7n }, PRICING);
     const sig = decodeSignedOrder(header.orderEnvelope).userSignature;
@@ -374,8 +392,10 @@ describe('waitForAdmission', () => {
     s.reader.taskHash = res.taskHash;
     expect(await s.client.waitForAdmission(res, { pollIntervalMs: 5 })).toEqual({ kind: 'accepted', taskId: res.taskId });
     await tick(10);
-    expect(s.builders.opened).toBe(3);
-    expect(s.builders.closed).toBe(3);
+    // Only the bound Builder received (and acked) the order.
+    expect(res.builders.map((b) => b.address)).toEqual([BOUND]);
+    expect(s.builders.opened).toBe(1);
+    expect(s.builders.closed).toBe(1);
   });
 
   it('accepted by polling once the task lands', async () => {
@@ -388,7 +408,7 @@ describe('waitForAdmission', () => {
     expect(s.reader.reads).toBeGreaterThan(1);
   });
 
-  it('accepted through ASSIGNMENT_FINALIZED long before the next poll', async () => {
+  it('accepted through DISPATCH_RECORDED long before the next poll', async () => {
     const s = setup();
     const res = await s.client.openTask(BASE);
     const started = Date.now();
@@ -396,20 +416,24 @@ describe('waitForAdmission', () => {
     await tick(50);
     expect(s.reader.reads).toBe(1);
     s.reader.taskHash = res.taskHash;
-    s.builders.emit(res.builders[1]!.address, 'ASSIGNMENT_FINALIZED');
+    s.builders.emit(res.builders[0]!.address, 'DISPATCH_RECORDED');
     expect(await waiting).toEqual({ kind: 'accepted', taskId: res.taskId });
     expect(s.reader.reads).toBe(2);
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
-  it('ASSIGN_ACCEPTED also triggers a read', async () => {
+  it('pre-Phase-1 codes (ASSIGN_ACCEPTED, ASSIGNMENT_FINALIZED) and DISPATCH_ACCEPTED do not trigger a read', async () => {
     const s = setup();
     const res = await s.client.openTask(BASE);
-    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000, timeoutMs: 300 });
     await tick(50);
+    expect(s.reader.reads).toBe(1);
     s.reader.taskHash = res.taskHash;
-    s.builders.emit(res.builders[0]!.address, 'ASSIGN_ACCEPTED');
+    for (const code of ['ASSIGN_ACCEPTED', 'ASSIGNMENT_FINALIZED', 'DISPATCH_ACCEPTED']) s.builders.emit(res.builders[0]!.address, code);
+    await tick(50);
+    expect(s.reader.reads).toBe(1);
     expect(await waiting).toMatchObject({ kind: 'accepted' });
+    expect(s.reader.reads).toBe(2);
   });
 
   it('chain event codes Nexus never emits on GetTaskEvents do not trigger a read', async () => {
@@ -420,7 +444,7 @@ describe('waitForAdmission', () => {
     expect(s.reader.reads).toBe(1);
     s.reader.taskHash = res.taskHash;
     s.builders.emit(res.builders[0]!.address, 'WORKER_HANDRAISES_ACCEPTED');
-    s.builders.emit(res.builders[1]!.address, 'WORKER_ASSIGNMENT_FINALIZED');
+    s.builders.emit(res.builders[0]!.address, 'WORKER_ASSIGNMENT_FINALIZED');
     await tick(50);
     expect(s.reader.reads).toBe(1);
     // Found only by the next poll, at the bound.
@@ -448,12 +472,12 @@ describe('waitForAdmission', () => {
 
   it('one Builder rejecting while the others are silent is not a rejection: it times out', async () => {
     const s = setup();
-    const res = await s.client.openTask(BASE);
+    const res = ackedByAll(await s.client.openTask(BASE));
     s.chain.sessionReads = 0;
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 300 });
     await tick(50);
     expect(s.builders.opened).toBe(3);
-    s.builders.emit(res.builders[0]!.address, 'ASSIGN_REJECTED');
+    s.builders.emit(res.builders[0]!.address, 'RECORD_REJECTED');
     s.builders.emit(res.builders[1]!.address, 'ASSIGN_TIMEOUT');
     expect(await waiting).toEqual({ kind: 'timeout', taskId: res.taskId });
     expect(s.chain.sessionReads).toBe(0);
@@ -463,13 +487,13 @@ describe('waitForAdmission', () => {
 
   it('a Builder whose event stream fails never reports, so the wait times out', async () => {
     const s = setup();
-    const res = await s.client.openTask(BASE);
+    const res = ackedByAll(await s.client.openTask(BASE));
     s.builders.failing.add(res.builders[2]!.address);
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 300 });
     await tick(50);
     expect(s.builders.opened).toBe(2);
-    s.builders.emit(res.builders[0]!.address, 'ASSIGN_REJECTED');
-    s.builders.emit(res.builders[1]!.address, 'ASSIGN_REJECTED');
+    s.builders.emit(res.builders[0]!.address, 'RECORD_REJECTED');
+    s.builders.emit(res.builders[1]!.address, 'RECORD_REJECTED');
     expect(await waiting).toMatchObject({ kind: 'timeout' });
   });
 
@@ -487,18 +511,17 @@ describe('waitForAdmission', () => {
     expect(out.diagnosis.reason).toBe('unrelated');
     expect(out.diagnosis.sequenceFree).toBe(true);
     expect(out.diagnosis.session.nextExpectedSequence).toBe(7n);
-    expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['ASSIGN_REJECTED', 'ASSIGN_REJECTED', 'ASSIGN_REJECTED']);
-    expect(new Set(out.diagnosis.events.map((e) => e.builderAddress))).toEqual(new Set(res.builders.map((b) => b.address)));
+    expect(out.diagnosis.events).toEqual([{ builderAddress: BOUND, eventCode: 'RECORD_REJECTED' }]);
     expect(out.retry).toBe(res.retryParams);
     expect(out.retry.orderSequence).toBe(7n);
     expect(out.retry.idempotencyKey).toBe('k#retry1');
     await tick(10);
-    expect(s.builders.closed).toBe(3);
+    expect(s.builders.closed).toBe(1);
   });
 
   it('only the Builders that acked count', async () => {
     const s = setup();
-    const res = await s.client.openTask(BASE);
+    const res = ackedByAll(await s.client.openTask(BASE));
     const [a, b, c] = res.builders;
     const partial: OpenTaskResult = {
       ...res,
@@ -507,7 +530,7 @@ describe('waitForAdmission', () => {
     const waiting = s.client.waitForAdmission(partial, { pollIntervalMs: 60_000 });
     await tick(50);
     expect(s.builders.opened).toBe(2);
-    s.builders.emit(a!.address, 'ASSIGN_REJECTED');
+    s.builders.emit(a!.address, 'RECORD_REJECTED');
     s.builders.emit(b!.address, 'ASSIGN_TIMEOUT');
     expect(await waiting).toMatchObject({ kind: 'rejected' });
   });
@@ -603,8 +626,8 @@ describe('waitForAdmission', () => {
         s.builders.refuseKeySigned = true;
         const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
         await tick(50);
-        // Every stream was refused (key-signed), so no Builder can report.
-        expect(s.builders.refused).toBe(3);
+        // The stream was refused (key-signed), so the Builder cannot report.
+        expect(s.builders.refused).toBe(1);
         expect(s.builders.opened).toBe(0);
         const readsBefore = s.reader.reads;
         s.hubState.latest = intent.orderExpireHeight + 1n;
@@ -724,11 +747,11 @@ describe('waitForAdmission', () => {
     const ac = new AbortController();
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000, signal: ac.signal }).catch((x: unknown) => x);
     await tick(50);
-    expect(s.builders.opened).toBe(3);
+    expect(s.builders.opened).toBe(1);
     ac.abort();
     expect(await waiting).toMatchObject({ family: 'SDK_LOCAL', code: 'ORDER_ADMISSION_WAIT_ABORTED' });
     await tick(10);
-    expect(s.builders.closed).toBe(3);
+    expect(s.builders.closed).toBe(1);
     await expect(s.client.waitForAdmission(res, { signal: ac.signal })).rejects.toMatchObject({ code: 'ORDER_ADMISSION_WAIT_ABORTED' });
   });
 
@@ -738,8 +761,8 @@ describe('waitForAdmission', () => {
     expect(await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 300 })).toEqual({ kind: 'timeout', taskId: res.taskId });
     expect(s.reader.reads).toBeGreaterThanOrEqual(1);
     await tick(10);
-    expect(s.builders.opened).toBe(3);
-    expect(s.builders.closed).toBe(3);
+    expect(s.builders.opened).toBe(1);
+    expect(s.builders.closed).toBe(1);
   });
 
   it('rejects a bad poll interval or timeout', async () => {
@@ -783,10 +806,10 @@ describe('waitForAdmission', () => {
 const nonceHex = (h: OpenTaskHeader): string => toHex(h.requestEnvelope!.requestNonce);
 
 describe('waitForAdmission: a replayed journal (Nexus keeps an abandoned task\'s journal)', () => {
-  it('[ORDER_RECEIVED, ASSIGN_REJECTED, ORDER_RECEIVED]: the old attempt\'s rejection does not count', async () => {
+  it('[ORDER_RECEIVED, RECORD_REJECTED, ORDER_RECEIVED]: the old attempt\'s rejection does not count', async () => {
     const s = setup();
     const res = await s.client.openTask(BASE);
-    for (const b of res.builders) s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_REJECTED', 'ORDER_RECEIVED']);
+    for (const b of res.builders) s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'RECORD_REJECTED', 'ORDER_RECEIVED']);
     s.chain.sessionReads = 0;
     const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 300 });
     expect(out).toEqual({ kind: 'timeout', taskId: res.taskId });
@@ -797,23 +820,23 @@ describe('waitForAdmission: a replayed journal (Nexus keeps an abandoned task\'s
     const s = setup();
     const res = await s.client.openTask(BASE);
     for (const b of res.builders) {
-      s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_TIMEOUT', 'ORDER_RECEIVED', 'ASSIGN_REJECTED']);
+      s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_TIMEOUT', 'ORDER_RECEIVED', 'RECORD_REJECTED']);
     }
     const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
     expect(out.kind).toBe('rejected');
-    if (out.kind === 'rejected') expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['ASSIGN_REJECTED', 'ASSIGN_REJECTED', 'ASSIGN_REJECTED']);
+    if (out.kind === 'rejected') expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['RECORD_REJECTED']);
   });
 
   it('the old rejection replayed, then the new attempt rejected live: rejected', async () => {
     const s = setup();
     const res = await s.client.openTask(BASE);
-    for (const b of res.builders) s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'ASSIGN_REJECTED', 'ORDER_RECEIVED']);
+    for (const b of res.builders) s.builders.journal.set(b.address, ['ORDER_RECEIVED', 'RECORD_REJECTED', 'ORDER_RECEIVED']);
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
     await tick(50);
     rejectAll(s.builders, res, 'ASSIGN_TIMEOUT');
     const out = await waiting;
     expect(out.kind).toBe('rejected');
-    if (out.kind === 'rejected') expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['ASSIGN_TIMEOUT', 'ASSIGN_TIMEOUT', 'ASSIGN_TIMEOUT']);
+    if (out.kind === 'rejected') expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual(['ASSIGN_TIMEOUT']);
   });
 });
 
@@ -825,23 +848,23 @@ describe('waitForAdmission: GetTaskEvents NotFound from an acked Builder', () =>
     const out = await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 10_000 });
     expect(out.kind).toBe('rejected');
     if (out.kind !== 'rejected') return;
-    expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual([ABANDONED_REPORT, ABANDONED_REPORT, ABANDONED_REPORT]);
+    expect(out.diagnosis.events.map((e) => e.eventCode)).toEqual([ABANDONED_REPORT]);
   });
 
   it('mixed with event reports: rejected once every Builder reported', async () => {
     const s = setup();
-    const res = await s.client.openTask(BASE);
+    const res = ackedByAll(await s.client.openTask(BASE));
     s.builders.notFound.add(res.builders[0]!.address);
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
     await tick(50);
-    s.builders.emit(res.builders[1]!.address, 'ASSIGN_REJECTED');
+    s.builders.emit(res.builders[1]!.address, 'RECORD_REJECTED');
     s.builders.emit(res.builders[2]!.address, 'ASSIGN_TIMEOUT');
     expect(await waiting).toMatchObject({ kind: 'rejected' });
   });
 
   it('only some Builders abandoned: not a rejection', async () => {
     const s = setup();
-    const res = await s.client.openTask(BASE);
+    const res = ackedByAll(await s.client.openTask(BASE));
     s.builders.notFound.add(res.builders[0]!.address);
     expect(await s.client.waitForAdmission(res, { pollIntervalMs: 5, timeoutMs: 200 })).toMatchObject({ kind: 'timeout' });
   });
@@ -858,12 +881,22 @@ describe('waitForAdmission: GetTaskEvents NotFound from an acked Builder', () =>
 describe('openTask: the order window', () => {
   it('refuses locally an order whose order_expire_height is below the latest height', async () => {
     const s = setup();
-    await expect(s.client.openTask({ ...BASE, context: context(51_001n, 51_000n) })).rejects.toMatchObject({
+    // Only a relative window can end before the latest height: without one the order is anchored
+    // at the latest height.
+    await expect(s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: -10n, orderExpireBlocks: -1n } })).rejects.toMatchObject({
       family: 'SDK_LOCAL', code: 'SDK_LOCAL_ORDER_EXPIRED',
     });
     expect(s.builders.headers).toHaveLength(0);
     // At the height itself it is still sent.
-    await expect(s.client.openTask({ ...BASE, context: context(51_000n, 51_000n) })).resolves.toMatchObject({ orderExpireHeight: 51_000n });
+    await expect(s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: -10n, orderExpireBlocks: 0n } }))
+      .resolves.toMatchObject({ orderExpireHeight: 1_000n });
+  });
+
+  it('without orderWindow an intent whose heights are stale is rebased on the latest height, keeping its lifetime', async () => {
+    const s = setup();
+    const res = await s.client.openTask({ ...BASE, context: context(9_001n, 9_001n) });
+    expect(res.earliestSubmitHeight).toBe(9_001n);
+    expect(res.orderExpireHeight).toBe(9_001n + LIFETIME);
   });
 
   it('a retry after the deadline passed is rebased on the fresh context, not expired', async () => {
@@ -879,9 +912,9 @@ describe('openTask: the order window', () => {
     const res2 = await s.client.openTask(out.retry);
     expect(res2.context.latestHeight).toBe(latest);
     expect(res2.earliestSubmitHeight).toBe(latest);
-    expect(res2.orderExpireHeight).toBe(latest + 50_000n);
+    expect(res2.orderExpireHeight).toBe(latest + LIFETIME);
     const order = decodeSignedOrder(s.builders.headers.at(-1)!.orderEnvelope).order!;
-    expect(order.orderExpireHeight).toBe(latest + 50_000n);
+    expect(order.orderExpireHeight).toBe(latest + LIFETIME);
     expect(res2.taskHash).not.toBe(res.taskHash);
   });
 
@@ -906,24 +939,14 @@ describe('openTask: a retry identical to the rejected order', () => {
     expect(s.builders.headers).toHaveLength(sent);
   });
 
-  it('resolves one fresh context, bypassing the anchor-reuse cache', async () => {
+  it('a later block changes the retried order (its window is rebased on the new latest height)', async () => {
     const s = setup();
     const { context: _c, expiryHeight: _e, ...noContext } = BASE;
     void _c;
     void _e;
     const res = await s.client.openTask(noContext);
-    // Same latest height, same reused anchor: the retry would be identical, until the cache is
-    // invalidated and a block passes.
-    const cache = s.client['contextCache']!;
-    const invalidate = cache.invalidate.bind(cache);
-    let invalidations = 0;
-    cache.invalidate = () => {
-      invalidations += 1;
-      s.hubState.latest += 1n;
-      invalidate();
-    };
+    s.hubState.latest += 1n;
     const res2 = await s.client.openTask(res.retryParams);
-    expect(invalidations).toBe(1);
     expect(res2.taskHash).not.toBe(res.taskHash);
     expect(res2.context.latestHeight).toBe(1_001n);
   });
@@ -968,7 +991,8 @@ describe('openTask retry: NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED', () => {
     // The signed order is the same on every attempt.
     expect(new Set(mine.map((h) => toHex(h.orderEnvelope))).size).toBe(1);
     expect(res2.builders.find((b) => b.address === a)!.ack?.accepted).toBe(true);
-    for (const b of res2.builders.slice(1)) expect(s.builders.headersBy.get(b.address)).toHaveLength(1);
+    // Only the bound Builder is contacted.
+    expect(res2.builders.map((b) => b.address)).toEqual([BOUND]);
   });
 
   it('bounded: past ORDER_REPLACEMENT_RETRY_ATTEMPTS the refusal is the result', async () => {
@@ -977,21 +1001,23 @@ describe('openTask retry: NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED', () => {
     const a = res.builders[0]!.address;
     s.builders.headersBy.clear();
     s.builders.openTaskErrors.set(a, Array.from({ length: 10 }, replacement));
-    const res2 = await s.client.openTask({ ...res.retryParams, context: context(1_001n, 1_000n) });
+    // The bound Builder is the only one contacted, so its final refusal fails the call.
+    const err = await s.client.openTask({ ...res.retryParams, context: context(1_001n, 1_000n) }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
     expect(s.builders.headersBy.get(a)).toHaveLength(1 + ORDER_REPLACEMENT_RETRY_ATTEMPTS);
-    expect(res2.builders.find((b) => b.address === a)!.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });
+    const results = (err as TaskBuilderAllEndpointsFailedError<never, never>).results;
+    expect(results).toHaveLength(1);
+    expect(results[0]!.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });
   });
 
   it('not a retry: the refusal is final at once', async () => {
     const s = setup();
-    s.builders.openTaskErrors.set(ADDRS[0]!, [replacement()]);
-    const res = await s.client.openTask(BASE);
-    const r = res.builders.find((b) => b.address === ADDRS[0]);
-    expect(r).toBeDefined();
-    if (r !== undefined) {
-      expect(s.builders.headersBy.get(ADDRS[0]!)).toHaveLength(1);
-      expect(r.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });
-    }
+    s.builders.openTaskErrors.set(BOUND, [replacement()]);
+    const err = await s.client.openTask(BASE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
+    expect(s.builders.headersBy.get(BOUND)).toHaveLength(1);
+    const results = (err as TaskBuilderAllEndpointsFailedError<never, never>).results;
+    expect(results[0]!.error).toMatchObject({ code: 'NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED' });
   });
 });
 
@@ -1008,33 +1034,31 @@ describe('openTask: Builders lagging a key change (key-change window)', () => {
   it('inside the window (latest < change + 10): refused key-signed OpenTasks are re-signed and re-sent', async () => {
     const s = setup();
     await keyAt(s, 995n);
-    for (const a of ADDRS) s.builders.openTaskErrors.set(a, [invalidSig(), invalidSig()]);
+    s.builders.openTaskErrors.set(BOUND, [invalidSig(), invalidSig()]);
     const res = await s.client.openTask(BASE);
     expect(res.orderSignedBy).toBe('session-key');
-    for (const a of ADDRS) {
-      const mine = s.builders.headersBy.get(a)!;
-      expect(mine).toHaveLength(3);
-      expect(new Set(mine.map(nonceHex)).size).toBe(3);
-    }
+    const mine = s.builders.headersBy.get(BOUND)!;
+    expect(mine).toHaveLength(3);
+    expect(new Set(mine.map(nonceHex)).size).toBe(3);
     expect(res.builders.every((b) => b.ack?.accepted === true)).toBe(true);
   });
 
   it('bounded by DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS', async () => {
     const s = setup();
     await keyAt(s, 995n);
-    for (const a of ADDRS) s.builders.openTaskErrors.set(a, Array.from({ length: 50 }, invalidSig));
+    s.builders.openTaskErrors.set(BOUND, Array.from({ length: 50 }, invalidSig));
     const err = await s.client.openTask(BASE).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
-    for (const a of ADDRS) expect(s.builders.headersBy.get(a)).toHaveLength(1 + DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS);
+    expect(s.builders.headersBy.get(BOUND)).toHaveLength(1 + DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS);
   });
 
   it('outside the window the refusal is final', async () => {
     const s = setup();
     await keyAt(s, 990n); // 1000 >= 990 + 10
-    for (const a of ADDRS) s.builders.openTaskErrors.set(a, [invalidSig()]);
+    s.builders.openTaskErrors.set(BOUND, [invalidSig()]);
     const err = await s.client.openTask(BASE).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
-    for (const a of ADDRS) expect(s.builders.headersBy.get(a)).toHaveLength(1);
+    expect(s.builders.headersBy.get(BOUND)).toHaveLength(1);
     const results = (err as TaskBuilderAllEndpointsFailedError<never, never>).results;
     expect(results.every((r) => (r.error as TrueOpenError).code === 'SDK_AUTH_INVALID_SIGNATURE')).toBe(true);
   });
@@ -1042,18 +1066,17 @@ describe('openTask: Builders lagging a key change (key-change window)', () => {
   it('a wallet-signed order is never retried for it', async () => {
     const s = setup();
     await keyAt(s, 995n);
-    for (const a of ADDRS) s.builders.openTaskErrors.set(a, [invalidSig()]);
+    s.builders.openTaskErrors.set(BOUND, [invalidSig()]);
     await expect(s.client.openTask({ ...BASE, orderSigner: 'wallet', orderSequence: 7n })).rejects.toBeInstanceOf(TaskBuilderAllEndpointsFailedError);
-    for (const a of ADDRS) expect(s.builders.headersBy.get(a)).toHaveLength(1);
+    expect(s.builders.headersBy.get(BOUND)).toHaveLength(1);
   });
 
   it('a key-signed OpenTask refused SDK_AUTH_SESSION_GRANT_EXPIRED outside the window is not retriable', async () => {
     const s = setup();
     await keyAt(s, 990n);
-    for (const a of ADDRS) {
-      s.builders.openTaskErrors.set(a, [new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: the session\'s registered key has expired', Code.DeadlineExceeded)]);
-    }
+    s.builders.openTaskErrors.set(BOUND, [new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: the session\'s registered key has expired', Code.DeadlineExceeded)]);
     const err = (await s.client.openTask(BASE).catch((e: unknown) => e)) as TaskBuilderAllEndpointsFailedError<never, never>;
+    expect(err.results).toHaveLength(1);
     for (const r of err.results) expect(r.error).toMatchObject({ code: 'SDK_AUTH_SESSION_GRANT_EXPIRED', retriable: false });
   });
 });
@@ -1062,16 +1085,19 @@ describe('openTask: the order window against the registered key\'s expiry', () =
   it('earliest_submit_height after the key expiry: SDK_LOCAL_SESSION_KEY_EXPIRED before signing', async () => {
     const s = setup();
     await withKey(s); // expiry 1100
-    const order = { ...intent, earliestSubmitHeight: 1_101n };
-    await expect(s.client.openTask({ ...BASE, order })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_EXPIRED' });
+    // Without a relative window the order starts at the latest height (1000), so the window is
+    // moved past the expiry with orderWindow.
+    await expect(s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: 101n, orderExpireBlocks: 200n } }))
+      .rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_KEY_EXPIRED' });
     expect(s.builders.headers).toHaveLength(0);
-    await expect(s.client.openTask({ ...BASE, order: { ...intent, earliestSubmitHeight: 1_100n } })).resolves.toBeDefined();
+    await expect(s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: 100n, orderExpireBlocks: 200n } }))
+      .resolves.toMatchObject({ earliestSubmitHeight: 1_100n });
   });
 
   it('a window that ends after the expiry is sent, flagged keyExpiresInOrderWindow', async () => {
     const s = setup();
     await withKey(s);
-    const res = await s.client.openTask(BASE); // order_expire_height 51000 > 1100
+    const res = await s.client.openTask(BASE); // order_expire_height 8000 > 1100
     expect(res.keyExpiresInOrderWindow).toBe(true);
     expect(res.sessionKeyExpiryHeight).toBe(1_100n);
     const inside = await s.client.openTask({ ...BASE, order: { ...intent, orderExpireHeight: 1_100n } });
@@ -1084,7 +1110,8 @@ describe('openTask: the order window against the registered key\'s expiry', () =
   it('diagnosis: expired when the key expires before earliest_submit_height, though not before latest', async () => {
     const s = setup();
     await withKey(s);
-    const res = await s.client.openTask({ ...BASE, order: { ...intent, earliestSubmitHeight: 1_050n } });
+    const res = await s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: 50n, orderExpireBlocks: 150n } });
+    expect(res.earliestSubmitHeight).toBe(1_050n);
     // The chain now shows an expiry between latest (1000) and earliest_submit_height (1050).
     s.chain.stream = { ...s.chain.stream, sessionKeyExpiryHeight: 1_040n };
     const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });

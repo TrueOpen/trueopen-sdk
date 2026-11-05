@@ -1,3 +1,5 @@
+import { ResumeOutputRequestSchema, GetDispatchRosterRequestSchema } from '../gen/nexus/v1/dispatch_pb.js';
+import { SDKRequestEnvelopeV2Schema } from '../gen/nexus/v1/sdk_auth_pb.js';
 import { createClient } from '@connectrpc/connect';
 import { classifyNexusError } from '../errors/classify';
 import type { Client, Transport } from '@connectrpc/connect';
@@ -6,7 +8,6 @@ import {
   IngressAPI,
   OpenTaskHeaderSchema,
   OpenTaskRequestSchema,
-  SDKRequestEnvelopeV2Schema,
   GetTaskStatusRequestSchema,
   PrepareChallengeRequestSchema,
   GetTaskEventsRequestSchema,
@@ -38,6 +39,8 @@ import type { SessionAuthority, SignedSessionGrant } from '../session/session-gr
 import type { RegisteredSessionKey, RegisteredSessionKeys } from '../session/registered-session-key';
 import {
   getTaskEventsBodyDigest,
+  resumeOutputBodyDigest,
+  getDispatchRosterBodyDigest,
   prepareChallengeBodyDigest,
   subscribeOutputBodyDigest,
   ackOutputBodyDigest,
@@ -85,6 +88,13 @@ export interface OpenTaskInput {
 
 /** OpenTask accept response. */
 export interface OpenTaskAck {
+  readonly status?: number;
+  readonly dispatchResult?: import('../gen/nexus/v1/dispatch_pb.js').DispatchResultHeaderV1;
+  readonly boundBuilder?: string;
+  readonly takeoverActivationHeight?: bigint;
+  readonly dispatchAvailableHeight?: bigint;
+  /** With NEXUS_INGRESS_BUILDER_KEY_ROTATING: the height the Builder's pending service key activates. */
+  readonly serviceKeyRotationEffectiveHeight?: bigint;
   readonly taskId: string;
   readonly accepted: boolean;
   readonly reason: string;
@@ -205,7 +215,7 @@ export class IngressClient {
    *    that is Unix milliseconds, which OpenTask does not accept);
    *  - the envelope is wallet-signed and never carries a session grant.
    */
-  async openTask(req: OpenTaskInput): Promise<OpenTaskAck> {
+  async openTask(req: OpenTaskInput, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<OpenTaskAck> {
     // A session-signed OpenTask is allowed only under a grant for the order's own user (wire PR
     // #43); the Builder would refuse any other with SDK_AUTH_SESSION_GRANT_INVALID.
     const grant = req.requestEnvelope.sessionGrant;
@@ -247,10 +257,16 @@ export class IngressClient {
       }
     }
 
-    const res = await this.client.openTask(frames());
+    const res = await this.client.openTask(frames(), options);
     return {
       taskId: responseHash32('OpenTaskResponse.task_id', res.taskId),
       accepted: res.accepted,
+      status: res.status,
+      ...(res.dispatchResult !== undefined ? { dispatchResult: res.dispatchResult } : {}),
+      ...(res.boundBuilder !== undefined ? { boundBuilder: res.boundBuilder } : {}),
+      ...(res.takeoverActivationHeight !== undefined ? { takeoverActivationHeight: res.takeoverActivationHeight } : {}),
+      ...(res.dispatchAvailableHeight !== undefined ? { dispatchAvailableHeight: res.dispatchAvailableHeight } : {}),
+      ...(res.serviceKeyRotationEffectiveHeight !== undefined ? { serviceKeyRotationEffectiveHeight: res.serviceKeyRotationEffectiveHeight } : {}),
       reason: res.reason,
       sessionId: responseHash32('OpenTaskResponse.session_id', res.sessionId),
       ...(res.inputMetadata !== undefined ? { inputMetadata: res.inputMetadata } : {}),
@@ -303,7 +319,7 @@ export class IngressClient {
           fromCursor: cursor,
           requestEnvelope: envelopeMessage(env),
         }),
-        p.signal !== undefined ? { signal: p.signal } : undefined,
+        p.signal === undefined ? undefined : { signal: p.signal },
       ),
     );
   }
@@ -318,6 +334,7 @@ export class IngressClient {
     taskId: string;
     /** Resume point: only replays frames with seq greater than this value. Leave unset on the first subscription, starting from seq = 0. */
     resumeAfterSeq?: bigint;
+    dispatchTicketHash?: Uint8Array;
     /**
      * Abort signal. **You must abort when giving up on a stream**: merely stopping reads
      * (`iterator.return()`) does not tear down the underlying HTTP request -- if the queried
@@ -327,7 +344,8 @@ export class IngressClient {
      */
     signal?: AbortSignal;
   }): AsyncIterable<SubscribeOutputResponse> {
-    const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq);
+    requireResumeTicket(p.resumeAfterSeq, p.dispatchTicketHash);
+    const bd = subscribeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq, p.dispatchTicketHash);
     yield* this.signedStream('SubscribeOutput', p.sessionId, p.taskId, bd, (env) =>
       this.client.subscribeOutput(
         create(SubscribeOutputRequestSchema, {
@@ -335,10 +353,29 @@ export class IngressClient {
           taskId: p.taskId,
           requestEnvelope: envelopeMessage(env),
           ...(p.resumeAfterSeq !== undefined ? { resumeAfterSeq: p.resumeAfterSeq } : {}),
+          ...(p.dispatchTicketHash !== undefined ? { dispatchTicketHash: p.dispatchTicketHash } : {}),
         }),
         p.signal !== undefined ? { signal: p.signal } : undefined,
       ),
     );
+  }
+
+  async *resumeOutput(p: { sessionId: string; taskId: string; resumeAfterSeq?: bigint; dispatchTicketHash?: Uint8Array; signal?: AbortSignal }) {
+    requireResumeTicket(p.resumeAfterSeq, p.dispatchTicketHash);
+    const digest = resumeOutputBodyDigest(p.sessionId, p.taskId, p.resumeAfterSeq, p.dispatchTicketHash);
+    yield* this.signedStream('ResumeOutput', p.sessionId, p.taskId, digest, (env) =>
+      this.client.resumeOutput(create(ResumeOutputRequestSchema, {
+        sessionId: p.sessionId, taskId: p.taskId, requestEnvelope: envelopeMessage(env),
+        ...(p.resumeAfterSeq !== undefined ? { resumeAfterSeq: p.resumeAfterSeq } : {}),
+        ...(p.dispatchTicketHash !== undefined ? { dispatchTicketHash: p.dispatchTicketHash } : {}),
+      }), p.signal === undefined ? undefined : { signal: p.signal }));
+  }
+
+  getDispatchRoster(sessionId: string, taskId: string) {
+    return this.signedCall('GetDispatchRoster', sessionId, taskId, getDispatchRosterBodyDigest(sessionId, taskId), env =>
+      this.client.getDispatchRoster(create(GetDispatchRosterRequestSchema, {
+        sessionId, taskId, authentication: { case: 'requestEnvelope', value: envelopeMessage(env) },
+      })));
   }
 
   /**
@@ -896,5 +933,11 @@ async function* classifyingIterable<T>(source: AsyncIterable<T>): AsyncGenerator
     yield* source;
   } catch (e) {
     throw classifyNexusError(e);
+  }
+}
+
+function requireResumeTicket(cursor: bigint | undefined, ticket: Uint8Array | undefined): void {
+  if (cursor !== undefined && ticket?.length !== 32) {
+    throw new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_RESUME_TICKET_REQUIRED', 'resume_after_seq requires the same attempt\'s raw32 dispatch_ticket_hash');
   }
 }

@@ -18,6 +18,7 @@ import {
 export type OpenAIAssistantSseEvent =
   | { readonly kind: 'reasoning'; readonly text: string }
   | { readonly kind: 'content'; readonly text: string }
+  | { readonly kind: 'reset' }
   | { readonly kind: 'confirmed'; readonly message: ConfirmedAssistantMessage };
 
 export interface OpenAIAssistantSseOptions {
@@ -45,7 +46,8 @@ export interface OpenAIAssistantSseOptions {
  *
  * Fails closed, with no terminal chunk and no `[DONE]`, when the stream ends without a confirmed
  * message, when the confirmed message belongs to another task, when its content differs from the
- * content already streamed, or when the protocol finish reason is unavailable.
+ * content already streamed, when the protocol finish reason is unavailable, or when a voided
+ * dispatch attempt is reset after content was streamed (`DATA_OPENAI_SSE_ATTEMPT_RESET`).
  */
 export async function* toOpenAIAssistantSSEIterable(
   events: AsyncIterable<OpenAIAssistantSseEvent>,
@@ -62,6 +64,13 @@ export async function* toOpenAIAssistantSSEIterable(
   for await (const event of events) {
     switch (event.kind) {
       case 'reasoning':
+        continue;
+      case 'reset':
+        // A voided dispatch attempt (Phase 1). SSE cannot take back content already sent, so the
+        // stream fails closed; before any content there is nothing to take back.
+        if (streamed !== '') {
+          throw sseError('DATA_OPENAI_SSE_ATTEMPT_RESET', 'the dispatch attempt was replaced after its content was streamed');
+        }
         continue;
       case 'content': {
         if (event.text === '') continue;

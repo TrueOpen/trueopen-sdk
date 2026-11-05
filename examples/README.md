@@ -26,6 +26,7 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
 | `TRUEOPEN_MODEL_ID` | Hash32 model ID, `0x` + 64 lowercase hex (open-task) | - |
 | `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
+| `TRUEOPEN_INITIAL_BUILDER` / `TRUEOPEN_INITIAL_DEPOSIT` | Builder operator address the new Session is bound to, and its prefunded balance in atomic units (create-session) | `trueopen1...` / `1000000` |
 
 Nothing chain-specific is hard-coded: the fee denom (`business_denom`, used for the order signature
 and for tx fees) is read from `params.phase0` on chain. The EIP-712 domain chainId is not a chain
@@ -53,14 +54,15 @@ Prints the chain's business denom, the nexus endpoint of each active Builder, an
 when set, the session, task and infer receipt.
 
 ### create-session.mjs -- spends gas
-Broadcasts `MsgCreateSession` with an explicit fee in the chain business denom. A new session's
-first order sequence is 0.
+Broadcasts `MsgCreateSession` (`createSession({ initialBuilder, initialDeposit })`) with an explicit
+fee in the chain business denom. The Session is bound to `TRUEOPEN_INITIAL_BUILDER`, which receives
+all its orders. A new session's first order sequence is 0.
 
 ### open-task.mjs -- places an order
 Reads the next order sequence from chain (0 for a new session), builds and signs the order, and
-sends it to every Task Builder selected by `task_builder_seed`. Before signing, the SDK checks the
+sends it to the Session-bound Builder. Before signing, the SDK checks the
 order against the chain's generation limits and the model profile's pricing, and refuses one the
-chain would reject. It prints each selected Builder's outcome.
+chain would reject. It prints the bound Builder's outcome.
 
 > An `accepted` ack is local acceptance by nexus. The chain decides whether the task exists; once
 > it is assigned, funds up to `max_fee` are frozen.
@@ -86,3 +88,10 @@ redirect and timeout limits, and the 4 MiB cap. It returns the bytes unchanged. 
 ```bash
 npm run build && PORT=8787 node examples/manifest-proxy.mjs
 ```
+
+Phase 1: before creating a Session, set `TRUEOPEN_INITIAL_BUILDER` to a current Builder
+operator address and `TRUEOPEN_INITIAL_DEPOSIT` to a canonical atomic-unit amount.
+Creation funds Session escrow in addition to paying transaction gas. Orders spend Session
+balance. Existing Sessions must belong to the same fresh Phase 1 chain as this SDK.
+
+`TRUEOPEN_SIGNATURE_CHAIN_ID` selects the EIP-712 signing domain (default `1`); it is not queried from Hub.

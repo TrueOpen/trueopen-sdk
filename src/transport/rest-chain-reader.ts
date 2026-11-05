@@ -1,4 +1,4 @@
-import { stringToU64, restHash32, base64ToBytes } from '../codec/wire';
+import { stringToU64, restHash32, base64ToBytes, bytesToBase64 } from '../codec/wire';
 import { TrueOpenError } from '../errors/errors';
 import type { ChainReader } from './chain-client';
 import type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from '../types/node';
@@ -107,7 +107,7 @@ export class RestChainReader implements ChainReader {
     const body = await this.getJson(`/TrueOpen/task/v1/session/${encodeURIComponent(sessionId)}`);
     const s = body['session'];
     if (typeof s !== 'object' || s === null) throw malformed('session object');
-    return toStreamState(s as Record<string, unknown>);
+    return { ...toStreamState(s as Record<string, unknown>), ...sessionFrozenParams(body) };
   }
 
   async querySessionNonce(address: string): Promise<{ nextSessionNonce: bigint }> {
@@ -143,6 +143,7 @@ export class RestChainReader implements ChainReader {
       // arm from reading a compacted task as a silently empty one.
       return {
         view: 'terminal',
+        ...(pendingField(terminal, 'dispatch_ticket_hash') !== '' ? { dispatchTicketHash: hash32Field(terminal, 'dispatch_ticket_hash') } : {}),
         terminalPhase: enumField(terminal, 'terminal_phase', 'TASK_PHASE_'),
         taskId: hash32Field(terminal, 'task_id'),
         acceptedTaskHash: hash32Field(terminal, 'task_hash'),
@@ -162,6 +163,7 @@ export class RestChainReader implements ChainReader {
     const assignment = optObj(active, 'assignment');
     return {
       view: 'active',
+      ...(assignment !== undefined && pendingField(assignment, 'dispatch_ticket_hash') !== '' ? { dispatchTicketHash: hash32Field(assignment, 'dispatch_ticket_hash') } : {}),
       // task_id is carried by the assignment view, so it is unavailable until
       // assignment exists. The caller already knows which id it asked for.
       taskId: assignment === undefined ? taskId : hash32Field(assignment, 'task_id'),
@@ -270,6 +272,8 @@ function toStreamState(s: Record<string, unknown>): StreamStateView {
   return {
     sessionId: hash32Field(s, 'session_id'),
     owner: field(s, 'owner_user_address'),
+    ...sessionFundingFields(s),
+    ...(typeof s.bound_builder === 'string' ? { boundBuilder: s.bound_builder } : {}),
     nextExpectedSequence: u64Field(s, 'next_expected_sequence'),
     lastActiveHeight: u64Field(s, 'last_active_height'),
     // uint32: protojson leaves it unquoted; verified to arrive as a bare number.
@@ -426,4 +430,64 @@ function optEnumField<K extends string>(
 
 function malformed(what: string): TrueOpenError {
   return new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_MALFORMED', `chain query returned malformed ${what}`);
+}
+
+/**
+ * QuerySessionResponse.params / params_version: the parameters frozen for this Session's
+ * lifecycle (wire #49). Only the dispatch clocks the SDK checks are read. Absent on a node that
+ * predates them, and then left undefined: current parameters must not stand in for a missing
+ * historical body.
+ */
+function sessionFrozenParams(body: Record<string, unknown>): Partial<StreamStateView> {
+  const params = optObj(body, 'params');
+  if (params === undefined) return {};
+  const dispatch = obj(params, 'dispatch');
+  return {
+    frozenParams: {
+      maxOrderLifetimeBlocks: u64Field(dispatch, 'max_order_lifetime_blocks'),
+      recordDeadlineBlocks: u64Field(dispatch, 'record_deadline_blocks'),
+    },
+    ...(raw(body, 'params_version') !== undefined ? { paramsVersion: u64Field(body, 'params_version') } : {}),
+  };
+}
+
+/** Phase 1 funding, binding and pending-change fields (the session key itself is read by toStreamState). */
+function sessionFundingFields(s: Record<string, unknown>): Partial<StreamStateView> {
+  const result: Record<string, unknown> = {};
+  for (const [wire, name] of [['balance', 'balance'], ['frozen_total', 'frozenTotal'], ['pending_withdraw_amount', 'pendingWithdrawAmount']]) {
+    const value = raw(s, wire!);
+    if (value !== undefined) {
+      if (!value || typeof value !== 'object') throw malformed(`field ${wire}`);
+      const amount = field(value as Record<string, unknown>, 'atomic_units');
+      if (!/^(0|[1-9][0-9]*)$/.test(amount)) throw malformed(`amount ${wire}`);
+      result[name!] = amount;
+    }
+  }
+  for (const [wire, name] of [['pending_withdraw_effective_height', 'pendingWithdrawEffectiveHeight'], ['bound_change_height', 'boundChangeHeight'], ['last_record_height', 'lastRecordHeight'], ['closed_height', 'closedHeight']]) {
+    if (raw(s, wire!) !== undefined) result[name!] = u64Field(s, wire!);
+  }
+  if (raw(s, 'pending_withdraw_kind') !== undefined) result.pendingWithdrawKind = enumField(s, 'pending_withdraw_kind', 'SESSION_WITHDRAW_KIND_V1_');
+  const pending = raw(s, 'pending_takeover');
+  if (pending !== undefined && pending !== null) {
+    if (typeof pending !== 'object') throw malformed('pending_takeover');
+    const p = pending as Record<string, unknown>;
+    result.pendingTakeover = { candidateBuilder: field(p, 'candidate_builder'), orderSequence: u64Field(p, 'order_sequence'), orderTaskHash: hash32Field(p, 'order_task_hash'), registeredHeight: u64Field(p, 'registered_height'), activationHeight: u64Field(p, 'activation_height') };
+  }
+  const decodeKey = (value: unknown): Uint8Array => {
+    if (typeof value !== 'string') throw malformed('session_key');
+    const key = base64ToBytes(value);
+    if (key.length !== 20 || bytesToBase64(key) !== value || key.every(b => b === 0)) throw malformed('session_key raw20');
+    return key;
+  };
+  const keyChange = optObj(s, 'pending_session_key_change');
+  if (keyChange) {
+    const grant = optObj(keyChange, 'grant');
+    const cap = grant ? field(obj(grant, 'spend_cap'), 'atomic_units') : undefined;
+    if (cap !== undefined && !/^(0|[1-9][0-9]*)$/.test(cap)) throw malformed('pending session key cap');
+    result.pendingSessionKeyChange = {
+      kind: enumField(keyChange, 'kind', 'SESSION_KEY_CHANGE_KIND_V1_'), effectiveHeight: u64Field(keyChange, 'effective_height'),
+      ...(grant ? { grant: { sessionKey: decodeKey(raw(grant, 'session_key')), expiryHeight: u64Field(grant, 'expiry_height'), spendCap: cap! } } : {}),
+    };
+  }
+  return result as Partial<StreamStateView>;
 }

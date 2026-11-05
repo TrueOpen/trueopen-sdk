@@ -38,7 +38,7 @@ function chain(opts: { assignAfter?: number; terminal?: boolean; phase?: string 
         modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
         ...(opts.terminal
           ? { terminalPhase: 'FAILED' }
-          : { acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: opts.phase ?? 'WORKER_ASSIGNMENT_PENDING' }),
+          : { acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: opts.phase ?? 'INFER_PENDING' }),
       };
     },
     async queryInferReceipt(): Promise<InferReceiptView | undefined> {
@@ -138,7 +138,7 @@ describe('waitForOutputTrustAnchors', () => {
     expect(reader.reads).toBe(3);
   });
 
-  it('reads the chain once more, straight away, on ASSIGNMENT_FINALIZED, and only once', async () => {
+  it('reads the chain once more, straight away, on DISPATCH_RECORDED, and only once', async () => {
     const reader = chain();
     const log = { opened: 0, closed: 0 };
     let emit!: (code: string) => void;
@@ -150,17 +150,17 @@ describe('waitForOutputTrustAnchors', () => {
     await tick(50);
     expect(reader.reads).toBe(1);
 
-    // Neither another nexus event nor the Verifier one counts.
+    // No other nexus event counts, not even the Builder accepting the dispatch.
     emit('ORDER_RECEIVED');
-    emit('VERIFIER_ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_ACCEPTED');
     await tick(50);
     expect(reader.reads).toBe(1);
 
     // The event still finds no winner: one extra read, then back to the (long) poll.
-    emit('ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_RECORDED');
     await tick(50);
     expect(reader.reads).toBe(2);
-    emit('ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_RECORDED');
     await tick(50);
     expect(reader.reads).toBe(2);
     // The event stream was closed after its one trigger.
@@ -182,7 +182,7 @@ describe('waitForOutputTrustAnchors', () => {
     const waiting = makeClient(t, reader).waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 60_000 });
     await tick(50);
     reader.assign();
-    emit('ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_RECORDED');
     const a = await waiting;
     expect(a.winnerWorker).toBe(WINNER);
     expect(reader.reads).toBe(2);
@@ -286,7 +286,7 @@ function gatedChain() {
       return {
         view: 'active', taskId, acceptedTaskHash: TASK_HASH, winnerWorker: winner ? WINNER : '',
         modelId: `0x${'b'.repeat(64)}`, profileVersion: 1n, orderSequence: 0n,
-        acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: 'WORKER_ASSIGNMENT_PENDING',
+        acceptedInputHash: `0x${'a'.repeat(64)}`, taskPhase: 'INFER_PENDING',
       };
     },
     async queryInferReceipt(): Promise<InferReceiptView | undefined> {
@@ -306,7 +306,7 @@ describe('waitForOutputTrustAnchors: the event read does not queue behind a read
     await tick(30);
     expect(reader.reads).toBe(1);
 
-    emit('ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_RECORDED');
     await tick(30);
     // The first read is still in flight; the event's read did not wait for it.
     expect(reader.reads).toBe(2);
@@ -326,7 +326,7 @@ describe('waitForOutputTrustAnchors: the event read does not queue behind a read
     const started = Date.now();
     const waiting = makeClient(t, reader).waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 60_000 });
     await tick(30);
-    emit('ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_RECORDED');
     await tick(30);
     expect(reader.reads).toBe(2);
     // The older read says "no winner yet" first: the wait must keep waiting for the newer read,
@@ -345,7 +345,7 @@ describe('waitForOutputTrustAnchors: the event read does not queue behind a read
     const t = eventsTransport({ opened: 0, closed: 0 }, (e) => { emit = e; });
     const waiting = makeClient(t, reader).waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 60_000 });
     await tick(30);
-    emit('ASSIGNMENT_FINALIZED');
+    emit('DISPATCH_RECORDED');
     await tick(30);
     reader.release(0, true);
     expect((await waiting).winnerWorker).toBe(WINNER);
@@ -371,8 +371,8 @@ describe('resolveOutputTrustAnchors on a task that ended', () => {
     }
   });
 
-  it('stays pending while the active task is still being assigned, or carries no phase', async () => {
-    for (const phase of ['WORKER_ASSIGNMENT_PENDING', undefined]) {
+  it('stays pending while the active task has no winner yet, or carries no phase', async () => {
+    for (const phase of ['INFER_PENDING', undefined]) {
       const reader = chain();
       const r: OutputTaskReader = {
         queryTask: async (id) => {

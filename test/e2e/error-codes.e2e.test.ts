@@ -1,3 +1,4 @@
+import type { SDKRequestEnvelopeV2 } from '../../src/gen/nexus/v1/sdk_auth_pb.js';
 /**
  * The error code the simulated Builder answers for each auth failure the contract pins, and how
  * the SDK classifies it. The SDK refuses most of these locally, so the bad requests are sent raw.
@@ -6,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { create } from '@bufbuild/protobuf';
 import { bech32 } from '@scure/base';
 import { OpenTaskHeaderSchema, OpenTaskRequestSchema } from '../../src/gen/nexus/v1/ingress_pb.js';
-import type { OpenTaskRequest, SDKRequestEnvelopeV2 } from '../../src/gen/nexus/v1/ingress_pb.js';
+import type { OpenTaskRequest } from '../../src/gen/nexus/v1/ingress_pb.js';
 import { TrueOpenError } from '../../src/errors/errors';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { sdkRequestTypedData } from '../../src/transport/sdk-request-envelope';
@@ -88,7 +89,7 @@ describe('e2e: pinned auth error codes', () => {
     // Every selected Builder refuses it, so openTask fails with each Builder's error.
     const err = await caught(world.client(0).openTask({ sessionId, idempotencyKey: 'k', order: w.orderIntent(), expiryHeight: w.LATEST_HEIGHT + 21n }));
     const results = (err as TrueOpenError & { results: { error?: unknown }[] }).results;
-    expect(results).toHaveLength(3);
+    expect(results).toHaveLength(1);
     for (const r of results) expect(r.error).toMatchObject({ code: 'SDK_AUTH_EXPIRED', category: 'expired', retriable: true });
   });
 

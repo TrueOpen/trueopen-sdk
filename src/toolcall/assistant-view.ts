@@ -69,7 +69,8 @@ function parseWithReasoning(
  */
 type OutputEventLike =
   | { readonly kind: 'chunk'; readonly text: string }
-  | { readonly kind: 'fin'; readonly finishReason?: FinishReasonV1 | undefined };
+  | { readonly kind: 'fin'; readonly finishReason?: FinishReasonV1 | undefined }
+  | { readonly kind: 'reset' };
 
 /**
  * Stage one of the execution gate: content and **provisional** calls from locally verified
@@ -86,9 +87,9 @@ export async function* deriveAssistantStream(
   source: AsyncIterable<OutputEventLike>,
   opts: DerivedViewOptions,
 ): AsyncIterable<AssistantStreamEvent> {
-  const state = opts.parser.createStreamState();
+  let state = opts.parser.createStreamState();
   // Chained, not parallel (S7.3 rule 10): reasoning first, the tool parser sees only the remainder.
-  const reasoning = opts.reasoning?.createStreamState();
+  let reasoning = opts.reasoning?.createStreamState();
   function* feed(text: string): Iterable<AssistantStreamEvent> {
     if (reasoning === undefined) {
       yield* state.push(text);
@@ -101,6 +102,14 @@ export async function* deriveAssistantStream(
   }
   let finishReason: FinishReasonV1 | undefined;
   for await (const event of source) {
+    if (event.kind === 'reset') {
+      // A voided dispatch attempt (Phase 1): its text is gone, and so is everything derived from
+      // it. The replacement attempt is parsed from scratch.
+      state = opts.parser.createStreamState();
+      reasoning = opts.reasoning?.createStreamState();
+      yield { kind: 'reset' };
+      continue;
+    }
     if (event.kind === 'fin') finishReason = event.finishReason;
     if (event.kind !== 'chunk') continue;
     yield* feed(event.text);

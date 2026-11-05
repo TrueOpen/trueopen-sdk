@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { FinishReasonV1 } from '../../src/gen/task/v1/evidence_pb.js';
 import {
+  OPENAI_SSE_OBFUSCATION_MAX_LENGTH,
+  OPENAI_SSE_OBFUSCATION_MIN_LENGTH,
   openAIFinishReason,
   toOpenAIChatSSE,
   toOpenAIChatSSEIterable,
@@ -96,22 +98,33 @@ describe('openAIFinishReason', () => {
 });
 
 describe('toOpenAIChatSSEIterable', () => {
-  it('provisional: two content chunks, a terminal chunk, then [DONE]', async () => {
+  it('provisional: a role chunk, two content chunks, a terminal chunk, then [DONE]', async () => {
     const frames = await collect(toOpenAIChatSSEIterable(source(events()), context));
-    expect(frames).toHaveLength(4);
-    const first = jsonFrame(frames[0]!);
-    const second = jsonFrame(frames[1]!);
-    const terminal = jsonFrame(frames[2]!);
-    expect(first).toMatchObject({
+    expect(frames).toHaveLength(5);
+    const envelope = {
       id: context.id,
       object: 'chat.completion.chunk',
       created: context.created,
       model: context.model,
-      choices: [{ index: 0, delta: { content: TEXTS[0] }, finish_reason: null }],
+      system_fingerprint: null,
+    };
+    expect(jsonFrame(frames[0]!)).toEqual({
+      ...envelope,
+      choices: [{ index: 0, delta: { role: 'assistant', content: '' }, logprobs: null, finish_reason: null }],
     });
-    expect(second).toMatchObject({ choices: [{ delta: { content: TEXTS[1] }, finish_reason: null }] });
-    expect(terminal).toMatchObject({ choices: [{ delta: {}, finish_reason: 'stop' }] });
-    expect(frames[3]).toBe('data: [DONE]\n\n');
+    expect(jsonFrame(frames[1]!)).toEqual({
+      ...envelope,
+      choices: [{ index: 0, delta: { content: TEXTS[0] }, logprobs: null, finish_reason: null }],
+    });
+    expect(jsonFrame(frames[2]!)).toEqual({
+      ...envelope,
+      choices: [{ index: 0, delta: { content: TEXTS[1] }, logprobs: null, finish_reason: null }],
+    });
+    expect(jsonFrame(frames[3]!)).toEqual({
+      ...envelope,
+      choices: [{ index: 0, delta: {}, logprobs: null, finish_reason: 'stop' }],
+    });
+    expect(frames[4]).toBe('data: [DONE]\n\n');
     // Verify that metadata never leaks into assistant content / the SSE envelope.
     expect(frames.join('')).not.toContain(toHex(ROOT0));
     expect(frames.join('')).not.toContain('outputMmrRoot');
@@ -134,16 +147,17 @@ describe('toOpenAIChatSSEIterable', () => {
 
     release();
     const first = await firstPromise;
-    expect(dec.decode(first.value)).toContain(TEXTS[0]);
+    expect(jsonFrame(dec.decode(first.value))).toMatchObject({ choices: [{ delta: { role: 'assistant', content: '' } }] });
     const rest: string[] = [];
     for (;;) {
       const step = await iterator.next();
       if (step.done) break;
       rest.push(dec.decode(step.value));
     }
-    expect(rest).toHaveLength(3);
-    expect(jsonFrame(rest[1]!)).toMatchObject({ choices: [{ finish_reason: 'length' }] });
-    expect(rest[2]).toBe('data: [DONE]\n\n');
+    expect(rest).toHaveLength(4);
+    expect(rest[0]).toContain(TEXTS[0]);
+    expect(jsonFrame(rest[2]!)).toMatchObject({ choices: [{ finish_reason: 'length' }] });
+    expect(rest[3]).toBe('data: [DONE]\n\n');
   });
 
   it('confirmed-only: zero content delivered if the confirmed root/count/size mismatches', async () => {
@@ -184,8 +198,8 @@ describe('toOpenAIChatSSEIterable', () => {
     await expectCode(async () => {
       for await (const bytes of toOpenAIChatSSEIterable(source(bad), context)) got.push(dec.decode(bytes));
     }, 'DATA_OPENAI_SSE_CHUNK_SEQ_MISMATCH');
-    expect(got).toHaveLength(1);
-    expect(got[0]).toContain(TEXTS[0]);
+    expect(got).toHaveLength(2);
+    expect(got[1]).toContain(TEXTS[0]);
   });
 
   it('rejects the terminal chunk and DONE when Fin seq/root mismatch or the reason is invalid', async () => {
@@ -201,7 +215,7 @@ describe('toOpenAIChatSSEIterable', () => {
           source([events()[0]!, events()[1]!, fin]), context,
         )) got.push(dec.decode(bytes));
       }, `DATA_OPENAI_SSE_${suffix}`);
-      expect(got).toHaveLength(2);
+      expect(got).toHaveLength(3); // the role chunk and the two content chunks
     }
   });
 
@@ -289,12 +303,57 @@ describe('toOpenAIChatSSEIterable', () => {
     };
     const controller = new AbortController();
     const iterator = toOpenAIChatSSEIterable(controlled, context, { signal: controller.signal })[Symbol.asyncIterator]();
-    expect((await iterator.next()).done).toBe(false);
+    expect((await iterator.next()).done).toBe(false); // the role chunk
+    expect((await iterator.next()).done).toBe(false); // chunk 0
     const waiting = iterator.next();
     controller.abort();
     await expectCode(() => waiting, 'OPENAI_SSE_ABORTED', 'SDK_LOCAL');
     await Promise.resolve();
     expect(returned).toBe(true);
+  });
+});
+
+describe('OpenAI chunk shape (role, logprobs, system_fingerprint, obfuscation)', () => {
+  it('confirmed-only releases the same chunk shape as provisional, role chunk first', async () => {
+    const provisional = (await collect(toOpenAIChatSSEIterable(source(events()), context))).map((f) => f === 'data: [DONE]\n\n' ? f : jsonFrame(f));
+    const confirmedOnly = (await collect(toOpenAIChatSSEIterable(
+      source([...events(), confirmed()]), context, { delivery: 'confirmed-only' },
+    ))).map((f) => f === 'data: [DONE]\n\n' ? f : jsonFrame(f));
+    expect(confirmedOnly).toEqual(provisional);
+  });
+
+  it('writes the caller\'s system_fingerprint on every chunk', async () => {
+    const frames = await collect(toOpenAIChatSSEIterable(source(events()), { ...context, systemFingerprint: 'fp_trueopen_v3' }));
+    for (const frame of frames.slice(0, -1)) expect(jsonFrame(frame).system_fingerprint).toBe('fp_trueopen_v3');
+    const explicitNull = await collect(toOpenAIChatSSEIterable(source(events()), { ...context, systemFingerprint: null }));
+    expect(jsonFrame(explicitNull[0]!).system_fingerprint).toBeNull();
+  });
+
+  it('rejects an empty or non-string system_fingerprint', async () => {
+    for (const systemFingerprint of ['', 7 as unknown as string]) {
+      await expectCode(() => collect(toOpenAIChatSSEIterable(source(events()), { ...context, systemFingerprint })), 'DATA_OPENAI_SSE_CONTEXT_INVALID');
+    }
+  });
+
+  it('obfuscation is off by default and pads every chunk with random alphanumerics when on', async () => {
+    const plain = await collect(toOpenAIChatSSEIterable(source(events()), context));
+    for (const frame of plain.slice(0, -1)) expect(jsonFrame(frame)).not.toHaveProperty('obfuscation');
+
+    const padded = await collect(toOpenAIChatSSEIterable(source(events()), context, { includeObfuscation: true }));
+    expect(padded).toHaveLength(plain.length);
+    expect(padded[padded.length - 1]).toBe('data: [DONE]\n\n');
+    const paddings = padded.slice(0, -1).map((f) => jsonFrame(f).obfuscation as string);
+    for (const p of paddings) {
+      expect(p).toMatch(/^[A-Za-z0-9]+$/);
+      expect(p.length).toBeGreaterThanOrEqual(OPENAI_SSE_OBFUSCATION_MIN_LENGTH);
+      expect(p.length).toBeLessThanOrEqual(OPENAI_SSE_OBFUSCATION_MAX_LENGTH);
+    }
+    expect(new Set(paddings).size).toBe(paddings.length);
+    // The padding never changes the payload: drop it and the chunks are the plain ones.
+    expect(padded.slice(0, -1).map((f) => {
+      const { obfuscation: _, ...rest } = jsonFrame(f);
+      return rest;
+    })).toEqual(plain.slice(0, -1).map(jsonFrame));
   });
 });
 
@@ -329,9 +388,11 @@ describe('toOpenAIChatSSE ReadableStream', () => {
     const reader = toOpenAIChatSSE(counted, context).getReader();
     await Promise.resolve();
     expect(nextCalls).toBe(0);
-    expect((await reader.read()).done).toBe(false);
+    expect((await reader.read()).done).toBe(false); // the role chunk, pulled with chunk 0
     expect(nextCalls).toBe(1);
     await Promise.resolve();
+    expect(nextCalls).toBe(1);
+    expect((await reader.read()).done).toBe(false); // chunk 0: no new upstream pull
     expect(nextCalls).toBe(1);
     expect((await reader.read()).done).toBe(false);
     expect(nextCalls).toBe(2);

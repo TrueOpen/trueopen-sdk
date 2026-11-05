@@ -2,7 +2,7 @@ export const SDK_WIRE_VERSION = 'SDK_WIRE_V1' as const;
 
 export { TrueOpenError, dataError } from './errors/errors';
 export type { ErrorFamily, ErrorCategory, TrueOpenErrorOptions } from './errors/errors';
-export { classifyNexusError, classifyBroadcastError, nexusErrorCode } from './errors/classify';
+export { classifyNexusError, classifyBroadcastError, nexusErrorCode, sessionTxFailureCode } from './errors/classify';
 
 // Task lifecycle enums come straight from the wire contract.
 export { TaskPhase, AssignmentStatus, ReceiptStatus, VerificationStatus, SettlementStatus } from './gen/task/v1/assignment_pb.js';
@@ -14,11 +14,11 @@ export { HASH32_TEXT_RE, isHash32Text, hash32Text } from './codec/hash32';
 
 export type { StreamStateView, ChainTaskSnapshot, InferReceiptView } from './types/node';
 
-export type { OutputAdmissionWaitOptions } from './output/output-admission';
 export type {
   ChainReader,
   ChainClient,
   CreateSessionResult,
+  UpdateSessionKeyInput,
   CancelOrderInput,
   CancelOrderResult,
 } from './transport/chain-client';
@@ -28,7 +28,7 @@ export type { FetchLike, FetchResponse, RestChainReaderOptions, QueryRetryPolicy
 export { HubReader } from './transport/hub-reader';
 export type { HubReaderOptions } from './transport/hub-reader';
 export { BUILDER_DESCRIPTOR_SCHEMA_V1, SERVICE_ENDPOINT_KIND_NEXUS_GRPC, nexusGrpcUri, nexusGrpcEndpoint, nexusHttpBaseUri } from './types/hub';
-export type { ParticipantType, BuilderInfo, ServiceEndpointV1, ServiceDescriptorRef, BuilderDescriptorDoc, BuilderEndpoint, ModelState, ProfileInfo, ProfilePricing, TaskGenerationLimits, BeaconView, ParameterBucketView } from './types/hub';
+export type { ParticipantType, BuilderInfo, ServiceEndpointV1, ServiceDescriptorRef, BuilderDescriptorDoc, BuilderEndpoint, ModelState, ParserRefV1, ProfileInfo, ProfilePricing, TaskGenerationLimits, BeaconView, ParameterBucketView } from './types/hub';
 export { BUCKET_KIND, DEFAULT_PARAMETER_BUCKET_KEY, PARTICIPANT_TYPE } from './types/hub';
 export type { ParticipantTypeName, ServiceKeyBinding } from './types/hub';
 export { verifyAndParseBuilderDescriptor, resolveBuilderEndpoints } from './hub/builder-discovery';
@@ -43,8 +43,8 @@ export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } fro
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
 export { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from './transport/fan-out-submit';
-export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, tlsPubkeyHashRequiredByEnv, insecureHttpAllowedByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
-export type { NexusTransportPolicy } from './transport/nexus-tls';
+export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, sharedPinnedHttpsAgent, prewarmNexusConnections, DEFAULT_PREWARM_CONNECTIONS, MAX_PREWARM_CONNECTIONS, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, tlsPubkeyHashRequiredByEnv, insecureHttpAllowedByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
+export type { NexusTransportPolicy, PrewarmNexusOptions } from './transport/nexus-tls';
 export type { NexusTransportOptions } from './transport/nexus-tls';
 export type { EndpointLike, AcceptedLike, FanOutResult, FanOutResultItem } from './transport/fan-out-submit';
 
@@ -53,14 +53,19 @@ export {
   TYPE_URL,
   encodeMsgCreateSession,
   encodeMsgCancelOrder,
+  encodeMsgUpdateSessionKey,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
+  decodeMsgUpdateSessionKeyResponse,
 } from './transport/task-msgs';
 export type {
   MsgCreateSession,
   MsgCreateSessionResponse,
   MsgCancelOrder,
   MsgCancelOrderResponse,
+  MsgUpdateSessionKey,
+  MsgUpdateSessionKeyResponse,
+  SessionKeyGrant,
 } from './transport/task-msgs';
 
 export { taskRegistry } from './transport/cosmjs-registry';
@@ -68,14 +73,47 @@ export { CosmjsChainWriter, composeChainClient } from './transport/cosmjs-chain-
 export type { TxBroadcaster, CosmjsChainWriterOptions, TxInclusionPolicy } from './transport/cosmjs-chain-writer';
 export { DEFAULT_TX_INCLUSION } from './transport/cosmjs-chain-writer';
 
-export { createTrueOpenChainClient, connectTrueOpenChainClient } from './transport/trueopen-chain-client';
+export {
+  createTrueOpenChainClient,
+  connectTrueOpenChainClient,
+  createTrueOpenWeb3ChainClient,
+  connectTrueOpenWeb3ChainClient,
+} from './transport/trueopen-chain-client';
 export type {
   CreateTrueOpenChainClientConfig,
   ConnectTrueOpenChainClientOptions,
+  CreateTrueOpenWeb3ChainClientConfig,
+  ConnectTrueOpenWeb3ChainClientOptions,
 } from './transport/trueopen-chain-client';
 
+// ---- Web3 (EIP-712 wallet) transaction path: LEGACY_AMINO_JSON + ExtensionOptionsWeb3Tx ----
+export {
+  AMINO_NAME,
+  aminoMsgCreateSession,
+  aminoMsgUpdateSessionKey,
+  aminoMsgCancelOrder,
+  canonicalAminoSignDoc,
+  canonicalJson,
+} from './transport/amino-json';
+export type { AminoMsg, AminoJsonValue, AminoSignDocInput } from './transport/amino-json';
+export { cosmosWeb3TypedData, cosmosWeb3Domain } from './codec/cosmos-web3';
+export {
+  WEB3_EXTENSION_TYPE_URL,
+  encodeExtensionOptionsWeb3Tx,
+  assembleWeb3TxRaw,
+  signWeb3Tx,
+  Web3TxBroadcaster,
+} from './transport/web3-tx';
+export type {
+  Web3TxRawInput,
+  SignWeb3TxInput,
+  SignedWeb3Tx,
+  Web3ChainRpc,
+  Web3TxBroadcasterOptions,
+} from './transport/web3-tx';
+
 export { SessionManager } from './session/session-manager';
-export type { SessionHandle } from './session/session-manager';
+export type { SessionHandle, SessionKeyHandle } from './session/session-manager';
 export {
   SessionKeyManager,
   SESSION_GRANT_EIP712_TYPES,
@@ -92,6 +130,19 @@ export type {
   SessionAuthority,
   SessionKeyManagerOptions,
 } from './session/session-grant';
+export {
+  generateSessionKey,
+  sessionKeyFromPrivateKey,
+  registeredSessionKey,
+  RegisteredSessionKeys,
+  sessionKeyAddressHex,
+  DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS,
+  DEFAULT_REGISTERED_KEY_EXPIRY_MARGIN_BLOCKS,
+  MAX_SESSION_KEY_CACHE_TTL_BLOCKS,
+  DEFAULT_KEY_CHANGE_RETRY_DELAY_MS,
+  DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS,
+} from './session/registered-session-key';
+export type { SessionKeyMaterial, RegisteredSessionKey, RegisteredSessionKeysOptions } from './session/registered-session-key';
 
 export {
   validateModelId,
@@ -125,16 +176,20 @@ export { DEFAULT_SIGNATURE_CHAIN_ID, signatureChainIdBigInt } from './signature-
 export {
   buildTaskOrder,
   resolveTaskOrderContext,
+  resolveTaskOrderContextWithBuilderSet,
   defaultGenerationParams,
   payloadRefFor,
 } from './order/task-order-input';
 export type {
+  ResolvedTaskOrderContext,
   TaskOrderChainContext,
   TaskOrderContextReader,
   TaskOrderRequest,
   TaskOrderIntent,
   TaskOrderAmounts,
 } from './order/task-order-input';
+export { chatInferInputBytes } from './order/chat-input';
+export type { ChatInferInput, ChatMessage, ChatTool, ChatToolCall, ChatJsonObject, ChatJsonValue } from './order/chat-input';
 export {
   signAndEncodeOrder,
   encodeSignedOrder,
@@ -288,6 +343,8 @@ export type {
 } from './output/output-confirmation';
 export {
   DEFAULT_CONFIRMED_ONLY_MAX_BUFFERED_BYTES,
+  OPENAI_SSE_OBFUSCATION_MIN_LENGTH,
+  OPENAI_SSE_OBFUSCATION_MAX_LENGTH,
   openAIFinishReason,
   toOpenAIChatSSEIterable,
   toOpenAIChatSSE,
@@ -301,6 +358,10 @@ export type {
   OutputDeliveryMode,
   OpenAIFinishReason,
 } from './output/openai-sse';
+export { TOOL_CALL_ID_FORMATS, newToolCallId, openAIFinishReasonOf } from './output/openai-assistant';
+export type { OpenAIAssistantFinishReason, ToolCallIdFormat } from './output/openai-assistant';
+export { toOpenAIAssistantSSEIterable, toOpenAIAssistantSSE } from './output/openai-assistant-sse';
+export type { OpenAIAssistantSseEvent, OpenAIAssistantSseOptions } from './output/openai-assistant-sse';
 export { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
 export {
   OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,
@@ -315,15 +376,36 @@ export type {
   OutputStreamVerifierConfig,
   OutputStreamVerifierCheckpoint,
   OutputFrameAcceptance,
+  VerifiedOutputFin,
 } from './output/output-commitment';
 
-export { TrueOpenClient, DEFAULT_MAX_RANGE_BYTES, DEFAULT_TASK_DATA_EXPIRY_BLOCKS, stripChatTemplateEos } from './client';
+export {
+  TrueOpenClient,
+  DEFAULT_MAX_RANGE_BYTES,
+  DEFAULT_TASK_DATA_EXPIRY_BLOCKS,
+  DEFAULT_TRUST_ANCHOR_POLL_MS,
+  DEFAULT_TRUST_ANCHOR_WAIT_MS,
+  DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS,
+  DEFAULT_MAX_PENDING_FRAMES,
+  MAX_OVERFLOW_RESUBSCRIBES,
+  DEFAULT_ADMISSION_WAIT_MS,
+  nextRetryIdempotencyKey,
+  ABANDONED_REPORT,
+  DEFAULT_ORDER_REPLACEMENT_RETRY_MS,
+  ORDER_REPLACEMENT_RETRY_ATTEMPTS,
+} from './client';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,
   FacadeHubReader,
   OutputTaskReader,
+  FetchTaskOutputParams,
+  FetchAssistantMessageParams,
+  AssistantTurnParams,
+  AssistantTurnEvent,
+  ProfileParsers,
   OutputTrustAnchors,
+  WaitForOutputTrustAnchorsOptions,
   OpenTaskBuilderResult,
   OpenTaskParams,
   OpenTaskResult,
@@ -331,7 +413,69 @@ export type {
   StreamOutputParams,
   OutputStreamEvent,
   ConfirmOutputParams,
+  ToolCallParams,
+  SessionKeyOptions,
+  RegisterSessionKeyOptions,
+  CreateSessionOptions,
+  SessionKeyUpdate,
+  UpdateSessionKeyResult,
+  SessionKeyState,
+  WaitForAdmissionOptions,
+  AdmissionOutcome,
+  RejectionDiagnosis,
+  RejectionReason,
+  OrderWindowOffsets,
 } from './client';
+
+// --- Tool calling: derived views over committed output (ADR-0022). Never part of the protocol. ---
+export {
+  confirmAssistantMessageWithReceipt,
+  deriveAssistantMessage,
+  deriveAssistantStream,
+  unclosedCallRecovery,
+  type DerivedViewOptions,
+} from './toolcall/assistant-view';
+export { createMarkerStreamState, type MarkerStreamOptions } from './toolcall/stream-state';
+export { partialMarkerSuffix, pendingMarkerSuffix } from './toolcall/marker-scan';
+export {
+  BUILTIN_TOOL_CALL_PARSERS,
+  createToolCallRegistry,
+  resolveToolCalling,
+  type ParserConformance,
+  type RegistryEntry,
+  type ToolCallRegistry,
+} from './toolcall/registry';
+export { hermesParser } from './toolcall/parsers/hermes';
+export { qwen3CoderParser } from './toolcall/parsers/qwen3-coder';
+export {
+  BUILTIN_REASONING_PARSERS,
+  createMarkerReasoningParser,
+  createReasoningRegistry,
+  qwen3ReasoningParser,
+  type ReasoningMarkers,
+  type ReasoningParser,
+  type ReasoningRegistry,
+  type ReasoningRegistryEntry,
+  type ReasoningSplit,
+  type ReasoningStartMarkerClass,
+  type ReasoningStreamEvent,
+  type ReasoningStreamState,
+  type ReasoningSupport,
+} from './toolcall/reasoning';
+export type {
+  AssistantStreamEvent,
+  ConfirmedAssistantMessage,
+  DerivedAssistantMessage,
+  DerivedToolCall,
+  ParserRef,
+  ToolCallParseOptions,
+  ToolCallFinishOptions,
+  ToolCallParser,
+  ToolCallStreamEvent,
+  ToolCallStreamState,
+  ToolCallSupport,
+  UnsupportedReason,
+} from './toolcall/types';
 
 // ---- Model manifest retrieval. The SSRF-safe Node downloader lives in "trueopen-sdk/node". ----
 export {
@@ -360,6 +504,7 @@ export {
   DOMAIN_MODEL_CHAIN_PROJECTION_V3,
   DOMAIN_MODEL_REGISTRATION_DIGEST_V3,
   MAX_MANIFEST_BYTES,
+  toolCallIdFormatOf,
 } from './manifest/model-manifest';
 export type {
   ModelManifestV4,
@@ -380,7 +525,6 @@ export type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, Dep
 
 export { resumeOutputBodyDigest, getDispatchRosterBodyDigest } from './transport/sdk-request-body';
 
-export type { UpdateSessionKeyInput, SessionKeyInput } from './transport/session-funding';
 
 export { recoverDispatch } from './transport/dispatch-recovery';
 export type { DispatchRecoveryPolicy, DispatchRecoveryPort } from './transport/dispatch-recovery';

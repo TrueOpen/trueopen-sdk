@@ -41,6 +41,8 @@ describe('classifyNexusError', () => {
       [new ConnectError('SDK_AUTH_SESSION_GRANT_INVALID: user signature', Code.Unauthenticated), 'SDK_AUTH_SESSION_GRANT_INVALID', 'auth', false, false],
       [new ConnectError('SDK_AUTH_SESSION_GRANT_EXPIRED: window', Code.Unauthenticated), 'SDK_AUTH_SESSION_GRANT_EXPIRED', 'expired', true, false],
       [new ConnectError('SDK_AUTH_SESSION_METHOD_NOT_ALLOWED: OpenTask', Code.PermissionDenied), 'SDK_AUTH_SESSION_METHOD_NOT_ALLOWED', 'auth', false, false],
+      // A registered session key's order past its nonzero spend_cap (ADR-0037).
+      [new ConnectError('SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED: spent + max_fee > cap', Code.PermissionDenied), 'SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED', 'auth', false, false],
       [new ConnectError('DATA_ACCESS_INVALID_SIGNATURE: recovered', Code.Unauthenticated), 'DATA_ACCESS_INVALID_SIGNATURE', 'auth', false, false],
       [new ConnectError('DATA_ACCESS_SESSION_GRANT_INVALID: chain', Code.Unauthenticated), 'DATA_ACCESS_SESSION_GRANT_INVALID', 'auth', false, false],
       [new ConnectError('DATA_ACCESS_SESSION_GRANT_EXPIRED: window', Code.Unauthenticated), 'DATA_ACCESS_SESSION_GRANT_EXPIRED', 'expired', true, false],
@@ -149,6 +151,14 @@ describe('classifyBroadcastError', () => {
     const c = classifyBroadcastError(new renamed('broadcast failed')) as TrueOpenError;
     expect(c).toMatchObject({ code: 'CHAIN_TX_REJECTED', retriable: true });
     expect(c.details).toEqual({ codespace: 'sdk', code: 32, log: 'account sequence mismatch' });
+  });
+
+  it('a session-key CheckTx failure gets its own code when codespace, code and text match', () => {
+    const c = classifyBroadcastError(new BroadcastTxError(1144, 'task', 'expiry is outside the current registration window: invalid session key')) as TrueOpenError;
+    expect(c).toMatchObject({ code: 'CHAIN_SESSION_KEY_INVALID', retriable: false, details: { codespace: 'task', code: 1144, txFailure: 'CHAIN_TX_REJECTED' } });
+    expect((classifyBroadcastError(new BroadcastTxError(1144, 'other', 'invalid session key')) as TrueOpenError).code).toBe('CHAIN_TX_REJECTED');
+    expect((classifyBroadcastError(new BroadcastTxError(4, 'sdk', 'signer must be session owner: unauthorized')) as TrueOpenError).code)
+      .toBe('CHAIN_SESSION_NOT_OWNER');
   });
 
   it('leaves an error that only looks similar alone', () => {

@@ -1,22 +1,24 @@
-import { UPDATE_SESSION_KEY_TYPE_URL, decodeUpdateSessionKey, encodeUpdateSessionKey, type UpdateSessionKeyInput } from './session-funding';
 import { SESSION_FUNDING_TYPE_URL, decodeDepositSession, decodeWithdrawSession } from './session-funding';
 import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } from './session-funding';
 import type { EncodeObject } from '@cosmjs/proto-signing';
 import type { IndexedTx, StdFee } from '@cosmjs/stargate';
 import { TrueOpenError } from '../errors/errors';
-import { classifyBroadcastError } from '../errors/classify';
+import { classifyBroadcastError, sessionTxFailureCode } from '../errors/classify';
 import {
   TYPE_URL,
   encodeMsgCreateSession,
   decodeMsgCreateSessionResponse,
   decodeMsgCancelOrderResponse,
+  decodeMsgUpdateSessionKeyResponse,
 } from './task-msgs';
+import type { MsgUpdateSessionKeyResponse } from './task-msgs';
 import type {
   ChainReader,
   ChainClient,
   CreateSessionResult,
   CancelOrderInput,
   CancelOrderResult,
+  UpdateSessionKeyInput,
 } from './chain-client';
 
 /**
@@ -108,12 +110,18 @@ export class CosmjsChainWriter {
     const tx = await this.awaitInclusion(hash);
     if (tx.code !== 0) {
       // Included but rejected by the state machine. Not retriable: the same bytes will be
-      // rejected the same way, and the sequence has already advanced.
+      // rejected the same way, and the sequence has already advanced. A session-key
+      // registration failure gets its own code (CHAIN_SESSION_KEY_INVALID, ...; see
+      // sessionTxFailureCode), with details.txFailure 'CHAIN_TX_FAILED'.
+      const session = sessionTxFailureCode(tx.code, tx.rawLog);
       throw new TrueOpenError(
         'CHAIN_REJECT',
-        'CHAIN_TX_FAILED',
+        session ?? 'CHAIN_TX_FAILED',
         `tx ${hash} failed on chain with code ${tx.code}: ${tx.rawLog}`,
-        { category: 'chain-rejected', details: { txHash: hash, code: tx.code, log: tx.rawLog } },
+        {
+          category: 'chain-rejected',
+          details: { txHash: hash, code: tx.code, log: tx.rawLog, ...(session !== undefined ? { txFailure: 'CHAIN_TX_FAILED' } : {}) },
+        },
       );
     }
     return tx;
@@ -168,13 +176,6 @@ export class CosmjsChainWriter {
     return decodeWithdrawSession(firstResponse(tx, typeUrl));
   }
 
-  async updateSessionKey(input: UpdateSessionKeyInput) {
-    const value = { ...input, signer: this.opts.signerAddress };
-    encodeUpdateSessionKey(value);
-    const tx = await this.broadcast([{ typeUrl: UPDATE_SESSION_KEY_TYPE_URL, value }]);
-    return decodeUpdateSessionKey(firstResponse(tx, UPDATE_SESSION_KEY_TYPE_URL));
-  }
-
   async cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult> {
     // The frozen wire contract's MsgCancelOrder has no owner_signature, so input.ownerSignature
     // is never sent on-chain.
@@ -185,6 +186,12 @@ export class CosmjsChainWriter {
     };
     const res = await this.broadcast([{ typeUrl: TYPE_URL.cancelOrder, value }]);
     return decodeMsgCancelOrderResponse(firstResponse(res, TYPE_URL.cancelOrder));
+  }
+
+  async updateSessionKey(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse> {
+    const value = { signer: this.opts.signerAddress, sessionId: input.sessionId, action: input.action };
+    const res = await this.broadcast([{ typeUrl: TYPE_URL.updateSessionKey, value }]);
+    return decodeMsgUpdateSessionKeyResponse(firstResponse(res, TYPE_URL.updateSessionKey));
   }
 }
 
@@ -201,10 +208,10 @@ export function composeChainClient(reader: ChainReader, writer: CosmjsChainWrite
   return {
     querySession: (id) => reader.querySession(id),
     querySessionNonce: (a) => reader.querySessionNonce(a),
-    createSession: (input) => writer.createSession(input),
-    depositSession: (input) => writer.depositSession(input),
-    withdrawSession: (input) => writer.withdrawSession(input),
-    updateSessionKey: (input) => writer.updateSessionKey(input),
+    createSession: (i) => writer.createSession(i),
+    depositSession: (i) => writer.depositSession(i),
+    withdrawSession: (i) => writer.withdrawSession(i),
     cancelOrder: (i) => writer.cancelOrder(i),
+    updateSessionKey: (i) => writer.updateSessionKey(i),
   };
 }

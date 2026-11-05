@@ -9,7 +9,7 @@ const { id, client, businessDenom, disconnect } = await setup({ write: true });
 console.log('account:', id.address);
 console.log(`About to broadcast MsgCreateSession (spends gas, fee in ${businessDenom})...`);
 try {
-  const created = await client.createSession(undefined, { initialBuilder: env('TRUEOPEN_INITIAL_BUILDER'), initialDeposit: env('TRUEOPEN_INITIAL_DEPOSIT') });
+  const created = await client.createSession({ initialBuilder: env('TRUEOPEN_INITIAL_BUILDER'), initialDeposit: env('TRUEOPEN_INITIAL_DEPOSIT') });
   show('createSession', created);
   // A new session starts at order sequence 0: that is the first orderSequence to sign.
   show('getSession (round trip)', await client.getSession(created.sessionId));

@@ -25,7 +25,7 @@ describe('e2e: full flow through the SDK facade', () => {
     const client = world.client(0, { chain: writer.chain });
     let sessionId: string;
     try {
-      const session = await client.createSession('e2e', { initialBuilder: w.BUILDERS[0]!.address, initialDeposit: '100000' });
+      const session = await client.createSession({ label: 'e2e', initialBuilder: w.BUILDERS[0]!.address, initialDeposit: '100000' });
       sessionId = session.sessionId;
       expect(session.owner).toBe(w.USER.address);
       expect(session.nextExpectedSequence).toBe(0n);

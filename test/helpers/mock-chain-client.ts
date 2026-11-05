@@ -1,6 +1,7 @@
 import type {
-  ChainClient, CreateSessionResult, CancelOrderInput, CancelOrderResult,
+  ChainClient, CreateSessionResult, CancelOrderInput, CancelOrderResult, UpdateSessionKeyInput,
 } from '../../src/transport/chain-client';
+import type { MsgUpdateSessionKeyResponse } from '../../src/transport/task-msgs';
 import type { StreamStateView } from '../../src/types/node';
 
 /** In-memory ChainClient test double: session state and the createSession result can be seeded. */
@@ -22,11 +23,14 @@ export class MockChainClient implements ChainClient {
     const r = this.nextCreate;
     this.sessions.set(r.sessionId, {
       sessionId: r.sessionId, owner: r.owner, nextExpectedSequence: 0n,
-      lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE',
+      lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
     });
     return r;
   }
   async cancelOrder(_i: CancelOrderInput): Promise<CancelOrderResult> {
+    throw new Error('not used');
+  }
+  async updateSessionKey(_i: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse> {
     throw new Error('not used');
   }
 }

@@ -173,6 +173,7 @@ export class RestChainReader implements ChainReader {
       // winner fields are present together or absent together, so a pending
       // assignment never reports a default winner.
       winnerWorker: assignment === undefined ? '' : pendingField(assignment, 'winner_worker'),
+      ...optEnumField(core, 'task_phase', 'TASK_PHASE_', 'taskPhase'),
       receiptStatus: enumField(core, 'receipt_status', 'RECEIPT_STATUS_'),
       assignmentStatus: enumField(core, 'assignment_status', 'ASSIGNMENT_STATUS_'),
       // model_id is a Hash32 as of TaskOrderV3, so it goes through the same decoder
@@ -208,6 +209,18 @@ export class RestChainReader implements ChainReader {
       outputSizeBytes: u64Field(r, 'output_size_bytes'),
       outputLeafCount: u64Field(r, 'output_leaf_count'),
     };
+  }
+
+  /**
+   * The task's frozen Task Builder selection (task.v1 TaskBuilders), in rank order. These are the
+   * Builders that hold the task's data, so output retrieval asks them and no others. Empty once
+   * the selection body is pruned.
+   */
+  async queryTaskBuilders(taskId: string): Promise<string[]> {
+    const body = await this.getJson(`/TrueOpen/task/v1/task/${encodeURIComponent(taskId)}/builders`);
+    const list = raw(obj(body, 'selection'), 'selected_task_builders') ?? [];
+    if (!Array.isArray(list) || list.some((a) => typeof a !== 'string')) throw malformed('field selected_task_builders');
+    return list as string[];
   }
 
   private async getJson(path: string): Promise<Record<string, unknown>> {
@@ -266,7 +279,44 @@ function toStreamState(s: Record<string, unknown>): StreamStateView {
     // uint32: protojson leaves it unquoted; verified to arrive as a bare number.
     openPendingCount: u64Field(s, 'open_pending_count'),
     status: status as 'ACTIVE' | 'IDLE' | 'CLOSED',
+    ...optSessionKey(s),
+    sessionKeyExpiryHeight: optU64Field(s, 'session_key_expiry_height'),
+    sessionKeySpendCap: amountField(s, 'session_key_spend_cap'),
+    sessionKeySpent: amountField(s, 'session_key_spent'),
+    sessionKeySetHeight: optU64Field(s, 'session_key_set_height'),
   };
+}
+
+/** session_key is ProtoJSON Base64; absent/null = no key, present must be exactly 20 bytes. */
+function optSessionKey(s: Record<string, unknown>): { sessionKey?: Uint8Array } {
+  const v = raw(s, 'session_key');
+  if (v === undefined || v === null) return {};
+  if (typeof v !== 'string') throw malformed('field session_key');
+  let key: Uint8Array;
+  try {
+    key = base64ToBytes(v);
+  } catch {
+    throw malformed('field session_key');
+  }
+  if (key.length !== 20) throw malformed(`field session_key (${key.length} bytes)`);
+  return { sessionKey: key };
+}
+
+/** u64 that older nodes may not send: absent reads as 0n. */
+function optU64Field(o: Record<string, unknown>, snakeKey: string): bigint {
+  const v = raw(o, snakeKey);
+  if (v === undefined || v === null) return 0n;
+  return u64Field(o, snakeKey);
+}
+
+/** shared.v1.Amount `{atomic_units}`; an absent object (or absent atomic_units) reads as "0". */
+function amountField(o: Record<string, unknown>, snakeKey: string): string {
+  const a = optObj(o, snakeKey);
+  if (a === undefined) return '0';
+  const v = raw(a, 'atomic_units');
+  if (v === undefined || v === null) return '0';
+  if (typeof v !== 'string' || !/^(0|[1-9][0-9]*)$/.test(v)) throw malformed(`field ${snakeKey}.atomic_units`);
+  return v;
 }
 
 /** Reads the raw value, preferring snake_case and falling back to camelCase. */
@@ -367,6 +417,17 @@ function enumField(o: Record<string, unknown>, snakeKey: string, prefix: string)
   return v.startsWith(prefix) ? v.slice(prefix.length) : v;
 }
 
+/** Like enumField, but an absent field yields no property instead of a malformed error. */
+function optEnumField<K extends string>(
+  o: Record<string, unknown>,
+  snakeKey: string,
+  prefix: string,
+  as: K,
+): Partial<Record<K, string>> {
+  if (raw(o, snakeKey) === undefined) return {};
+  return { [as]: enumField(o, snakeKey, prefix) } as Partial<Record<K, string>>;
+}
+
 function malformed(what: string): TrueOpenError {
   return new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_MALFORMED', `chain query returned malformed ${what}`);
 }
@@ -390,9 +451,10 @@ function sessionFrozenParams(body: Record<string, unknown>): Partial<StreamState
   };
 }
 
+/** Phase 1 funding, binding and pending-change fields (the session key itself is read by toStreamState). */
 function sessionFundingFields(s: Record<string, unknown>): Partial<StreamStateView> {
   const result: Record<string, unknown> = {};
-  for (const [wire, name] of [['session_key_spend_cap', 'sessionKeySpendCap'], ['session_key_spent', 'sessionKeySpent'], ['balance', 'balance'], ['frozen_total', 'frozenTotal'], ['pending_withdraw_amount', 'pendingWithdrawAmount']]) {
+  for (const [wire, name] of [['balance', 'balance'], ['frozen_total', 'frozenTotal'], ['pending_withdraw_amount', 'pendingWithdrawAmount']]) {
     const value = raw(s, wire!);
     if (value !== undefined) {
       if (!value || typeof value !== 'object') throw malformed(`field ${wire}`);
@@ -401,7 +463,7 @@ function sessionFundingFields(s: Record<string, unknown>): Partial<StreamStateVi
       result[name!] = amount;
     }
   }
-  for (const [wire, name] of [['session_key_expiry_height', 'sessionKeyExpiryHeight'], ['session_key_set_height', 'sessionKeySetHeight'], ['pending_withdraw_effective_height', 'pendingWithdrawEffectiveHeight'], ['bound_change_height', 'boundChangeHeight'], ['last_record_height', 'lastRecordHeight'], ['closed_height', 'closedHeight']]) {
+  for (const [wire, name] of [['pending_withdraw_effective_height', 'pendingWithdrawEffectiveHeight'], ['bound_change_height', 'boundChangeHeight'], ['last_record_height', 'lastRecordHeight'], ['closed_height', 'closedHeight']]) {
     if (raw(s, wire!) !== undefined) result[name!] = u64Field(s, wire!);
   }
   if (raw(s, 'pending_withdraw_kind') !== undefined) result.pendingWithdrawKind = enumField(s, 'pending_withdraw_kind', 'SESSION_WITHDRAW_KIND_V1_');
@@ -417,7 +479,6 @@ function sessionFundingFields(s: Record<string, unknown>): Partial<StreamStateVi
     if (key.length !== 20 || bytesToBase64(key) !== value || key.every(b => b === 0)) throw malformed('session_key raw20');
     return key;
   };
-  if (raw(s, 'session_key') != null) result.sessionKey = decodeKey(raw(s, 'session_key'));
   const keyChange = optObj(s, 'pending_session_key_change');
   if (keyChange) {
     const grant = optObj(keyChange, 'grant');

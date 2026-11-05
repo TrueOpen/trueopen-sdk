@@ -1,7 +1,6 @@
-import type { UpdateSessionKeyInput } from './session-funding';
-import type { MsgUpdateSessionKeyResponse } from '../gen/task/v1/msg_session_pb.js';
 import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, DepositSessionResult, WithdrawSessionResult } from './session-funding';
 import type { StreamStateView } from '../types/node';
+import type { SessionKeyGrant, MsgUpdateSessionKeyResponse } from './task-msgs';
 
 /**
  * Read port: node task.v1 Query (the authoritative snapshot).
@@ -17,11 +16,24 @@ export interface ChainReader {
  * Adapters implement this separately; business logic and mocks depend on this interface only.
  */
 export interface ChainClient extends ChainReader {
+  /**
+   * Phase 1: the Session is prefunded and bound to its first Builder in the same tx; with
+   * `sessionKey`, the key is registered there too.
+   */
   createSession(input?: CreateSessionInput): Promise<CreateSessionResult>;
+  /** Adds funds to the Session (owner wallet only). */
   depositSession?(input: DepositSessionInput): Promise<DepositSessionResult>;
+  /** Registers a delayed withdrawal or CLOSE (owner wallet only). */
   withdrawSession?(input: WithdrawSessionInput): Promise<WithdrawSessionResult>;
-  updateSessionKey?(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse>;
+  /** Registers, replaces or clears the session's registered key (restrictive changes are delayed). */
+  updateSessionKey(input: UpdateSessionKeyInput): Promise<MsgUpdateSessionKeyResponse>;
   cancelOrder(input: CancelOrderInput): Promise<CancelOrderResult>;
+}
+
+export interface UpdateSessionKeyInput {
+  /** Hash32 text, `0x` + 64 lowercase hex. */
+  readonly sessionId: string;
+  readonly action: { readonly set: SessionKeyGrant } | { readonly clear: true };
 }
 
 export interface CreateSessionResult {

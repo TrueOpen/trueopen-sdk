@@ -21,13 +21,16 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | `TRUEOPEN_CHAIN_ID` | Cosmos chain ID | `trueopen-localnet-1` |
 | `TRUEOPEN_MNEMONIC` | mnemonic of a funded test account | `"flee cover ..."` |
 | `TRUEOPEN_ADDR_PREFIX` | bech32 prefix (default `trueopen`) | `trueopen` |
+| `TRUEOPEN_SIGNATURE_CHAIN_ID` | EIP-712 domain chainId the wallet signs under (ADR-0033; default `1`) | `1` |
 | `TRUEOPEN_ALLOW_INSECURE_HTTP` | `1` allows plain `http://` / `grpc://` nexus endpoints. **Localnet only.** | `1` |
 | `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
 | `TRUEOPEN_MODEL_ID` | Hash32 model ID, `0x` + 64 lowercase hex (open-task) | - |
 | `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
+| `TRUEOPEN_INITIAL_BUILDER` / `TRUEOPEN_INITIAL_DEPOSIT` | Builder operator address the new Session is bound to, and its prefunded balance in atomic units (create-session) | `trueopen1...` / `1000000` |
 
-Nothing chain-specific is hard-coded: the EVM chain ID and the fee denom (`business_denom`, used
-for the order signature and for tx fees) are read from `params.phase0` on chain.
+Nothing chain-specific is hard-coded: the fee denom (`business_denom`, used for the order signature
+and for tx fees) is read from `params.phase0` on chain. The EIP-712 domain chainId is not a chain
+parameter but the signer's choice (ADR-0033): `TRUEOPEN_SIGNATURE_CHAIN_ID`, default `1`.
 
 nexus endpoints come from the Builders' on-chain descriptors. An https endpoint is checked against
 the certificate fingerprint registered on chain and is never downgraded to http. A localnet whose
@@ -51,8 +54,9 @@ Prints the chain's business denom, the nexus endpoint of each active Builder, an
 when set, the session, task and infer receipt.
 
 ### create-session.mjs -- spends gas
-Broadcasts `MsgCreateSession` with an explicit fee in the chain business denom. A new session's
-first order sequence is 0.
+Broadcasts `MsgCreateSession` (`createSession({ initialBuilder, initialDeposit })`) with an explicit
+fee in the chain business denom. The Session is bound to `TRUEOPEN_INITIAL_BUILDER`, which receives
+all its orders. A new session's first order sequence is 0.
 
 ### open-task.mjs -- places an order
 Reads the next order sequence from chain (0 for a new session), builds and signs the order, and

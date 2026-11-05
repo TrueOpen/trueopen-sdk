@@ -1,11 +1,15 @@
-import type { CreateSessionInput } from '../../transport/session-funding';
 import { buildContext } from '../context';
 import type { CliConfig } from '../config';
 
-export async function cmdSessionCreate(cfg: CliConfig, mnemonic: string, label?: string, input?: CreateSessionInput): Promise<unknown> {
+export async function cmdSessionCreate(
+  cfg: CliConfig,
+  mnemonic: string,
+  label: string | undefined,
+  funding: { readonly initialBuilder: string; readonly initialDeposit: string },
+): Promise<unknown> {
   const ctx = await buildContext(cfg, mnemonic, { write: true, key: true });
   try {
-    return await ctx.client.createSession(label, input);
+    return await ctx.client.createSession({ ...(label !== undefined ? { label } : {}), ...funding });
   } finally {
     await ctx.dispose();
   }

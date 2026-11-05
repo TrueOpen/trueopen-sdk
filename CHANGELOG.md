@@ -24,6 +24,351 @@ from wire `495ea3e` to `b30fba8`:
   `DispatchParamsV1.max_order_lifetime_blocks`, `StreamState.closed_height`,
   `OrderSequenceState.compensation_paid`.
 
+### Merged main into Phase 1
+
+Phase 1 now carries main's registered session keys, Web3 transactions, tool-call and reasoning
+parsers, OpenAI SSE, early subscribe and connection prewarm. Where main's behavior assumed the
+pre-Phase-1 chain, Phase 1 wins:
+
+- **Breaking:** `createSession` takes main's options object, extended for Phase 1:
+  `createSession({ label?, initialBuilder, initialDeposit?, sessionKey? })` (a string is still
+  the label). The chain requires `initialBuilder`; a session key is registered in the same
+  `MsgCreateSession`. The Phase 1 `createSession(label, input)` form is gone.
+  `depositSession`, `withdrawSession` and `closeSession` are unchanged.
+- **Breaking:** `updateSessionKey` is main's `(sessionId, { renew } | { rotate } | { clear: true })`.
+  The Phase 1 `updateSessionKey(input)` and `openTask({ delegatedOrderSigner })` are removed: a
+  loaded registered key (`createSession({ sessionKey })`, `useSessionKey`) signs the orders.
+  Restrictive key changes are delayed (wire #49): when the chain answers with a pending change,
+  `rotate` keeps the old key loaded and returns the new one with `effectiveHeight`; load it with
+  `useSessionKey` once the chain applied it. `MsgUpdateSessionKeyResponse` gains
+  `effectiveHeight` and `pendingChange`.
+- **Removed:** `TaskOrderContextCache`, `orderContextReuse`, `DEFAULT_ANCHOR_REUSE_FRACTION`,
+  `DEFAULT_ANCHOR_LAG` and `HubReader.getAnchorFreshnessWindowBlocks()`. wire #49 removed
+  `anchor_freshness_window_blocks` and the session anchor block hash; the order is anchored at the
+  latest height, and `resolveTaskOrderContextWithBuilderSet` still saves the second BuilderSet read.
+- **Changed:** `openTask` sends to the Session's bound Builder only (or the recovery destination);
+  prewarm and `resolveTaskBuilders` return that Builder.
+- **Changed:** the task event hints follow Phase 1 nexus: `DISPATCH_RECORDED` triggers the chain
+  read in `waitForOutputTrustAnchors` and `waitForAdmission`; `RECORD_REJECTED`, `NO_CAPACITY`,
+  `ASSIGN_TIMEOUT` and `ORDER_EXPIRED` are a Builder's rejection report.
+- **Changed:** `streamOutput` early subscribe also waits for the dispatch ticket.
+  `admissionWait` is kept as `waitForAnchors` with the stream's `sessionId`; the Phase 1
+  `waitForOutputTrustAnchors(sessionId, taskId, opts)` overload is replaced by main's
+  `waitForOutputTrustAnchors(taskId, { sessionId, ... })`, and `OutputAdmissionWaitOptions` is
+  removed.
+- **Fixed:** every Fin check binds the dispatch ticket: the checkpoint's kept Fin
+  (`acceptFin`, confirmation) and the stored Fin of `fetchTaskOutput`, which must also be for the
+  chain's accepted attempt (`DATA_OUTPUT_ATTEMPT_MISMATCH`).
+- **Added:** the `reset` of a voided dispatch attempt reaches the derived views:
+  `deriveAssistantStream` / `streamAssistantMessage` and `assistantTurn` yield `{ kind: 'reset' }`
+  and parse the replacement attempt from scratch.
+- **Added:** Web3 (Amino JSON) transactions carry the Phase 1 `MsgCreateSession` fields and
+  `MsgDepositSession` / `MsgWithdrawSession` (`aminoMsgDepositSession`,
+  `aminoMsgWithdrawSession`), checked against wire `session_funding_amino_v1.json`.
+
+### Added: OpenAI SSE for an assistant turn
+
+- **Added:** `toOpenAIAssistantSSEIterable` / `toOpenAIAssistantSSE` turn one
+  `assistantTurn` into OpenAI `chat.completion.chunk` SSE: content as it verifies, reasoning
+  dropped (OpenAI's Chat Completions returns none), then, after the confirmed message, one chunk
+  per tool call (`index`, an id in the required `toolCallIdFormat`, `type: "function"`, name and
+  arguments as written) and the finish_reason (`stop` / `length` / `tool_calls`). Same chunk shape
+  as `toOpenAIChatSSE`. It fails closed, with no terminal chunk and no `[DONE]`, when the turn has
+  no confirmed message, the confirmed message is for another task or its content differs from what
+  was streamed, or the protocol finish reason is unavailable.
+- `usage` (`include_usage`) is still not produced: the receipt carries only the Worker-signed
+  generated token count, and no prompt token count reaches the SDK.
+
+### Added: qwen3_coder@1 tool-call parser
+
+- `qwen3CoderParser` (`qwen3_coder@1`) parses Qwen3-Coder / Qwen3.5+ XML calls
+  (`<tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>`)
+  as specified in `docs/qwen3-coder-parser-v1.md`. It is built in, `unverified`
+  (pass `allowUnverified`), like `hermes@1`.
+- Every argument value is a JSON string: the raw text, less one wrapping newline each
+  side, verbatim (wire #46). No value is coerced and no tool schema is read, so the
+  parser takes no `tools`: its result depends on the committed output alone.
+- It defines no unclosed-call recovery: a final block without `</tool_call>` is
+  content, whatever the finish reason.
+- `MarkerStreamOptions` gains `quoteAware`, and `parseCall` may return several calls.
+
+### Changed: qwen3@1 has an implicit start marker
+
+- **Breaking:** a reasoning parser declares the class of its start marker,
+  `ReasoningParser.startMarkerClass: 'explicit' | 'implicit'` (Manifest S7.3 rule 6);
+  `createMarkerReasoningParser` requires `startMarkerClass` in its `ReasoningMarkers`.
+- **Breaking:** `qwen3@1` is implicit. The output opens in reasoning whether or not it
+  starts with `<think>` (one `<think>` at the head is absorbed), and reasoning runs to the
+  first `</think>`. With no `</think>`, no marker at all included, the whole output is
+  `reasoningContent`, `content` is empty and no tool call is parsed (rule 8). Before, output
+  without a leading `<think>` had no reasoning. A `<tool_call>` inside reasoning still never
+  ends it (rule 7). This also covers forced-thinking Qwen3 output whose `<think>` is in the
+  prompt. A profile whose template does not think pins no reasoning parser.
+
+### Changed: align the parsers with wire #46 @ 5760ab7
+
+- **Changed:** reasoning parsers treat only ASCII SP, HT, LF and CR as leading whitespace.
+  `\uFEFF<think>abc</think>ok` now gives `qwen3@1` reasoning `\uFEFF<think>abc` (the marker is not
+  absorbed); before, `\s` let a BOM or other Unicode space pass as whitespace.
+- **Changed:** `hermes@1` no longer drops a partial closing marker (`</tool_`) before recovering
+  an unclosed final call: the JSON is then invalid and the block is content.
+- **Changed:** when a profile pins a reasoning parser this SDK does not use (unknown, or
+  unverified without `allowUnverified`), its tool-call parser is not used either: the whole
+  output is content with no tool calls (TOOL_CALL_PARSER_V1, Support).
+
+### Changed: unclosed-call recovery is per parser, and STOP_TOKEN opens the gate
+
+- **Changed:** an unclosed final call may be recovered when the verified Fin says
+  `EOS_TOKEN`, `STOP_SEQUENCE` or `STOP_TOKEN` (`STOP_TOKEN` is new), and only if the parser
+  defines recovery (Manifest S7.2 rule 6). `hermes@1` does (a complete JSON object with a
+  string `name`); `qwen3_coder@1` does not. The body is judged on its raw committed bytes.
+- **Added:** `MarkerStreamOptions.recoverUnclosed`, a parser's recovery rule; the shared
+  state machine never recovers without one.
+
+### Changed: the OpenAI chat SSE follows OpenAI's chunk shape
+
+- **Changed:** `toOpenAIChatSSE` / `toOpenAIChatSSEIterable` send a first chunk with
+  `delta: {"role":"assistant","content":""}` before the content (both delivery modes), every
+  choice carries `logprobs: null`, and every chunk carries `system_fingerprint`. A consumer
+  that counted chunks or read the first chunk as content sees one more leading chunk.
+- **Added:** `OpenAIChatSseContext.systemFingerprint` (written on every chunk, `null` when
+  omitted) and `OpenAIChatSseOptions.includeObfuscation` (a random alphanumeric `obfuscation`
+  padding on every chunk, 8 to 48 characters; off by default, unlike OpenAI).
+- **Fixed:** the reference doc listed the context as `{ id, model }`; it also requires `taskId`,
+  `taskHash` and `created`.
+
+### Added: Web3 transactions for EIP-712 wallets
+
+- **Added:** `connectTrueOpenWeb3ChainClient({ rpcUrl, restUrl, wallet, signerAddress,
+  typedDataChainId, fee })` and `createTrueOpenWeb3ChainClient` return the usual `ChainClient`
+  (`createSession(grant?)`, `updateSessionKey`, `cancelOrder`, reads) signed by a
+  `TypedDataSigner`, so MetaMask / EIP-1193 and Keplr users can create sessions, register / update
+  session keys and cancel orders. Transactions use node's Web3 envelope: one critical
+  `ExtensionOptionsWeb3Tx`, `SIGN_MODE_LEGACY_AMINO_JSON`, a 65-byte signature over the "Cosmos
+  Web3" typed data (cosmos-evm v0.6.3 `WrapTxToTypedData` plus TrueOpen's type rename) of the
+  canonical Amino sign doc. One Msg per tx, explicit fee (`'auto'` is `SDK_LOCAL_TX_FEE_AUTO`), no
+  fee delegation; a first transaction's public key is recovered from the signature, a stored key
+  of another account is `SDK_LOCAL_TX_PUBKEY_MISMATCH`, a missing account
+  `CHAIN_ACCOUNT_NOT_FOUND`.
+- **Added:** the building blocks: `Web3TxBroadcaster` (a `TxBroadcaster` for `CosmjsChainWriter`),
+  `signWeb3Tx`, `assembleWeb3TxRaw`, `encodeExtensionOptionsWeb3Tx`, `aminoMsgCreateSession` /
+  `aminoMsgUpdateSessionKey` / `aminoMsgCancelOrder`, `canonicalAminoSignDoc`, `canonicalJson`,
+  `cosmosWeb3TypedData`, `cosmosWeb3Domain`, `AMINO_NAME`, `WEB3_EXTENSION_TYPE_URL`.
+- **Added:** `createTrueOpenChainClient` takes an optional `inclusion` policy.
+- **Changed:** a `MsgUpdateSessionKey` action is checked at runtime on both the protobuf and the
+  Amino encoder: anything but exactly one of `set` (a grant) or `clear: true` is
+  `SDK_LOCAL_SESSION_KEY_INVALID` (wire `session_key_amino_v1.json` negative cases).
+- Tests reproduce `task/session_key_amino_v1.json` (create / set / clear: sign doc bytes, sha256,
+  encode_type, hash_struct, domain_separator, signing_digest, signature_65) and
+  `shared/account_signing_v1.json` `msg_create_session_transaction`; the produced TxRaw bytes were
+  accepted by node's ante handler.
+
+### Registered session keys sign orders (ADR-0037, wire PR #47, untagged; breaking for ChainClient implementers)
+
+A session can have one registered key (a 20-byte eth-style address on chain). That key, not the
+wallet, then signs the session's OpenTask orders and the session-allowed requests, so a browser
+wallet prompts once per registration instead of once per order. **Enable it only once the chain
+and the Task Builders support it**: a chain whose `max_session_key_blocks` is absent, 0 or below 2
+is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
+
+- **Breaking (implementers):** `ChainClient.updateSessionKey(input)` is a new required method, and
+  `StreamStateView` gains four required fields: `sessionKeyExpiryHeight`, `sessionKeySpendCap`,
+  `sessionKeySpent` and `sessionKeySetHeight` (plus the optional `sessionKey`). A custom
+  `ChainClient` / `ChainReader`, a test double, a wrapper (like the CLI's read-only chain) or code
+  that builds a `StreamStateView` literal no longer compiles until updated. Migration, for a node
+  without session keys: return `0n` / `"0"` for the four fields and no `sessionKey`, and have
+  `updateSessionKey` throw if unsupported. Callers of the SDK's own clients need no change.
+- **Added:** `createSession(label | { label?, sessionKey?: { expiryBlocks?, spendCap?, key? } })`.
+  With `sessionKey` the SDK generates the key from a CSPRNG (or takes `key`, material from
+  `generateSessionKey()` the caller persisted before the broadcast), registers it in the same
+  `MsgCreateSession`, loads it, and returns it once in `SessionHandle.sessionKey`
+  (`{ address, privateKey, expiryHeight, spendCap }`). `expiryBlocks` is an integer in
+  `[2, max_session_key_blocks]` (default `max_session_key_blocks - 2`, at least 2; one block never
+  lands). `spendCap` defaults to `"0"`, which is unlimited: a leaked key can then authorize orders
+  up to the whole account balance.
+- **Added:** `updateSessionKey(sessionId, { renew } | { rotate } | { clear: true })`, returning
+  `{ response, newKey? }`. All three are `MsgUpdateSessionKey`, signed by the wallet; the session
+  key never signs a transaction. `renew` keeps the loaded key (it must still be the chain's key);
+  `rotate` generates a fresh key (or takes `rotate.key`), loads it and returns it as `newKey`;
+  `clear` removes the registration and the loaded key. `renew` and `rotate` default the cap to the
+  chain's current one; when the chain has no key (after a clear, which zeroes the cap) `rotate`
+  requires an explicit `spendCap`. `spent` is never reset. `renew` checks the chain's key and then
+  sends the tx, which is not atomic: a rotate on another device in between is overwritten.
+- **Added:** `useSessionKey(sessionId, privateKey)`, `forgetSessionKey(sessionId)` and
+  `sessionKeyState(sessionId)` (`registered`, `matchesLoadedKey`, `expiryHeight`, `spendCap`,
+  `spent`, `setHeight`, `status`). Also exported: `generateSessionKey`, `sessionKeyFromPrivateKey`,
+  `registeredSessionKey`, `RegisteredSessionKeys`, `sessionKeyAddressHex`,
+  `DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS`, `DEFAULT_REGISTERED_KEY_HEIGHT_MAX_AGE_MS` and the
+  `SessionKeyOptions` / `RegisterSessionKeyOptions` / `SessionKeyUpdate` /
+  `UpdateSessionKeyResult` / `SessionKeyState` / `SessionKeyHandle` /
+  `RegisteredSessionKeysOptions` types.
+- **Key custody:** the SDK generates the key and never derives it from a signature. It keeps keys in
+  memory only and never logs them. **The caller persists `privateKey`** and reloads it with
+  `useSessionKey` after a restart; it cannot be recovered.
+- **Added:** `openTask` prechecks, before anything is signed, what the chain checks at admission:
+  the session is not CLOSED, the registered key is the loaded one, the latest height is at or
+  before the key's expiry, the session anchor is at or after the key's `set_height`,
+  `spent + max_fee` fits a u64 (even with an unlimited cap), and (with a nonzero cap)
+  `spent + max_fee <= cap`. A failed check never falls back to the wallet: renew or
+  raise the cap, load the current key, or call `forgetSessionKey` to sign with the wallet. Right
+  after a registration the anchor can still be below `set_height`, so `openTask` waits up to
+  `sessionKeyAnchorWaitMs` (default 15 s; `sessionKeyAnchorPollMs`, default 1 s; 0 disables) for a
+  fresh anchor; a caller-supplied `context` is used as is and refused if too old. Both settings
+  are validated in the constructor (wait finite and `>= 0`, poll finite and `> 0`, else
+  `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID`).
+- **Added:** requests fall back near the key's expiry. The client tracks the loaded key's expiry
+  height (create, rotate, renew, `useSessionKey`, and every `openTask` / `sessionKeyState` read).
+  From `sessionKeyRequestExpiryMarginBlocks` (default 3) blocks before it, the session-allowed
+  requests are signed by the configured grant key, else the wallet: the margin keeps a request
+  from being refused as expired on arrival, and output of orders admitted just before expiry stays
+  readable. Orders never fall back. A
+  registered-key `FetchTaskData` the Builder reports expired is not retried by `fetchTaskOutput`.
+- **Added:** `HubReader.getMaxSessionKeyBlocks()` reads `params.session.max_session_key_blocks`
+  (the `StreamStateView` fields are listed under Breaking above).
+- **Added:** error codes `SDK_LOCAL_SESSION_KEY_INVALID`, `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`,
+  `SDK_LOCAL_SESSION_KEY_NOT_REGISTERED`, `SDK_LOCAL_SESSION_KEY_EXPIRED`,
+  `SDK_LOCAL_SESSION_KEY_SPEND_CAP_EXCEEDED` (also for a u64 overflow, with `details.overflow`),
+  `SDK_LOCAL_SESSION_KEY_ANCHOR_BEFORE_SET_HEIGHT` (retriable when the SDK resolved the context),
+  `SDK_LOCAL_SESSION_KEY_CONFIG_INVALID` and `SDK_LOCAL_SESSION_CLOSED`, plus the nexus code
+  `SDK_AUTH_SESSION_KEY_SPEND_CAP_EXCEEDED` (category `auth`). The chain's
+  `ERR_SESSION_KEY_INVALID`, `ERR_SESSION_KEY_EXPIRED` and `ERR_SESSION_KEY_SPEND_CAP_EXCEEDED`
+  appear in a Builder's tx result or a tx log.
+- **Unchanged:** the order domain, EIP-712 types and digest. Only the recovered signer differs. A
+  registered-key request carries `signer_address` = the owner, no `session_grant` and an all-zero
+  `sessionGrantHash`, and is allowed only for the session-allowed requests (OUTPUT task data
+  included). A `SessionGrant` key (the opt-in `session` config) still cannot sign orders. Requests
+  never consume the cap; only admitted orders do.
+- **Recovery:** there is no automatic resubmission on `ASSIGN_REJECTED`. `waitForAdmission`
+  (below) diagnoses it; fix the cause (renew, raise the cap, load the current key, or sign with
+  the wallet) and call `openTask(retry)`.
+- **Added:** `waitForAdmission(res, { timeoutMs?, pollIntervalMs?, signal? })` waits for the chain
+  to decide an order and resolves `accepted` (chain task has this `task_hash`), `superseded`
+  (another `task_hash` for the `task_id`), `rejected` or `timeout`. The chain is the truth; every
+  acking Builder's task events are hints (`ASSIGN_ACCEPTED` / `ASSIGNMENT_FINALIZED` trigger a
+  read; `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT` after the Builder's last `ORDER_RECEIVED`, or a
+  NotFound event stream, are that Builder's report). `rejected` needs every acked Builder to have
+  reported and a later chain read to show no task, since one Builder's rejection does not prove
+  another did not get the order admitted; or, with no reports needed, the latest height past the
+  order's `orderExpireHeight` and a later read with no task (a Builder may refuse the key-signed
+  event stream once the key was rotated or cleared or the session closed). A task without a valid
+  accepted task_hash decides nothing yet. It carries `diagnosis` (`reason`: `session-closed`,
+  `cleared`, `rotated`, `expired`, `anchor-before-set-height`, `spend-cap` or `unrelated`;
+  `sequenceFree`; the events; the session read) and `retry`. Abort throws
+  `ORDER_ADMISSION_WAIT_ABORTED`; bad options are `SDK_LOCAL_POLL_INTERVAL_INVALID` /
+  `SDK_LOCAL_TIMEOUT_INVALID`; a client without `taskReader` / `ingressTransportFactory` / `hub` is
+  `SDK_LOCAL_ADMISSION_UNCONFIGURED`. Exported with `DEFAULT_ADMISSION_WAIT_MS`,
+  `nextRetryIdempotencyKey` and the `WaitForAdmissionOptions` / `AdmissionOutcome` /
+  `RejectionDiagnosis` / `RejectionReason` types.
+- **Added:** `OpenTaskResult` gains `orderSequence`, `orderSignedBy` (`'wallet' | 'session-key'`),
+  `orderSignerAddress` (the key's 20-byte address, never its private key), `maxFee`,
+  `orderExpireHeight` and
+  `retryParams`: the same params under the same sequence, without `context` / `expiryHeight`,
+  with the idempotency key `<key>#retry<n>`. The re-signed order has a new `task_hash`, and an
+  idempotency key only repeats the same one, so the retry needs a new key. `rejected.retry` drops
+  `orderSequence` when the sequence was used up meanwhile (`sequenceFree: false`).
+- **Added:** `openTask({ orderSigner: 'wallet' })` signs the order with the wallet while a key is
+  loaded, skipping the key prechecks; the envelope is signed as without a key (grant, else
+  wallet). The default `'auto'` is unchanged. An unknown value is `SDK_LOCAL_ORDER_SIGNER_INVALID`.
+- The SDK never re-signs, renews, raises a cap or switches to the wallet by itself. Builders that
+  abandoned a rejected order accept its retry; a task that reached the chain and finished refuses
+  a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
+- **Interop with the deployed node (PR #34) and nexus (PR #56):**
+  - **Fixed:** `waitForAdmission` on a retry no longer counts the previous attempt's
+    `ASSIGN_REJECTED` / `ASSIGN_TIMEOUT`: Nexus keeps an abandoned task's journal and the event
+    stream replays it, so a Builder's report is reset on every `ORDER_RECEIVED`.
+  - **Fixed:** the admission hints are `ASSIGN_ACCEPTED` and `ASSIGNMENT_FINALIZED`; the chain
+    codes `WORKER_ASSIGNMENT_FINALIZED` / `WORKER_HANDRAISES_ACCEPTED` never reach the SDK.
+  - **Added:** a GetTaskEvents NotFound from a Builder that acked the order is its report
+    (`ABANDONED_REPORT`, `'ABANDONED'`), so a fast rejection is not a wait until the deadline.
+  - **Fixed:** `retryParams` keeps the order window relative (`OpenTaskParams.orderWindow`,
+    `OrderWindowOffsets`), rebased on the retry's context, so a retry after a past-deadline
+    rejection is not refused by every Builder. `openTask` refuses an order whose
+    `orderExpireHeight` is below the latest height with `SDK_LOCAL_ORDER_EXPIRED`. An invalid
+    `orderWindow` is `SDK_LOCAL_ORDER_WINDOW_INVALID`.
+  - **Added:** a retry whose order is identical to the rejected one (the Builders keep a tombstone
+    of its input) resolves one fresh context, then fails with `SDK_LOCAL_RETRY_ORDER_UNCHANGED`.
+  - **Added:** a retry answered `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` by a Builder still
+    tracking the rejected version is re-sent to it after `orderReplacementRetryMs` (default
+    `DEFAULT_ORDER_REPLACEMENT_RETRY_MS`, 1000), at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` (3)
+    times, with the envelope re-signed under a fresh nonce. A bad value is `SDK_LOCAL_CONFIG_INVALID`.
+  - **Added:** Builders may lag a key change by up to `MAX_SESSION_KEY_CACHE_TTL_BLOCKS` (10)
+    blocks. The client records each session's last key-change height (createSession with a key,
+    rotate, renew, `useSessionKey`); within 10 blocks of it a key-signed request or OpenTask
+    refused with `SDK_AUTH_INVALID_SIGNATURE` / `DATA_ACCESS_INVALID_SIGNATURE` /
+    `*_SESSION_GRANT_EXPIRED` is re-signed with a fresh nonce and re-sent after
+    `sessionKeyChangeRetryMs` (default `DEFAULT_KEY_CHANGE_RETRY_DELAY_MS`, 1000), at most
+    `DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS` (10) times. Outside the window those answers are final.
+    `RegisteredSessionKeys` gains `retryAfterKeyChange`, `keyChangeHeight`, `noteKeyChange` and the
+    `keyChangeRetryDelayMs` / `keyChangeRetryAttempts` / `sleep` options; `set` and `refreshExpiry`
+    take an optional key-change / set height.
+  - **Changed:** a `*_SESSION_GRANT_EXPIRED` answer to a request that carried no grant is
+    `retriable: false` on every path (SDK envelopes, streams, Task Data, OpenTask fan-out
+    results), outside the key-change window. A key-signed Task Data request answered
+    `DATA_ACCESS_INVALID_SIGNATURE` (what a Builder without the local Task says) is
+    `switchSource: true`.
+  - **Added:** `openTask` with a registered key refuses an order whose `earliestSubmitHeight` is
+    after the key's expiry (`SDK_LOCAL_SESSION_KEY_EXPIRED`; the Keeper checks the expiry at the
+    admitting height); a window that only ends after it is sent with
+    `OpenTaskResult.keyExpiresInOrderWindow`. `OpenTaskResult` gains `earliestSubmitHeight` and
+    `sessionKeyExpiryHeight`. The `expired` diagnosis compares the expiry with the later of the
+    latest height and `earliestSubmitHeight`.
+  - **Added:** a spend cap above u64 max, or an expiry above 2^63 - 1, is
+    `SDK_LOCAL_SESSION_KEY_INVALID` before any transaction (client and `MsgCreateSession` /
+    `MsgUpdateSessionKey` encoders).
+  - **Added:** registration tx failures are classified: `CHAIN_SESSION_KEY_INVALID` (task 1144),
+    `CHAIN_SESSION_KEY_EXPIRED` (1145), `CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED` (1146),
+    `CHAIN_SESSION_CLOSED` (1105 "session cannot update authorization") and
+    `CHAIN_SESSION_NOT_OWNER` (sdk 4), matched on code and raw-log text (and codespace for
+    CheckTx), with the generic code in `details.txFailure`; `sessionTxFailureCode` is exported.
+    **Changed:** these failures no longer surface as `CHAIN_TX_FAILED` / `CHAIN_TX_REJECTED`.
+  - **Added:** `updateSessionKey` `clear` and `rotate` (and `renew`) read the session first and send
+    nothing for a CLOSED session (`SDK_LOCAL_SESSION_CLOSED`) or another user's
+    (`SDK_LOCAL_SESSION_NOT_OWNER`).
+- Pinned to wire `v0.5.1` (`1c9db9b`), the release of wire #47. Its proto and vectors are identical
+  to the earlier `602cb18` pin (only wire's CHANGELOG and release metadata differ), so `src/gen` is
+  unchanged.
+
+### Lower time to first token
+
+- **Added:** early subscribe. `streamOutput({ waitForAnchors })` (or `pendingAnchors`, a promise
+  the caller already has) opens SubscribeOutput at once and waits for the trust anchors in
+  parallel. Frames that arrive first are held unverified, bounded by `maxPendingFrames` (default
+  `DEFAULT_MAX_PENDING_FRAMES`, 256; at the bound the SDK stops reading the subscription), and are
+  released only once the anchors arrive and each frame verifies; nothing is delivered,
+  checkpointed or acked before that. A Fin held before the anchors is checked after the frames
+  before it. If the anchor wait fails, the SDK closes the subscription and throws that error. The
+  checks are the same as before; the Worker service key is still read once, so a key rotated
+  mid-stream is not covered. Calls with both `taskHash` and `workerServicePubKey` behave as
+  before.
+- **Added:** `streamOutput({ signal })`: aborting closes the subscription and any anchor wait and
+  throws `OUTPUT_STREAM_ABORTED`.
+- **Changed:** `streamOutput` resubscribes on the same source after the last verified frame,
+  without using an attempt, when nexus drops a slow subscriber with ResourceExhausted after this
+  subscription delivered new verified frames (at most `MAX_OVERFLOW_RESUBSCRIBES`, 64, times).
+  With `waitForAnchors`, the `ASSIGNMENT_FINALIZED` hint is read from the first source when it is
+  an `IngressClient`.
+- **Changed:** `waitForOutputTrustAnchors`: an `ASSIGNMENT_FINALIZED` event that lands while a
+  chain read is in flight starts the event's read at once instead of after it; an older read's
+  "not yet" never overrides a newer read. `signal` now ends the wait at once, even mid-read.
+- **Added:** connection warm-up. Transports from `nexusIngressTransport` for the same pinned
+  certificate key now share one keep-alive agent (`sharedPinnedHttpsAgent`; opt out with
+  `shareConnections: false`), and `prewarmNexusConnections(uri, hash, { connections })` leaves
+  idle TLS connections in that agent's pool. `TrueOpenClientConfig.ingressPrewarm` makes
+  `openTask` prewarm every selected Builder concurrently while the order is being signed;
+  `prewarmTaskBuilders` does it on demand.
+- **Changed:** `openTask` reads the fee denom, pricing, order sequence and context concurrently,
+  resolves the selected Builders while the order is being signed, reads their descriptors
+  concurrently, and no longer reads the anchor-height BuilderSet twice.
+- **Added:** `resolveTaskBuilders({ sessionId, orderSequence?, context? })`: the Builders an
+  order will go to, before anything is signed.
+- **Added:** `TaskOrderContextCache` (used by `TrueOpenClient` unless
+  `orderContextReuse: false`): reuses the session anchor across orders while
+  `latest - anchor <= floor(anchor_freshness_window_blocks * 0.25)` and the anchor-height
+  BuilderSet still reads back, re-reading the latest height, that set, the timeout bucket
+  version, the generation limits and the window in one concurrent round.
+  `HubReader.getAnchorFreshnessWindowBlocks()` reads the window. Also exported:
+  `resolveTaskOrderContextWithBuilderSet`.
+
 ### Breaking: Hash32 text is 0x-prefixed (ADR-0034, wire #44)
 
 Every client-facing string form of a Hash32 (a 32-byte digest or ID) is now `0x` followed by
@@ -59,7 +404,107 @@ spelling, so the SDK must move together with the node and Nexus releases that ad
   stay raw 32 bytes. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. Bech32 and EVM
   addresses, signatures, the 33-byte service key, nonces and the beacon `randomness_hex` keep
   their spelling. No digest changes.
-- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); re-pin to the v0.5.0 tag once it ships.
+- Pinned to wire `main` @ `41af15b` (wire #44, pre-v0.5.0); superseded by the `v0.5.1` pin (see the registered session keys entry above).
+
+### Breaking: the SDK no longer strips a trailing EOS
+
+Cortex strips the trailing EOS before committing (ADR-0022 `output_decoding.strip_trailing_eos`),
+so the SDK's temporary tolerance is gone and the committed text is taken as is.
+
+- **Breaking:** `fetchTaskOutput().text` and `streamOutput` chunk `text` are the committed bytes
+  decoded, with no `<|im_end|>` stripped; `stripChatTemplateEos` is removed.
+- **Breaking:** the `trailingEosMarkers` option is removed from `DerivedViewOptions` and the tool
+  call / assistant-turn params, along with `stripTrailingEos`, `TrailingEosStripper`,
+  `assertNoEndMarkerCollision` and `ToolCallParser.endMarkers`, which existed only for that
+  stripping.
+
+### Changed: a final call missing its closing marker is recovered after a natural stop
+
+- **Changed:** when the Worker-signed Fin says the model stopped by itself (`EOS_TOKEN` /
+  `STOP_SEQUENCE`; `STOP_TOKEN` too since the per-parser recovery change above) and the output
+  ends inside a tool call whose body parses, the call is recovered instead of flushed as text, as
+  vLLM and Dynamo do for Hermes (design S7 requirement 6). A truncated (`MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION`), user-stopped or
+  reason-unavailable output, or a body that does not parse, still flushes as plain text.
+  `confirmAssistantMessage`, `assistantTurn`, `fetchAssistantMessage` and the provisional
+  stream all follow the Fin.
+- **Added:** `ToolCallParseOptions` (`recoverUnclosedAtEnd`), taken by
+  `ToolCallParser.parseComplete(text, opts?)` and `ToolCallStreamState.finish(opts?)`;
+  `DerivedViewOptions.finishReason` for `deriveAssistantMessage`; `unclosedCallRecovery`.
+
+### Added: assistantTurn and profileParsers
+
+- **Added:** `client.assistantTurn(params)`: one assistant turn, streamed then confirmed. It yields
+  `reasoning` / `content` events as frames verify (never a call from unconfirmed frames), waits for
+  the accepted InferReceipt (`receiptTimeoutMs`, `receiptPollIntervalMs`, `signal`), and yields
+  `{ kind: 'confirmed', message }` with the executable calls and `finishReason`. The checkpoint is
+  kept internally. Parsers default to the task profile's on-chain parsers; unverified ones need
+  `allowUnverified`. A receipt that does not arrive in time is `OUTPUT_RECEIPT_TIMEOUT` (retriable).
+- **Added:** `client.profileParsers(taskId)`: the `tool_call_parser` / `reasoning_parser` the task's
+  profile pins on chain.
+
+### Changed: hermes@1 ships in the built-in registry
+
+- **Changed:** `BUILTIN_TOOL_CALL_PARSERS` registers `hermes@1` as `unverified`, as
+  `BUILTIN_REASONING_PARSERS` already does for `qwen3@1`. Lookup still reports it unsupported unless
+  the caller passes `allowUnverified`; a profile's pinned parser now resolves without the caller
+  registering it.
+
+### Added: call_id_format from the verified manifest
+
+- **Added:** `toolCallIdFormatOf(manifest)` reads `tool_calling.call_id_format` from a verified V4
+  manifest (undefined for `tool_calling = {}`; a non-empty block without a closed-set format is
+  `MANIFEST_SCHEMA_INVALID`). `call_id_format` is not projected on chain (ADR-0028).
+- **Added:** `TrueOpenClientConfig.manifestSource` and `client.toolCallIdFormat(modelId,
+  profileVersion)`, which fetch the profile's manifest, verify it against the chain and read the
+  format. `ToolCallIdFormat` / `TOOL_CALL_ID_FORMATS` now live in the manifest module (still
+  exported from the package root).
+
+### Added: OpenAI rules for the assistant message (sdk_详细设计 §5.5)
+
+- **Added:** `openAIFinishReasonOf(confirmed)`: stop-class -> `"stop"` or `"tool_calls"` when the
+  confirmed parse has calls; `MAX_OUTPUT_TOKENS` / `MAX_OUTPUT_DURATION` -> `"length"` even with
+  calls (closed calls stay in `toolCalls`); `undefined` when the protocol reason is unavailable.
+- **Added:** `newToolCallId(format)` with `ToolCallIdFormat` (`OPENAI_CALL_PREFIX` /
+  `MISTRAL_ALNUM_9`): a random id in the profile's `call_id_format`. The Provider decides when to
+  assign one and builds `type` / `index` / the envelope.
+
+### Breaking: fetchAssistantMessage returns the confirmed message and can choose the Builder
+
+- **Breaking:** `fetchAssistantMessage` returns a `ConfirmedAssistantMessage` (with `confirmation`
+  and the stored Fin's `finishReason`), the same type the streaming path confirms to. It confirms
+  against the accepted InferReceipt, so the anchors must carry it (resolved from chain when not
+  passed; otherwise `SDK_LOCAL_RECEIPT_REQUIRED`). It no longer takes `taskHash` / `outputHash` /
+  `workerServicePubKey`: they always come from the anchors.
+- **Added:** `builderAddress` is optional. Without it the SDK asks the task's frozen Task Builders
+  (`RestChainReader.queryTaskBuilders`, task.v1 `TaskBuilders`) concurrently: the first verified
+  output with the signed Fin wins without waiting for slower Builders; with none, the
+  highest-ranked verified output is returned with `finishReason` undefined. Every
+  Builder failing is `DATA_OUTPUT_ALL_BUILDERS_FAILED` (retriable). Needs `taskReader` with
+  `queryTaskBuilders`, `hub` and `ingressTransportFactory` (`SDK_LOCAL_BUILDER_ROUTING_UNCONFIGURED`).
+- **Added:** `OutputTaskReader.queryTaskBuilders` (optional), and the `FetchTaskOutputParams` /
+  `FetchAssistantMessageParams` types.
+
+### Added: finish reason on the confirmed stream (sdk_详细设计 §5.5)
+
+- **Added:** the stream keeps the Worker-signed Fin it verified: `OutputStreamVerifierCheckpoint` is
+  now `schemaVersion: 2` with an optional `fin` (`VerifiedOutputFin`), and `onCheckpoint` fires once
+  more after the Fin. Restoring a checkpoint re-verifies its Fin. Schema-1 checkpoints (and schema-1
+  checkpoint JSON) still restore; the JSON codec writes `schema_version: 2` with an optional `fin`,
+  whose `output_mmr_root` is Hash32 text (`0x` + 64 lowercase hex) and `worker_signature` bare hex.
+- **Added:** `confirmOutputWithReceipt` / `confirmOutput` re-verify a kept Fin against the receipt-
+  matched root and set `ConfirmedOutputEvent.finishReason`; `ConfirmedAssistantMessage.finishReason`
+  carries the same value. A kept Fin that fails is `DATA_OUTPUT_CONFIRMATION_FIN_INVALID`. Without a
+  kept Fin the reason is undefined (unavailable), never inferred.
+
+### Added: finish reason on non-streaming retrieval
+
+- **Added:** `fetchTaskOutput` returns `finishReason` from the Worker-signed Fin the Builder stores
+  with the object (`TaskDataObjectMetadataV1.fin`, ADR-0027). It is checked as the stream checks its
+  trailing frame -- `final_seq` is the last leaf, the root is the verified `output_hash`, and the
+  Worker's signature verifies -- and a signed Fin that fails any of these throws
+  (`DATA_OUTPUT_FIN_SIGNATURE_INVALID` / `_ROOT_MISMATCH` / `_SEQ_MISMATCH`). Without a Fin, or with
+  an unsigned one, `finishReason` is undefined: unavailable, never inferred. A new optional
+  `workerServicePubKey` parameter skips the chain read for the key.
 
 ### Breaking: session-signed OpenTask
 

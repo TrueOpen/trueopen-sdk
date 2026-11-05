@@ -57,16 +57,44 @@
  *   --prompt <text>       the input body, sent exactly as given (default
  *                         "trueopen e2e open-task"). Nothing is appended; nexus dedupes by
  *                         content hash, so re-running the same text is rejected.
+ *   --initial-builder <a> the Builder (operator address) a new session is bound to; required
+ *                         without --session
+ *   --initial-deposit <n> a new session's prefunded balance, atomic units (default 0)
  *   --chat                send an OpenAI chat-completions-shaped `messages` object instead
  *                         of raw text. cortex routes by input shape: a JSON object carrying
  *                         a `messages` field is served over /v1/chat/completions (messages
  *                         forwarded verbatim to vLLM, which applies the model's chat
  *                         template), while anything else is the legacy raw-text inferV0
  *                         path.
- *   --stream              streaming retrieval: subscribe to SubscribeOutput as soon as
- *                         winner_confirm lands on chain, verify signatures and the MMR
- *                         root frame by frame as output is generated, without waiting
- *                         for the receipt. Once frames arrive, skip the full-output fetch.
+ *   --system-prompt <t>   add a system message ahead of the user message on a chat input
+ *                         (default: none -- the input carries only the user message)
+ *   --tools-json <json>   OpenAI function tools (a JSON array) offered on a chat input; implies
+ *                         --chat. The chat body is encoded by the SDK (chatInferInputBytes).
+ *   --assistant           after the receipt confirms the streamed output, derive the assistant
+ *                         view with confirmAssistantMessage, using the profile's on-chain
+ *                         tool_call_parser and reasoning_parser. The parsers are unverified
+ *                         (no shared vectors yet), so this opts in with allowUnverified.
+ *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
+ *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
+ *                         into task_hash, and the profile's task_types must list it.
+ *   --stream              streaming retrieval: verify signatures and the MMR root frame by
+ *                         frame as output is generated, without waiting for the receipt.
+ *                         Once frames arrive, skip the full-output fetch. By default this is
+ *                         early subscribe on the connection OpenTask used: SubscribeOutput
+ *                         opens right after OpenTask while waitForOutputTrustAnchors (chain
+ *                         poll plus the ASSIGNMENT_FINALIZED event) runs, and frames are held
+ *                         unverified until the anchors arrive (streamOutput pendingAnchors).
+ *                         Reports ttft_client_ms, from just before OpenTask to the first
+ *                         verified frame
+ *   --fast-stream / --early-subscribe  accepted and ignored: both are the default now
+ *   --no-early-subscribe  with --stream: wait for the anchors first, then subscribe on the
+ *                         OpenTask connection (the former --fast-stream alone)
+ *   --legacy-stream       with --stream: the script's own poll loop waits for winner_worker,
+ *                         then subscribes on a new connection (the former default)
+ *   --prewarm             open two TLS connections to every selected Builder before the
+ *                         TTFT clock starts (prewarmNexusConnections), so OpenTask and the
+ *                         stream reuse warm connections
+ *   --anchor-poll-ms <n>  chain poll interval for the anchor wait (default: the SDK default)
  *   --stream-idle <s>     idle timeout for a single stream, in seconds (default 20);
  *                         on timeout, resubscribe to another endpoint carrying the
  *                         verifier checkpoint
@@ -99,8 +127,8 @@ const {
   resolveTaskOrderContext, buildTaskOrder, defaultGenerationParams,
   buildOpenTaskRequest, resolveTaskBuilderEndpoints,
   taskOrderHashHex, deriveTaskId,
-  decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, RestChainReader,
-  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom,
+  decodeSignedOrder, TASK_TYPE, DEADLINE_LATENCY_CLASS, nexusIngressTransport, prewarmNexusConnections, RestChainReader,
+  TRUEOPEN_HD_PATH, EthSecp256k1DirectSigner, PARTICIPANT_TYPE, resolveFeeDenom, chatInferInputBytes,
 } = await import(SDK);
 
 // ---- args ----
@@ -132,6 +160,9 @@ const MODEL_ID = await (async () => {
   return active.model_id;
 })();
 const REUSE_SESSION = flag('--session', undefined);
+// Phase 1: a new session is bound to this Builder (operator address) and prefunded.
+const INITIAL_BUILDER = flag('--initial-builder', undefined);
+const INITIAL_DEPOSIT = flag('--initial-deposit', '0');
 const SEQ_OVERRIDE = flag('--seq', undefined);
 const POLL_TIMES = Number(flag('--poll', '18'));
 // The input body, sent verbatim. Nothing is appended: nexus dedupes by content hash, so
@@ -140,10 +171,15 @@ const PROMPT = flag('--prompt', 'trueopen e2e open-task');
 // OpenAI chat-completions-shaped input (see --chat in the header): cortex routes a JSON
 // object with a `messages` field to its /v1/chat/completions path instead of inferV0.
 const CHAT = has('--chat');
-// Overrides the chat system message (default "trueopen e2e chat").
+// Optional chat system message. Without it the chat input carries only the user message.
 const SYSTEM_PROMPT = flag('--system-prompt', undefined);
-// Full chat `messages` array (JSON) to send verbatim, for multi-turn history.
+// Full chat `messages` array (JSON) for multi-turn history.
 const MESSAGES_JSON = flag('--messages-json', undefined);
+// OpenAI function tools (JSON array) offered on a chat input; implies chat.
+const TOOLS_JSON = flag('--tools-json', undefined);
+// Derive the assistant view (reasoning / content / tool calls) from the confirmed output, through
+// TrueOpenClient.confirmAssistantMessage with the profile's on-chain parsers.
+const ASSISTANT = has('--assistant');
 // Output cap. It's signed into GenerationParamsV1 -> task_hash, so it's part of the
 // order content and the worker must honor it. 128 is small enough that a few sentences
 // get hard-truncated mid-sentence (observed in practice), hence it's tunable.
@@ -153,6 +189,18 @@ const FETCH_OUTPUT = !has('--no-fetch-output');
 // Streaming retrieval: subscribe as soon as winner_confirm lands on chain, receiving
 // frames as they're generated, without waiting for the receipt.
 const STREAM = has('--stream');
+// Wait for the winner with waitForOutputTrustAnchors on the OpenTask connection (chain poll
+// plus the ASSIGNMENT_FINALIZED event), then subscribe on that same connection, instead of
+// waiting for the script's own poll loop to see winner_worker.
+// The default for --stream; --legacy-stream restores the script's own poll loop.
+const FAST_STREAM = !has('--legacy-stream');
+// Subscribe right after OpenTask, while the anchors are still pending (default);
+// --no-early-subscribe waits for the anchors first.
+const EARLY_SUBSCRIBE = !has('--no-early-subscribe');
+// Prewarm TLS connections to every selected Builder before the TTFT clock starts.
+const PREWARM = has('--prewarm');
+// Chain poll interval for the anchor wait; unset means the SDK default.
+const ANCHOR_POLL_MS = has('--anchor-poll-ms') ? Number(flag('--anchor-poll-ms', '')) : undefined;
 // Idle cap for a single stream. If the subscription starts before the Worker begins
 // producing output, nexus will keep the stream open without pushing data, so this is
 // what breaks out and triggers a retry.
@@ -308,7 +356,11 @@ if (REUSE_SESSION) {
   sessionId = REUSE_SESSION;
   log(`Reusing session ${sessionId}`);
 } else {
-  const session = await client.createSession('e2e-open-task');
+  if (INITIAL_BUILDER === undefined) {
+    console.error('creating a session needs --initial-builder <trueopen1...> (or pass --session)');
+    process.exit(2);
+  }
+  const session = await client.createSession({ label: 'e2e-open-task', initialBuilder: INITIAL_BUILDER, initialDeposit: INITIAL_DEPOSIT });
   sessionId = session.sessionId;
   log(`Created session ${sessionId}`);
 }
@@ -324,6 +376,17 @@ log(`order_sequence=${ORDER_SEQ}${SEQ_OVERRIDE === undefined ? ' (read from chai
 // The payload is sent exactly as given, with nothing appended. Note nexus dedupes by content
 // hash, so re-running the same input collides with NEXUS_DATA_CONFLICT; vary the input
 // yourself (the caller owns uniqueness in the normal flow too).
+// Chat input is encoded once by the SDK (canonical_json_v1), so a rerun of the same request
+// yields the same bytes and the same input_hash.
+function chatTools() {
+  if (TOOLS_JSON === undefined) return {};
+  const tools = JSON.parse(TOOLS_JSON);
+  if (!Array.isArray(tools) || tools.length === 0) {
+    console.error('--tools-json must be a non-empty JSON array of OpenAI function tools');
+    process.exit(2);
+  }
+  return { tools };
+}
 let payload;
 if (MESSAGES_JSON !== undefined) {
   const raw = JSON.parse(MESSAGES_JSON);
@@ -332,19 +395,28 @@ if (MESSAGES_JSON !== undefined) {
     console.error('--messages-json must be a JSON array or an object with a messages array');
     process.exit(2);
   }
-  payload = new TextEncoder().encode(JSON.stringify({ messages: msgs }));
-} else if (CHAT) {
-  payload = new TextEncoder().encode(JSON.stringify({
+  payload = chatInferInputBytes({ messages: msgs, ...chatTools() });
+} else if (CHAT || TOOLS_JSON !== undefined) {
+  payload = chatInferInputBytes({
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT ?? 'trueopen e2e chat' },
+      ...(SYSTEM_PROMPT !== undefined ? [{ role: 'system', content: SYSTEM_PROMPT }] : []),
       { role: 'user', content: PROMPT },
     ],
-  }));
+    ...chatTools(),
+  });
 } else {
   payload = new TextEncoder().encode(PROMPT);
 }
 // Hash32 text, 0x + 64 lowercase hex, as the SDK and node spell it (ADR-0034).
 const payloadHash = `0x${hex(sha256(payload))}`;
+// The order declares what the payload is. A chat-shaped body defaults to TASK_TYPE_CHAT;
+// cortex routes on the body's shape either way, so a mismatch would still run but would
+// sign a task_type that misdescribes the input.
+const TASK_TYPE_NAME = flag('--task-type', CHAT || MESSAGES_JSON !== undefined || TOOLS_JSON !== undefined ? 'CHAT' : 'TEXT_GENERATION');
+if (!['TEXT_GENERATION', 'CHAT'].includes(TASK_TYPE_NAME)) {
+  console.error(`--task-type must be TEXT_GENERATION or CHAT, got ${TASK_TYPE_NAME}`);
+  process.exit(2);
+}
 
 // ---- 3) on-chain context (anchor / builder set / bucket version, all signed) ----
 const ctx = await resolveTaskOrderContext(hub, CHAIN_ID);
@@ -376,7 +448,7 @@ const order = buildTaskOrder(ctx, {
   userAddress: address, sessionId, orderSequence: ORDER_SEQ,
   modelId: activeModel.model_id,
   profileVersion: Number(activeModel.latest_profile_version || 1),
-  taskType: TASK_TYPE.TEXT_GENERATION,
+  taskType: TASK_TYPE[TASK_TYPE_NAME],
   payload,
   inputBucket: 1, outputBudgetBucket: 1,
   generationParams: defaultGenerationParams(MAX_OUTPUT_TOKENS, MAX_OUTPUT_DURATION_MS),
@@ -466,10 +538,23 @@ if (NEXUS_URL_OVERRIDE) {
 // throws that redundancy away. Widening the expiry would paper over the problem rather
 // than fix it: a larger signed window is also a larger replay window.
 const acks = [];
+if (DO_SUBMIT && PREWARM) {
+  // nexusIngressTransport shares one keep-alive agent per pinned key, so these connections are
+  // the ones OpenTask and the stream pick up.
+  const t = Date.now();
+  const opened = await Promise.all(routed.endpoints.map((ep) => prewarmNexusConnections(ep.serviceEndpoint, ep.tlsPubkeyHash ?? '').catch(() => 0)));
+  log(`prewarm: ${opened.join('/')} connections to ${routed.endpoints.length} Builders in ${Date.now() - t}ms`);
+}
+// Client-clock origin for time to first token: just before OpenTask goes out.
+const openTaskStartedAt = Date.now();
+// Kept so the stream can reuse the connection OpenTask already opened.
+const openTaskTransports = new Map();
 if (DO_SUBMIT) {
   const settled = await Promise.all(routed.endpoints.map(async (ep) => {
     const base = { rank: ep.rank, address: ep.address, endpoint: ep.serviceEndpoint };
-    const ic = new IngressClient(nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? ""));
+    const tr = nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? "");
+    openTaskTransports.set(ep.serviceEndpoint, tr);
+    const ic = new IngressClient(tr);
     try {
       const ack = await ic.openTask(built.input);
       return { ...base, ack: { accepted: ack.accepted, taskId: ack.taskId, reason: ack.reason } };
@@ -582,6 +667,7 @@ async function startStream(winnerWorker) {
   let resumedFromSeq = null;
   // From the terminating fin, which streamOutput requires to be Worker-signed by default.
   let finishReason;
+  let firstFrameAt;
 
   while (Date.now() < overallDeadline) {
     for (const ep of streamCandidates()) {
@@ -632,6 +718,7 @@ async function startStream(winnerWorker) {
             continue;
           }
           frames.push({ seq: f.seq.toString(), at_ms: Date.now() - t0, text: f.text });
+          if (frames.length === 1) firstFrameAt = Date.now();
           resumeAfterSeq = f.seq;
           if (breakArmed && frames.length >= STREAM_BREAK_AFTER) {
             breakArmed = false;
@@ -648,6 +735,7 @@ async function startStream(winnerWorker) {
           first_frame_ms: frames[0].at_ms,
           last_frame_ms: frames[frames.length - 1].at_ms,
           finished_ms: Date.now() - t0,
+          ttft_client_ms: firstFrameAt - openTaskStartedAt,
           attempts,
           // Non-null proves the "resubscribe with a non-empty checkpoint" path was
           // actually exercised: subsequent frames continue from the verified seq
@@ -679,6 +767,100 @@ async function startStream(winnerWorker) {
 }
 
 const chainReader = new RestChainReader({ baseUrl: REST, fetch: (u) => fetch(u) });
+
+/** Default --stream path: wait for the winner on the OpenTask connection and subscribe on it (early by default). */
+async function startClientStream() {
+  const mode = 'fast';
+  const t0 = Date.now();
+  const ep = streamCandidates()[0];
+  const sc = new TrueOpenClient({
+    chainId: CHAIN_ID, userAddress: address, wallet: userWallet,
+    signatureChainId: SIGNATURE_CHAIN_ID, feeDenom: FEE_DENOM, chain: conn.client,
+    ingressTransport: openTaskTransports.get(ep.serviceEndpoint) ?? nexusTransport(ep.serviceEndpoint, ep.tlsPubkeyHash ?? ''),
+    hub, taskReader: chainReader,
+  });
+  const waiting = sc.waitForOutputTrustAnchors(taskId, {
+    sessionId,
+    timeoutMs: OUTPUT_TIMEOUT_MS * 3,
+    ...(ANCHOR_POLL_MS !== undefined ? { pollIntervalMs: ANCHOR_POLL_MS } : {}),
+  });
+  let anchorsAt;
+  if (EARLY_SUBSCRIBE) return streamEarly(sc, ep, t0, waiting.then((x) => { anchorsAt = Date.now(); return x; }), () => anchorsAt);
+  const a = await waiting;
+  anchorsAt = Date.now();
+  const winner = a.winnerWorker;
+  const servicePubKey = a.workerServicePubKey;
+  log(`  ${mode} stream: chain names winner ${winner} at +${anchorsAt - t0}ms`);
+  const frames = [];
+  let finishReason;
+  let firstFrameAt;
+  const anchorParams = { taskHash: a.taskHash, workerServicePubKey: a.workerServicePubKey };
+  const onCheckpoint = (next) => { streamCheckpoint = next; };
+  for await (const f of sc.streamOutput({ sessionId, taskId, ...anchorParams, onCheckpoint, maxAttempts: 3, idleTimeoutMs: STREAM_IDLE_MS })) {
+    if (f.kind === 'fin') { finishReason = f.finishReason; continue; }
+    if (frames.length === 0) firstFrameAt = Date.now();
+    frames.push({ seq: f.seq.toString(), at_ms: Date.now() - t0, text: f.text });
+  }
+  if (frames.length === 0) throw new Error(`${mode} stream ended without frames`);
+  log(`Stream finished: ${ep.serviceEndpoint}, ${frames.length} frames, first frame +${frames[0].at_ms}ms (${mode}), elapsed ${Date.now() - t0}ms`);
+  return {
+    mode,
+    endpoint: ep.serviceEndpoint, builder_address: ep.address,
+    winner_worker: winner,
+    worker_service_pubkey: servicePubKey ? hex(servicePubKey) : null,
+    anchors_ms: anchorsAt - t0,
+    frame_count: frames.length,
+    first_frame_ms: frames[0].at_ms,
+    last_frame_ms: frames[frames.length - 1].at_ms,
+    finished_ms: Date.now() - t0,
+    ttft_client_ms: firstFrameAt - openTaskStartedAt,
+    attempts: [], resumed_from_seq: null,
+    finish_reason: finishReason === undefined ? null : finishReason,
+    per_frame_verified: true,
+    output_text: frames.map((f) => f.text).join(''),
+    frames,
+  };
+}
+/** --early-subscribe: subscribe at once; the SDK holds frames until the anchors resolve. */
+async function streamEarly(sc, ep, t0, pendingAnchors, anchorsAtFn) {
+  const mode = 'early';
+  const frames = [];
+  let finishReason;
+  let firstFrameAt;
+  let anchors;
+  const onCheckpoint = (next) => { streamCheckpoint = next; };
+  for await (const f of sc.streamOutput({
+    sessionId, taskId,
+    pendingAnchors: pendingAnchors.then((a) => { anchors = a; return a; }),
+    onCheckpoint, maxAttempts: 3, idleTimeoutMs: STREAM_IDLE_MS,
+  })) {
+    if (f.kind === 'fin') { finishReason = f.finishReason; continue; }
+    if (frames.length === 0) firstFrameAt = Date.now();
+    frames.push({ seq: f.seq.toString(), at_ms: Date.now() - t0, text: f.text });
+  }
+  if (frames.length === 0) throw new Error(`${mode} stream ended without frames`);
+  const anchorsAt = anchorsAtFn();
+  log(`  ${mode} stream: chain names winner ${anchors.winnerWorker} at +${anchorsAt - t0}ms`);
+  log(`Stream finished: ${ep.serviceEndpoint}, ${frames.length} frames, first frame +${frames[0].at_ms}ms (${mode}), elapsed ${Date.now() - t0}ms`);
+  return {
+    mode,
+    endpoint: ep.serviceEndpoint, builder_address: ep.address,
+    winner_worker: anchors.winnerWorker,
+    worker_service_pubkey: hex(anchors.workerServicePubKey),
+    anchors_ms: anchorsAt - t0,
+    frame_count: frames.length,
+    first_frame_ms: frames[0].at_ms,
+    last_frame_ms: frames[frames.length - 1].at_ms,
+    finished_ms: Date.now() - t0,
+    ttft_client_ms: firstFrameAt - openTaskStartedAt,
+    attempts: [], resumed_from_seq: null,
+    finish_reason: finishReason === undefined ? null : finishReason,
+    per_frame_verified: true,
+    output_text: frames.map((f) => f.text).join(''),
+    frames,
+  };
+}
+
 const polls = [];
 let chainTask = null;
 // Values picked up incidentally during polling, to avoid two extra round trips after
@@ -690,6 +872,12 @@ let heightAtReceipt = null;
 let streamTask = null;
 let streamInfo = null;
 let streamCheckpoint = null;
+if (DO_SUBMIT && STREAM && FAST_STREAM) {
+  streamTask = startClientStream().then(
+    (r) => { streamInfo = r; },
+    (e) => { streamInfo = { mode: 'fast', error: String(e.message || e).slice(0, 300) }; },
+  );
+}
 
 if (DO_SUBMIT && POLL_TIMES > 0) {
   const ic = routed.endpoints.length > 0
@@ -787,6 +975,28 @@ if (streamInfo?.frame_count > 0 && streamCheckpoint !== null) {
         output_size_bytes: event.outputSizeBytes.toString(),
       };
       log(`Receipt confirmation: root/count/size all match`);
+      if (ASSISTANT) {
+        try {
+          const m = client.confirmAssistantMessage({
+            taskId, taskHash: built.taskHash, checkpoint: streamCheckpoint, receipt,
+            toolCallParser: profile.toolCallParser,
+            reasoningParser: profile.reasoningParser,
+            // The built-in registries (hermes@1 / qwen3_coder@1, qwen3@1) are unverified until wire
+            // publishes their vectors, so this opts in.
+            allowUnverified: true,
+          });
+          streamConfirmation.assistant = {
+            tool_call_parser: profile.toolCallParser,
+            reasoning_parser: profile.reasoningParser,
+            reasoning_content: m.reasoningContent ?? null,
+            content: m.content,
+            tool_calls: m.toolCalls,
+          };
+          log(`Assistant view: ${m.toolCalls.length} tool call(s)${m.reasoningContent !== undefined ? ', reasoning separated' : ''}`);
+        } catch (e) {
+          streamConfirmation.assistant = { error: String(e?.message || e).slice(0, 300) };
+        }
+      }
     } catch (e) {
       streamConfirmation = {
         confirmed: false,

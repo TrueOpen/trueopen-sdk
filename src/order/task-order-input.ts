@@ -129,12 +129,29 @@ export function defaultGenerationParams(maxOutputTokens: bigint, maxOutputDurati
   };
 }
 
-/** Read the currently effective BuilderSet and parameters; selection beacons are retired. */
+/**
+ * Read the currently effective BuilderSet and parameters. Phase 1 anchors the order at the
+ * latest height: selection beacons and the anchor block hash are retired.
+ */
 export async function resolveTaskOrderContext(
   hub: TaskOrderContextReader,
   chainId: string,
-  opts?: { readonly anchorLag?: bigint },
 ): Promise<TaskOrderChainContext> {
+  return (await resolveTaskOrderContextWithBuilderSet(hub, chainId)).context;
+}
+
+/** An order context together with the BuilderSet it was read from (the set at the anchor height). */
+export interface ResolvedTaskOrderContext {
+  readonly context: TaskOrderChainContext;
+  /** The BuilderSet in effect at context.sessionAnchorHeight; Task Builder routing uses this snapshot. */
+  readonly builderSet: BuilderSetSnapshot;
+}
+
+/** resolveTaskOrderContext, also returning the BuilderSet it read, so routing need not read it again. */
+export async function resolveTaskOrderContextWithBuilderSet(
+  hub: TaskOrderContextReader,
+  chainId: string,
+): Promise<ResolvedTaskOrderContext> {
   const latestHeight = await hub.getLatestHeight();
   const anchorHeight = latestHeight;
 
@@ -144,6 +161,8 @@ export async function resolveTaskOrderContext(
     hub.getTaskGenerationLimits(),
   ]);
 
+  // The anchor must not be earlier than that set's effective height - otherwise the
+  // builder_set_hash signed into the order wouldn't be authoritative at that height.
   if (set.effectiveHeight > anchorHeight) {
     throw invalid(
       'SDK_LOCAL_ANCHOR_BEFORE_BUILDER_SET',
@@ -152,14 +171,17 @@ export async function resolveTaskOrderContext(
   }
 
   return {
-    chainId,
-    sessionAnchorHeight: anchorHeight,
-    builderSetId: set.builderSetId,
-    builderSetHash: set.setHash,
-    // What gets signed in must be the **currently effective version**, not the version recorded on the bucket itself.
-    timeoutBucketVersion: timeout.currentVersion,
-    generationLimits,
-    latestHeight,
+    context: {
+      chainId,
+      sessionAnchorHeight: anchorHeight,
+      builderSetId: set.builderSetId,
+      builderSetHash: set.setHash,
+      // What gets signed in must be the **currently effective version**, not the version recorded on the bucket itself.
+      timeoutBucketVersion: timeout.currentVersion,
+      generationLimits,
+      latestHeight,
+    },
+    builderSet: set,
   };
 }
 

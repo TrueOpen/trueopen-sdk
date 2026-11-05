@@ -1,11 +1,6 @@
 
 /** SDK view of node task.v1.StreamState (camelCase mapping). */
 export interface StreamStateView {
-  readonly sessionKey?: Uint8Array;
-  readonly sessionKeyExpiryHeight?: bigint;
-  readonly sessionKeySetHeight?: bigint;
-  readonly sessionKeySpendCap?: string;
-  readonly sessionKeySpent?: string;
   readonly pendingSessionKeyChange?: { readonly kind: string; readonly effectiveHeight: bigint; readonly grant?: { readonly sessionKey: Uint8Array; readonly expiryHeight: bigint; readonly spendCap: string } };
   readonly balance?: string;
   readonly frozenTotal?: string;
@@ -32,6 +27,14 @@ export interface StreamStateView {
   readonly lastActiveHeight: bigint;
   readonly openPendingCount: bigint;
   readonly status: 'ACTIVE' | 'IDLE' | 'CLOSED';
+  /** The registered session key's 20-byte address; absent = wallet-only session. */
+  readonly sessionKey?: Uint8Array;
+  /** 0 when there is no key. */
+  readonly sessionKeyExpiryHeight: bigint;
+  /** Canonical decimal atomic units; "0" when there is no key or the key is unlimited. */
+  readonly sessionKeySpendCap: string;
+  readonly sessionKeySpent: string;
+  readonly sessionKeySetHeight: bigint;
 }
 
 /**
@@ -54,6 +57,12 @@ export interface ChainTaskSnapshot {
   readonly view: 'active' | 'terminal';
   /** TaskPhase without its prefix, for the terminal arm only (for example "SETTLED"). */
   readonly terminalPhase?: string;
+  /**
+   * TaskPhase without its prefix (for example "WORKER_ASSIGNMENT_PENDING", "FAILED"). Active arm
+   * only; undefined when the node does not send it. A task that fails or settles keeps the
+   * active arm, with this phase, until cleanup compaction switches it to the terminal arm.
+   */
+  readonly taskPhase?: string;
   readonly taskId: string;
   /** Hash32 text (`0x` + 64 lowercase hex); should match the SDK's locally computed task_hash byte for byte. */
   readonly acceptedTaskHash: string;

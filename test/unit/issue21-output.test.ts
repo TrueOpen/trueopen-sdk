@@ -36,7 +36,7 @@ const header = () => create(DispatchResultHeaderV1Schema, {
 const anchors = () => ({ taskId, taskHash: hash32Text(taskHash), dispatchTicketHash: hash32Text(newTicket), winnerWorker: worker, workerServicePubKey: pub(newKey) });
 function client(transport: TrueOpenClientConfig['ingressTransport'], extra: Partial<TrueOpenClientConfig> = {}) {
   return new TrueOpenClient({ chainId, userAddress: ethSecp256k1Address(pub(walletKey), 'trueopen'), wallet: privateKeyTypedDataSigner(walletKey),
-    chain: { querySession: async () => { throw new Error('unused'); }, querySessionNonce: async () => ({ nextSessionNonce: 0n }), createSession: async () => { throw new Error('unused'); }, cancelOrder: async () => { throw new Error('unused'); } }, ingressTransport: transport, ...extra });
+    chain: { querySession: async () => { throw new Error('unused'); }, querySessionNonce: async () => ({ nextSessionNonce: 0n }), createSession: async () => { throw new Error('unused'); }, cancelOrder: async () => { throw new Error('unused'); }, updateSessionKey: async () => { throw new Error('unused'); } }, ingressTransport: transport, ...extra });
 }
 const params = { sessionId, taskId, taskHash: hash32Text(taskHash), dispatchTicketHash: hash32Text(oldTicket), workerServicePubKey: pub(oldKey), maxAttempts: 4 };
 
@@ -86,6 +86,8 @@ it('stale attempt resets text/MMR/cursor, uses the new Worker, and resumes only 
   ]);
   expect(checkpoints.map(cp => [hash32Text(cp.dispatchTicketHash!), cp.mmr.leafCount])).toEqual([
     [hash32Text(oldTicket), 1n], [hash32Text(newTicket), 0n], [hash32Text(newTicket), 1n], [hash32Text(newTicket), 2n],
+    // The verified Fin is kept in one more checkpoint.
+    [hash32Text(newTicket), 2n],
   ]);
   expect(acked).toBe(1);
 });

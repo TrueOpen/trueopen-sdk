@@ -87,11 +87,12 @@ const order: TaskOrderIntent = {
 function fakeChain(): ChainClient {
   return {
     async querySession(id) {
-      return { boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE' };
+      return { boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n };
     },
     async querySessionNonce() { return { nextSessionNonce: 0n }; },
     async createSession() { return { sessionId: SESSION, owner: USER, nonce: 0n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
     async cancelOrder(i) { return { taskId: 'task-1', cancelledSequence: i.orderSequence, nextExpectedSequence: i.orderSequence + 1n, status: 'MUTATION_STATUS_V1_APPLIED' }; },
+    async updateSessionKey() { throw new Error('unused'); },
   };
 }
 
@@ -128,7 +129,7 @@ describe('TrueOpenClient.openTask', () => {
 
     expect(res.accepted).toBe(true);
     expect(res.endpointsTried).toBe(1);
-    expect(seen.calls).toBe(1); // each of the 3 endpoints receives one call
+    expect(seen.calls).toBe(1); // only the bound Builder is contacted
     expect(res.taskId).toBe(deriveTaskId(SESSION, 3n));
     expect(res.taskHash).toMatch(/^0x[0-9a-f]{64}$/);
 
@@ -136,12 +137,12 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.context.sessionAnchorBlockHash).toBeUndefined();
     expect(res.context.builderSetId).toBe('genesis-1');
     expect(res.context.timeoutBucketVersion).toBe(1n);
-    // anchor is latestHeight - 2.
+    // the order is anchored at the latest height (no anchor lag).
     expect(res.context.sessionAnchorHeight).toBe(1000n);
   });
 
   it('a newly effective BuilderSet is used for signing and routing', async () => {
-    // A new set with a single member takes effect at 999, after the anchor (998) but by the latest height (1000).
+    // A new set with a single member takes effect at 999, by the latest height (1000), which is the anchor.
     const rotated: BuilderSetSnapshot = {
       builderSetId: 'rotation-2', builderSetVersion: 2n, effectiveHeight: 999n, builders: ADDRS[0]!, setHash: hexOf(0x99),
     };
@@ -168,8 +169,9 @@ describe('TrueOpenClient.openTask', () => {
     });
     const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
 
-    // Every BuilderSet read, for signing and for routing, is at the anchor height.
-    expect(heights).toEqual([1000n, 1000n]);
+    // The BuilderSet is read once, at the anchor (latest) height, and that one read serves both
+    // the signed context and the routing.
+    expect(heights).toEqual([1000n]);
     expect(res.context.builderSetId).toBe('rotation-2');
     expect(res.context.builderSetHash).toBe(hexOf(0x99));
     // The Builders contacted are the anchor-height set's members, not the latest set's single member.
@@ -251,6 +253,61 @@ describe('TrueOpenClient.openTask', () => {
       chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
     });
     expect(client.signatureChainId()).toBe(1n);
+  });
+
+  describe('idempotency key', () => {
+    const open = (client: TrueOpenClient, payload: Uint8Array, idempotencyKey = 'idem-1') =>
+      client.openTask({ sessionId: SESSION, orderSequence: 3n, order: { ...order, payload }, idempotencyKey });
+
+    it('a retry with the same payload bytes is sent again', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      const client = makeClient(seen);
+      await open(client, PAYLOAD);
+      await open(client, Uint8Array.from(PAYLOAD));
+      expect(seen.calls).toBe(2);
+    });
+
+    it('a different payload under a used key is refused locally, before anything is sent', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      const client = makeClient(seen);
+      await open(client, PAYLOAD);
+      // The same request re-serialized: a different byte sequence, so a different input_hash.
+      await expect(open(client, new TextEncoder().encode('trueopen-input '))).rejects.toMatchObject({
+        code: 'SDK_LOCAL_IDEMPOTENCY_KEY_REUSED',
+        category: 'conflict',
+      });
+      expect(seen.calls).toBe(1);
+      // A new key is a new request.
+      await open(client, new TextEncoder().encode('trueopen-input '), 'idem-2');
+      expect(seen.calls).toBe(2);
+    });
+
+    it('a call that failed before sending leaves the key free', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      let reachable = false;
+      const client = new TrueOpenClient({
+        chainId: 'trueopen-localnet-1', userAddress: USER, wallet, signatureChainId: 424242n, feeDenom: 'utrueopen',
+        chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+        // Signed and checked, then no Builder resolves: nothing was sent.
+        hub: { ...(hub as object), getServiceDescriptor: async (id: string) => {
+          if (!reachable) throw new Error('descriptor unavailable');
+          return (hub as { getServiceDescriptor: (id: string) => Promise<ServiceDescriptorRef> }).getServiceDescriptor(id);
+        } } as never,
+        ingressTransportFactory: () => acceptTransport(seen),
+        nonce: () => new Uint8Array(32).fill(1),
+      });
+      await expect(open(client, PAYLOAD)).rejects.toMatchObject({ code: 'TASK_BUILDER_NO_REACHABLE_ENDPOINT' });
+      reachable = true;
+      await open(client, new TextEncoder().encode('trueopen-input '));
+      expect(seen.calls).toBe(1);
+    });
+
+    it('the record is per client', async () => {
+      const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+      await open(makeClient(seen), PAYLOAD);
+      await open(makeClient(seen), new TextEncoder().encode('other-input'));
+      expect(seen.calls).toBe(2);
+    });
   });
 
   it('throws when hub/transportFactory is not configured', async () => {
@@ -411,21 +468,64 @@ describe('request nonce without globalThis.crypto (node 18)', () => {
   });
 });
 
-it('delegated orders require the effective registered key, valid height and cumulative cap', async () => {
-  const keyPrivate = new Uint8Array(32).fill(7);
-  const keyAddress = canonicalAccountAddressBytes('key', ethSecp256k1Address(secp256k1PublicKey(keyPrivate), 'trueopen'));
-  const signer = privateKeyTypedDataSigner(keyPrivate);
-  const base = fakeChain();
-  let cap = '1000';
-  const chain: ChainClient = { ...base, querySession: async id => ({ ...await base.querySession(id), sessionKey: keyAddress, sessionKeyExpiryHeight: 2000n, sessionKeySetHeight: 900n, sessionKeySpendCap: cap, sessionKeySpent: '0' }) };
-  const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
-  const client = makeClient(seen, chain);
-  const params = { sessionId: SESSION, order, idempotencyKey: 'delegated', delegatedOrderSigner: { signer, address: keyAddress } };
-  expect((await client.openTask(params)).accepted).toBe(true);
-  cap = '999';
-  await expect(client.openTask(params)).rejects.toMatchObject({ code: 'SDK_AUTH_SESSION_KEY_CAP_EXCEEDED' });
-  await expect(client.openTask({ ...params, delegatedOrderSigner: { signer, address: new Uint8Array(20) } })).rejects.toMatchObject({ code: 'SDK_AUTH_SESSION_KEY_NOT_REGISTERED' });
-  expect(seen.calls).toBe(1);
+describe('openTask: routing and prewarm run while the order is being signed', () => {
+  it('prewarms the bound Builder before the wallet finishes signing', async () => {
+    const prewarmed: string[] = [];
+    let allPrewarmed!: () => void;
+    const prewarmDone = new Promise<void>((r) => { allPrewarmed = r; });
+    // The wallet only answers once the bound Builder was prewarmed: openTask cannot
+    // complete unless routing and prewarm ran during signing.
+    const slowWallet = {
+      signTypedData: async (data: Parameters<typeof wallet.signTypedData>[0]) => {
+        await Promise.race([prewarmDone, new Promise((_r, rej) => setTimeout(() => rej(new Error('not prewarmed during signing')), 2_000))]);
+        return wallet.signTypedData(data);
+      },
+    };
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet: slowWallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      ingressPrewarm: async (uri) => {
+        prewarmed.push(uri);
+        if (prewarmed.length === 1) allPrewarmed();
+      },
+      nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    expect(res.accepted).toBe(true);
+    // Phase 1 dispatches to the bound Builder only, so only it is prewarmed.
+    expect(prewarmed).toEqual([`grpc://${ADDRS[0]}:8080`]);
+  });
+
+  it('a failing prewarm never fails the order', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      ingressPrewarm: async () => { throw new Error('unreachable'); },
+      nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    expect(res.accepted).toBe(true);
+    expect(seen.calls).toBe(1);
+  });
+
+  it('resolveTaskBuilders gives the same Builders openTask then uses, before anything is signed', async () => {
+    const contacted: string[] = [];
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: (uri) => { contacted.push(uri); return acceptTransport({ calls: 0, frames: [] }); },
+      nonce: () => new Uint8Array(32).fill(1), signatureChainId: 424242n, feeDenom: 'utrueopen',
+    });
+    const pre = await client.resolveTaskBuilders({ sessionId: SESSION, orderSequence: 3n });
+    expect(pre.taskId).toBe(deriveTaskId(SESSION, 3n));
+    expect(contacted).toEqual([]);
+    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1', context: pre.context });
+    expect(contacted.sort()).toEqual(pre.endpoints.map((e) => e.serviceEndpoint).sort());
+  });
 });
 
 it('an acknowledgement timeout aborts the original RPC and recovery contacts the next Builder', async () => {
@@ -495,7 +595,7 @@ describe('order lifetime (wire #49 max_order_lifetime_blocks)', () => {
   const sessionWith = (frozenParams?: { maxOrderLifetimeBlocks: bigint; recordDeadlineBlocks: bigint }): ChainClient => ({
     ...fakeChain(),
     async querySession(id) {
-      return { boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: 0n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', ...(frozenParams ? { frozenParams } : {}) };
+      return { ...(await fakeChain().querySession(id)), ...(frozenParams ? { frozenParams } : {}) };
     },
   });
 

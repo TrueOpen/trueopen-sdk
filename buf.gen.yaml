@@ -6,7 +6,15 @@ plugins:
       - target=ts
       - import_extension=js
 inputs:
-  # wire PR #49, b30fba8: transitive SDK protocol closure.
+  # wire PR #49 @ b30fba8 (Phase 1; see README). Only the transitive closure the SDK needs is generated,
+  # which deliberately excludes cortex.v1: wire withholds that package, so its fields are not frozen
+  # and generating types from it now would bake in a shape wire has already said it will break.
+  # not all of wire's files. The first 13 are the import closure computed from two roots (ingress /
+  # msg_assignment): drop one and an internal src/gen import dangles. Recompute the closure before
+  # changing this list.
+  #   Roots:
+  #     - ingress.proto         the nexus IngressAPI (every SDK RPC)
+  #     - msg_assignment.proto  TaskOrderV3 / SignedOrderV2, the only message that goes on chain
   - directory: third_party/wire/proto
     paths:
       - third_party/wire/proto/task/v1/msg_session.proto

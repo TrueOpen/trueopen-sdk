@@ -16,7 +16,7 @@ const tryShow = async (label, fn) => {
   try { show(label, await fn()); } catch (e) { console.log(`\n=== ${label} ===\n(skipped: ${e?.code ?? ''} ${e?.message ?? e})`); }
 };
 
-// Both go into signatures; the SDK reads them, never assumes them.
+// business_denom goes into order signatures; the SDK reads it, never assumes it.
 await tryShow('chain params', async () => ({ businessDenom: await hub.getBusinessDenom() }));
 
 const addr = env('TRUEOPEN_QUERY_ADDR', '');

@@ -2,9 +2,14 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { canonicalAccountAddressBytes, canonicalOperatorAddressBytes } from '../codec/address';
 import { strictHash32 } from '../codec/hash32';
 import * as session from '../gen/task/v1/msg_session_pb.js';
+import type { SessionKeyGrant } from './task-msgs';
 
+/**
+ * Phase 1 Session funding (wire #49): CreateSession's prefund and first Builder binding, deposits,
+ * and delayed withdrawal / CLOSE. Registered session keys (SET / CLEAR) are encoded in task-msgs.
+ */
 export interface CreateSessionInput {
-  readonly sessionKey?: SessionKeyInput;
+  readonly sessionKey?: SessionKeyGrant;
   readonly initialBuilder: string;
   /** Atomic units in the chain's native settlement denomination. */
   readonly initialDeposit: string;
@@ -60,32 +65,4 @@ export function decodeWithdrawSession(bytes: Uint8Array): WithdrawSessionResult 
   const r = fromBinary(session.MsgWithdrawSessionResponseSchema, bytes);
   if (!r.pendingAmount) throw new Error('withdrawal response missing pending amount');
   return { effectiveHeight: r.effectiveHeight, pendingAmount: r.pendingAmount.atomicUnits, status: r.status };
-}
-
-export interface SessionKeyInput {
-  readonly sessionKey: Uint8Array;
-  readonly expiryHeight: bigint;
-  readonly spendCap: string;
-}
-export type UpdateSessionKeyInput = { readonly sessionId: string } & (
-  { readonly set: SessionKeyInput; readonly clear?: never } |
-  { readonly clear: true; readonly set?: never }
-);
-export function sessionKeyGrant(input: SessionKeyInput, signer: string) {
-  const owner = canonicalAccountAddressBytes('signer_address', signer);
-  if (input.sessionKey.length !== 20 || input.sessionKey.every(x => x === 0) || input.sessionKey.every((x, i) => x === owner[i])) throw new Error('session key must be a nonzero raw20 address distinct from owner');
-  if (input.expiryHeight <= 0n || input.expiryHeight > (1n << 64n) - 1n) throw new Error('invalid session key expiry height');
-  return { sessionKey: input.sessionKey, expiryHeight: input.expiryHeight, spendCap: atomicAmount(input.spendCap) };
-}
-export const UPDATE_SESSION_KEY_TYPE_URL = '/task.v1.MsgUpdateSessionKey';
-export function encodeUpdateSessionKey(m: UpdateSessionKeyInput & { signer: string }): Uint8Array {
-  canonicalAccountAddressBytes('signer_address', m.signer);
-  if ((m.clear === true) === (m.set !== undefined)) throw new Error('choose exactly one key SET or CLEAR');
-  return toBinary(session.MsgUpdateSessionKeySchema, create(session.MsgUpdateSessionKeySchema, {
-    signerAddress: m.signer, sessionId: strictHash32('session_id', m.sessionId),
-    action: m.clear === true ? { case: 'clear', value: {} } : { case: 'set', value: sessionKeyGrant(m.set!, m.signer) },
-  }));
-}
-export function decodeUpdateSessionKey(bytes: Uint8Array) {
-  return fromBinary(session.MsgUpdateSessionKeyResponseSchema, bytes);
 }

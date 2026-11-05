@@ -28,8 +28,9 @@ Builder. `getSession` also returns `closedHeight` for a CLOSED Session.
 ## Session funding and keys
 
 ```ts
-const session = await client.createSession('chat', {
-  initialBuilder: builderAddress,
+const session = await client.createSession({
+  label: 'chat',
+  initialBuilder: builderAddress, // the Builder's address (trueopen1...), required by the chain
   initialDeposit: '1000000', // atomic units of chain business_denom
 });
 await client.depositSession({ sessionId: session.sessionId, amount: '100000' });
@@ -44,22 +45,30 @@ withdrawal/close, effective Session key, pending key change and takeover.
 withdraw and change keys. Off-chain request grants remain distinct from a
 registered delegated order key.
 
-Use `updateSessionKey({ sessionId, set: { sessionKey, expiryHeight, spendCap } })`
-or `{ sessionId, clear: true }`. The key is a nonzero raw20 EVM address distinct
-from the owner. A zero spend cap means unlimited. Inspect effective heights:
-restrictive changes are delayed and cumulative spent is never reset.
+Register a session key in the same `MsgCreateSession` with
+`createSession({ ..., sessionKey: { expiryBlocks, spendCap, key? } })`, load a
+persisted one with `useSessionKey(sessionId, privateKey)`, and change it with
+`updateSessionKey(sessionId, { renew } | { rotate } | { clear: true })`. The key
+is a nonzero raw20 EVM address distinct from the owner. A zero spend cap means
+unlimited; cumulative spent is never reset. Restrictive changes are delayed: the
+result then carries `effectiveHeight`, and `rotate` keeps the old key loaded and
+returns the new one as `newKey`; load it with `useSessionKey` once the chain
+applied it.
 
-An order may explicitly supply `delegatedOrderSigner: { signer, address }`.
-The facade checks it against the effective chain key, expiry, registration height
-and cumulative cap, then verifies the recovered order signature against that key.
-The Builder remains authoritative for concurrent inflight reservations.
+A loaded registered key signs the session's orders (the Phase 1
+`delegatedOrderSigner` option is removed). `openTask` checks it against the
+effective chain key, expiry, registration height and cumulative cap before
+signing. The Builder remains authoritative for concurrent inflight reservations.
 
 ## Dispatch and recovery
 
 `openTask` reads the current BuilderSet and sends to the Session-bound Builder.
 The group is the full immutable snapshot in cyclic order from the dispatcher;
 there is no seed/rank draw, three-Builder fan-out or selection beacon dependency.
-`sessionAnchorHeight` remains signed; `sessionAnchorBlockHash` is retired.
+`sessionAnchorHeight` remains signed (the latest height); `sessionAnchorBlockHash` is retired.
+`TaskOrderContextCache`, `orderContextReuse`, `DEFAULT_ANCHOR_LAG` and
+`HubReader.getAnchorFreshnessWindowBlocks()` are removed: each order resolves a fresh context.
+`prewarmTaskBuilders` / `resolveTaskBuilders` give the bound Builder.
 
 ```ts
 const result = await client.openTaskWithRecovery(params, {
@@ -121,7 +130,8 @@ its old cursor/checkpoint. It subscribes without a cursor to discover the replac
 accepted ticket with chain-derived anchors. It then persists an empty replacement
 checkpoint, emits `{ kind: 'reset', previousDispatchTicketHash, dispatchTicketHash }`,
 and resubscribes **with the new ticket and no cursor**. Consumers must clear old text
-on `reset`. Subsequent reconnects carry only the cursor verified under that ticket.
+on `reset`. The derived views (`deriveAssistantStream` / `streamAssistantMessage` and
+`assistantTurn`) yield `{ kind: 'reset' }` and parse the replacement attempt from scratch. Subsequent reconnects carry only the cursor verified under that ticket.
 Both low-level subscription methods reject a cursor without a raw32 ticket.
 
 Before chain recording, an application can supply `resolveDispatchResult(header)`
@@ -136,11 +146,12 @@ even if the Session reader lags. A pending-takeover hint enforces its activation
 height before contacting the candidate; it does not authorize a third candidate.
 Chain facts remain authoritative and all waits use bounded budgets.
 
-`waitForOutputTrustAnchors(sessionId, taskId, options)` combines polling with Builder
+`waitForOutputTrustAnchors(taskId, { sessionId, ...options })` combines polling with Builder
 events. Only `DISPATCH_RECORDED` accelerates the admission read; retired
 `ASSIGN_ACCEPTED`/`ASSIGNMENT_FINALIZED` and provisional `DISPATCH_ACCEPTED` do not.
 The event itself never establishes admission. Event transport failure falls back
 to polling, and success, timeout or cancellation aborts the event subscription.
 Use `streamOutput({ ..., admissionWait: { timeoutMs: 30000, pollIntervalMs: 1000 } })`
-to enable this wait while deriving the initial anchors. Explicit anchors retain
+(the same as `waitForAnchors` with the stream's `sessionId`) to enable this wait while
+deriving the initial anchors. Explicit anchors retain
 the immediate subscription path.

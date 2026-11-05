@@ -24,18 +24,31 @@ interface CheckpointJsonMmrV1 {
   readonly peaks: readonly CheckpointJsonPeakV1[];
 }
 
+interface CheckpointJsonFinV2 {
+  readonly final_seq: string;
+  readonly output_mmr_root: string;
+  readonly finish_reason: number;
+  readonly worker_signature: string;
+}
+
+/**
+ * schema_version 2 adds the optional `fin` (the verified Worker-signed Fin); everything else is
+ * unchanged, and a schema-1 document still decodes.
+ */
 export interface OutputStreamCheckpointJsonV1 {
   readonly format: typeof OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1;
-  readonly schema_version: 1;
+  readonly schema_version: 1 | 2;
   readonly chain_id: string;
   readonly task_hash: string;
   readonly dispatch_ticket_hash: string;
   readonly worker_service_pubkey: string;
   readonly mmr: CheckpointJsonMmrV1;
   readonly chunks_base64: readonly string[];
+  readonly fin?: CheckpointJsonFinV2;
 }
 
 const PUBKEY33_HEX = /^[0-9a-f]{66}$/;
+const SIG64_HEX = /^[0-9a-f]{128}$/;
 const CANONICAL_U64 = /^(0|[1-9][0-9]*)$/;
 
 function checkpointError(message: string, cause?: unknown): TrueOpenError {
@@ -86,7 +99,7 @@ function canonicalBase64(value: string, what: string): Uint8Array {
 
 function validateCheckpoint(checkpoint: OutputStreamVerifierCheckpoint): void {
   if (
-    checkpoint.schemaVersion !== 1 ||
+    (checkpoint.schemaVersion !== 1 && checkpoint.schemaVersion !== 2) ||
     checkpoint.chainId === '' ||
     checkpoint.taskHash.length !== 32 ||
     checkpoint.workerServicePubKey.length !== 33
@@ -116,9 +129,10 @@ function validateCheckpoint(checkpoint: OutputStreamVerifierCheckpoint): void {
  */
 export function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifierCheckpoint): string {
   validateCheckpoint(checkpoint);
+  const fin = checkpoint.fin;
   const value: OutputStreamCheckpointJsonV1 = {
     format: OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1,
-    schema_version: 1,
+    schema_version: 2,
     chain_id: checkpoint.chainId,
     task_hash: hash32Text(checkpoint.taskHash),
     dispatch_ticket_hash: hash32Text(checkpoint.dispatchTicketHash!),
@@ -130,6 +144,14 @@ export function serializeOutputStreamCheckpoint(checkpoint: OutputStreamVerifier
       peaks: checkpoint.mmr.peaks.map((peak) => ({ height: peak.height, hash: hash32Text(peak.hash) })),
     },
     chunks_base64: checkpoint.chunks.map(bytesToBase64),
+    ...(fin !== undefined ? {
+      fin: {
+        final_seq: u64ToString(fin.finalSeq),
+        output_mmr_root: hash32Text(fin.outputMmrRoot),
+        finish_reason: fin.finishReason,
+        worker_signature: toHex(fin.workerSignature),
+      },
+    } : {}),
   };
   return JSON.stringify(value);
 }
@@ -144,15 +166,14 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
   }
 
   const top = record(parsed, 'checkpoint');
-  exactKeys(
-    top,
-    ['format', 'schema_version', 'chain_id', 'task_hash', 'dispatch_ticket_hash', 'worker_service_pubkey', 'mmr', 'chunks_base64'],
-    'checkpoint',
-  );
+  const schemaVersion = numberField(top, 'schema_version', 'checkpoint');
+  if (schemaVersion !== 1 && schemaVersion !== 2) throw checkpointError('unsupported checkpoint schema');
+  // Phase 1: every checkpoint binds its dispatch attempt; schema 2 may also keep the signed Fin.
+  const baseKeys = ['format', 'schema_version', 'chain_id', 'task_hash', 'dispatch_ticket_hash', 'worker_service_pubkey', 'mmr', 'chunks_base64'];
+  exactKeys(top, schemaVersion === 2 && 'fin' in top ? [...baseKeys, 'fin'] : baseKeys, 'checkpoint');
   if (stringField(top, 'format', 'checkpoint') !== OUTPUT_STREAM_CHECKPOINT_JSON_FORMAT_V1) {
     throw checkpointError('unsupported checkpoint format');
   }
-  if (numberField(top, 'schema_version', 'checkpoint') !== 1) throw checkpointError('unsupported checkpoint schema');
   const chainId = stringField(top, 'chain_id', 'checkpoint');
   if (chainId === '') throw checkpointError('checkpoint.chain_id must not be empty');
   const taskHashHex = stringField(top, 'task_hash', 'checkpoint');
@@ -198,14 +219,34 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
     return canonicalBase64(item, `checkpoint.chunks_base64[${i}]`);
   });
 
+  let fin: OutputStreamVerifierCheckpoint['fin'];
+  if (top['fin'] !== undefined) {
+    const f = record(top['fin'], 'checkpoint.fin');
+    exactKeys(f, ['final_seq', 'output_mmr_root', 'finish_reason', 'worker_signature'], 'checkpoint.fin');
+    const finalSeqText = stringField(f, 'final_seq', 'checkpoint.fin');
+    if (!CANONICAL_U64.test(finalSeqText)) throw checkpointError('checkpoint.fin.final_seq must be canonical u64 text');
+    const root = stringField(f, 'output_mmr_root', 'checkpoint.fin');
+    if (!isHash32Text(root)) throw checkpointError('checkpoint.fin.output_mmr_root must be 0x followed by 64 lowercase hex characters');
+    const signature = stringField(f, 'worker_signature', 'checkpoint.fin');
+    if (!SIG64_HEX.test(signature)) throw checkpointError('checkpoint.fin.worker_signature must be lowercase 128-hex');
+    fin = {
+      finalSeq: stringToU64(finalSeqText),
+      outputMmrRoot: fromHex(root.slice(2)),
+      finishReason: numberField(f, 'finish_reason', 'checkpoint.fin'),
+      workerSignature: fromHex(signature),
+    };
+  }
+
+  // The verifier inside validateCheckpoint re-verifies the Fin's signature, final_seq and root.
   const checkpoint: OutputStreamVerifierCheckpoint = {
-    schemaVersion: 1,
+    schemaVersion: schemaVersion as 1 | 2,
     chainId,
     taskHash: fromHex(taskHashHex.slice(2)),
     dispatchTicketHash: fromHex(ticketHex.slice(2)),
     workerServicePubKey: fromHex(pubkeyHex),
     mmr: { schemaVersion: 1, domain, leafCount, peaks },
     chunks,
+    ...(fin !== undefined ? { fin } : {}),
   };
   validateCheckpoint(checkpoint);
   // validateCheckpoint is read-only; copy again to ensure the return value doesn't share
@@ -219,5 +260,12 @@ export function deserializeOutputStreamCheckpoint(json: string): OutputStreamVer
       peaks: checkpoint.mmr.peaks.map((peak) => ({ height: peak.height, hash: Uint8Array.from(peak.hash) })),
     },
     chunks: checkpoint.chunks.map((chunk) => Uint8Array.from(chunk)),
+    ...(checkpoint.fin !== undefined ? {
+      fin: {
+        ...checkpoint.fin,
+        outputMmrRoot: Uint8Array.from(checkpoint.fin.outputMmrRoot),
+        workerSignature: Uint8Array.from(checkpoint.fin.workerSignature),
+      },
+    } : {}),
   };
 }

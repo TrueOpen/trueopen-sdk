@@ -3,7 +3,7 @@ import { recoverDispatch, type DispatchRecoveryPort } from '../../src/transport/
 import { TrueOpenError } from '../../src/errors/errors';
 import type { StreamStateView } from '../../src/types/node';
 const policy = { maxAttempts: 4, maxPolls: 3, pollIntervalMs: 0, sleep: async () => {} };
-const state: StreamStateView = { sessionId: 's', owner: 'u', nextExpectedSequence: 2n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', boundBuilder: 'a' };
+const state: StreamStateView = { sessionId: 's', owner: 'u', nextExpectedSequence: 2n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', boundBuilder: 'a', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n };
 const ack = { sessionId: 's', taskId: 't', accepted: true, reason: '', status: 3 };
 function port(overrides: Partial<DispatchRecoveryPort> = {}): DispatchRecoveryPort {
   return { orderSequence: 2n, builders: ['a', 'b', 'c'], readSession: async () => state, readHeight: async () => 10n, submit: async () => ack, recorded: async () => ({ ...ack, status: 4 }), ...overrides };

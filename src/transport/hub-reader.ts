@@ -8,6 +8,7 @@ import type {
   ServiceDescriptorRef,
   ServiceEndpointV1,
   ModelState,
+  ParserRefV1,
   ProfileInfo,
   ProfilePricing,
   TaskGenerationLimits,
@@ -215,6 +216,16 @@ export class HubReader {
       stopSequenceMaxTotalBytes: num('stop_sequence_max_total_bytes'),
       stopTokenMaxItems: num('stop_token_max_items'),
     };
+  }
+
+  /**
+   * The task module's `params.session.max_session_key_blocks`: the furthest a session key's
+   * expiry may lie beyond the current height. Absent or 0 means the chain does not support
+   * session keys.
+   */
+  async getMaxSessionKeyBlocks(): Promise<bigint> {
+    const body = await this.getJson('/TrueOpen/task/v1/params');
+    return u64opt(asObject(asObject(body['params'])['session']), 'max_session_key_blocks');
   }
 
   /** Latest block height (for choosing a session anchor and computing the order height window). */
@@ -432,11 +443,20 @@ function toModel(o: Record<string, unknown>): ModelState {
   };
 }
 
+/** nested ParserRefV1; the zero value (name='') is the "absent parser" encoding. */
+function toParserRef(raw: unknown): ParserRefV1 {
+  if (raw === undefined || raw === null) return { name: '', version: 0 };
+  const o = asObject(raw);
+  return { name: strOpt(o, 'name'), version: Number(u32(o, 'version')) };
+}
+
 function toProfile(o: Record<string, unknown>): ProfileInfo {
   const raw = o['task_types'] ?? o['taskTypes'];
   const taskTypes = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
   return {
     modelId: hash32Hex(o, 'model_id'),
+    toolCallParser: toParserRef(o['tool_call_parser'] ?? o['toolCallParser']),
+    reasoningParser: toParserRef(o['reasoning_parser'] ?? o['reasoningParser']),
     profileVersion: u32(o, 'profile_version'),
     status: strOpt(o, 'status'),
     runtimeClass: strOpt(o, 'runtime_class'),

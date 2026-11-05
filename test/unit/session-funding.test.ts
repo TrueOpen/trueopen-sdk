@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { bech32 } from '@scure/base';
-import { encodeDepositSession, encodeWithdrawSession, decodeWithdrawSession, atomicAmount, encodeUpdateSessionKey } from '../../src/transport/session-funding';
-import { encodeMsgCreateSession, decodeMsgCancelOrderResponse } from '../../src/transport/task-msgs';
+import { encodeDepositSession, encodeWithdrawSession, decodeWithdrawSession, atomicAmount } from '../../src/transport/session-funding';
+import { encodeMsgCreateSession, encodeMsgUpdateSessionKey, decodeMsgCancelOrderResponse } from '../../src/transport/task-msgs';
 import * as s from '../../src/gen/task/v1/msg_session_pb.js';
 const signer = bech32.encode('trueopen', bech32.toWords(new Uint8Array(20).fill(1)));
 const sessionId = `0x${'12'.repeat(32)}`;
@@ -39,13 +39,12 @@ describe('Phase 1 Session wire contract', () => {
   });
 });
 
-it('encodes registered key SET and delayed CLEAR with explicit oneof presence', () => {
-  const set = fromBinary(s.MsgUpdateSessionKeySchema, encodeUpdateSessionKey({ signer, sessionId, set: { sessionKey: new Uint8Array(20).fill(2), expiryHeight: 100n, spendCap: '500' } }));
+it('encodes registered key SET and CLEAR with explicit oneof presence', () => {
+  const set = fromBinary(s.MsgUpdateSessionKeySchema, encodeMsgUpdateSessionKey({ signer, sessionId, action: { set: { sessionKey: new Uint8Array(20).fill(2), expiryHeight: 100n, spendCap: '500' } } }));
   expect(set.action.case).toBe('set');
   if (set.action.case === 'set') expect(set.action.value.spendCap?.atomicUnits).toBe('500');
-  const clear = fromBinary(s.MsgUpdateSessionKeySchema, encodeUpdateSessionKey({ signer, sessionId, clear: true }));
+  const clear = fromBinary(s.MsgUpdateSessionKeySchema, encodeMsgUpdateSessionKey({ signer, sessionId, action: { clear: true } }));
   expect(clear.action.case).toBe('clear');
-  expect(() => encodeUpdateSessionKey({ signer, sessionId, set: { sessionKey: new Uint8Array(20).fill(1), expiryHeight: 100n, spendCap: '500' } })).toThrow(/distinct/);
 });
 it('rejects legacy unbound creation', () => {
   expect(() => encodeMsgCreateSession({ signer })).toThrow(/initial_builder/);

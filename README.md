@@ -10,6 +10,11 @@
 
 `trueopen-sdk` is the runtime-agnostic TypeScript client SDK for the **TrueOpen decentralized AI inference network**. It wraps the full user flow -- place an order -> track it -> retrieve output -> open a challenge -- into a single facade class, `TrueOpenClient`, that supports dependency injection and unit testing.
 
+On top of the verified output it derives the assistant view: the reasoning span and tool calls are
+parsed from the committed text with the parsers the model's profile pins on chain, and tool calls
+become executable only after the output is reconciled with the on-chain receipt (see "Chat and
+tool calls" below).
+
 ### Signing: one wallet, EIP-712 everywhere
 
 Every signature a user makes is **EIP-712 typed data** (65 bytes `R||S||V`, `V` 27/28, low S),
@@ -73,11 +78,13 @@ and the mnemonic are yours to supply; everything chain-specific is read from the
 ```ts
 import {
   TrueOpenClient,
+  IngressClient,
   HubReader,
   RestChainReader,
   connectTrueOpenChainClient,
   ethSecp256k1SignerFromMnemonic,
   nexusIngressTransport,
+  prewarmNexusConnections,
   privateKeyTypedDataSigner,
   secp256k1PublicKey,
   ethSecp256k1Address,
@@ -128,11 +135,15 @@ const makeClient = (ingressTransport: ReturnType<typeof nexus>) =>
     chain, hub, taskReader,
     ingressTransport, // default transport for calls not routed by the SDK
     ingressTransportFactory: nexus, // openTask routes to the Session-bound Builder
+    // Optional: while the order is being signed, open TLS connections to the bound Builder,
+    // so OpenTask and the output stream skip the handshake. nexusIngressTransport shares one
+    // keep-alive agent per pinned certificate, which is what makes these connections reusable.
+    ingressPrewarm: (url, tlsPubkeyHash) => prewarmNexusConnections(url, tlsPubkeyHash),
   });
 const client = makeClient(nexus('http://nexus.unused.invalid'));
 
 // --- 5. Session -> order ---
-const { sessionId } = await client.createSession('demo', { initialBuilder: process.env.TRUEOPEN_INITIAL_BUILDER!, initialDeposit: '1000000' });
+const { sessionId } = await client.createSession({ label: 'demo', initialBuilder: process.env.TRUEOPEN_INITIAL_BUILDER!, initialDeposit: '1000000' });
 const orderSequence = await client.nextOrderSequence(sessionId); // 0 for a new session
 const height = await hub.getLatestHeight();
 const res = await client.openTask({
@@ -158,7 +169,7 @@ const res = await client.openTask({
     latencyClass: DEADLINE_LATENCY_CLASS.STANDARD,
   },
 });
-// res.builders: every selected Builder with its ack or error. An ack is local acceptance by
+// res.builders: the Session's bound Builder with its ack or error. An ack is local acceptance by
 // nexus only; the chain decides whether the task exists.
 
 // --- 6. Output, verified against the chain ---
@@ -185,28 +196,39 @@ The same order, delivered as verified frames as the Worker generates them, inste
 fetching the whole object after the receipt lands:
 
 ```ts
-// streamOutput streams from a specific Builder, so build a per-Builder client exactly like
-// the non-streaming path above. It derives the trust anchors from chain when `taskReader`
-// and `hub.getCurrentServiceKey` are configured (they are).
+// One output source per Builder that accepted the order, signing with this client's identity.
+const sources = res.builders
+  .filter((b) => b.ack?.accepted)
+  .map((b) => ({ id: b.address, ingress: new IngressClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash), client.ingressAuth()) }));
+if (sources.length === 0) throw new Error('no Builder accepted the order');
+// Early subscribe: SubscribeOutput opens right away, while the SDK waits for the anchors
+// (waitForOutputTrustAnchors). Frames that arrive first are held, unverified and undelivered,
+// and are released only once the anchors are known and each frame verifies. No winner, a
+// timeout or a failed read closes the subscription and is thrown.
 let text = '';
-for (const b of res.builders) {
-  try {
-    const bc = makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash));
-    for await (const event of bc.streamOutput({ sessionId, taskId: res.taskId, admissionWait: { timeoutMs: 30000 } })) {
-      if (event.kind === 'chunk') {
-        text += event.text;                   // per-frame Worker signature + MMR root verified
-      } else if (event.kind === 'reset') {
-        text = ''; // ATTEMPT_STALE: discard the voided attempt before displaying its replacement
-      } else {
-        console.error(`fin: attested=${event.attested} finish_reason=${event.finishReason}`);
-      }
-    }
-    break;
-  } catch (e) {
-    // try the next Builder
+for await (const event of client.streamOutput({
+  sessionId, taskId: res.taskId, sources,
+  waitForAnchors: true,  // also watches the first source's task events as a hint; { pollIntervalMs } polls only
+  idleTimeoutMs: 20_000,
+})) {
+  if (event.kind === 'chunk') {
+    text += event.text;                       // per-frame Worker signature + MMR root verified
+  } else if (event.kind === 'reset') {
+    text = '';                                // ATTEMPT_STALE: discard the voided attempt before its replacement
+  } else {
+    console.error(`fin: attested=${event.attested} finish_reason=${event.finishReason}`);
   }
 }
-console.log(text);                            // the presented view (chat-template EOS marker stripped)
+console.log(text);                            // the committed text (Cortex strips the trailing EOS)
+```
+
+Already waiting for the anchors yourself? Pass that promise as `pendingAnchors` instead of
+`waitForAnchors`. With `taskHash`, `workerServicePubKey` and `dispatchTicketHash` all given,
+`streamOutput` subscribes only then, as before:
+
+```ts
+const { taskHash, workerServicePubKey, dispatchTicketHash } = await client.waitForOutputTrustAnchors(res.taskId, { sessionId });
+for await (const event of client.streamOutput({ sessionId, taskId: res.taskId, sources, taskHash, workerServicePubKey, dispatchTicketHash })) { /* ... */ }
 ```
 
 To resume after a disconnect, persist the checkpoint and pass it back (same per-Builder
@@ -222,6 +244,47 @@ for await (const e of makeClient(nexus(b.serviceEndpoint, b.tlsPubkeyHash)).stre
   sessionId, taskId: res.taskId, checkpoint: cp, resumeAfterSeq: cp.mmr.leafCount > 0n ? cp.mmr.leafCount - 1n : undefined,
 })) { /* ... */ }
 ```
+
+### Chat and tool calls
+
+A chat task's payload is a `ChatInferInput` (the OpenAI Chat Completions request body, content
+fields only), encoded once with `chatInferInputBytes`. Keep the bytes: a retry must resend exactly
+these, and the client refuses a different input under an idempotency key it already used.
+
+```ts
+import { chatInferInputBytes, TASK_TYPE } from 'trueopen-sdk';
+
+const payload = chatInferInputBytes({
+  messages: [{ role: 'user', content: 'List the files in the current directory' }],
+  tools: [{ type: 'function', function: {
+    name: 'list_files', description: 'List a directory',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  } }],
+});
+// order: { ...as above, taskType: TASK_TYPE.CHAT, payload }
+```
+
+`assistantTurn` streams one assistant turn: reasoning and content as frames verify (provisional,
+for display), then, once the accepted receipt matches, the confirmed message. Tool calls appear
+only there, so nothing the agent executes comes from unconfirmed frames.
+
+```ts
+for await (const e of client.assistantTurn({ sessionId, taskId: res.taskId, allowUnverified: true })) {
+  if (e.kind === 'reasoning') showThinking(e.text);
+  if (e.kind === 'content') showText(e.text);
+  if (e.kind === 'confirmed') {
+    const m = e.message; // { content, toolCalls: [{ name, arguments }], reasoningContent?, finishReason?, confirmation }
+    for (const call of m.toolCalls) await runTool(call.name, JSON.parse(call.arguments));
+  }
+}
+```
+
+The parsers come from the task's profile on chain (`tool_call_parser`, `reasoning_parser`); the
+built-in ones are `hermes@1`, `qwen3_coder@1` and `qwen3@1` (reasoning). They are `unverified`
+until wire publishes their shared vectors, so they take effect only with `allowUnverified: true`;
+without it the turn is plain content with no calls. For an OpenAI-compatible stream, pass the turn
+to `toOpenAIAssistantSSE`; for a finished task, `fetchAssistantMessage` returns the same confirmed
+message without streaming. Details, the two-stage API and custom parsers: reference 8.8.
 
 The full API — every exported symbol plus both complete flows (with the retry-on-pending
 loop) — is in [docs/reference.md](docs/reference.md).
@@ -243,24 +306,31 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 
 | Method | Description |
 |---|---|
-| `createSession(label, { initialBuilder, initialDeposit, sessionKey? })` / `getSession(sessionId)` | create a prefunded Session / refresh its chain state |
+| `createSession({ label?, initialBuilder, initialDeposit?, sessionKey? })` / `getSession(sessionId)` | create a prefunded Session bound to `initialBuilder` (a string is the label) / refresh its chain state |
 | `depositSession({ sessionId, amount })` | owner-signed deposit in atomic units |
 | `withdrawSession({ sessionId, amount })` / `closeSession(sessionId)` | register delayed withdrawal / close; inspect the returned effective height |
-| `updateSessionKey({ sessionId, set })` / `updateSessionKey({ sessionId, clear: true })` | register or clear a delegated order key; restrictive changes are delayed |
+| `updateSessionKey(sessionId, { renew } \| { rotate } \| { clear: true })` / `useSessionKey(sessionId, privateKey)` | renew, rotate or clear the registered session key / load a persisted one (see section 4); restrictive changes are delayed and return `effectiveHeight` |
 | `openTaskWithRecovery(params, { maxAttempts, maxPolls, pollIntervalMs, signal? })` | bounded sequential recovery; checks chain sequence/binding, waits for takeover, and refreshes stale orders |
 | `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
 | `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> uses the current immutable BuilderSet and submits to the bound Builder -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` records the contacted Builder's address, endpoint and ack or error |
-| `waitForOutputTrustAnchors(sessionId, taskId, { pollIntervalMs?, timeoutMs?, signal? })` | waits for chain anchors; `DISPATCH_RECORDED` triggers an immediate read, with polling fallback |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
+| `waitForOutputTrustAnchors(taskId, { sessionId?, pollIntervalMs?, timeoutMs?, signal? })` | waits until the chain names the winner and returns the streaming anchors: polls the chain (default every 1000 ms, at most 60 s) and, with `sessionId`, reads once more straight away on the Builder's `DISPATCH_RECORDED` event (without waiting for a read already in flight); a task that failed or settled without a winner ends the wait with `OUTPUT_TRUST_ANCHOR_NO_WINNER` |
+| `resolveTaskBuilders({ sessionId, orderSequence?, context? })` | the Task Builder an order will go to (the Session's bound Builder), before anything is signed; pass the returned `context` to `openTask` |
+| `prewarmTaskBuilders(endpoints)` | opens connections to that Builder through `config.ingressPrewarm` (openTask does this itself while signing) |
 | `cancelOrder(sessionId, orderSequence)` | on-chain `MsgCancelOrder` (authorized by the account signature) |
 | `taskStatus(sessionId, taskId)` | local nexus status snapshot (informational) |
-| `watchTask(sessionId, taskId, fromCursor?)` | subscribes to the task event stream (`AsyncIterable`) |
+| `watchTask(sessionId, taskId, fromCursor?, { signal? })` | subscribes to the task event stream (`AsyncIterable`); abort `signal` to close it |
 | `fetchTaskOutput({ sessionId, taskId, builderAddress, taskHash?, outputHash?, expiresAtHeight? })` | fetches the full output in ranges and recomputes the MMR root from `chunk_lengths` to verify it against the on-chain receipt (see section 4) |
-| `streamOutput({ sessionId, taskId, taskHash?, dispatchTicketHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification and a verified terminal frame (see section 4) |
+| `streamOutput({ sessionId, taskId, taskHash?, dispatchTicketHash?, workerServicePubKey?, checkpoint?, sources?, idleTimeoutMs?, finSignaturePolicy?, ack?, waitForAnchors?, pendingAnchors?, maxPendingFrames?, signal? })` | resumable streaming subscription to output, with per-frame signature and MMR-root verification bound to the dispatch ticket and a verified terminal frame; `waitForAnchors` / `pendingAnchors` subscribe before the anchors are known; a `reset` event discards a voided attempt (see section 4) |
 | `confirmOutput({ taskId, taskHash, dispatchTicketHash, checkpoint, receipt })` | binds the checkpoint to the chain-recorded ticket and uses the on-chain Receipt's root / leaf count / size to upgrade provisional output to confirmed |
 | `serializeOutputStreamCheckpoint()` / `deserializeOutputStreamCheckpoint()` | strictly encodes a verifier checkpoint into JSON V1, stable across Node/browser |
+| `assistantTurn({ sessionId, taskId, allowUnverified?, toolCallParser?, reasoningParser?, receiptTimeoutMs?, signal?, ... })` | one assistant turn: reasoning and content as frames verify, then the confirmed message (tool calls, finish reason) after the receipt matches |
+| `streamAssistantMessage(...)` / `confirmAssistantMessage(...)` | the same in two stages: provisional events over `streamOutput`, then the executable message from the checkpoint and the receipt |
+| `fetchAssistantMessage({ sessionId, taskId, builderAddress?, ... })` | the confirmed message of a finished task, without streaming |
+| `profileParsers(taskId)` / `toolCallIdFormat(modelId, profileVersion)` | the parsers the task's profile pins on chain / the manifest's tool call id format |
 | `toOpenAIChatSSEIterable(events, context, opts?)` | Node / generic runtimes: verified events -> OpenAI-compatible SSE byte stream |
 | `toOpenAIChatSSE(events, context, opts?)` | browser / Web API: returns a `ReadableStream<Uint8Array>` |
+| `toOpenAIAssistantSSEIterable(turn, context, opts)` / `toOpenAIAssistantSSE` | one `assistantTurn` -> OpenAI SSE with confirmed `tool_calls` and finish_reason; reasoning dropped |
 | `prepareChallenge(sessionId, taskId, kind, localEvidenceDigest?)` | prepares challenge material (does not submit a verdict) |
 
 ---
@@ -293,6 +363,13 @@ This section states plainly **which capabilities are already aligned with the re
 - **REST chain reads** -- `/TrueOpen/task/v1/session/...`, `/session_nonce/...`, `/task/...` (both the active and the compacted terminal view).
 - **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` (including the task registry).
 - **Not supported yet** -- `MsgOpenChallengeRound`, the only challenge Msg in wire. `prepareChallenge` (nexus) still prepares material.
+- **Tool calls and reasoning (derived from the committed output)** -- `hermes@1` and
+  `qwen3_coder@1` (tool calls) and `qwen3@1` (reasoning, implicit start marker) follow wire #46
+  (`docs/REASONING_PARSER_V1.md`, `docs/TOOL_CALL_PARSER_V1.md` @ `5760ab7`) and its worked
+  examples, and are cross-checked against a corpus from the vLLM and Dynamo parser tests. wire #46
+  is still a draft and has published no vector files, so all three are `unverified`: they run
+  only with `allowUnverified: true`. The result is a derived view: it never enters `output_hash`,
+  the receipt or the chain.
 - **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput` / `getTaskDataMetadata` / `fetchTaskData`. The deprecated `SubmitOrder` / `FetchOutputRef` / `RefreshCredential` RPCs are not wrapped.
 
 ### ✅ Output delivery: two paths
@@ -336,6 +413,21 @@ winner Worker's current service key)
 - The terminal event is `{ kind: 'fin', attested: true, finishReason }` for a signed Fin, or
   `{ kind: 'fin', attested: false, finishReason: undefined }` under the opt-in.
 - Phase 0 requires `attachment` / `attachment_signature` to be empty; a non-empty value fails closed.
+- **Early subscribe** (`waitForAnchors` or `pendingAnchors`): the subscription opens as soon as
+  the order is accepted, in parallel with the anchor wait. Until the anchors arrive, frames are
+  held unverified; they are never delivered, checkpointed or acked before they verify. The
+  read-ahead is bounded by `maxPendingFrames` (default 256): at the bound the SDK stops reading
+  the subscription. If nexus then drops the slow subscriber (ResourceExhausted), the SDK verifies
+  what it holds and resubscribes after the last verified frame (at most
+  `MAX_OVERFLOW_RESUBSCRIBES`, 64, such free resubscribes; after that each counts as a failed
+  attempt). With `waitForAnchors` and a session ID, the `DISPATCH_RECORDED` hint is read from
+  the first source when it is an `IngressClient`, else from the client's own ingress. A Fin can arrive before the
+  anchors; it is held too and checked, after the frames before it, once they arrive. The checks
+  are the same as without early subscribe; as before, the Worker's service key is read once, so
+  a key rotated mid-stream is not covered. nexus never ends a subscription because the task
+  reached a terminal state, so when the anchor wait fails (`OUTPUT_TRUST_ANCHOR_NO_WINNER`,
+  `OUTPUT_TRUST_ANCHOR_TIMEOUT`, an inactive key, a failed read) the SDK closes the subscription
+  and throws that error. Aborting `signal` closes both and throws `OUTPUT_STREAM_ABORTED`.
 - `workerServicePubKey` must be supplied by the caller; the SDK has no switch to skip this check
   -- accepting output without verifying it discards all of the streamed-output guarantees. To obtain it:
   on-chain `assignment.winner_worker` -> `hub.getCurrentServiceKey(PARTICIPANT_TYPE.CORTEX,
@@ -416,10 +508,14 @@ const sse = toOpenAIChatSSE(verifiedEvents, {
 - `AbortSignal` aborts consumption of the upstream events; in the browser, `reader.cancel()`
   propagates to `iterator.return`. The `ReadableStream` uses `highWaterMark=0` and does not
   prefetch upstream events without consumer demand.
-- EOS / STOP_SEQUENCE -> OpenAI `stop`; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION -> `length`;
+- EOS / STOP_SEQUENCE / STOP_TOKEN / USER_STOP -> OpenAI `stop`; MAX_OUTPUT_TOKENS / MAX_OUTPUT_DURATION -> `length`;
   UNSPECIFIED and unknown values fail closed.
 - `id` / `model` / `created` must be supplied from the task context; the adapter never guesses
   them. MMR, signature, and confirmation metadata never leak into `delta.content`.
+- The chunks follow OpenAI's shape: a first chunk `{"role":"assistant","content":""}`, then the
+  content, then the terminal chunk; every choice has `logprobs: null` and every chunk has
+  `system_fingerprint` (the context's `systemFingerprint`, else `null`). `includeObfuscation: true`
+  adds a random `obfuscation` padding to every chunk (off by default).
 
 The SDK implements the digest and signature verification for `TRUEOPEN_OUTPUT_FIN_V1`
 (anchored to the official `fin_signing` vectors) and requires it in `streamOutput` by default.
@@ -477,16 +573,143 @@ Every signature is recovered and checked against `userAddress` before it is sent
 **Session grants (opt-in).** With `session: { maxGrantBlocks }` in the config, the wallet signs
 one `SessionGrant` for an in-memory session key, and that key signs `SubscribeOutput`,
 `AckOutput`, `GetTaskEvents`, `PrepareChallenge`, and `GetTaskDataMetadata` / `FetchTaskData`
-of an OUTPUT object: one wallet prompt per grant instead of one per request. `OpenTask` and
-everything else is always wallet-signed. `maxGrantBlocks` must be the Builders'
+of an OUTPUT object: one wallet prompt per grant instead of one per request. For `OpenTask` the
+grant key signs the request envelope, and the order is signed by the wallet, or by a registered key
+(below); every other request is wallet-signed. `maxGrantBlocks` must be the Builders'
 `max_session_grant_blocks`; the grant is renewed with a fresh key before it expires, and once
 more when a Builder reports it expired (`SDK_AUTH_SESSION_GRANT_EXPIRED` /
 `DATA_ACCESS_SESSION_GRANT_EXPIRED`). The session key is never persisted and never derived from
 a signature. Without `session`, the default, every request is signed by the wallet directly,
 which is what the CLI and raw-key clients do.
 
+**Registered session keys (ADR-0037, opt-in).** A different mechanism from the grant above: the
+chain itself stores one key per session, and that key signs the session's **orders** too, so a
+browser wallet prompts once per registration, not once per order. A `SessionGrant` key cannot sign
+orders; a registered key can, and its requests carry no grant.
+
+```ts
+const key = generateSessionKey();                         // or omit `key` and read s.sessionKey!.privateKey
+saveSecurely('chat', key.privateKey);                     // persist before the broadcast; the SDK never will
+const s = await client.createSession({ label: 'chat', initialBuilder, initialDeposit: '1000000', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n, key } });
+await client.openTask({ sessionId: s.sessionId, /* ... */ });   // signed by the key, not the wallet
+// after a restart:
+await client.useSessionKey(sessionId, loadSecurely('chat'));
+// renew / rotate / clear are wallet-signed MsgUpdateSessionKey transactions:
+const { newKey, effectiveHeight } = await client.updateSessionKey(sessionId, { rotate: { expiryBlocks: 100 } });
+// effectiveHeight set: the change is pending (restrictive changes are delayed); the old key stays
+// loaded until then, so persist newKey and load it with useSessionKey once the chain applied it.
+```
+
+- **Custody.** The SDK generates the key from a CSPRNG, never derives it from a signature, keeps it
+  in memory only and never logs it. Persist `privateKey` yourself; it cannot be recovered. To
+  persist it before the transaction is broadcast (a timed-out broadcast may still land), pass
+  material from `generateSessionKey()` as `sessionKey.key` / `rotate.key`. The key never signs a
+  transaction: every registration change is signed by the wallet.
+- **Expiry.** Orders stop at the key's expiry height (`SDK_LOCAL_SESSION_KEY_EXPIRED`, no wallet
+  fallback). Requests do fall back: from a few blocks before the expiry
+  (`sessionKeyRequestExpiryMarginBlocks`, default 3, so a request is not refused as expired on
+  arrival), the session's `SubscribeOutput` /
+  `AckOutput` / `GetTaskEvents` / `PrepareChallenge` / OUTPUT task-data requests are signed by the
+  grant key when `session` is configured, else by the wallet, so the output of the last orders
+  admitted before expiry stays readable. The client tracks the expiry from create / rotate / renew
+  / `useSessionKey` and from every `openTask` and `sessionKeyState` read; renew before expiry to
+  keep the key.
+- **Rotate after clear.** A clear zeroes the cap, so a later `rotate` must pass `spendCap`
+  explicitly (`SDK_LOCAL_SESSION_KEY_INVALID` otherwise). `renew` checks the chain's key, then
+  sends the tx; that is not atomic, so do not renew on one device while rotating on another.
+  `clear`, `rotate` and `renew` all read the session first and send nothing for a CLOSED session
+  (`SDK_LOCAL_SESSION_CLOSED`) or another user's (`SDK_LOCAL_SESSION_NOT_OWNER`).
+- **Registration failures are classified.** A refused `MsgCreateSession` / `MsgUpdateSessionKey`
+  is `CHAIN_SESSION_KEY_INVALID` (task 1144: bad key, expiry outside the registration window, cap
+  above u64), `CHAIN_SESSION_KEY_EXPIRED` (1145), `CHAIN_SESSION_KEY_SPEND_CAP_EXCEEDED` (1146),
+  `CHAIN_SESSION_CLOSED` (1105 "session cannot update authorization") or `CHAIN_SESSION_NOT_OWNER`
+  (sdk 4), instead of the generic `CHAIN_TX_FAILED` / `CHAIN_TX_REJECTED` (kept in
+  `details.txFailure`). A cap above u64 max or an expiry above 2^63 - 1 is refused locally first
+  (`SDK_LOCAL_SESSION_KEY_INVALID`).
+- **Builders may lag a key change by up to 10 blocks.** A Builder caches a session's key state for
+  up to `MAX_SESSION_KEY_CACHE_TTL_BLOCKS` (10) blocks, so right after a rotate or renew (or
+  createSession with a key) it can still judge against the old key or expiry. Within 10 blocks of
+  the change, a key-signed request or OpenTask refused with `SDK_AUTH_INVALID_SIGNATURE` /
+  `DATA_ACCESS_INVALID_SIGNATURE` / `*_SESSION_GRANT_EXPIRED` is re-signed with a fresh nonce and
+  sent again after about a block (`sessionKeyChangeRetryMs`, default 1000), at most
+  `DEFAULT_KEY_CHANGE_RETRY_ATTEMPTS` (10) times; after the window those answers are final. Renew at
+  least 10 blocks before the expiry.
+- **Zero cap is unlimited.** `spendCap` defaults to `"0"`: a leaked key can then authorize orders
+  up to the whole account balance. Set a cap where that matters. The cap counts the cumulative
+  `max_fee` of admitted orders and is never reset.
+- **No silent wallet fallback.** Before signing, `openTask` checks what the chain will check: not
+  CLOSED, the registered key is the loaded one, not expired, the session anchor is at or after the
+  key's registration height (it waits up to `sessionKeyAnchorWaitMs` for that), and
+  `spent + max_fee <= cap` (and fits a u64 even with cap 0). The chain checks the expiry at the
+  admitting height, which is at or after `earliestSubmitHeight`: an order whose window starts after
+  the expiry is refused (`SDK_LOCAL_SESSION_KEY_EXPIRED`); one whose window only ends after it is
+  sent with `res.keyExpiresInOrderWindow` set (it is rejected if admitted after the expiry). A
+  failed check throws an `SDK_LOCAL_SESSION_*` error. Use
+  `sessionKeyState(sessionId)` to see why; `forgetSessionKey` returns the session to wallet signing.
+- **Expired answers to key-signed requests are final.** A registered-key request carries no grant,
+  so `SDK_AUTH_SESSION_GRANT_EXPIRED` / `DATA_ACCESS_SESSION_GRANT_EXPIRED` for it is
+  `retriable: false` (outside the key-change window above). A Builder that does not hold the Task
+  answers a key-signed Task Data request with `DATA_ACCESS_INVALID_SIGNATURE`, not NOT_FOUND; that
+  answer is `switchSource: true`, so try the Builder that holds the Task.
+- **If the chain rejects an order.** See below; nothing is resubmitted automatically.
+- **Rollout.** Enable it only after the chain (`max_session_key_blocks` of at least 2) and the Task
+  Builders support it; otherwise registration is refused with `SDK_LOCAL_SESSION_KEY_UNSUPPORTED`.
+
 A client built by hand for another Builder should share the signing context:
 `new IngressClient(transport, client.ingressAuth())`.
+
+**If the chain rejects an order.** `openTask`'s acks are only local acceptance; the chain's Keeper
+can still refuse the order (key rotated or cleared elsewhere, expired, cap used up by concurrent
+orders, session closed). A refused order does not consume its sequence. `waitForAdmission` reads
+the chain until it decides, watching every acking Builder's task events as hints:
+
+```ts
+const res = await client.openTask(params);
+const out = await client.waitForAdmission(res);           // { timeoutMs?, pollIntervalMs?, signal? }
+if (out.kind === 'rejected') {
+  // out.diagnosis: { reason, sequenceFree, events, session }
+  if (out.diagnosis.reason === 'cleared') {
+    await client.openTask({ ...out.retry, orderSigner: 'wallet' });   // the chain has no key now
+  } else {
+    if (out.diagnosis.reason === 'expired') await client.updateSessionKey(sid, { renew: {} });
+    await client.openTask(out.retry);
+  }
+}
+```
+
+- `accepted` / `superseded` come from the chain task (same or another `task_hash`). `rejected`
+  needs **every** acking Builder to report and a later chain read to still show no task: one
+  Builder's rejection does not prove another did not get the order admitted. A report is
+  `RECORD_REJECTED` / `NO_CAPACITY` / `ASSIGN_TIMEOUT` / `ORDER_EXPIRED` after the Builder's last `ORDER_RECEIVED` (a Builder keeps
+  an abandoned task's journal, so a retry's stream replays the previous attempt first), or
+  `ABANDONED` when the event stream answers NotFound (the Builder dropped the task it acked).
+  `DISPATCH_RECORDED` triggers an immediate chain read. A Builder may refuse
+  the key-signed event stream once the key changed, so `rejected` also follows, without any
+  report, once the latest height is past the order's `orderExpireHeight` and the chain still has
+  no task. Otherwise the wait ends as `timeout`.
+- `reason` comes from the session read after the rejection: `session-closed`, `cleared`,
+  `rotated`, `expired` (the expiry is compared with the later of the latest height and the
+  order's `earliestSubmitHeight`), `anchor-before-set-height`, `spend-cap` or `unrelated` (always
+  `unrelated` for a wallet-signed order).
+- `retry` is `res.retryParams`: the same params and sequence, without `context` / `expiryHeight`,
+  and a new idempotency key `<key>#retry<n>`, because the re-signed order has a new `task_hash`.
+  Its `orderWindow` keeps the order window relative to the original context's latest height, and
+  openTask rebases it on the retry's fresh context, so a retry after a past-deadline rejection is
+  not born expired. When the sequence was used up meanwhile (another order, or `cancelOrder`),
+  `sequenceFree` is false and `retry` has no `orderSequence`.
+- A retry identical to the rejected order (same anchor, heights and fees) would hit the Builders'
+  tombstone of the deleted input: openTask then resolves one fresh context, and if the order is
+  still identical throws `SDK_LOCAL_RETRY_ORDER_UNCHANGED` (retriable: a block later, or change
+  the order). A Builder still tracking the rejected version answers
+  `NEXUS_INGRESS_ORDER_REPLACEMENT_UNSUPPORTED` until it reconciles; openTask re-sends the retry to
+  it after about a block (`orderReplacementRetryMs`), at most `ORDER_REPLACEMENT_RETRY_ATTEMPTS` (3)
+  times, re-signing the envelope with a fresh nonce (a wallet-signed envelope prompts each time).
+- Any order whose `orderExpireHeight` is below the latest height is refused locally
+  (`SDK_LOCAL_ORDER_EXPIRED`) instead of by the Builder.
+- **The SDK never re-signs, renews, raises a cap or switches to the wallet by itself.** You decide,
+  then call `openTask(retry)`. `orderSigner: 'wallet'` signs one order with the wallet while a key
+  stays loaded (no key prechecks).
+- A task that reached the chain and finished refuses a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
 
 ### ✅ On-chain writes: direct ethsecp256k1 signing (`EthSecp256k1DirectSigner`)
 
@@ -535,6 +758,72 @@ the account's first tx, the chain stores its public key as ethsecp256k1, and the
 > `MsgCreateSession` was broadcast for real through this signer and landed on-chain multiple
 > times: the address derivation via keccak, the keccak256(SignDoc) digest, and the rewritten
 > ethsecp256k1 public key type URL all passed node's ante handler.
+
+### ✅ On-chain writes from a browser wallet: the Web3 path (`connectTrueOpenWeb3ChainClient`)
+
+A browser wallet (MetaMask or any EIP-1193 provider, Keplr `signEthereum`) cannot produce a
+DIRECT signature; it can only sign EIP-712 typed data. node accepts a second transaction envelope
+for it (`app/account_ante.go`): one critical `/cosmos.evm.eip712.v1.ExtensionOptionsWeb3Tx`
+option, `SIGN_MODE_LEGACY_AMINO_JSON`, and a 65-byte R||S||V signature over the "Cosmos Web3"
+typed data (cosmos-evm v0.6.3 `WrapTxToTypedData`) of the canonical Amino sign doc.
+`connectTrueOpenWeb3ChainClient` builds and broadcasts exactly that, returning the same
+`ChainClient` (`createSession`, `updateSessionKey`, `cancelOrder` and the reads), so a browser app
+can create a session with a registered session key with one wallet prompt for the transaction.
+
+> The transactions this path builds are accepted by node's full ante handler (checked against the
+> deployed node code, with the wire `session_key_amino_v1.json` vectors). It has not yet been tried
+> with a real MetaMask or Keplr: the "Cosmos Web3" domain uses the string fields
+> `verifyingContract: "cosmos"` and `salt: "0"`, and wallet-side acceptance of that domain is
+> unverified. Smoke-test your wallet before relying on it.
+
+
+```ts
+import {
+  TrueOpenClient, connectTrueOpenWeb3ChainClient, eip1193TypedDataSigner, toAccountAddress, HubReader,
+} from 'trueopen-sdk';
+
+const [address0x] = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+const wallet = eip1193TypedDataSigner({ provider: window.ethereum, address: address0x });
+const signatureChainId = BigInt((await window.ethereum.request({ method: 'eth_chainId' })) as string);
+const userAddress = toAccountAddress(address0x);
+const businessDenom = await new HubReader({ baseUrl: restUrl, fetch: (u) => fetch(u) }).getBusinessDenom();
+
+const { client: chain } = await connectTrueOpenWeb3ChainClient({
+  rpcUrl, restUrl, wallet, signerAddress: userAddress,
+  typedDataChainId: signatureChainId, // the wallet's active network, same as signatureChainId below
+  fee: { amount: [{ denom: businessDenom, amount: '7500' }], gas: '300000' }, // explicit, never 'auto'
+});
+const client = new TrueOpenClient({ chainId, userAddress, wallet, signatureChainId, chain, hub, taskReader, /* ... */ });
+
+// One wallet prompt: the MsgCreateSession that also registers the session key.
+const s = await client.createSession({ label: 'chat', initialBuilder, initialDeposit: '1000000', sessionKey: { expiryBlocks: 100, spendCap: 5_000_000n } });
+saveSecurely('chat', s.sessionKey!.privateKey);
+// Orders are now signed by the session key; renew / rotate / clear and cancelOrder are Web3 txs too.
+```
+
+- **Phase 1 fields.** The Amino `MsgCreateSession` always carries `initial_deposit` (`{ atomic_units }`,
+  default `"0"`) and `initial_builder`; `MsgDepositSession` / `MsgWithdrawSession` have Amino forms
+  too (wire `task/session_funding_amino_v1.json`).
+- **Shape.** One Msg per transaction, signer = the wallet account, no fee payer / granter, default
+  timeout, ordered. The fee must be explicit: node only simulates DIRECT transactions, so
+  `fee: 'auto'` is refused (`SDK_LOCAL_TX_FEE_AUTO`).
+- **The account must exist** (it pays the fee; `CHAIN_ACCOUNT_NOT_FOUND` otherwise). On its first
+  transaction it has no public key on chain: the SDK recovers the key from the wallet's signature
+  and puts it in the SignerInfo. When the chain has one, it must derive the signer address
+  (`SDK_LOCAL_TX_PUBKEY_MISMATCH`, checked before the wallet is asked) and the signature must
+  recover to it.
+- **Domain chainId.** `typedDataChainId` is the signer-chosen EIP-712 domain chainId (1..MaxInt64),
+  carried in the extension option; replay across chains is stopped by the Cosmos `chain_id`
+  inside the signed document. MetaMask needs its active network here.
+- The signature is recovered and checked against the signer before broadcast
+  (`SDK_LOCAL_SIGNER_ADDRESS_MISMATCH`). `createTrueOpenWeb3ChainClient` takes an injected
+  `Web3ChainRpc` (a CosmJS `StargateClient` connected with `ethAccountParser` satisfies it).
+
+> ✅ Verified against the frozen wire vectors (`task/session_key_amino_v1.json`,
+> `task/session_funding_amino_v1.json`,
+> `shared/account_signing_v1.json` `msg_create_session_transaction`) and against node's own ante
+> handler: the SDK's TxRaw bytes for all three Msgs, including a first transaction with no stored
+> public key, were accepted, and tampered ones refused.
 
 ### ✅ Model manifest retrieval (`ManifestSource`)
 
@@ -688,8 +977,8 @@ real devnet.
 ### proto source
 
 The single authority for all proto is **[TrueOpen/wire](https://github.com/TrueOpen/wire)**,
-pinned as a submodule at `third_party/wire` to `main` (`41af15b`, pre-v0.5.0), carrying the
-signer-chosen `signature_chain_id` and the `0x`-prefixed Hash32 text form (wire #44). **This repo no longer keeps
+pinned as a submodule at `third_party/wire` to wire `v0.5.1` (`1c9db9b`), carrying the
+signer-chosen `signature_chain_id`, the `0x`-prefixed Hash32 text form (wire #44) and registered session keys (ADR-0037). **This repo no longer keeps
 any proto of its own** -- a hand-copied subset would silently drift, and nexus applies
 `DiscardUnknown` + `proto.Equal` to order bytes, so a single field-number mismatch gets the whole
 order rejected. (wire also absorbs nexus's `nexus.v1.IngressAPI`, so the on-chain contract and
@@ -703,8 +992,8 @@ npm run generate                              # needs BSR network access (cosmos
 
 | proto | source |
 |---|---|
-| `nexus.v1.IngressAPI` | `third_party/wire` (`main` @ `41af15b`) |
-| `task.v1` / `shared.v1` | `third_party/wire` (`main` @ `41af15b`) |
+| `nexus.v1.IngressAPI` | `third_party/wire` (wire `v0.5.1` @ `1c9db9b`) |
+| `task.v1` / `shared.v1` | `third_party/wire` (wire `v0.5.1` @ `1c9db9b`) |
 | `cosmos.base.v1beta1` + gogoproto / cosmos_proto / amino annotations | BSR (commit pinned in `buf.lock`) |
 
 The generation scope is limited by `buf.gen.yaml`'s `paths` to the transitive closure the SDK
@@ -734,7 +1023,7 @@ Besides the library, `trueopen-sdk` ships the `trueopen` CLI -- a thin wrapper a
 |---|---|---|
 | `trueopen address` | mnemonic -> address | none |
 | `trueopen builders` | discovers the nexus endpoint on-chain | none |
-| `trueopen session create [label]` / `session get <id>` | createSession / getSession | gas / none |
+| `trueopen session create [label] --builder <trueopen1...> [--deposit <amount>]` / `session get <id>` | createSession / getSession | gas / none |
 | `trueopen order submit --order-file <f> --session <id> --payload-file <f> [--seq <n>] [--idempotency-key <k>]` | openTask | freezes max_fee |
 | `trueopen order cancel --session <id> --seq <n>` | cancelOrder | gas |
 | `trueopen task status <session> <task>` / `task watch <session> <task>` | taskStatus / watchTask (streaming) | none |
@@ -810,7 +1099,7 @@ node dist/cli.cjs builders --rest-url https://<host>:1317
 TRUEOPEN_MNEMONIC="..." node dist/cli.cjs address
 # create a session (gas); use https once TLS is enabled on the node port (local testing can use http://127.0.0.1)
 TRUEOPEN_RPC_URL=https://<host>:26657 TRUEOPEN_REST_URL=https://<host>:1317 \
-  TRUEOPEN_MNEMONIC="..." node dist/cli.cjs session create
+  TRUEOPEN_MNEMONIC="..." node dist/cli.cjs session create --builder <trueopen1...> --deposit 1000000
 # retrieve the output body (--auto discovers nexus, verifies the certificate against the on-chain tls_pubkey_hash)
 TRUEOPEN_REST_URL=https://<host>:1317 TRUEOPEN_MNEMONIC="..." \
   node dist/cli.cjs output get <session> <task> --auto --json

@@ -139,6 +139,37 @@ describe('body digest (H_FIELDS_V1)', () => {
     expect(() => canonicalObjectRefFrame({ ...worker, evidenceProducerKind: 0 })).toThrow();
   });
 
+  // ADR-0040: the Worker's anchor bundle (kind 5) is a Worker data-plane object. The
+  // digests are the ones Cortex (internal/builderclient) and Nexus (internal/taskdata)
+  // compute for the same ref, so a User reading an anchor object signs exactly what the
+  // Builder verifies.
+  it('WORKER_ANCHOR_OPENING objects hash like Cortex and Nexus', () => {
+    const anchorRef: TaskDataObjectRef = {
+      taskHash: '0x' + '22'.repeat(32),
+      sessionId: '0x' + '33'.repeat(32),
+      taskId: '0x' + '11'.repeat(32),
+      objectKind: TASK_DATA_OBJECT_KIND.EVIDENCE_MANIFEST,
+      contentHash: '0x' + '44'.repeat(32),
+      evidenceProducerKind: 1,
+      verifyRound: 1,
+      producerOperator: 'trueopen1crqu9s7ychrv0jxfet9uenwwelgdr5knutsmxe',
+      evidenceKind: EVIDENCE_KIND.WORKER_ANCHOR_OPENING,
+    };
+    expect(EVIDENCE_KIND.WORKER_ANCHOR_OPENING).toBe(5);
+    expect(toHex(taskDataMetadataBodyDigest(anchorRef))).toBe(
+      '1f4fc8a0975ab3f34dbc37eccf7a3366c9616197c0a4d6a1c679d2999902d6fa',
+    );
+    expect(toHex(taskDataFetchBodyDigest(anchorRef))).toBe(
+      '0c3349e2ea0565f4bc1be24d59f5d36f9231751e657abc9a185c954571a8fd6a',
+    );
+    expect(toHex(taskDataFetchBodyDigest(anchorRef, { offset: 0n, length: 64n }))).toBe(
+      '3c3a86a16e135f66fb2444aaf420bcd55ee6b66e1c5bf29613b44d9cdb38a281',
+    );
+    // Still a Worker-only kind: a Verifier object or a non-evidence object cannot carry it.
+    expect(() => canonicalObjectRefFrame({ ...anchorRef, evidenceProducerKind: 2, verifyRound: 2 })).toThrow(/data-plane/);
+    expect(() => taskDataMetadataBodyDigest({ ...REF, evidenceKind: EVIDENCE_KIND.WORKER_ANCHOR_OPENING })).toThrow(/non-evidence/);
+  });
+
   // "no producer kind" and "wrong kind for this producer" are different mistakes; folding
   // them together produced "evidence_kind 0 is not a data-plane evidence kind for producer
   // kind 0", which names neither.

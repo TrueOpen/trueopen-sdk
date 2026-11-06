@@ -10,9 +10,11 @@
   `NEXUS_INGRESS_NO_CAPACITY` refusing a retry whose draw is used up in its VRF epoch (the next
   epoch's first height). It reads through a one-Builder `TASK_BUILDER_ALL_ENDPOINTS_FAILED`
   (`openTask`). No new error code.
-- **Changed:** `openTaskWithRecovery`, on `NEXUS_INGRESS_NO_CAPACITY` with no other Builder left,
-  waits for that height (within `maxPolls`) and re-signs for the same Builder instead of
-  throwing; with another Builder it still routes there first.
+- **Changed:** `openTaskWithRecovery` records the retry height each Builder names and does not try
+  it again before then. On `NEXUS_INGRESS_NO_CAPACITY` with no other Builder left it waits for the
+  earliest named height (within `maxPolls`; it stops when the sequence is recorded, the Session
+  closes or the signal aborts) and re-signs for that Builder instead of throwing; with another
+  Builder it still routes there first.
 
 ### Added: stream output before the dispatch record lands
 

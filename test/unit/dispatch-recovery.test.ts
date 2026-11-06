@@ -207,3 +207,48 @@ it('an exhausted draw still routes to another Builder first, and without a heigh
   const far = exhausted(99n);
   await expect(recoverDispatch(port({ builders: ['a'], submit: async () => { throw far; } }), policy)).rejects.toBe(far);
 });
+
+it('with several Builders, records each retry height and waits for the earliest, then re-signs there', async () => {
+  let height = 10n;
+  const calls: [string, boolean, bigint][] = [];
+  const heights: Record<string, bigint> = { a: 30n, b: 15n, c: 20n };
+  await recoverDispatch(port({ readHeight: async () => height,
+    submit: async (b, refresh) => { calls.push([b, refresh, height]); if (calls.length <= 3) throw exhausted(heights[b]); return ack; },
+  }), { ...policy, maxAttempts: 5, maxPolls: 10, sleep: async () => { height++; } });
+  expect(calls).toEqual([['a', false, 10n], ['b', false, 10n], ['c', false, 10n], ['b', true, 15n]]);
+});
+
+it('a Builder without a retry height is skipped for the wait on one that named a height', async () => {
+  let height = 10n;
+  const calls: [string, bigint][] = [];
+  await recoverDispatch(port({ builders: ['a', 'b'], readHeight: async () => height,
+    submit: async b => { calls.push([b, height]); if (calls.length === 1) throw exhausted(12n); if (calls.length === 2) throw exhausted(); return ack; },
+  }), { ...policy, maxPolls: 5, sleep: async () => { height++; } });
+  // a is not tried again before its retry height.
+  expect(calls).toEqual([['a', 10n], ['b', 10n], ['a', 12n]]);
+});
+
+it('the wait for a retry height stops when the sequence is recorded, the Session closes or recovery is aborted', async () => {
+  let reads = 0, submits = 0;
+  const recorded = await recoverDispatch(port({ builders: ['a'],
+    readSession: async () => (++reads > 1 ? { ...state, nextExpectedSequence: 3n } : state),
+    submit: async () => { submits++; throw exhausted(99n); },
+  }), { ...policy, maxPolls: 10 });
+  expect(recorded.status).toBe(4);
+  expect(submits).toBe(1);
+
+  reads = 0; submits = 0;
+  await expect(recoverDispatch(port({ builders: ['a'],
+    readSession: async () => (++reads > 1 ? { ...state, pendingWithdrawKind: 'CLOSE' } : state),
+    submit: async () => { submits++; throw exhausted(99n); },
+  }), { ...policy, maxPolls: 10 })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_CLOSING' });
+  expect(submits).toBe(1);
+
+  const controller = new AbortController();
+  submits = 0;
+  await expect(recoverDispatch(port({ builders: ['a'],
+    readSession: async () => state,
+    submit: async () => { submits++; controller.abort(); throw exhausted(99n); },
+  }), { ...policy, maxPolls: 10, signal: controller.signal })).rejects.toMatchObject({ code: 'SDK_LOCAL_ABORTED' });
+  expect(submits).toBe(1);
+});

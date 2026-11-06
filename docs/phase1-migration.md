@@ -25,7 +25,7 @@ cannot dispatch. The Builder refuses such a retry up front with `NEXUS_INGRESS_N
 returns it (and the `NEXUS_INGRESS_DISPATCH_NOT_READY` height); wait until the latest height
 reaches it and call `openTask` again with the same `orderSequence`, which re-signs the order in
 the new epoch with an expiry covering it. `openTaskWithRecovery` does this itself when no other
-Builder is left to route to. The first failure of an accepted order arrives as the task event
+Builder is left to route to, waiting for the earliest height any Builder named. The first failure of an accepted order arrives as the task event
 `NO_CAPACITY`, which carries no height; the height comes with the refusal of the retry.
 
 ## Builder service-key rotation

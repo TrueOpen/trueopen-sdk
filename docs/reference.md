@@ -140,9 +140,10 @@ Returns that height for either code (reading through a one-Builder
 another Builder). Wait until the latest height reaches it and call `openTask` again with the
 same `orderSequence`: the order is re-signed with `earliest_submit_height` at the latest height
 and keeps its lifetime, so it falls in the new epoch and its `order_expire_height` covers the
-retry height. `openTaskWithRecovery` routes `NO_CAPACITY` to the next Builder as before; when no
-other Builder is left and the answer names a height, it waits for it (within `maxPolls`) and
-re-signs for the same Builder.
+retry height. `openTaskWithRecovery` routes `NO_CAPACITY` to the next Builder as before, but does
+not try a Builder again before the height it named; when no other Builder is left it waits for
+the earliest named height (within `maxPolls`, stopping when the sequence is recorded, the Session
+closes or the signal aborts) and re-signs for that Builder.
 
 ```ts
 async resolveTaskBuilders({ sessionId, orderSequence?, context? }): Promise<{ taskId, orderSequence, context, endpoints, unresolvedBuilders }>

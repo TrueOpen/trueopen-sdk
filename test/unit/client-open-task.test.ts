@@ -11,6 +11,8 @@ import { defaultGenerationParams } from '../../src/order/task-order-input';
 import { TASK_TYPE, DEADLINE_LATENCY_CLASS } from '../../src/order/task-order';
 import type { BuilderSetSnapshot, ServiceDescriptorRef, BeaconView, ParameterBucketView } from '../../src/types/hub';
 import { deriveTaskId } from '../../src/order/order-signing';
+import { dispatchRetryHeight } from '../../src/transport/dispatch-recovery';
+import { TaskBuilderAllEndpointsFailedError } from '../../src/transport/fan-out-submit';
 import {
     secp256k1PublicKey,
 } from '../../src/signer/secp256k1';
@@ -571,6 +573,25 @@ it('resolves a recorded-task error detail through QueryTask without sending the 
   expect(await client.openTaskWithRecovery({ sessionId: SESSION, order, idempotencyKey: 'recorded' }, { maxAttempts: 3, maxPolls: 2, pollIntervalMs: 0 })).toMatchObject({ status: 4, taskId, boundBuilder: ADDRS[1] });
   expect(contacted).toEqual([`grpc://${ADDRS[0]}:8080`]);
   expect(queried).toBe(1);
+});
+
+it('surfaces the retry height of a NO_CAPACITY refusing an exhausted retry as a typed detail', async () => {
+  const { OpenTaskResponseSchema } = await import('../../src/gen/nexus/v1/ingress_pb.js');
+  const transport = createRouterTransport(({ service }) => service(IngressAPI, {
+    async openTask() {
+      throw new ConnectError('NEXUS_INGRESS_NO_CAPACITY: epoch 11: no member of the order is left after rank 4 of 4; dispatchable_height=1200',
+        Code.FailedPrecondition, undefined, [{ desc: OpenTaskResponseSchema, value: { dispatchAvailableHeight: 1200n } }]);
+    },
+  }));
+  const client = new TrueOpenClient({
+    chainId: 'trueopen-localnet-1', userAddress: USER, wallet, chain: fakeChain(), hub,
+    signatureChainId: 424242n, feeDenom: 'utrueopen', ingressTransport: transport, ingressTransportFactory: () => transport,
+  });
+  const error = await client.openTask({ sessionId: SESSION, order, idempotencyKey: 'exhausted' }).catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: 'TASK_BUILDER_ALL_ENDPOINTS_FAILED' });
+  expect((error as TaskBuilderAllEndpointsFailedError<{ serviceEndpoint: string }, { accepted: boolean }>).results[0]?.error)
+    .toMatchObject({ code: 'NEXUS_INGRESS_NO_CAPACITY', category: 'capacity', details: { dispatchAvailableHeight: 1200n } });
+  expect(dispatchRetryHeight(error)).toBe(1200n);
 });
 
 describe('request envelope expiry', () => {

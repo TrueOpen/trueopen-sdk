@@ -123,6 +123,28 @@ returns the result. A CLOSED Session or one with a pending CLOSE is refused
 (`SDK_LOCAL_SESSION_CLOSING`), as is one without a bound Builder
 (`SDK_LOCAL_SESSION_BINDING_MISSING`).
 
+A Builder that cannot dispatch the order's sequence before a known height says so in the typed
+OpenTask error detail, `details.dispatchAvailableHeight` (OpenTaskResponse
+`dispatch_available_height`): `NEXUS_INGRESS_DISPATCH_NOT_READY` (the order's VRF epoch is not
+dispatchable yet), and `NEXUS_INGRESS_NO_CAPACITY` refusing a retry of a failed sequence whose
+earlier attempts used up the draw of its VRF epoch (within one epoch a retry continues their
+cursor and skip count, so it would fail at once; the height is the next epoch's first height).
+`openTask` reports the refusal in `TASK_BUILDER_ALL_ENDPOINTS_FAILED.results[0].error`.
+
+```ts
+function dispatchRetryHeight(error: unknown): bigint | undefined
+```
+
+Returns that height for either code (reading through a one-Builder
+`TASK_BUILDER_ALL_ENDPOINTS_FAILED`), else `undefined` (a `NO_CAPACITY` without it: move to
+another Builder). Wait until the latest height reaches it and call `openTask` again with the
+same `orderSequence`: the order is re-signed with `earliest_submit_height` at the latest height
+and keeps its lifetime, so it falls in the new epoch and its `order_expire_height` covers the
+retry height. `openTaskWithRecovery` routes `NO_CAPACITY` to the next Builder as before, but does
+not try a Builder again before the height it named; when no other Builder is left it waits for
+the earliest named height (within `maxPolls`, stopping when the sequence is recorded, the Session
+closes or the signal aborts) and re-signs for that Builder.
+
 ```ts
 async resolveTaskBuilders({ sessionId, orderSequence?, context? }): Promise<{ taskId, orderSequence, context, endpoints, unresolvedBuilders }>
 async prewarmTaskBuilders(endpoints): Promise<void>

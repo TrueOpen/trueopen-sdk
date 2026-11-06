@@ -1,6 +1,7 @@
 import { TrueOpenError } from '../errors/errors';
 import type { StreamStateView } from '../types/node';
 import type { OpenTaskAck } from './ingress-client';
+import { TaskBuilderAllEndpointsFailedError } from './fan-out-submit';
 
 export interface DispatchRecoveryPolicy {
   readonly signal?: AbortSignal;
@@ -20,7 +21,40 @@ export interface DispatchRecoveryPort {
   /** Resolve the already admitted task without dispatching it again. */
   recorded(builder: string, taskId?: string): Promise<OpenTaskAck>;
 }
-/** Sequential recovery. A pending takeover never permits speculative third-party dispatch. */
+/**
+ * The height from which an order of the same sequence, re-signed, can dispatch at the Builder
+ * that refused it with `error`: OpenTaskResponse.dispatch_available_height
+ * (`details.dispatchAvailableHeight`) of
+ * - `NEXUS_INGRESS_DISPATCH_NOT_READY`: the order's VRF epoch cannot dispatch before it;
+ * - `NEXUS_INGRESS_NO_CAPACITY` refusing a retry whose earlier attempts used up the draw of its
+ *   VRF epoch (within one epoch a retry continues their cursor and skip count): the first height
+ *   of the next epoch, from which the order is drawn afresh.
+ *
+ * Wait until the latest height reaches it, then call openTask again with the same
+ * `orderSequence`: openTask anchors earliest_submit_height at the latest height and keeps the
+ * order's lifetime, so the re-signed order belongs to the new epoch and its order_expire_height
+ * covers the retry height (an unchanged order whose expiry is below it must not be resent).
+ * Undefined for any other error, or a NO_CAPACITY without a height (move to another Builder).
+ * openTask reports its one Builder's refusal as TASK_BUILDER_ALL_ENDPOINTS_FAILED with that
+ * refusal in `results[0].error`; such an error with exactly one result is read through.
+ */
+export function dispatchRetryHeight(error: unknown): bigint | undefined {
+  if (error instanceof TaskBuilderAllEndpointsFailedError) {
+    return error.results.length === 1 ? dispatchRetryHeight(error.results[0]!.error) : undefined;
+  }
+  if (!(error instanceof TrueOpenError)) return undefined;
+  if (error.code !== 'NEXUS_INGRESS_DISPATCH_NOT_READY' && error.code !== 'NEXUS_INGRESS_NO_CAPACITY') return undefined;
+  const height = error.details?.dispatchAvailableHeight;
+  return typeof height === 'bigint' ? height : undefined;
+}
+
+/**
+ * Sequential recovery. A pending takeover never permits speculative third-party dispatch.
+ * NO_CAPACITY moves to the next Builder. A Builder whose answer names a retry height
+ * (dispatchRetryHeight) is not tried again before it; when no other Builder is left, the order
+ * waits for the earliest such height (stopping when the sequence is recorded, the Session closes
+ * or recovery is aborted) and is re-signed for that Builder.
+ */
 export async function recoverDispatch(port: DispatchRecoveryPort, policy: DispatchRecoveryPolicy): Promise<OpenTaskAck> {
   if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1 || !Number.isSafeInteger(policy.maxPolls) || policy.maxPolls < 1 || !Number.isFinite(policy.pollIntervalMs) || policy.pollIntervalMs < 0) throw new Error('invalid dispatch recovery policy');
   const checkAbort = () => {
@@ -42,12 +76,15 @@ export async function recoverDispatch(port: DispatchRecoveryPort, policy: Dispat
   // Builders that answered NEXUS_INGRESS_BUILDER_KEY_ROTATING, with the activation height of their
   // pending service key (undefined when they gave none). They take no new work until then.
   const rotating = new Map<string, bigint | undefined>();
-  /** The next Builder after `from` in snapshot order that is not rotating, if any. */
+  // Builders that answered NO_CAPACITY with a retry height: the draw of the order's epoch is used
+  // up there until that height.
+  const exhausted = new Map<string, bigint>();
+  /** The next Builder after `from` in snapshot order that is neither rotating nor exhausted, if any. */
   const nextCandidate = (from: string | undefined): string | undefined => {
     const start = from === undefined ? -1 : builders.indexOf(from);
     for (let i = 1; i <= builders.length; i++) {
       const b = builders[(start + i) % builders.length]!;
-      if (b !== from && !rotating.has(b)) return b;
+      if (b !== from && !rotating.has(b) && !exhausted.has(b)) return b;
     }
     return undefined;
   };
@@ -181,10 +218,31 @@ export async function recoverDispatch(port: DispatchRecoveryPort, policy: Dispat
         target = [...builders].find((b) => !rotating.has(b) && b === state.boundBuilder) ?? nextCandidate(undefined);
         refresh = true; // time has passed: fresh order context and envelope
       } else if ((error.category === 'transport' && error.retriable) || error.code === 'NEXUS_INGRESS_NO_CAPACITY' || error.code === 'NEXUS_CONNECT_DEADLINE_EXCEEDED') {
+        // A draw used up in its epoch names the next epoch's first height.
+        const retryHeight = error.code === 'NEXUS_INGRESS_NO_CAPACITY' ? dispatchRetryHeight(error) : undefined;
+        if (retryHeight !== undefined) exhausted.set(target!, retryHeight);
         const next = nextCandidate(target);
-        if (!next) throw error;
-        target = next;
-        refresh = false;
+        if (next) {
+          target = next;
+          refresh = false;
+          continue;
+        }
+        if (exhausted.size === 0) throw error;
+        let earliest: [string, bigint] | undefined;
+        for (const [b, h] of exhausted) if (earliest === undefined || h < earliest[1]) earliest = [b, h];
+        let ready = false;
+        for (let poll = 0; poll < policy.maxPolls; poll++) {
+          checkAbort();
+          const current = await port.readSession();
+          if (current.nextExpectedSequence > port.orderSequence) return port.recorded(current.boundBuilder!);
+          if (current.status === 'CLOSED' || current.pendingWithdrawKind === 'CLOSE') throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_SESSION_CLOSING', 'Session is closing');
+          if (await port.readHeight() >= earliest![1]) { ready = true; break; }
+          await sleep(policy.pollIntervalMs);
+        }
+        if (!ready) throw error;
+        for (const [b, h] of exhausted) if (h <= earliest![1]) exhausted.delete(b);
+        target = earliest![0];
+        refresh = true; // re-signed in the new epoch
       } else throw error;
     }
   }

@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
-import { recoverDispatch, type DispatchRecoveryPort } from '../../src/transport/dispatch-recovery';
+import { dispatchRetryHeight, recoverDispatch, type DispatchRecoveryPort } from '../../src/transport/dispatch-recovery';
 import { TrueOpenError } from '../../src/errors/errors';
+import { TaskBuilderAllEndpointsFailedError } from '../../src/transport/fan-out-submit';
 import type { StreamStateView } from '../../src/types/node';
 const policy = { maxAttempts: 4, maxPolls: 3, pollIntervalMs: 0, sleep: async () => {} };
 const state: StreamStateView = { sessionId: 's', owner: 'u', nextExpectedSequence: 2n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', boundBuilder: 'a', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n };
@@ -169,4 +170,85 @@ it('gives up when the earliest activation is not reached within the poll budget'
   await expect(recoverDispatch(port({ submit: async (b) => { calls.push(b); throw rotating(99n); } }), { ...policy, maxAttempts: 6 }))
     .rejects.toMatchObject({ code: 'NEXUS_INGRESS_BUILDER_KEY_ROTATING' });
   expect(calls).toEqual(['a', 'b', 'c']);
+});
+
+const exhausted = (h?: bigint) => new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_NO_CAPACITY', 'draw used up in its epoch', {
+  category: 'capacity', retriable: true, switchSource: true, ...(h === undefined ? {} : { details: { dispatchAvailableHeight: h } }),
+});
+
+it('dispatchRetryHeight reads the retry height of NO_CAPACITY and DISPATCH_NOT_READY only', () => {
+  expect(dispatchRetryHeight(exhausted(180n))).toBe(180n);
+  expect(dispatchRetryHeight(new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_DISPATCH_NOT_READY', 'wait', { details: { dispatchAvailableHeight: 90n } }))).toBe(90n);
+  expect(dispatchRetryHeight(exhausted())).toBeUndefined();
+  expect(dispatchRetryHeight(new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_NO_CAPACITY', 'x', { details: { dispatchAvailableHeight: '180' } }))).toBeUndefined();
+  expect(dispatchRetryHeight(new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_TAKEOVER_PENDING', 'x', { details: { dispatchAvailableHeight: 180n } }))).toBeUndefined();
+  expect(dispatchRetryHeight(new Error('NEXUS_INGRESS_NO_CAPACITY'))).toBeUndefined();
+  // openTask's one-Builder refusal is read through; several Builders' refusals are not.
+  const endpoint = { serviceEndpoint: 'grpc://a' };
+  expect(dispatchRetryHeight(new TaskBuilderAllEndpointsFailedError([{ endpoint, error: exhausted(180n) }]))).toBe(180n);
+  expect(dispatchRetryHeight(new TaskBuilderAllEndpointsFailedError([{ endpoint, error: exhausted(180n) }, { endpoint, error: exhausted(180n) }]))).toBeUndefined();
+});
+
+it('with no other Builder, waits for the retry height of an exhausted draw and re-signs at the same Builder', async () => {
+  let height = 10n;
+  const calls: [string, boolean, bigint][] = [];
+  await recoverDispatch(port({ builders: ['a'], readHeight: async () => height,
+    submit: async (b, refresh) => { calls.push([b, refresh, height]); if (calls.length === 1) throw exhausted(12n); return ack; },
+  }), { ...policy, sleep: async () => { height++; } });
+  expect(calls).toEqual([['a', false, 10n], ['a', true, 12n]]);
+});
+
+it('an exhausted draw still routes to another Builder first, and without a height or in budget gives up', async () => {
+  const calls: string[] = [];
+  await recoverDispatch(port({ submit: async b => { calls.push(b); if (calls.length === 1) throw exhausted(12n); return ack; } }), policy);
+  expect(calls).toEqual(['a', 'b']);
+  const bare = exhausted();
+  await expect(recoverDispatch(port({ builders: ['a'], submit: async () => { throw bare; } }), policy)).rejects.toBe(bare);
+  const far = exhausted(99n);
+  await expect(recoverDispatch(port({ builders: ['a'], submit: async () => { throw far; } }), policy)).rejects.toBe(far);
+});
+
+it('with several Builders, records each retry height and waits for the earliest, then re-signs there', async () => {
+  let height = 10n;
+  const calls: [string, boolean, bigint][] = [];
+  const heights: Record<string, bigint> = { a: 30n, b: 15n, c: 20n };
+  await recoverDispatch(port({ readHeight: async () => height,
+    submit: async (b, refresh) => { calls.push([b, refresh, height]); if (calls.length <= 3) throw exhausted(heights[b]); return ack; },
+  }), { ...policy, maxAttempts: 5, maxPolls: 10, sleep: async () => { height++; } });
+  expect(calls).toEqual([['a', false, 10n], ['b', false, 10n], ['c', false, 10n], ['b', true, 15n]]);
+});
+
+it('a Builder without a retry height is skipped for the wait on one that named a height', async () => {
+  let height = 10n;
+  const calls: [string, bigint][] = [];
+  await recoverDispatch(port({ builders: ['a', 'b'], readHeight: async () => height,
+    submit: async b => { calls.push([b, height]); if (calls.length === 1) throw exhausted(12n); if (calls.length === 2) throw exhausted(); return ack; },
+  }), { ...policy, maxPolls: 5, sleep: async () => { height++; } });
+  // a is not tried again before its retry height.
+  expect(calls).toEqual([['a', 10n], ['b', 10n], ['a', 12n]]);
+});
+
+it('the wait for a retry height stops when the sequence is recorded, the Session closes or recovery is aborted', async () => {
+  let reads = 0, submits = 0;
+  const recorded = await recoverDispatch(port({ builders: ['a'],
+    readSession: async () => (++reads > 1 ? { ...state, nextExpectedSequence: 3n } : state),
+    submit: async () => { submits++; throw exhausted(99n); },
+  }), { ...policy, maxPolls: 10 });
+  expect(recorded.status).toBe(4);
+  expect(submits).toBe(1);
+
+  reads = 0; submits = 0;
+  await expect(recoverDispatch(port({ builders: ['a'],
+    readSession: async () => (++reads > 1 ? { ...state, pendingWithdrawKind: 'CLOSE' } : state),
+    submit: async () => { submits++; throw exhausted(99n); },
+  }), { ...policy, maxPolls: 10 })).rejects.toMatchObject({ code: 'SDK_LOCAL_SESSION_CLOSING' });
+  expect(submits).toBe(1);
+
+  const controller = new AbortController();
+  submits = 0;
+  await expect(recoverDispatch(port({ builders: ['a'],
+    readSession: async () => state,
+    submit: async () => { submits++; controller.abort(); throw exhausted(99n); },
+  }), { ...policy, maxPolls: 10, signal: controller.signal })).rejects.toMatchObject({ code: 'SDK_LOCAL_ABORTED' });
+  expect(submits).toBe(1);
 });

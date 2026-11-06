@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added: retry height after an exhausted dispatch
+
+- **Added:** `dispatchRetryHeight(error)`: the height from which a re-signed order of the same
+  sequence can dispatch at the Builder that refused it, from the typed OpenTask detail
+  `details.dispatchAvailableHeight` of `NEXUS_INGRESS_DISPATCH_NOT_READY` or of a
+  `NEXUS_INGRESS_NO_CAPACITY` refusing a retry whose draw is used up in its VRF epoch (the next
+  epoch's first height). It reads through a one-Builder `TASK_BUILDER_ALL_ENDPOINTS_FAILED`
+  (`openTask`). No new error code.
+- **Changed:** `openTaskWithRecovery`, on `NEXUS_INGRESS_NO_CAPACITY` with no other Builder left,
+  waits for that height (within `maxPolls`) and re-signs for the same Builder instead of
+  throwing; with another Builder it still routes there first.
+
 ### Added: stream output before the dispatch record lands
 
 - **Added:** `streamOutput({ beforeRecord })` (`StreamBeforeRecordOptions` =

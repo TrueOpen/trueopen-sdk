@@ -16,6 +16,18 @@ keeps the requested lifetime, so a re-signed retry -- including after
 the bound is `SDK_LOCAL_ORDER_LIFETIME_INVALID` before anything is signed;
 `validateOrderLifetime` and `MAX_ORDER_LIFETIME_BLOCKS_V1` are exported.
 
+## Retrying a sequence after NO_CAPACITY
+
+Within one VRF epoch a same-sequence retry continues the earlier attempts' cursor and skip
+count, so once they passed the last Worker of the draw (or `max_skips`) a retry in that epoch
+cannot dispatch. The Builder refuses such a retry up front with `NEXUS_INGRESS_NO_CAPACITY` and
+`details.dispatchAvailableHeight`, the next epoch's first height. `dispatchRetryHeight(error)`
+returns it (and the `NEXUS_INGRESS_DISPATCH_NOT_READY` height); wait until the latest height
+reaches it and call `openTask` again with the same `orderSequence`, which re-signs the order in
+the new epoch with an expiry covering it. `openTaskWithRecovery` does this itself when no other
+Builder is left to route to. The first failure of an accepted order arrives as the task event
+`NO_CAPACITY`, which carries no height; the height comes with the refusal of the retry.
+
 ## Builder service-key rotation
 
 A Builder with a pending service-key rotation refuses new orders, same-sequence retries,

@@ -226,6 +226,11 @@ export interface ServiceKeyBinding {
   readonly previousServicePubKey?: Uint8Array;
   readonly previousServiceAuthorizationNonce?: bigint;
   readonly previousRetiredHeight?: bigint;
+  /**
+   * Explicit emergency-revoke cutoff of the current key (REST `revoked_height`); absent when the
+   * key was never explicitly revoked. A revoked key verifies only retained proofs below it.
+   */
+  readonly revokedHeight?: bigint;
   readonly participantType: string;
   readonly operatorAddress: string;
   readonly serviceAddress: string;

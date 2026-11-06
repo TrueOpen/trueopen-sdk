@@ -336,6 +336,25 @@ export {
   verifyOutputFinSignature,
   OutputStreamVerifier,
 } from './output/output-commitment';
+export {
+  DOMAIN_DISPATCH_RESULT_HEADER_V1,
+  DOMAIN_DISPATCH_TICKET_V1,
+  DOMAIN_DISPATCH_ACCEPT_V1,
+  dispatchSigningPreimage,
+  dispatchSigningDigest,
+  dispatchTicketDigest,
+  dispatchAcceptDigest,
+  dispatchResultHeaderDigest,
+  verifyServiceDigestSignature,
+  selectServiceProofKey,
+  verifyDispatchResultHeader,
+} from './output/dispatch-proof';
+export type {
+  DispatchSignedMessageName,
+  DispatchProofKeyReader,
+  VerifyDispatchResultHeaderParams,
+  VerifiedDispatchResult,
+} from './output/dispatch-proof';
 export { confirmOutputWithReceipt } from './output/output-confirmation';
 export type {
   ConfirmOutputWithReceiptInput,

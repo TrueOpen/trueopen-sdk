@@ -19,3 +19,11 @@ it('preserves the previous proof key as a separate generation and rejects partia
   delete binding.previous_retired_height;
   await expect(hub.getCurrentServiceKey('PARTICIPANT_TYPE_CORTEX', 'worker')).rejects.toThrow('paired presence');
 });
+it('reads an explicit revoke cutoff only when the binding carries one', async () => {
+  const current = secp256k1PublicKey(new Uint8Array(32).fill(1));
+  const binding: Record<string, unknown> = { participant_type: 'PARTICIPANT_TYPE_BUILDER', operator_address: 'builder', service_address: 'current', service_pubkey: Buffer.from(current).toString('base64'), service_authorization_nonce: '2', builder_service_key_status: 'SERVICE_KEY_STATUS_REVOKED', revoked_height: '140' };
+  const hub = new HubReader({ baseUrl: 'https://chain.invalid', fetch: async () => ({ ok: true, status: 200, json: async () => ({ binding }) }) });
+  expect(await hub.getCurrentServiceKey('PARTICIPANT_TYPE_BUILDER', 'builder')).toMatchObject({ status: 'REVOKED', revokedHeight: 140n });
+  delete binding.revoked_height;
+  expect(await hub.getCurrentServiceKey('PARTICIPANT_TYPE_BUILDER', 'builder')).not.toHaveProperty('revokedHeight');
+});

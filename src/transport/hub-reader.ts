@@ -175,6 +175,7 @@ export class HubReader {
     if (previousCount !== 0 && previousCount !== 3) throw malformed('previous service key fields must have paired presence');
     return {
       ...(previousCount === 3 ? { previousServicePubKey: pubKeyBytes(b, 'previous_service_pubkey'), previousServiceAuthorizationNonce: u64opt(b, 'previous_service_authorization_nonce'), previousRetiredHeight: u64opt(b, 'previous_retired_height') } : {}),
+      ...(b['revoked_height'] !== undefined && b['revoked_height'] !== null ? { revokedHeight: u64opt(b, 'revoked_height') } : {}),
       participantType: str(b, 'participant_type'),
       operatorAddress: str(b, 'operator_address'),
       serviceAddress: str(b, 'service_address'),

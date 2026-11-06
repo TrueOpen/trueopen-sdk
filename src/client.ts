@@ -2740,11 +2740,41 @@ export class TrueOpenClient {
       if (builders.length === 0) {
         throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BUILDERS_REQUIRED', 'beforeRecord.builders must name the Builders the order was sent to');
       }
-      const keys: DispatchProofKeyReader = { getCurrentServiceKey: (pt, addr) => hub.getCurrentServiceKey!.call(hub, pt, addr) };
-      verifyHeader = (header) => verifyDispatchResultHeader(header, {
-        chainId: this.cfg.chainId, sessionId: p.sessionId, taskId: p.taskId, taskHash: signedTaskHash, builders,
-        ...(before.earliestSubmitHeight !== undefined ? { earliestSubmitHeight: before.earliestSubmitHeight } : {}), keys,
-      });
+      // Signer keys are read once per stream: the Builder re-sends its header on every record
+      // status change and at every (re)subscription, and a chain read there would hold up the
+      // output behind it. The Builder keys are read at once, while the subscription opens. A
+      // header that does not verify with the cached bindings (a newer key generation, say) is
+      // verified once more with fresh reads. The chain confirmation always reads afresh.
+      const cache = new Map<string, Promise<ServiceKeyBinding>>();
+      const cachedKeys: DispatchProofKeyReader = {
+        getCurrentServiceKey: (pt, addr) => {
+          const k = `${pt}/${addr}`;
+          let read = cache.get(k);
+          if (read === undefined) {
+            read = hub.getCurrentServiceKey!.call(hub, pt, addr);
+            cache.set(k, read);
+            read.catch(() => { if (cache.get(k) === read) cache.delete(k); });
+          }
+          return read;
+        },
+      };
+      for (const b of builders) void cachedKeys.getCurrentServiceKey(PARTICIPANT_TYPE.BUILDER, b).catch(() => undefined);
+      const verifyWith = (header: DispatchResultHeaderV1, keys: DispatchProofKeyReader): Promise<VerifiedDispatchResult> =>
+        verifyDispatchResultHeader(header, {
+          chainId: this.cfg.chainId, sessionId: p.sessionId, taskId: p.taskId, taskHash: signedTaskHash, builders,
+          ...(before.earliestSubmitHeight !== undefined ? { earliestSubmitHeight: before.earliestSubmitHeight } : {}), keys,
+        });
+      verifyHeader = async (header) => {
+        try {
+          return await verifyWith(header, cachedKeys);
+        } catch (e) {
+          const stale = e instanceof TrueOpenError &&
+            ['DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE', 'DATA_OUTPUT_DISPATCH_SIGNATURE_INVALID', 'OUTPUT_TRUST_ANCHOR_WORKER_KEY_INACTIVE'].includes(e.code);
+          if (!stale) throw e;
+          cache.clear();
+          return verifyWith(header, cachedKeys);
+        }
+      };
     }
 
     let verifier: OutputStreamVerifier | undefined;

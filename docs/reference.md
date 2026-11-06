@@ -832,6 +832,10 @@ first:
   nothing is delivered from it.
 - Frames are then verified exactly as usual against the header's ticket and the Worker's
   current key, and delivered at once with `recorded: false`.
+- Signer keys are read once per stream (the Builder keys as soon as the stream starts), so the
+  header the Builder re-sends on every record status change and resubscription is verified
+  without a chain read; a header that does not verify with the cached keys is verified once
+  more with fresh reads. The chain confirmation always reads afresh.
 - A RECORDED header (or a verified fin, whichever comes first) starts a chain read
   (`waitForOutputTrustAnchors`, paced by `admissionWait`'s `pollIntervalMs` / `timeoutMs`). When
   the anchors name the same `task_hash`, ticket and Worker with the same key, later chunks carry

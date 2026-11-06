@@ -72,9 +72,9 @@ function attempt(o: AttemptOpts = {}) {
     member: target, serviceAuthorizationNonce: 1n,
   });
   accept.serviceSignature = sign(dispatchAcceptDigest(accept), o.acceptPriv ?? o.workerPriv ?? WORKER_PRIV);
-  const header = (status: DispatchRecordStatusV1): DispatchResultHeaderV1 => {
-    const h = create(DispatchResultHeaderV1Schema, { taskId: rawTask, winnerTicket: ticket, accept, recordStatus: status, serviceAuthorizationNonce: 1n });
-    h.builderServiceSignature = sign(dispatchResultHeaderDigest(h), o.builderPriv ?? BUILDER_PRIV);
+  const header = (status: DispatchRecordStatusV1, signer: { nonce: bigint; priv: Uint8Array } = { nonce: 1n, priv: o.builderPriv ?? BUILDER_PRIV }): DispatchResultHeaderV1 => {
+    const h = create(DispatchResultHeaderV1Schema, { taskId: rawTask, winnerTicket: ticket, accept, recordStatus: status, serviceAuthorizationNonce: signer.nonce });
+    h.builderServiceSignature = sign(dispatchResultHeaderDigest(h), signer.priv);
     return h;
   };
   return { ticketHash, ticketHex: hash32Text(ticketHash), worker, header, workerPriv: o.workerPriv ?? WORKER_PRIV };
@@ -169,9 +169,13 @@ function chain() {
 
 const hub = {
   keyReads: 0,
+  /** Bindings that replace an operator's default one (a rotated key). */
+  rotated: {} as Record<string, Omit<ServiceKeyBinding, 'participantType' | 'operatorAddress' | 'serviceAddress'>>,
   getLatestHeight: async (): Promise<bigint> => 500n,
   async getCurrentServiceKey(pt: string, addr: string): Promise<ServiceKeyBinding> {
     hub.keyReads += 1;
+    const rotated = hub.rotated[addr];
+    if (rotated !== undefined) return { participantType: pt, operatorAddress: addr, serviceAddress: addr, ...rotated };
     const key = KEYS[addr];
     if (key === undefined) throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_NOT_FOUND', `no key for ${addr}`);
     return { participantType: pt, operatorAddress: addr, serviceAddress: addr, servicePubKey: key, status: 'ACTIVE', serviceAuthorizationNonce: 1n };
@@ -239,6 +243,59 @@ describe('streamOutput beforeRecord', () => {
     expect(run.events.map(label)).toEqual(['c0?', 'c1?', 'c2+', 'fin']);
     expect(run.events.at(-1)).toMatchObject({ kind: 'fin', attested: true, finishReason: 1 });
     expect(acks).toEqual([2n]);
+  });
+
+  it('reads each signer key once per stream: a re-sent header needs no chain read', async () => {
+    const a = attempt();
+    const out = output(a.ticketHash, WORKER_PRIV, ['one ', 'two']);
+    const c = chain();
+    const { source, send, feed } = liveSource();
+    const before = hub.keyReads;
+    const run = start(c.reader, source);
+    await tick(10);
+    send(0, headerMsg(a.header(DispatchRecordStatusV1.PENDING)), out.chunks[0]!);
+    await tick(20);
+    // The Builder key (read when the stream starts) and the Worker key.
+    expect(hub.keyReads - before).toBe(2);
+    c.record(a.ticketHex, WORKER);
+    send(0, headerMsg(a.header(DispatchRecordStatusV1.RECORDED)));
+    await tick(30);
+    send(0, out.chunks[1]!, out.fin);
+    feed(0, { end: true });
+    await run.done;
+    expect(run.state().failed).toBeUndefined();
+    expect(run.events.map(label)).toEqual(['c0?', 'c1+', 'fin']);
+    // Plus the one read of the chain confirmation itself, which is never cached.
+    expect(hub.keyReads - before).toBe(3);
+  });
+
+  it('re-reads a key when a re-sent header names a newer generation', async () => {
+    const a = attempt();
+    const out = output(a.ticketHash, WORKER_PRIV, ['one ', 'two']);
+    const c = chain();
+    const { source, send, feed } = liveSource();
+    const run = start(c.reader, source);
+    await tick(10);
+    send(0, headerMsg(a.header(DispatchRecordStatusV1.PENDING)), out.chunks[0]!);
+    await tick(20);
+    // The Builder rotated: the RECORDED header is signed by its new key under nonce 2.
+    hub.rotated[BUILDER] = { servicePubKey: pub(STRANGER_PRIV), status: 'ACTIVE', serviceAuthorizationNonce: 2n,
+      previousServicePubKey: pub(BUILDER_PRIV), previousServiceAuthorizationNonce: 1n, previousRetiredHeight: 1000n };
+    try {
+      const reads = hub.keyReads;
+      c.record(a.ticketHex, WORKER);
+      send(0, headerMsg(a.header(DispatchRecordStatusV1.RECORDED, { nonce: 2n, priv: STRANGER_PRIV })));
+      await tick(30);
+      send(0, out.chunks[1]!, out.fin);
+      feed(0, { end: true });
+      await run.done;
+      expect(run.state().failed).toBeUndefined();
+      expect(run.events.map(label)).toEqual(['c0?', 'c1+', 'fin']);
+      // Both signer keys read again after the cached ones failed, plus the confirmation's read.
+      expect(hub.keyReads - reads).toBe(3);
+    } finally {
+      delete hub.rotated[BUILDER];
+    }
   });
 
   it('holds a Fin that arrives before the record until the chain confirms it, and never acks before', async () => {

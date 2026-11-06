@@ -724,6 +724,47 @@ waited out; any other error from the newest read (for example
 The event stream is closed when the wait ends. `timeoutMs` takes effect between reads; a single
 chain read is bounded only by the reader's own limits.
 
+### 8.2a Dispatch header, ticket and accept verification
+
+```ts
+function dispatchSigningPreimage(name: DispatchSignedMessageName, raw: Uint8Array): Uint8Array
+function dispatchSigningDigest(name: DispatchSignedMessageName, raw: Uint8Array): Uint8Array
+function dispatchTicketDigest(ticket: DispatchTicketV1): Uint8Array        // = dispatch_ticket_hash
+function dispatchAcceptDigest(accept: DispatchAcceptV1): Uint8Array
+function dispatchResultHeaderDigest(header: DispatchResultHeaderV1): Uint8Array
+function verifyServiceDigestSignature(pubKey, digest, signature): boolean
+function selectServiceProofKey(binding: ServiceKeyBinding, signedNonce: bigint, proofHeight: bigint | undefined): Uint8Array
+async function verifyDispatchResultHeader(header: DispatchResultHeaderV1, p: VerifyDispatchResultHeaderParams): Promise<VerifiedDispatchResult>
+```
+
+`DispatchSignedMessageName` is `'nexus.v1.DispatchResultHeaderV1' | 'task.v1.DispatchTicketV1' |
+'task.v1.DispatchAcceptV1'` (domains `DOMAIN_DISPATCH_RESULT_HEADER_V1`,
+`DOMAIN_DISPATCH_TICKET_V1`, `DOMAIN_DISPATCH_ACCEPT_V1`). The projection is wire's canonical
+dispatch signing projection: the strictly decoded fields in schema order, framed after the
+domain, signature fields left out (nested messages keep theirs), SHA-256, signed directly with a
+64-byte low-S signature. Unknown or duplicate fields, non-minimal varints, non-32-byte hashes and
+noncanonical addresses are refused (`DATA_OUTPUT_DISPATCH_PROOF_MALFORMED`). The digests are
+pinned by wire's `dispatch_v1.json` vectors.
+
+`selectServiceProofKey` picks the key by the message's own signed nonce from the signer's chain
+binding: the current key while `ACTIVE` or `REVOKED` (an explicit `revokedHeight` admits only
+proofs below it), or the one previous key for proofs below `previousRetiredHeight`. The proof
+height is `max(order earliest_submit_height, ticket bound_change_height)`; when it is unknown, a
+key with a cutoff is refused (`DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE`).
+
+`VerifyDispatchResultHeaderParams` = `{ chainId, sessionId, taskId, taskHash, builders,
+earliestSubmitHeight?, keys }` (`keys`: anything with `getCurrentServiceKey`, e.g. `HubReader`).
+It checks that the winner ticket binds the order (chain, session, task, the signed `task_hash`)
+and that its Builder is in `builders`; that the accept names the same task, `task_hash` and the
+ticket's digest, by the ticket's target; that the header is signed by the ticket's Builder with a
+nonce not older than the ticket's; that the ticket is signed by its Builder and the accept by the
+Worker (the header's signature does not vouch for them); and that the Worker's current key is
+`ACTIVE`. `VerifiedDispatchResult` = `{ taskId, taskHash, dispatchTicketHash,
+dispatchAcceptDigest, builder, winnerWorker, workerServicePubKey, recordStatus }`, with
+`recordStatus` `'PENDING' | 'RECORDED' | 'REJECTED'`. Errors: `DATA_OUTPUT_DISPATCH_HEADER_INVALID`,
+`DATA_OUTPUT_DISPATCH_BUILDER_UNEXPECTED`, `DATA_OUTPUT_DISPATCH_SIGNATURE_INVALID`,
+`DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE`, `OUTPUT_TRUST_ANCHOR_WORKER_KEY_INACTIVE`.
+
 ### 8.3 Streaming
 
 ```ts
@@ -746,13 +787,14 @@ async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent>
 | `admissionWait?` | `waitForAnchors` with `{ sessionId, ...admissionWait }` (options without `sessionId`); `waitForAnchors` takes precedence. |
 | `pendingAnchors?` | Early subscribe with a promise of `{ taskHash, workerServicePubKey }` the caller already has; takes precedence over `waitForAnchors`. |
 | `maxPendingFrames?` | Read-ahead bound before the anchors arrive (default `DEFAULT_MAX_PENDING_FRAMES`, 256). At the bound the SDK stops reading the subscription; nothing is dropped. |
+| `beforeRecord?` | Stream before the chain records the dispatch (see below). `StreamBeforeRecordOptions` = `{ taskHash, builders, earliestSubmitHeight? }`; pass the `openTask` result. Needs `hub.getCurrentServiceKey`, and `config.taskReader` for the confirmation. Explicit `taskHash` + `workerServicePubKey` + `dispatchTicketHash` take precedence; `waitForAnchors` / `pendingAnchors` are not used with it. |
 | `signal?` | Abort: closes the subscription and any anchor wait, throws `OUTPUT_STREAM_ABORTED`. |
 
 `OutputStreamEvent`:
 
 ```ts
 { kind: 'reset', previousDispatchTicketHash: string, dispatchTicketHash: string }
-{ kind: 'chunk', seq: bigint, text: string, mmrRoot: Uint8Array }
+{ kind: 'chunk', seq: bigint, text: string, mmrRoot: Uint8Array, recorded?: boolean }  // recorded: only with beforeRecord
 { kind: 'fin', attested: true,  finishReason: FinishReasonV1 }
 { kind: 'fin', attested: false, finishReason: undefined }   // only under 'accept-unsigned'
 ```
@@ -773,6 +815,36 @@ async *streamOutput(p: StreamOutputParams): AsyncIterable<OutputStreamEvent>
   closes the subscription itself (nexus never ends it on a terminal task state) and throws that
   error. A subscription error before the anchors is handled after them, as a normal failed
   attempt. The idle timeout starts when the anchors are known.
+
+**Streaming before the record (`beforeRecord`).** The Builder's first message on a
+subscription is its signed `DispatchResultHeaderV1` for the task's current attempt, sent as
+soon as a Worker accepted; it is sent again when the chain admits the record (RECORDED) or
+refuses it (REJECTED). While the record is pending the Builder forwards only the first
+`max_prerecord_output_tokens` of output. With `beforeRecord` the SDK does not read the chain
+first:
+
+- The header is checked with `verifyDispatchResultHeader` (§8.2a): the winner ticket binds
+  this order and comes from one of `builders`, the accept is of that ticket by its target, the
+  header and ticket are signed by the ticket's Builder and the accept by the Worker, and the
+  Worker's current key is `ACTIVE`. Anything else is a bad source (the next source is tried);
+  nothing is delivered from it.
+- Frames are then verified exactly as usual against the header's ticket and the Worker's
+  current key, and delivered at once with `recorded: false`.
+- A RECORDED header (or a verified fin, whichever comes first) starts a chain read
+  (`waitForOutputTrustAnchors`, paced by `admissionWait`'s `pollIntervalMs` / `timeoutMs`). When
+  the anchors name the same `task_hash`, ticket and Worker with the same key, later chunks carry
+  `recorded: true` (which also confirms the earlier ones). When the chain recorded another
+  attempt of the task, a `reset` switches to it and its output streams from seq 0. A chain
+  `task_hash` that is not the signed one, or the same ticket with another Worker or key, ends
+  the stream with `DATA_OUTPUT_DISPATCH_ANCHOR_MISMATCH`; a failed or timed-out read ends it
+  with that error.
+- A REJECTED header ends the stream with `OUTPUT_RECORD_REJECTED` (re-sign the order with
+  `OpenTaskResult.retryParams` to try again).
+- `fin` and the ack only ever follow a confirmed record: a fin that arrives first is verified
+  and held until the chain confirms the attempt.
+- After `NEXUS_INGRESS_ATTEMPT_STALE` the replacement header is verified the same way (not
+  through `resolveDispatchResult`) and is provisional until the chain records it.
+- Without `beforeRecord` nothing changes, and chunks have no `recorded` field.
 
 ### 8.4 Fetch (whole object)
 
@@ -1016,7 +1088,8 @@ class RestChainReader  // task.v1.Query (session / task / infer receipt)
 
 `HubReader` (`baseUrl`, `fetch`, `retry?`) reads: models (`listModels`), profiles
 (`getProfile`), pricing, builder set by height (`getBuilderSetAtHeight`), service
-descriptors (`getServiceDescriptor`), current service keys (`getCurrentServiceKey`),
+descriptors (`getServiceDescriptor`), current service keys (`getCurrentServiceKey`, with the
+previous proof key and an explicit `revokedHeight` when the chain reports them),
 `business_denom` (`getBusinessDenom`), and manifest state
 (`getProfileManifestState`). Hash32 fields decode to `0x` + 64 lowercase hex through
 `restHash32`: the `0x` form passes through, a protojson base64 value is converted, and a bare
@@ -1438,6 +1511,18 @@ for await (const event of client.streamOutput({
   }
 }
 console.log(text);                            // the committed text
+```
+
+To show output before the chain records the dispatch, pass the `openTask` result as
+`beforeRecord` and mark provisional text (see `examples/stream-output.mjs`):
+
+```ts
+for await (const event of makeClient(b.serviceEndpoint, b.tlsPubkeyHash).streamOutput({
+  sessionId: session.sessionId, taskId, beforeRecord: result,
+})) {
+  if (event.kind === 'chunk') render(event.text, { provisional: event.recorded === false });
+  else if (event.kind === 'reset') clearRendered();   // the chain recorded another attempt
+}
 ```
 
 To resume after a disconnect, persist `onCheckpoint` and pass it back on the next call:

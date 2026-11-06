@@ -26,7 +26,7 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
 | `TRUEOPEN_MODEL_ID` | Hash32 model ID, `0x` + 64 lowercase hex (open-task) | - |
 | `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
-| `TRUEOPEN_PROMPT` / `TRUEOPEN_TOOL_DIR` / `TRUEOPEN_MAX_TURNS` | the user message, the directory `list_files` may list (default: the current directory) and the turn limit (default 3) (tool-call) | - |
+| `TRUEOPEN_PROMPT` / `TRUEOPEN_TOOL_DIR` / `TRUEOPEN_MAX_TURNS` | the user message, the directory `list_files` may list (default: the current directory) and the turn limit (default 3) (tool-call; stream-output reads `TRUEOPEN_PROMPT` too) | - |
 | `TRUEOPEN_INITIAL_BUILDER` / `TRUEOPEN_INITIAL_DEPOSIT` | Builder operator address the new Session is bound to, and its prefunded balance in atomic units (create-session) | `trueopen1...` / `1000000` |
 
 Nothing chain-specific is hard-coded: the fee denom (`business_denom`, used for the order signature
@@ -49,6 +49,7 @@ node examples/create-session.mjs  # 1. create a session (gas); prints TRUEOPEN_S
 TRUEOPEN_MODEL_ID=<0x+64hex> node examples/open-task.mjs   # 2. place an order; prints TRUEOPEN_TASK_ID
 node examples/fetch-output.mjs    # 3. wait for the receipt, fetch and verify the output
 TRUEOPEN_MODEL_ID=<0x+64hex> node examples/tool-call.mjs   # a multi-turn tool call, one order per turn
+TRUEOPEN_MODEL_ID=<0x+64hex> node examples/stream-output.mjs   # stream before the record; prints time to first chunk
 ```
 
 ### read.mjs -- read-only, costs nothing
@@ -88,6 +89,18 @@ Each turn is an order with its own sequence and `max_fee` (default 4000 for 512 
 ```bash
 TRUEOPEN_MODEL_ID=<0x+64hex> TRUEOPEN_PROMPT="List the files in the current directory" \
   node examples/tool-call.mjs
+```
+
+### stream-output.mjs -- streams before the dispatch record lands
+Places one CHAT order (`TRUEOPEN_PROMPT`) and streams it with `streamOutput({ beforeRecord: res })`.
+The SDK verifies the Builder-signed dispatch header (winner ticket, Worker accept, signatures, a
+Builder the order went to) and prints verified chunks at once, marked `recorded: false`, before
+the chain records the dispatch. Once the chain names the same attempt, chunks carry
+`recorded: true`; `fin` only comes after that. It prints the time to the openTask ack, the first
+chunk, the first confirmed chunk and the fin.
+
+```bash
+TRUEOPEN_MODEL_ID=<0x+64hex> TRUEOPEN_PROMPT="Say hello" node examples/stream-output.mjs
 ```
 
 ## Notes

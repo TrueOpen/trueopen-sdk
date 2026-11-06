@@ -425,6 +425,22 @@ describe('streamOutput beforeRecord', () => {
     expect(hub.keyReads).toBe(reads);
   });
 
+  it('fails at the start, before subscribing, when the confirmation could not run', async () => {
+    const { source, subs } = liveSource();
+    const noReader = new TrueOpenClient({
+      chainId: CHAIN_ID, userAddress: ethSecp256k1Address(pub(WALLET_PRIV), 'trueopen'), wallet: privateKeyTypedDataSigner(WALLET_PRIV),
+      signatureChainId: 424242n,
+      chain: { querySession: async () => { throw new Error('unused'); }, querySessionNonce: async () => ({ nextSessionNonce: 0n }), createSession: async () => { throw new Error('unused'); }, cancelOrder: async () => { throw new Error('unused'); }, updateSessionKey: async () => { throw new Error('unused'); } },
+      ingressTransport: createRouterTransport(() => {}), hub: hub as never,
+    });
+    const first = (p: Partial<StreamOutputParams>, client = noReader) =>
+      client.streamOutput({ sessionId: SESSION, taskId: TASK, sources: [source], beforeRecord: openTaskResult, ...p })[Symbol.asyncIterator]().next();
+    await expect(first({})).rejects.toMatchObject({ code: 'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED', message: expect.stringMatching(/taskReader/) });
+    await expect(first({ admissionWait: { pollIntervalMs: 0 } }, makeClient(chain().reader))).rejects.toMatchObject({ code: 'SDK_LOCAL_POLL_INTERVAL_INVALID' });
+    await expect(first({ admissionWait: { timeoutMs: -1 } }, makeClient(chain().reader))).rejects.toMatchObject({ code: 'SDK_LOCAL_TIMEOUT_INVALID' });
+    expect(subs).toHaveLength(0);
+  });
+
   it('without the option, chunks carry no recorded field', async () => {
     const a = attempt();
     const out = output(a.ticketHash, WORKER_PRIV, ['plain']);

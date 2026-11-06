@@ -403,6 +403,11 @@ const RECORD_STATUS: Readonly<Partial<Record<DispatchRecordStatusV1, VerifiedDis
  *    its own signed nonce selects (the header's signature does not vouch for either);
  * 4. the Worker's current service key is ACTIVE; it is the key the output frames verify with.
  *
+ * Each key binding read must name the signer it was read for (Builder for the header and
+ * ticket, Cortex for the accept), else DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE. This does not
+ * verify the VRF draw or the roster behind the ticket: it trusts the ticket's Builder about who
+ * won, until the chain records the dispatch.
+ *
  * Previous and revoked keys follow selectServiceProofKey, with the proof height
  * max(earliestSubmitHeight, ticket bound_change_height). Throws a DATA error on anything that
  * does not verify; a failed key read is thrown as is.
@@ -442,6 +447,15 @@ export async function verifyDispatchResultHeader(header: DispatchResultHeaderV1,
     p.keys.getCurrentServiceKey(PARTICIPANT_TYPE.BUILDER, ticket.builderAddress),
     p.keys.getCurrentServiceKey(PARTICIPANT_TYPE.CORTEX, worker),
   ]);
+  // A reader that answers for another participant must not supply the key.
+  const requireSigner = (binding: ServiceKeyBinding, participantType: ParticipantTypeName, operator: string): void => {
+    if (binding.participantType !== participantType || binding.operatorAddress !== operator) {
+      throw dataError('DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE',
+        `service key read for ${participantType} ${operator} returned the binding of ${binding.participantType || 'unset'} ${binding.operatorAddress || 'unset'}`);
+    }
+  };
+  requireSigner(builderKey, PARTICIPANT_TYPE.BUILDER, ticket.builderAddress);
+  requireSigner(workerKey, PARTICIPANT_TYPE.CORTEX, worker);
   const check = (what: string, binding: ServiceKeyBinding, nonce: bigint, digest: Uint8Array, signature: Uint8Array): void => {
     const key = selectServiceProofKey(binding, nonce, proofHeight);
     if (!verifyServiceDigestSignature(key, digest, signature)) {

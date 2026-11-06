@@ -255,6 +255,20 @@ describe('verifyDispatchResultHeader', () => {
     await expect(verifyDispatchResultHeader(resignHeader(zero), params())).rejects.toMatchObject({ code: 'DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE' });
   });
 
+  it('refuses a key binding for another operator or participant type', async () => {
+    const worker = h0.accept!.member!.operatorAddress;
+    const cases: Array<[string, (pt: string, addr: string) => ServiceKeyBinding]> = [
+      ['Builder binding of another operator', (pt, addr) => binding(pt, pt === 'PARTICIPANT_TYPE_BUILDER' ? 'trueopen1wltmkp6cpvulh9ya7z0hhw0cpgwsvsdccd5man' : addr)],
+      ['Builder binding of the Cortex type', (pt, addr) => binding(pt === 'PARTICIPANT_TYPE_BUILDER' ? 'PARTICIPANT_TYPE_CORTEX' : pt, addr)],
+      ['Worker binding of the Builder type', (pt, addr) => binding(pt === 'PARTICIPANT_TYPE_CORTEX' ? 'PARTICIPANT_TYPE_BUILDER' : pt, addr)],
+      ['Worker binding of another operator', (pt, addr) => binding(pt, pt === 'PARTICIPANT_TYPE_CORTEX' ? `${worker.slice(0, -1)}x` : addr)],
+    ];
+    for (const [name, make] of cases) {
+      const wrong = { async getCurrentServiceKey(pt: string, addr: string) { return make(pt, addr); } } as VerifyDispatchResultHeaderParams['keys'];
+      await expect(verifyDispatchResultHeader(base(), params({ keys: wrong })), name).rejects.toMatchObject({ code: 'DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE' });
+    }
+  });
+
   it('requires the Worker current key to be ACTIVE for live output', async () => {
     const revoked = {
       async getCurrentServiceKey(pt: string, addr: string) {

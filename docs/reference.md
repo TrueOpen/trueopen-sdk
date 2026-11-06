@@ -759,7 +759,9 @@ and that its Builder is in `builders`; that the accept names the same task, `tas
 ticket's digest, by the ticket's target; that the header is signed by the ticket's Builder with a
 nonce not older than the ticket's; that the ticket is signed by its Builder and the accept by the
 Worker (the header's signature does not vouch for them); and that the Worker's current key is
-`ACTIVE`. `VerifiedDispatchResult` = `{ taskId, taskHash, dispatchTicketHash,
+`ACTIVE`. Each key binding read must name the signer it was read for (Builder for the header and
+ticket, Cortex for the accept), else `DATA_OUTPUT_DISPATCH_KEY_UNAVAILABLE`. It does not verify the
+VRF draw or the roster behind the ticket. `VerifiedDispatchResult` = `{ taskId, taskHash, dispatchTicketHash,
 dispatchAcceptDigest, builder, winnerWorker, workerServicePubKey, recordStatus }`, with
 `recordStatus` `'PENDING' | 'RECORDED' | 'REJECTED'`. Errors: `DATA_OUTPUT_DISPATCH_HEADER_INVALID`,
 `DATA_OUTPUT_DISPATCH_BUILDER_UNEXPECTED`, `DATA_OUTPUT_DISPATCH_SIGNATURE_INVALID`,
@@ -845,6 +847,13 @@ first:
 - After `NEXUS_INGRESS_ATTEMPT_STALE` the replacement header is verified the same way (not
   through `resolveDispatchResult`) and is provisional until the chain records it.
 - Without `beforeRecord` nothing changes, and chunks have no `recorded` field.
+- Trust: output delivered with `recorded: false` trusts the dispatching Builder's statement of
+  who won. The SDK verifies the signatures, the ticket and the accept, but not the VRF draw or
+  the roster behind the ticket. The exposure is bounded by the chain's
+  `max_prerecord_output_tokens`, and if the chain records another attempt the stream resets.
+- `config.taskReader`, `hub.getCurrentServiceKey` and `admissionWait`'s `pollIntervalMs` /
+  `timeoutMs` are checked when the stream starts (`SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED`,
+  `SDK_LOCAL_POLL_INTERVAL_INVALID`, `SDK_LOCAL_TIMEOUT_INVALID`), before anything is subscribed.
 
 ### 8.4 Fetch (whole object)
 

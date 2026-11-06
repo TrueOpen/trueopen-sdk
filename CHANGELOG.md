@@ -11,8 +11,10 @@
   frames are checked against that ticket as usual. Chunks carry `recorded: false` until the chain
   anchors name the same `task_hash`, ticket and Worker, then `recorded: true`. If the chain
   recorded another attempt, a `reset` switches to it; a REJECTED header ends the stream with
-  `OUTPUT_RECORD_REJECTED`. `fin` and the ack only follow a confirmed record. Without the option
-  nothing changes and chunks have no `recorded` field.
+  `OUTPUT_RECORD_REJECTED`. `fin` and the ack only follow a confirmed record. Output marked
+  `recorded: false` trusts the dispatching Builder about who won (the VRF draw and roster are not
+  verified), bounded by `max_prerecord_output_tokens`. Without the option nothing changes and
+  chunks have no `recorded` field.
 - **Added:** `verifyDispatchResultHeader`, `selectServiceProofKey`,
   `verifyServiceDigestSignature`, `dispatchSigningPreimage` / `dispatchSigningDigest` and
   `dispatchTicketDigest` / `dispatchAcceptDigest` / `dispatchResultHeaderDigest`: wire's

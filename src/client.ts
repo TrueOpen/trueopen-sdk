@@ -727,6 +727,13 @@ export interface StreamOutputParams {
    * and the stream continues with the chain's attempt. A REJECTED header ends the stream with
    * OUTPUT_RECORD_REJECTED. `fin` (and the ack) only ever follow a confirmed record.
    *
+   * Trust: output delivered with `recorded: false` trusts the dispatching Builder's statement of
+   * who won. The SDK verifies the signatures, the ticket and the accept, but not the VRF draw or
+   * the roster behind the ticket. The exposure is bounded by the chain's
+   * max_prerecord_output_tokens, and if the chain records another attempt the stream resets.
+   * config.taskReader, the hub reader and `admissionWait`'s values are checked when the stream
+   * starts.
+   *
    * Explicit taskHash + workerServicePubKey + dispatchTicketHash take precedence (the stream
    * then runs as without this option, and chunks carry `recorded: true`); `waitForAnchors`,
    * `pendingAnchors` and early subscribe are not used with this option, and a replacement
@@ -2711,6 +2718,19 @@ export class TrueOpenClient {
       if (hub?.getCurrentServiceKey === undefined) {
         throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED',
           'beforeRecord verifies the dispatch header with service keys from chain: it needs a hub reader with getCurrentServiceKey (HubReader)');
+      }
+      // The confirmation reads the chain anchors later; refuse now what it could not do then.
+      if (this.cfg.taskReader === undefined) {
+        throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED',
+          'beforeRecord confirms the dispatch against the chain: it needs config.taskReader (RestChainReader)');
+      }
+      const pollMs = p.admissionWait?.pollIntervalMs;
+      const waitMs = p.admissionWait?.timeoutMs;
+      if (pollMs !== undefined && (!Number.isFinite(pollMs) || pollMs <= 0)) {
+        throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_POLL_INTERVAL_INVALID', 'pollIntervalMs must be a positive finite number');
+      }
+      if (waitMs !== undefined && (!Number.isFinite(waitMs) || waitMs <= 0)) {
+        throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TIMEOUT_INVALID', 'timeoutMs must be a positive finite number');
       }
       const signedTaskHash = hash32Text(strictHash32('beforeRecord.taskHash', before.taskHash));
       if (p.taskHash !== undefined && p.taskHash !== signedTaskHash) {

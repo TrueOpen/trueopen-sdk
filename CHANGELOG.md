@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added: stream output before the dispatch record lands
+
+- **Added:** `streamOutput({ beforeRecord })` (`StreamBeforeRecordOptions` =
+  `{ taskHash, builders, earliestSubmitHeight? }`; pass the `openTask` result). Output is
+  delivered as soon as the Builder sends its signed `DispatchResultHeaderV1`, before the chain
+  records the dispatch: the header, its winner ticket and the Worker's accept are verified, and
+  frames are checked against that ticket as usual. Chunks carry `recorded: false` until the chain
+  anchors name the same `task_hash`, ticket and Worker, then `recorded: true`. If the chain
+  recorded another attempt, a `reset` switches to it; a REJECTED header ends the stream with
+  `OUTPUT_RECORD_REJECTED`. `fin` and the ack only follow a confirmed record. Output marked
+  `recorded: false` trusts the dispatching Builder about who won (the VRF draw and roster are not
+  verified), bounded by `max_prerecord_output_tokens`. Without the option nothing changes and
+  chunks have no `recorded` field.
+- **Added:** `verifyDispatchResultHeader`, `selectServiceProofKey`,
+  `verifyServiceDigestSignature`, `dispatchSigningPreimage` / `dispatchSigningDigest` and
+  `dispatchTicketDigest` / `dispatchAcceptDigest` / `dispatchResultHeaderDigest`: wire's
+  canonical dispatch signing projection for `DispatchResultHeaderV1`, `DispatchTicketV1` and
+  `DispatchAcceptV1`, pinned by the `dispatch_v1.json` vectors, with the key chosen by each
+  message's signed nonce (current, or previous / emergency-revoked below its cutoff).
+- **Added:** `ServiceKeyBinding.revokedHeight` (REST `revoked_height`).
+- **Added:** `examples/stream-output.mjs`, which prints the time to the first chunk.
+
 ### Breaking: Phase 1 (wire #49 @ b30fba8)
 
 The SDK targets the fresh-genesis Phase 1 chain: direct dispatch, prefunded Sessions and

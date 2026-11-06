@@ -1,6 +1,7 @@
 import { TrueOpenError } from '../errors/errors';
 import type { StreamStateView } from '../types/node';
 import type { OpenTaskAck } from './ingress-client';
+import { TaskBuilderAllEndpointsFailedError } from './fan-out-submit';
 
 export interface DispatchRecoveryPolicy {
   readonly signal?: AbortSignal;
@@ -20,7 +21,38 @@ export interface DispatchRecoveryPort {
   /** Resolve the already admitted task without dispatching it again. */
   recorded(builder: string, taskId?: string): Promise<OpenTaskAck>;
 }
-/** Sequential recovery. A pending takeover never permits speculative third-party dispatch. */
+/**
+ * The height from which an order of the same sequence, re-signed, can dispatch at the Builder
+ * that refused it with `error`: OpenTaskResponse.dispatch_available_height
+ * (`details.dispatchAvailableHeight`) of
+ * - `NEXUS_INGRESS_DISPATCH_NOT_READY`: the order's VRF epoch cannot dispatch before it;
+ * - `NEXUS_INGRESS_NO_CAPACITY` refusing a retry whose earlier attempts used up the draw of its
+ *   VRF epoch (within one epoch a retry continues their cursor and skip count): the first height
+ *   of the next epoch, from which the order is drawn afresh.
+ *
+ * Wait until the latest height reaches it, then call openTask again with the same
+ * `orderSequence`: openTask anchors earliest_submit_height at the latest height and keeps the
+ * order's lifetime, so the re-signed order belongs to the new epoch and its order_expire_height
+ * covers the retry height (an unchanged order whose expiry is below it must not be resent).
+ * Undefined for any other error, or a NO_CAPACITY without a height (move to another Builder).
+ * openTask reports its one Builder's refusal as TASK_BUILDER_ALL_ENDPOINTS_FAILED with that
+ * refusal in `results[0].error`; such an error with exactly one result is read through.
+ */
+export function dispatchRetryHeight(error: unknown): bigint | undefined {
+  if (error instanceof TaskBuilderAllEndpointsFailedError) {
+    return error.results.length === 1 ? dispatchRetryHeight(error.results[0]!.error) : undefined;
+  }
+  if (!(error instanceof TrueOpenError)) return undefined;
+  if (error.code !== 'NEXUS_INGRESS_DISPATCH_NOT_READY' && error.code !== 'NEXUS_INGRESS_NO_CAPACITY') return undefined;
+  const height = error.details?.dispatchAvailableHeight;
+  return typeof height === 'bigint' ? height : undefined;
+}
+
+/**
+ * Sequential recovery. A pending takeover never permits speculative third-party dispatch.
+ * NO_CAPACITY moves to the next Builder; when none is left and the answer names a retry height
+ * (dispatchRetryHeight), the order waits for it and is re-signed for the same Builder.
+ */
 export async function recoverDispatch(port: DispatchRecoveryPort, policy: DispatchRecoveryPolicy): Promise<OpenTaskAck> {
   if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1 || !Number.isSafeInteger(policy.maxPolls) || policy.maxPolls < 1 || !Number.isFinite(policy.pollIntervalMs) || policy.pollIntervalMs < 0) throw new Error('invalid dispatch recovery policy');
   const checkAbort = () => {
@@ -182,9 +214,21 @@ export async function recoverDispatch(port: DispatchRecoveryPort, policy: Dispat
         refresh = true; // time has passed: fresh order context and envelope
       } else if ((error.category === 'transport' && error.retriable) || error.code === 'NEXUS_INGRESS_NO_CAPACITY' || error.code === 'NEXUS_CONNECT_DEADLINE_EXCEEDED') {
         const next = nextCandidate(target);
-        if (!next) throw error;
-        target = next;
-        refresh = false;
+        if (next) {
+          target = next;
+          refresh = false;
+          continue;
+        }
+        // No other Builder: a draw used up in its epoch names the next epoch's first height.
+        const height = error.code === 'NEXUS_INGRESS_NO_CAPACITY' ? dispatchRetryHeight(error) : undefined;
+        if (height === undefined) throw error;
+        let ready = false;
+        for (let poll = 0; poll < policy.maxPolls; poll++) {
+          if (await port.readHeight() >= height) { ready = true; break; }
+          await sleep(policy.pollIntervalMs);
+        }
+        if (!ready) throw error;
+        refresh = true; // same Builder, re-signed in the new epoch
       } else throw error;
     }
   }

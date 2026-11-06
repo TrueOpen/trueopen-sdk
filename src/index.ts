@@ -546,5 +546,5 @@ export type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput, Dep
 export { resumeOutputBodyDigest, getDispatchRosterBodyDigest } from './transport/sdk-request-body';
 
 
-export { recoverDispatch } from './transport/dispatch-recovery';
+export { dispatchRetryHeight, recoverDispatch } from './transport/dispatch-recovery';
 export type { DispatchRecoveryPolicy, DispatchRecoveryPort } from './transport/dispatch-recovery';

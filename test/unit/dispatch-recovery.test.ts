@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
-import { recoverDispatch, type DispatchRecoveryPort } from '../../src/transport/dispatch-recovery';
+import { dispatchRetryHeight, recoverDispatch, type DispatchRecoveryPort } from '../../src/transport/dispatch-recovery';
 import { TrueOpenError } from '../../src/errors/errors';
+import { TaskBuilderAllEndpointsFailedError } from '../../src/transport/fan-out-submit';
 import type { StreamStateView } from '../../src/types/node';
 const policy = { maxAttempts: 4, maxPolls: 3, pollIntervalMs: 0, sleep: async () => {} };
 const state: StreamStateView = { sessionId: 's', owner: 'u', nextExpectedSequence: 2n, lastActiveHeight: 0n, openPendingCount: 0n, status: 'ACTIVE', boundBuilder: 'a', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n };
@@ -169,4 +170,40 @@ it('gives up when the earliest activation is not reached within the poll budget'
   await expect(recoverDispatch(port({ submit: async (b) => { calls.push(b); throw rotating(99n); } }), { ...policy, maxAttempts: 6 }))
     .rejects.toMatchObject({ code: 'NEXUS_INGRESS_BUILDER_KEY_ROTATING' });
   expect(calls).toEqual(['a', 'b', 'c']);
+});
+
+const exhausted = (h?: bigint) => new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_NO_CAPACITY', 'draw used up in its epoch', {
+  category: 'capacity', retriable: true, switchSource: true, ...(h === undefined ? {} : { details: { dispatchAvailableHeight: h } }),
+});
+
+it('dispatchRetryHeight reads the retry height of NO_CAPACITY and DISPATCH_NOT_READY only', () => {
+  expect(dispatchRetryHeight(exhausted(180n))).toBe(180n);
+  expect(dispatchRetryHeight(new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_DISPATCH_NOT_READY', 'wait', { details: { dispatchAvailableHeight: 90n } }))).toBe(90n);
+  expect(dispatchRetryHeight(exhausted())).toBeUndefined();
+  expect(dispatchRetryHeight(new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_NO_CAPACITY', 'x', { details: { dispatchAvailableHeight: '180' } }))).toBeUndefined();
+  expect(dispatchRetryHeight(new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_TAKEOVER_PENDING', 'x', { details: { dispatchAvailableHeight: 180n } }))).toBeUndefined();
+  expect(dispatchRetryHeight(new Error('NEXUS_INGRESS_NO_CAPACITY'))).toBeUndefined();
+  // openTask's one-Builder refusal is read through; several Builders' refusals are not.
+  const endpoint = { serviceEndpoint: 'grpc://a' };
+  expect(dispatchRetryHeight(new TaskBuilderAllEndpointsFailedError([{ endpoint, error: exhausted(180n) }]))).toBe(180n);
+  expect(dispatchRetryHeight(new TaskBuilderAllEndpointsFailedError([{ endpoint, error: exhausted(180n) }, { endpoint, error: exhausted(180n) }]))).toBeUndefined();
+});
+
+it('with no other Builder, waits for the retry height of an exhausted draw and re-signs at the same Builder', async () => {
+  let height = 10n;
+  const calls: [string, boolean, bigint][] = [];
+  await recoverDispatch(port({ builders: ['a'], readHeight: async () => height,
+    submit: async (b, refresh) => { calls.push([b, refresh, height]); if (calls.length === 1) throw exhausted(12n); return ack; },
+  }), { ...policy, sleep: async () => { height++; } });
+  expect(calls).toEqual([['a', false, 10n], ['a', true, 12n]]);
+});
+
+it('an exhausted draw still routes to another Builder first, and without a height or in budget gives up', async () => {
+  const calls: string[] = [];
+  await recoverDispatch(port({ submit: async b => { calls.push(b); if (calls.length === 1) throw exhausted(12n); return ack; } }), policy);
+  expect(calls).toEqual(['a', 'b']);
+  const bare = exhausted();
+  await expect(recoverDispatch(port({ builders: ['a'], submit: async () => { throw bare; } }), policy)).rejects.toBe(bare);
+  const far = exhausted(99n);
+  await expect(recoverDispatch(port({ builders: ['a'], submit: async () => { throw far; } }), policy)).rejects.toBe(far);
 });

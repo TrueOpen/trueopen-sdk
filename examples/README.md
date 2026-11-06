@@ -26,6 +26,7 @@ Node >= 18 (uses global `fetch`). All configuration is via environment variables
 | `TRUEOPEN_FEE_AMOUNT` / `TRUEOPEN_GAS` | tx fee amount and gas for chain writes (defaults `7500` / `300000`) | - |
 | `TRUEOPEN_MODEL_ID` | Hash32 model ID, `0x` + 64 lowercase hex (open-task) | - |
 | `TRUEOPEN_SESSION_ID` / `TRUEOPEN_TASK_ID` | the session and task to use | - |
+| `TRUEOPEN_PROMPT` / `TRUEOPEN_TOOL_DIR` / `TRUEOPEN_MAX_TURNS` | the user message, the directory `list_files` may list (default: the current directory) and the turn limit (default 3) (tool-call) | - |
 | `TRUEOPEN_INITIAL_BUILDER` / `TRUEOPEN_INITIAL_DEPOSIT` | Builder operator address the new Session is bound to, and its prefunded balance in atomic units (create-session) | `trueopen1...` / `1000000` |
 
 Nothing chain-specific is hard-coded: the fee denom (`business_denom`, used for the order signature
@@ -47,6 +48,7 @@ node examples/read.mjs            # 0. read-only: chain params and nexus endpoin
 node examples/create-session.mjs  # 1. create a session (gas); prints TRUEOPEN_SESSION_ID
 TRUEOPEN_MODEL_ID=<0x+64hex> node examples/open-task.mjs   # 2. place an order; prints TRUEOPEN_TASK_ID
 node examples/fetch-output.mjs    # 3. wait for the receipt, fetch and verify the output
+TRUEOPEN_MODEL_ID=<0x+64hex> node examples/tool-call.mjs   # a multi-turn tool call, one order per turn
 ```
 
 ### read.mjs -- read-only, costs nothing
@@ -72,6 +74,21 @@ Reads the trust anchors from chain (`resolveOutputTrustAnchors`): the accepted t
 winner Worker's service key and the accepted infer receipt. It waits while the receipt is not
 there yet, then fetches the output from the Builders with `fetchTaskOutput`, which checks the MMR
 root, size and leaf count against the receipt.
+
+### tool-call.mjs -- a multi-turn tool call
+Offers the model one tool, `list_files`, and runs the conversation one CHAT order per turn: the
+input is the whole conversation, encoded with `chatInferInputBytes`. `assistantTurn` streams each
+turn, verifies every frame, waits for the receipt and yields the confirmed message, with tool calls
+parsed by the parsers the model profile pins on chain (the built-in parsers are unverified, so the
+example passes `allowUnverified`). Only confirmed calls are run, locally, on paths inside
+`TRUEOPEN_TOOL_DIR`; the next turn replays them as an assistant message with `tool_calls` plus one
+`tool` message per result. It stops when the model answers in text, or after `TRUEOPEN_MAX_TURNS`.
+Each turn is an order with its own sequence and `max_fee` (default 4000 for 512 output tokens).
+
+```bash
+TRUEOPEN_MODEL_ID=<0x+64hex> TRUEOPEN_PROMPT="List the files in the current directory" \
+  node examples/tool-call.mjs
+```
 
 ## Notes
 - Local facade logic is covered by `test/unit/*.test.ts`, and `test/integration/smoke.test.ts`

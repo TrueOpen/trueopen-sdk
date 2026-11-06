@@ -96,4 +96,36 @@ describe.skipIf(!enabled)('e2e: examples/*.mjs against the simulated network', (
     expect(r.code, `${r.stdout}\n${r.stderr}`).toBe(0);
     expect(r.stdout).toContain(`"text": ${JSON.stringify(outputText(STREAM))}`);
   });
+
+  it('tool-call.mjs (one CHAT turn per order; no tool parser pinned, so the first turn answers)', async () => {
+    // The fake chain never consumes a sequence, so this order reuses open-task's sequence and
+    // task id: clear that task, so the example cannot read its task_hash.
+    world.node.tasks.delete(taskId);
+    world.node.receipts.delete(taskId);
+    world.outputs.delete(taskId);
+    const before = world.nexus[0]!.opened.length;
+    const run = runExample('tool-call.mjs', { ...baseEnv, TRUEOPEN_SESSION_ID: sessionId, TRUEOPEN_PROMPT: 'List the files' });
+    // The chain records the order once the Builder took it: stage the task, receipt and output then.
+    let opened: (typeof world.nexus)[number]['opened'][number] | undefined;
+    for (let i = 0; i < 200 && opened === undefined; i++) {
+      opened = world.nexus[0]!.opened[before];
+      if (opened === undefined) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(opened, 'the example never opened its order').toBeDefined();
+    const input = JSON.parse(new TextDecoder().decode(opened!.payload)) as { messages: unknown[]; tools: { function: { name: string } }[] };
+    expect(input.tools.map((t) => t.function.name)).toEqual(['list_files']);
+    expect(input.messages).toEqual([{ content: 'List the files', role: 'user' }]);
+    const toolTaskId = opened!.taskId;
+    // Output and receipt first: the example subscribes as soon as the chain names the winner.
+    world.outputs.set(toolTaskId, { ...STREAM, task_id: toolTaskId, session_id: sessionId });
+    world.node.receipts.set(toolTaskId, {
+      outputHash: STREAM.output_hash, outputSizeBytes: BigInt(STREAM.output_size_bytes),
+      outputLeafCount: BigInt(STREAM.output_leaf_count), winnerWorker: w.WORKER_OPERATOR,
+    });
+    world.node.tasks.set(toolTaskId, { taskId: toolTaskId, sessionId, orderSequence: 0n, taskHash: STREAM.task_hash, inputHash: w.labelHash32('tool-call-input'), winner: w.WORKER_OPERATOR });
+    const r = await run;
+    expect(r.code, `${r.stdout}\n${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain(`=== turn 1: task ${toolTaskId}`);
+    expect(r.stdout).toContain(`Answer:\n${outputText(STREAM)}`);
+  });
 });

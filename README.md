@@ -285,6 +285,8 @@ until wire publishes their shared vectors, so they take effect only with `allowU
 without it the turn is plain content with no calls. For an OpenAI-compatible stream, pass the turn
 to `toOpenAIAssistantSSE`; for a finished task, `fetchAssistantMessage` returns the same confirmed
 message without streaming. Details, the two-stage API and custom parsers: reference 8.8.
+`examples/tool-call.mjs` runs a whole multi-turn exchange: it executes the confirmed calls and
+replays them, with their results, as the next turn's input.
 
 The full API — every exported symbol plus both complete flows (with the retry-on-pending
 loop) — is in [docs/reference.md](docs/reference.md).

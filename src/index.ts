@@ -430,6 +430,7 @@ export type {
   OpenTaskResult,
   OutputStreamSource,
   StreamOutputParams,
+  StreamBeforeRecordOptions,
   OutputStreamEvent,
   ConfirmOutputParams,
   ToolCallParams,

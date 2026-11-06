@@ -41,6 +41,8 @@ import { TrueOpenError, dataError } from './errors/errors';
 import { sha256 } from './codec/hash';
 import { outputHash as outputMmrRoot, OutputStreamVerifier, verifyOutputFinSignature } from './output/output-commitment';
 import type { OutputStreamVerifierCheckpoint } from './output/output-commitment';
+import { verifyDispatchResultHeader } from './output/dispatch-proof';
+import type { DispatchProofKeyReader, VerifiedDispatchResult } from './output/dispatch-proof';
 import { confirmOutputWithReceipt } from './output/output-confirmation';
 import type { ConfirmedOutputEvent } from './output/output-confirmation';
 import type { FinishReasonV1 } from './gen/task/v1/evidence_pb.js';
@@ -706,10 +708,51 @@ export interface StreamOutputParams {
    */
   readonly maxPendingFrames?: number;
   /**
+   * Stream before the chain records the dispatch: deliver verified output while the dispatch
+   * record is still pending, instead of waiting for the chain's anchors first. Pass the
+   * `openTask` result (it has `taskHash`, `builders` and `earliestSubmitHeight`). Needs a hub
+   * reader with getCurrentServiceKey, and config.taskReader for the confirmation.
+   *
+   * The Builder's first message is its signed DispatchResultHeaderV1. It is verified with
+   * verifyDispatchResultHeader (the winner ticket binds this order and comes from one of these
+   * Builders; the header and ticket are signed by that Builder and the accept by the target
+   * Worker; the Worker's current key is ACTIVE) and frames are then verified against its ticket
+   * and the Worker's key, as usual, and delivered at once with `recorded: false`. The Builder
+   * forwards only the first max_prerecord_output_tokens of output until the record lands.
+   *
+   * When the Builder reports the record (a RECORDED header), or a verified Fin arrives first,
+   * the chain anchors are read (polled with `admissionWait`'s pollIntervalMs / timeoutMs). If
+   * they name this task_hash, ticket and Worker (with the same key), later chunks carry
+   * `recorded: true`. If the chain recorded another attempt of this task, a `reset` is emitted
+   * and the stream continues with the chain's attempt. A REJECTED header ends the stream with
+   * OUTPUT_RECORD_REJECTED. `fin` (and the ack) only ever follow a confirmed record.
+   *
+   * Explicit taskHash + workerServicePubKey + dispatchTicketHash take precedence (the stream
+   * then runs as without this option, and chunks carry `recorded: true`); `waitForAnchors`,
+   * `pendingAnchors` and early subscribe are not used with this option, and a replacement
+   * attempt's header (after NEXUS_INGRESS_ATTEMPT_STALE) is verified the same way instead of
+   * through `resolveDispatchResult`, and is provisional until the chain records it. Without the
+   * option, chunks have no `recorded` field and nothing changes.
+   */
+  readonly beforeRecord?: StreamBeforeRecordOptions;
+  /**
    * Aborting stops the stream: the subscription and any anchor wait are closed and
    * `OUTPUT_STREAM_ABORTED` is thrown.
    */
   readonly signal?: AbortSignal;
+}
+
+/** What streamOutput's `beforeRecord` checks the dispatch header against. An OpenTaskResult fits. */
+export interface StreamBeforeRecordOptions {
+  /** Hash32 text of the task_hash signed into the order (OpenTaskResult.taskHash). */
+  readonly taskHash: string;
+  /** The Builders the order was sent to (OpenTaskResult.builders, or their addresses). */
+  readonly builders: readonly (string | { readonly address: string })[];
+  /**
+   * The order's earliest_submit_height (OpenTaskResult.earliestSubmitHeight). Without it, a
+   * header, ticket or accept signed by a previous or emergency-revoked service key is refused.
+   */
+  readonly earliestSubmitHeight?: bigint;
 }
 
 /**
@@ -733,6 +776,12 @@ export type OutputStreamEvent =
       readonly seq: bigint;
       readonly text: string;
       readonly mmrRoot: Uint8Array;
+      /**
+       * Set only with `beforeRecord`: false while the chain has not been seen to record this
+       * attempt (the text is provisional and may still be reset), true once it has. A true
+       * chunk also confirms every earlier chunk of the same attempt.
+       */
+      readonly recorded?: boolean;
     }
   | {
       readonly kind: 'fin';
@@ -2649,7 +2698,34 @@ export class TrueOpenClient {
     // Early subscribe: the anchors are waited for while the subscription is already open.
     const explicitAnchors = p.taskHash !== undefined && p.workerServicePubKey !== undefined && givenTicket !== undefined;
     const waitForAnchors = p.waitForAnchors ?? (p.admissionWait !== undefined ? { sessionId: p.sessionId, ...p.admissionWait } : undefined);
-    const early = !explicitAnchors && (p.pendingAnchors !== undefined || (waitForAnchors !== undefined && waitForAnchors !== false));
+    // Streaming before the record: the attempt comes from the Builder-signed header, the chain
+    // only confirms it later.
+    const before = p.beforeRecord;
+    const prerecord = before !== undefined && !explicitAnchors;
+    const early = !prerecord && !explicitAnchors && (p.pendingAnchors !== undefined || (waitForAnchors !== undefined && waitForAnchors !== false));
+    // Whether the chain is known to record the current attempt; undefined without beforeRecord.
+    let recorded: boolean | undefined = before === undefined ? undefined : !prerecord;
+    let verifyHeader: ((header: DispatchResultHeaderV1) => Promise<VerifiedDispatchResult>) | undefined;
+    if (prerecord) {
+      const hub = this.cfg.hub;
+      if (hub?.getCurrentServiceKey === undefined) {
+        throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED',
+          'beforeRecord verifies the dispatch header with service keys from chain: it needs a hub reader with getCurrentServiceKey (HubReader)');
+      }
+      const signedTaskHash = hash32Text(strictHash32('beforeRecord.taskHash', before.taskHash));
+      if (p.taskHash !== undefined && p.taskHash !== signedTaskHash) {
+        throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TASK_HASH_MISMATCH', 'taskHash differs from beforeRecord.taskHash');
+      }
+      const builders = before.builders.map((b) => (typeof b === 'string' ? b : b.address));
+      if (builders.length === 0) {
+        throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_BUILDERS_REQUIRED', 'beforeRecord.builders must name the Builders the order was sent to');
+      }
+      const keys: DispatchProofKeyReader = { getCurrentServiceKey: (pt, addr) => hub.getCurrentServiceKey!.call(hub, pt, addr) };
+      verifyHeader = (header) => verifyDispatchResultHeader(header, {
+        chainId: this.cfg.chainId, sessionId: p.sessionId, taskId: p.taskId, taskHash: signedTaskHash, builders,
+        ...(before.earliestSubmitHeight !== undefined ? { earliestSubmitHeight: before.earliestSubmitHeight } : {}), keys,
+      });
+    }
 
     let verifier: OutputStreamVerifier | undefined;
     let taskHash: Uint8Array = new Uint8Array();
@@ -2677,7 +2753,7 @@ export class TrueOpenClient {
         'resumeAfterSeq alone cannot restore MMR state; pass checkpoint returned by OutputStreamVerifier.checkpoint()',
       );
     }
-    if (!early) {
+    if (!early && !prerecord) {
       // Anchors default to the chain: the accepted task_hash and the winner Worker's current
       // service key. The receipt is not needed (and usually not there yet) while streaming.
       let taskHashHex = p.taskHash;
@@ -2694,7 +2770,7 @@ export class TrueOpenClient {
     // Without a verifier yet, the subscription cursor comes from the checkpoint alone; the
     // verifier rechecks the checkpoint against the anchors once they arrive.
     const checkpointLeafCount = p.checkpoint?.mmr.leafCount ?? 0n;
-    if (early && p.resumeAfterSeq !== undefined && p.resumeAfterSeq !== checkpointLeafCount - 1n) {
+    if ((early || prerecord) && p.resumeAfterSeq !== undefined && p.resumeAfterSeq !== checkpointLeafCount - 1n) {
       throw new TrueOpenError(
         'SDK_LOCAL',
         'OUTPUT_STREAM_RESUME_CURSOR_MISMATCH',
@@ -2727,6 +2803,7 @@ export class TrueOpenClient {
     type AnchorOutcome =
       | { readonly ok: true; readonly taskHash: string; readonly workerServicePubKey: Uint8Array; readonly dispatchTicketHash?: string }
       | { readonly ok: false; readonly error: unknown };
+    type ConfirmOutcome = { readonly ok: true; readonly anchors: OutputTrustAnchors } | { readonly ok: false; readonly error: unknown };
     let anchorsP: Promise<AnchorOutcome> | undefined;
     // Errors that end the whole stream rather than one attempt.
     const fatal = (error: unknown): StreamFatal => new StreamFatal(error);
@@ -2778,6 +2855,68 @@ export class TrueOpenClient {
       // After NEXUS_INGRESS_ATTEMPT_STALE: the next subscription names no ticket and must start
       // with the replacement attempt's DispatchResultHeaderV1.
       let discoveringAttempt = false;
+      // beforeRecord: the current attempt's Worker, the chain confirmation in flight for the
+      // attempt, and whether its verified Fin is waiting for that confirmation.
+      let winnerWorker = '';
+      let confirmP: Promise<ConfirmOutcome> | undefined;
+      let heldFin = false;
+      const recordRejected = (ticket: string): TrueOpenError =>
+        new TrueOpenError('CHAIN_REJECT', 'OUTPUT_RECORD_REJECTED',
+          `the chain refused the dispatch record of task ${p.taskId} (attempt ${ticket}); ` +
+            'its output is void. Re-sign the order (OpenTaskResult.retryParams) to try again',
+          { category: 'chain-rejected' });
+      const startConfirm = (): void => {
+        if (confirmP !== undefined) return;
+        const wait: WaitForOutputTrustAnchorsOptions = {
+          ...(p.admissionWait?.pollIntervalMs !== undefined ? { pollIntervalMs: p.admissionWait.pollIntervalMs } : {}),
+          ...(p.admissionWait?.timeoutMs !== undefined ? { timeoutMs: p.admissionWait.timeoutMs } : {}),
+          signal: life.signal,
+        };
+        const started = this.waitForOutputTrustAnchors(p.taskId, wait).then(
+          (anchors): ConfirmOutcome => ({ ok: true, anchors }),
+          (error: unknown): ConfirmOutcome => ({ ok: false, error }),
+        );
+        confirmP = started;
+      };
+      // Applies a settled confirmation. Returns undefined when the chain records the current
+      // attempt; when it records another attempt of this task, switches to that attempt and
+      // returns the reset to emit.
+      const settleConfirm = async (o: ConfirmOutcome): Promise<{ readonly previousDispatchTicketHash: string; readonly dispatchTicketHash: string } | undefined> => {
+        confirmP = undefined;
+        if (life.signal.aborted) throw fatal(aborted());
+        if (!o.ok) throw fatal(o.error);
+        const a = o.anchors;
+        const current = dispatchTicketHash === undefined ? '' : hash32Text(dispatchTicketHash);
+        if (a.taskHash !== hash32Text(taskHash) || a.dispatchTicketHash === undefined) {
+          throw fatal(dataError('DATA_OUTPUT_DISPATCH_ANCHOR_MISMATCH', `the chain does not record task ${p.taskId} with the signed task_hash and a dispatch ticket`));
+        }
+        if (a.dispatchTicketHash === current) {
+          if (a.winnerWorker !== winnerWorker || !bytesEqual(a.workerServicePubKey, workerServicePubKey)) {
+            throw fatal(dataError('DATA_OUTPUT_DISPATCH_ANCHOR_MISMATCH',
+              `the chain records attempt ${current} with Worker ${a.winnerWorker}, not ${winnerWorker} with the key the output was verified against`));
+          }
+          recorded = true;
+          return undefined;
+        }
+        // The chain recorded another attempt: continue with it, from seq 0.
+        const ticket = strictHash32('dispatch_ticket_hash', a.dispatchTicketHash);
+        const nextVerifier = new OutputStreamVerifier({ chainId: this.cfg.chainId, taskHash, dispatchTicketHash: ticket, workerServicePubKey: a.workerServicePubKey });
+        if (p.onCheckpoint !== undefined) {
+          try {
+            await p.onCheckpoint(nextVerifier.checkpoint());
+          } catch (cause) {
+            throw fatal(new TrueOpenError('SDK_LOCAL', 'OUTPUT_STREAM_CHECKPOINT_PERSIST_FAILED', 'failed to persist replacement checkpoint', { cause }));
+          }
+        }
+        verifier = nextVerifier;
+        dispatchTicketHash = ticket;
+        workerServicePubKey = a.workerServicePubKey;
+        winnerWorker = a.winnerWorker;
+        recorded = true;
+        heldFin = false;
+        finishReason = undefined;
+        return { previousDispatchTicketHash: current, dispatchTicketHash: a.dispatchTicketHash };
+      };
       let sourceIndex = 0;
       for (let attempt = 0; attempt < maxAttempts && finSource === undefined; attempt += 1) {
         if (life.signal.aborted) throw aborted();
@@ -2819,6 +2958,26 @@ export class TrueOpenClient {
         let sawFin = false;
         let replacedAttempt = false;
         try {
+          if (verifier === undefined && prerecord) {
+            // The first message names the attempt: the Builder-signed header, verified before
+            // any output is.
+            const first = await nextWithIdleTimeout(iterator, p.idleTimeoutMs);
+            if (first.done) throw dataError('DATA_OUTPUT_DISPATCH_HEADER_REQUIRED', 'the output stream ended before its DispatchResultHeaderV1');
+            const header = first.value.dispatchResult;
+            if (!header) throw dataError('DATA_OUTPUT_DISPATCH_HEADER_REQUIRED', 'streaming before the record needs the DispatchResultHeaderV1 first');
+            const att = await verifyHeader!(header);
+            if (att.recordStatus === 'REJECTED') throw fatal(recordRejected(att.dispatchTicketHash));
+            try {
+              verifier = setAnchors(att.taskHash, att.workerServicePubKey, att.dispatchTicketHash);
+            } catch (e) {
+              throw fatal(e);
+            }
+            winnerWorker = att.winnerWorker;
+            progressFrom = verifier.leafCount;
+            if (att.recordStatus === 'RECORDED') startConfirm();
+            // A frame that came with the header goes through the usual checks.
+            if (first.value.frame.case !== undefined) held.push({ step: { done: false, value: { ...first.value, dispatchResult: undefined } } });
+          }
           if (verifier === undefined) {
             const anchors = anchorsP!;
             // Read ahead until the anchors settle, the subscription ends, or the bound is hit.
@@ -2868,10 +3027,57 @@ export class TrueOpenClient {
             } else {
               const carried = pending;
               pending = undefined;
-              // The idle clock starts when the anchors are known, not when the subscription opened.
-              step = await nextWithIdleTimeout(iterator, p.idleTimeoutMs, carried);
+              if (confirmP === undefined) {
+                // The idle clock starts when the anchors are known, not when the subscription opened.
+                step = await nextWithIdleTimeout(iterator, p.idleTimeoutMs, carried);
+              } else {
+                // beforeRecord: the chain confirmation may settle while the subscription is quiet
+                // (a held Fin waits for it).
+                const next = nextWithIdleTimeout(iterator, p.idleTimeoutMs, carried);
+                next.catch(() => undefined);
+                const r = await Promise.race([
+                  next.then((s) => ({ step: s }), (error: unknown) => ({ error })),
+                  confirmP.then((outcome) => ({ outcome })),
+                  lifeEnded,
+                ]);
+                if (r === 'abort') throw fatal(aborted());
+                if ('outcome' in r) {
+                  pending = next;
+                  const reset = await settleConfirm(r.outcome);
+                  if (reset !== undefined) {
+                    replacedAttempt = true;
+                    retrySameSource = true;
+                    yield { kind: 'reset', ...reset };
+                    break;
+                  }
+                  if (heldFin) {
+                    sawFin = true;
+                    finSource = source;
+                    break;
+                  }
+                  continue;
+                }
+                if ('error' in r) throw r.error;
+                step = r.step;
+              }
             }
-            if (step.done) break;
+            if (step.done) {
+              if (heldFin && confirmP !== undefined) {
+                // The Builder ended the call after the Fin: the chain decides.
+                const o = await Promise.race([confirmP, lifeEnded]);
+                if (o === 'abort') throw fatal(aborted());
+                const reset = await settleConfirm(o);
+                if (reset !== undefined) {
+                  replacedAttempt = true;
+                  retrySameSource = true;
+                  yield { kind: 'reset', ...reset };
+                  break;
+                }
+                sawFin = true;
+                finSource = source;
+              }
+              break;
+            }
             const header = step.value.dispatchResult;
             if (discoveringAttempt) {
               if (!header) throw dataError('DATA_OUTPUT_DISPATCH_HEADER_REQUIRED', 'A replacement attempt must supply DispatchResultHeaderV1 before output');
@@ -2880,12 +3086,29 @@ export class TrueOpenClient {
                 throw dataError('DATA_OUTPUT_ATTEMPT_STALE', 'Builder still reports the voided dispatch attempt');
               }
               // Never trust a header solely because a Builder sent it: the chain (or the caller's
-              // resolver) must name the same attempt and Worker.
-              const anchors = p.resolveDispatchResult === undefined
-                ? await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false })
-                : await p.resolveDispatchResult(header);
+              // resolver) must name the same attempt and Worker. With beforeRecord the header is
+              // verified on its own and the chain confirms the attempt later.
+              let replacementStatus: VerifiedDispatchResult['recordStatus'] | undefined;
+              let anchors: OutputTrustAnchors;
+              if (prerecord) {
+                const att = await verifyHeader!(header);
+                if (att.recordStatus === 'REJECTED') throw fatal(recordRejected(att.dispatchTicketHash));
+                replacementStatus = att.recordStatus;
+                anchors = { taskId: p.taskId, taskHash: att.taskHash, dispatchTicketHash: att.dispatchTicketHash, winnerWorker: att.winnerWorker, workerServicePubKey: att.workerServicePubKey };
+              } else {
+                anchors = p.resolveDispatchResult === undefined
+                  ? await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false })
+                  : await p.resolveDispatchResult(header);
+              }
               if (anchors.taskId !== p.taskId || anchors.taskHash !== hash32Text(taskHash) || anchors.dispatchTicketHash !== hash32Text(replacement) || anchors.winnerWorker !== header.accept!.member!.operatorAddress) {
                 throw dataError('DATA_OUTPUT_DISPATCH_ANCHOR_MISMATCH', 'Replacement header does not match trusted output anchors');
+              }
+              if (prerecord) {
+                // The replacement is provisional until the chain records it.
+                winnerWorker = anchors.winnerWorker;
+                recorded = false;
+                heldFin = false;
+                confirmP = undefined;
               }
               const previousDispatchTicketHash = dispatchTicketHash === undefined ? '' : hash32Text(dispatchTicketHash);
               const nextVerifier = new OutputStreamVerifier({ chainId: this.cfg.chainId, taskHash, dispatchTicketHash: replacement, workerServicePubKey: anchors.workerServicePubKey });
@@ -2901,6 +3124,7 @@ export class TrueOpenClient {
               dispatchTicketHash = replacement;
               workerServicePubKey = anchors.workerServicePubKey;
               discoveringAttempt = false;
+              if (replacementStatus === 'RECORDED') startConfirm();
               replacedAttempt = true;
               retrySameSource = true;
               yield { kind: 'reset', previousDispatchTicketHash, dispatchTicketHash: hash32Text(replacement) };
@@ -2909,6 +3133,12 @@ export class TrueOpenClient {
             }
             if (header && !bytesEqual(dispatchHeaderTicket(header, this.cfg.chainId, p.sessionId, p.taskId, taskHash), dispatchTicketHash!)) {
               throw dataError('DATA_OUTPUT_ATTEMPT_MISMATCH', 'Unannounced dispatch attempt change');
+            }
+            if (header && recorded === false) {
+              // beforeRecord: the Builder re-signs the header when the record status changes.
+              const att = await verifyHeader!(header);
+              if (att.recordStatus === 'REJECTED') throw fatal(recordRejected(att.dispatchTicketHash));
+              if (att.recordStatus === 'RECORDED') startConfirm();
             }
             const frame = step.value.frame;
             if (header && frame.case === undefined) continue;
@@ -2945,11 +3175,14 @@ export class TrueOpenClient {
                 // mmrRoot covers the committed bytes, so it is what verification ran against.
                 text: new TextDecoder().decode(c.text),
                 mmrRoot: Uint8Array.from(c.mmrRoot),
+                ...(recorded !== undefined ? { recorded } : {}),
               };
               continue;
             }
             if (frame.case === 'fin') {
               const f = frame.value;
+              // beforeRecord: a replayed Fin while the first one waits for the chain.
+              if (heldFin && f.finalSeq === v.resumeAfterSeq && bytesEqual(f.dispatchTicketHash, dispatchTicketHash!)) continue;
               if (f.finalSeq !== v.resumeAfterSeq) {
                 throw dataError('DATA_OUTPUT_FIN_SEQ_MISMATCH', `fin says final_seq=${f.finalSeq} but ${v.resumeAfterSeq} was verified`);
               }
@@ -3000,6 +3233,13 @@ export class TrueOpenClient {
                     );
                   }
                 }
+              }
+              if (recorded === false) {
+                // beforeRecord: the output is complete, but `fin` waits until the chain records
+                // this attempt. Keep reading: the Builder still sends the record status.
+                heldFin = true;
+                startConfirm();
+                continue;
               }
               sawFin = true;
               finSource = source;

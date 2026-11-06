@@ -239,7 +239,8 @@ describe('waitForOutputTrustAnchors', () => {
     const reader = chain();
     const log = { opened: 0, closed: 0 };
     const e = await makeClient(noEvents(log), reader)
-      .waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 5, timeoutMs: 40 })
+      // The timeout is 40 poll intervals so that more than one read fits even on a loaded host.
+      .waitForOutputTrustAnchors(TASK, { sessionId: SESSION, pollIntervalMs: 5, timeoutMs: 200 })
       .catch((x: unknown) => x);
     expect(e).toMatchObject({ family: 'SDK_LOCAL', code: 'OUTPUT_TRUST_ANCHOR_TIMEOUT', retriable: false });
     expect((e as Error).cause).toMatchObject({ code: 'OUTPUT_TRUST_ANCHOR_PENDING' });

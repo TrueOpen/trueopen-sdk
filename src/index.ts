@@ -413,6 +413,7 @@ export {
   DEFAULT_ORDER_REPLACEMENT_RETRY_MS,
   ORDER_REPLACEMENT_RETRY_ATTEMPTS,
 } from './client';
+export { MAX_CHAIN_READ_CACHE_TTL_MS } from './transport/chain-read-cache';
 export { resolveFeeDenom } from './order/fee-denom';
 export type {
   TrueOpenClientConfig,
@@ -445,6 +446,8 @@ export type {
   RejectionDiagnosis,
   RejectionReason,
   OrderWindowOffsets,
+  PrefetchParams,
+  PrefetchResult,
 } from './client';
 
 // --- Tool calling: derived views over committed output (ADR-0022). Never part of the protocol. ---

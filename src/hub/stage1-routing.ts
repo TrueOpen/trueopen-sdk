@@ -37,6 +37,12 @@ export interface ResolveTaskBuilderInput {
   readonly builderSet?: BuilderSetSnapshot;
   readonly buildersPerTask?: number;
   readonly dispatchingBuilder?: string;
+  /**
+   * Resolve only the dispatching Builder's descriptor (it must still be a member of the
+   * snapshot), not every member's: the result has that one endpoint (rank 1) or its error.
+   * Needs dispatchingBuilder.
+   */
+  readonly dispatchingOnly?: boolean;
 }
 
 export interface TaskBuilderEndpoint {
@@ -86,7 +92,7 @@ export async function resolveTaskBuilderEndpoints(
       .filter((a) => a !== '')
       .map((address) => ({ address, status: 'BUILDER_STATUS_ACTIVE' }));
 
-  const selected = selectTaskBuilders({
+  const ordered = selectTaskBuilders({
     chainId: input.chainId,
     taskId: input.taskId,
     builderSetHash: input.builderSetHash,
@@ -94,6 +100,8 @@ export async function resolveTaskBuilderEndpoints(
     ...(input.dispatchingBuilder !== undefined ? { dispatchingBuilder: input.dispatchingBuilder } : {}),
     ...(input.buildersPerTask !== undefined ? { buildersPerTask: input.buildersPerTask } : {}),
   });
+  // Selection puts the dispatching Builder first, after checking it is in the snapshot.
+  const selected = input.dispatchingOnly === true && input.dispatchingBuilder !== undefined ? ordered.slice(0, 1) : ordered;
 
   // The descriptor reads are independent, so they run concurrently; results keep selection order.
   const outcomes = await Promise.all(

@@ -191,9 +191,10 @@ export class HubReader {
    * the same "on-chain facts to read before placing an order" category as this class's
    * other methods.
    *
-   * These values can change via governance, so resolveTaskOrderContext re-reads them
-   * every time instead of caching: validating against a stale limit -- passing locally
-   * but still getting rejected on chain -- is harder to debug than just re-reading.
+   * These values can change via governance, so this reader never caches them:
+   * validating against a stale limit -- passing locally but still getting rejected on
+   * chain -- is harder to debug than just re-reading. TrueOpenClient reuses them only
+   * when config.chainReadCache opts in, for at most 60 s.
    */
   async getTaskGenerationLimits(): Promise<TaskGenerationLimits> {
     const body = await this.getJson('/TrueOpen/task/v1/params');

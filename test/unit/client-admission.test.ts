@@ -519,6 +519,21 @@ describe('waitForAdmission', () => {
     expect(s.builders.closed).toBe(1);
   });
 
+  it('a rejection drops config.chainReadCache, so the retry is built on fresh reads', async () => {
+    let denomReads = 0;
+    const hub: FacadeHubReader = { ...makeHub({ latest: 1_000n }), getBusinessDenom: async () => { denomReads += 1; return 'utrueopen'; } };
+    const s = setup({ chainReadCache: true, hub });
+    const res = await s.client.openTask(BASE);
+    await s.client.resolveFeeDenom();
+    expect(denomReads).toBe(1); // cached
+    const waiting = s.client.waitForAdmission(res, { pollIntervalMs: 60_000 });
+    await tick(50);
+    rejectAll(s.builders, res);
+    expect((await waiting).kind).toBe('rejected');
+    await s.client.resolveFeeDenom();
+    expect(denomReads).toBe(2);
+  });
+
   it('only the Builders that acked count', async () => {
     const s = setup();
     const res = ackedByAll(await s.client.openTask(BASE));

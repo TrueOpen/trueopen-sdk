@@ -201,8 +201,12 @@ describe('chain round trips per order, without the read cache', () => {
     expect(meter.rounds).toBe(4);
   });
 
-  it('sends no request with a session grant beyond what an order without one reads', async () => {
+  it('with a session grant, only making the grant reads a height of its own', async () => {
     const { meter, client } = setup({ session: { maxGrantBlocks: 100 } });
+    await client.openTask(params());
+    // The order's context, and the new grant's expiry (always from a fresh height).
+    expect(meter.calls.filter((c) => c === 'height')).toHaveLength(2);
+    meter.reset();
     await client.openTask(params());
     expect(meter.calls.filter((c) => c === 'height')).toHaveLength(1);
   });
@@ -433,6 +437,26 @@ describe('chain read cache: a BuilderSet the cache kept too long is caught befor
     const context = (await client.resolveTaskBuilders({ sessionId: SESSION })).context;
     await expect(client.openTask(params({ context }))).rejects.toMatchObject({ code: 'TASK_BUILDER_ALL_ENDPOINTS_FAILED' });
     expect(seen.calls).toBe(1);
+  });
+});
+
+describe('session grant expiry heights', () => {
+  it('a grant renewed after a Builder refused it as expired counts from a fresh height, not a reused one', async () => {
+    const { state, client } = setup({ session: { maxGrantBlocks: 400 } });
+    const first = (await client.sessionGrants!.current()).grant;
+    // Within the same second the chain moved on and a Builder refused the grant as expired.
+    state.height = 1_250n;
+    client.sessionGrants!.expired(first);
+    const renewed = (await client.sessionGrants!.current()).grant;
+    expect(renewed.expiryHeight - first.expiryHeight).toBe(250n);
+  });
+
+  it('a grant still valid is judged against a recently read height', async () => {
+    const { meter, client } = setup({ session: { maxGrantBlocks: 400 } });
+    await client.openTask(params());
+    meter.reset();
+    await client.openTask(params());
+    expect(meter.calls.filter((c) => c === 'height')).toHaveLength(1);
   });
 });
 

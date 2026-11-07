@@ -138,7 +138,15 @@ export interface SessionKeyManagerOptions {
   /** The user's wallet: signs each grant (one prompt per grant). */
   readonly wallet: TypedDataSigner;
   readonly signatureChainId: bigint;
+  /** The latest height, read fresh: a new grant's expiry counts from it. */
   readonly latestHeight: () => Promise<bigint>;
+  /**
+   * A latest height that may be slightly old (a recent read reused), for deciding whether the
+   * current grant needs renewing; renewBeforeBlocks covers the lag. Defaults to latestHeight. A
+   * new grant's expiry never uses it: after a Builder refused a grant as expired, a reused height
+   * could make the renewed grant expire as early as the refused one.
+   */
+  readonly recentLatestHeight?: () => Promise<bigint>;
   /**
    * The Builders' max_session_grant_blocks (off-chain configuration, the same on every Task
    * Builder). A grant expires at most this many blocks after the height it is made at.
@@ -183,7 +191,7 @@ export class SessionKeyManager implements SessionAuthority {
   async current(): Promise<ActiveSession> {
     const active = this.active;
     if (active === undefined) return this.renew();
-    const height = await this.opts.latestHeight();
+    const height = await (this.opts.recentLatestHeight ?? this.opts.latestHeight)();
     if (height + this.renewBefore < active.grant.expiryHeight) return active;
     try {
       return await this.renew();

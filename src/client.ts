@@ -1108,9 +1108,11 @@ export class TrueOpenClient {
             userAddress: cfg.userAddress,
             wallet: cfg.wallet,
             signatureChainId: this.signatureChainId(),
-            // A height read within about a block is reused: the renewal margin covers it, and a
-            // lagging height only moves a new grant's expiry earlier.
-            latestHeight: () => this.recentLatestHeight('a session grant expiry'),
+            // A new grant's expiry counts from a fresh height; whether the current grant needs
+            // renewing is judged against one read within about a block (the renewal margin
+            // covers the lag).
+            latestHeight: () => this.latestHeight('a session grant expiry'),
+            recentLatestHeight: () => this.recentLatestHeight('a session grant expiry'),
             maxGrantBlocks: cfg.session.maxGrantBlocks,
             ...(cfg.session.grantBlocks !== undefined ? { grantBlocks: cfg.session.grantBlocks } : {}),
             ...(cfg.session.renewBeforeBlocks !== undefined ? { renewBeforeBlocks: cfg.session.renewBeforeBlocks } : {}),

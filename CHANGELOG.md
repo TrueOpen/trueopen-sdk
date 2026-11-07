@@ -13,8 +13,9 @@
 - **Changed:** `openTaskWithRecovery` reads the session and the order context concurrently and
   hands that session read and the context's BuilderSet to its first submit: 8 reads in 4 rounds
   (was 15 in 9).
-- **Changed:** a session grant (`config.session`) reuses a latest height read within about a
-  block instead of reading it again for each order.
+- **Changed:** a session grant (`config.session`) is checked for renewal against a latest height
+  read within about a block instead of reading it again for each order. A new or renewed grant's
+  expiry still counts from a fresh height (`SessionKeyManagerOptions.recentLatestHeight`).
 - **Added:** `config.chainReadCache` (`true` or `{ ttlMs }`, opt-in): reuses the business denom,
   profile pricing, timeout bucket, generation limits, BuilderSet and Builder descriptors for at
   most `MAX_CHAIN_READ_CACHE_TTL_MS` (60 s). A warm order reads only the latest height and the

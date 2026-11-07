@@ -142,7 +142,8 @@ describe('openTask: re-reads the descriptor and retries once on a fingerprint mi
     expect(seen.pins.filter((p) => p === STALE)).toHaveLength(1);
     expect(seen.pins.filter((p) => p === FRESH)).toHaveLength(1);
     expect(reads[ADDRS[0]!]).toBe(2);
-    for (const address of ADDRS.slice(1)) expect(reads[address]).toBe(1);
+    // Only the dispatching Builder's descriptor is resolved.
+    for (const address of ADDRS.slice(1)) expect(reads[address]).toBeUndefined();
   });
 
   it('when the fingerprint did not change after re-reading, does not retry again, and the original error stays in the details', async () => {
@@ -152,7 +153,26 @@ describe('openTask: re-reads the descriptor and retries once on a fingerprint mi
       makeClient(hub, seen).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' }),
     ).rejects.toMatchObject({ code: 'TASK_BUILDER_ALL_ENDPOINTS_FAILED' });
     expect(seen.pins).toHaveLength(1); // no second connection
+    expect(reads[ADDRS[0]!]).toBe(2); // re-read once
+    for (const address of ADDRS.slice(1)) expect(reads[address]).toBeUndefined();
+  });
+});
+
+describe('openTask fingerprint re-read with config.chainReadCache', () => {
+  it('re-reads past the cache and drops the stale descriptor for the next order', async () => {
+    const { hub, reads } = makeHub(FRESH);
+    const seen = { pins: [] as string[] };
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet, signatureChainId: 424242n, feeDenom: 'utrueopen',
+      chain: fakeChain(), ingressTransport: pinAwareFactory({ pins: [] })('unused', FRESH),
+      hub: hub as never, ingressTransportFactory: pinAwareFactory(seen), chainReadCache: true,
+    });
+    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
     expect(reads[ADDRS[0]!]).toBe(2);
-    for (const address of ADDRS.slice(1)) expect(reads[address]).toBe(1); // re-read once
+    expect(seen.pins).toEqual([STALE, FRESH]);
+    await client.openTask({ sessionId: SESSION, orderSequence: 4n, order, idempotencyKey: 'idem-2' });
+    // The next order reads the descriptor afresh (now FRESH) instead of the cached stale one.
+    expect(reads[ADDRS[0]!]).toBe(3);
+    expect(seen.pins).toEqual([STALE, FRESH, FRESH]);
   });
 });

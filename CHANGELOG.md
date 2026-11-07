@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Added: fewer chain round trips before an order
+
+- **Changed:** `openTask` resolves only the dispatching Builder's service descriptor instead of
+  every BuilderSet member's (`unresolvedBuilders` lists only that Builder; so does
+  `resolveTaskBuilders`). With a passed `context` it reads the BuilderSet at the context's anchor
+  alongside the other reads, and reads no latest height when `expiryHeight` is given; without
+  `expiryHeight` it reuses a latest height read within about a block (1 s). An order makes 8
+  reads in 3 rounds (was 10 in 3), or 5 in 2 with a caller's context (was 8 in 4).
+- **Changed:** `openTaskWithRecovery` reads the session and the order context concurrently and
+  hands that session read and the context's BuilderSet to its first submit: 8 reads in 4 rounds
+  (was 15 in 9).
+- **Changed:** a session grant (`config.session`) is checked for renewal against a latest height
+  read within about a block instead of reading it again for each order. A new or renewed grant's
+  expiry still counts from a fresh height (`SessionKeyManagerOptions.recentLatestHeight`).
+- **Added:** `config.chainReadCache` (`true` or `{ ttlMs }`, opt-in): reuses the business denom,
+  profile pricing, timeout bucket, generation limits, BuilderSet and Builder descriptors for at
+  most `MAX_CHAIN_READ_CACHE_TTL_MS` (60 s). A warm order reads only the latest height and the
+  session, in one round. The cache is dropped when a fresh BuilderSet or timeout bucket read
+  differs, an order fails, `waitForAdmission` returns `rejected`, or a certificate re-read finds a
+  new endpoint. Before signing, a cached BuilderSet that is not the context's or lacks the
+  dispatching Builder is read again once (no extra wallet prompt); `openTask` retries once on
+  fresh reads an order a Builder refused with `NEXUS_INGRESS_BUILDER_SET_STALE`, unless the
+  caller passed `context`. See reference §1.3a for the trade-off (chain-only checks of the
+  denom, pricing and bucket version).
+- **Changed:** `openTask` checks before signing that the BuilderSet is the context's and the
+  dispatching Builder is a member (`SDK_LOCAL_BUILDER_SET_MISMATCH`,
+  `SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT`), instead of failing in routing after the wallet signed.
+- **Added:** `TrueOpenClient.prefetch({ sessionId?, model? })` (`PrefetchParams`,
+  `PrefetchResult`) warms the cache and the bound Builder's connection; it never rejects for a
+  failed read. `invalidateChainReadCache()` drops the cache.
+- **Added:** `ResolveTaskBuilderInput.dispatchingOnly`.
+
 ### Added: retry height after an exhausted dispatch
 
 - **Added:** `dispatchRetryHeight(error)`: the height from which a re-signed order of the same

@@ -1,4 +1,6 @@
 import { recoverDispatch, type DispatchRecoveryPolicy } from './transport/dispatch-recovery';
+import { ChainReadCache, hubOrderReads } from './transport/chain-read-cache';
+import type { BuilderSetSnapshot } from './types/hub';
 import { MAX_ORDER_LIFETIME_BLOCKS_V1, validateOrderLifetime } from './order/order-lifetime';
 import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } from './transport/session-funding';
 import { Code, ConnectError } from '@connectrpc/connect';
@@ -31,7 +33,7 @@ import type { ManifestSource } from './manifest/manifest-source';
 import { toolCallIdFormatOf, type ToolCallIdFormat } from './manifest/model-manifest';
 import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
-import { buildTaskOrder, resolveTaskOrderContext, resolveTaskOrderContextWithBuilderSet } from './order/task-order-input';
+import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet } from './order/task-order-input';
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader, ResolvedTaskOrderContext } from './order/task-order-input';
 import { buildOpenTaskRequest } from './order/build-open-task';
 import { taskOrderHashHex } from './order/task-order';
@@ -234,6 +236,30 @@ export interface TrueOpenClientConfig {
    * SDK_LOCAL_CONFIG_INVALID).
    */
   readonly orderReplacementRetryMs?: number;
+  /**
+   * Opt-in reuse of the chain reads an order makes that change only with governance or a
+   * BuilderSet replacement: params.phase0.business_denom, the model profile's pricing, the
+   * timeout bucket version, the task generation limits, the BuilderSet and Builder service
+   * descriptors. Off by default. `true` or `{}` reuses each successful read for
+   * MAX_CHAIN_READ_CACHE_TTL_MS (60 s); `ttlMs` shortens that (it must be in (0, 60000], else the
+   * constructor throws SDK_LOCAL_CONFIG_INVALID). The latest height and the session are always
+   * read fresh, so a warm order makes those two reads only, concurrently.
+   *
+   * The cache is dropped as a whole when: a fresh BuilderSet or timeout bucket read differs from
+   * the cached one (a BuilderSet replacement or a params change); openTask or
+   * openTaskWithRecovery fails in any way; waitForAdmission finds an order rejected; a Builder's
+   * certificate re-read finds a new endpoint; or invalidateChainReadCache is called. Before
+   * signing, a cached BuilderSet that is not the context's or lacks the dispatching Builder (a
+   * replacement the cache has not seen) is read again once, so it costs no wallet prompt. openTask
+   * retries once, with fresh reads, an order a Builder refused with
+   * NEXUS_INGRESS_BUILDER_SET_STALE, unless the caller passed its own context.
+   *
+   * Trade-off: business_denom, the pricing and the bucket version are checked only by the chain,
+   * after a Builder accepted the order. A governance change inside the TTL can therefore make
+   * one order fail on chain (waitForAdmission reports it `rejected` and drops the cache, so the
+   * retry it returns is built on fresh reads). Leave this off where that is not acceptable.
+   */
+  readonly chainReadCache?: boolean | { readonly ttlMs?: number };
 }
 
 /**
@@ -413,6 +439,17 @@ export interface OrderWindowOffsets {
   readonly orderExpireBlocks: bigint;
 }
 
+/** Internal: a session read recovery made just before submitting, used instead of reading it again. */
+const READ_SESSION: unique symbol = Symbol('trueopen.readSession');
+/** Internal: the BuilderSet recovery read with its context, used for routing when it is the context's set. */
+const READ_BUILDER_SET: unique symbol = Symbol('trueopen.readBuilderSet');
+
+/** OpenTaskParams with the reads openTaskWithRecovery hands to submitOpenTask. */
+type InternalOpenTaskParams = OpenTaskParams & {
+  readonly [READ_SESSION]?: StreamStateView | undefined;
+  readonly [READ_BUILDER_SET]?: BuilderSetSnapshot | undefined;
+};
+
 /**
  * Carries the rejected order's task_hash in retryParams. A symbol, so an object spread of the
  * params (`{ ...retry, orderSigner: 'wallet' }`) keeps it while it stays out of the public API.
@@ -526,6 +563,19 @@ export type AdmissionOutcome =
   | { readonly kind: 'rejected'; readonly taskId: string; readonly diagnosis: RejectionDiagnosis; readonly retry: OpenTaskParams }
   /** Neither within timeoutMs. */
   | { readonly kind: 'timeout'; readonly taskId: string };
+
+/** What TrueOpenClient.prefetch warms besides the order-independent reads. */
+export interface PrefetchParams {
+  /** Reads the session and warms its bound Builder's descriptor and connection. */
+  readonly sessionId?: string;
+  /** Warms this model profile's pricing (what openTask reads unless params.pricing is given). */
+  readonly model?: { readonly modelId: string; readonly profileVersion: number | bigint };
+}
+
+/** What TrueOpenClient.prefetch could not read (each failure; empty when everything was warmed). */
+export interface PrefetchResult {
+  readonly errors: readonly unknown[];
+}
 
 /** Expiry and cap of a registered session key grant (ADR-0037). */
 export interface SessionKeyOptions {
@@ -995,6 +1045,16 @@ export class TrueOpenClient {
   /** Registered session keys loaded on this client, by session (memory only), with their expiry. */
   private readonly registeredKeys: RegisteredSessionKeys;
 
+  /** config.chainReadCache, when enabled. */
+  private readonly readCache: ChainReadCache | undefined;
+  /**
+   * The hub reads an order makes: through readCache when it is enabled, and recording every
+   * latest height read (readLatestHeight).
+   */
+  private readonly orderHub: FacadeHubReader | undefined;
+  /** The highest latest height read so far and when (Date.now()). */
+  private observedHeight: { readonly height: bigint; readonly at: number } | undefined;
+
   constructor(cfg: TrueOpenClientConfig) {
     // A 0x address (as an EIP-1193 wallet reports it) becomes the canonical Bech32 account
     // address; anything else must already be canonical with the account prefix.
@@ -1024,6 +1084,12 @@ export class TrueOpenClient {
     if (replacementMs !== undefined && (!Number.isFinite(replacementMs) || replacementMs < 0)) {
       throw local('SDK_LOCAL_CONFIG_INVALID', `orderReplacementRetryMs must be a finite number >= 0, got ${String(replacementMs)}`);
     }
+    const cacheOpt = cfg.chainReadCache;
+    this.readCache =
+      cacheOpt === undefined || cacheOpt === false ? undefined : new ChainReadCache(cacheOpt === true ? {} : cacheOpt);
+    const rawHub = cfg.hub;
+    this.orderHub =
+      rawHub === undefined ? undefined : { ...hubOrderReads(rawHub, this.readCache), getLatestHeight: () => this.readLatestHeight(rawHub) };
     this.sessionManager = new SessionManager(cfg.chain);
     // Requests use a registered key only up to a margin before its expiry height; the height comes from the hub,
     // reused from the client's own recent reads (readLatestHeight) where one exists.
@@ -1042,7 +1108,11 @@ export class TrueOpenClient {
             userAddress: cfg.userAddress,
             wallet: cfg.wallet,
             signatureChainId: this.signatureChainId(),
+            // A new grant's expiry counts from a fresh height; whether the current grant needs
+            // renewing is judged against one read within about a block (the renewal margin
+            // covers the lag).
             latestHeight: () => this.latestHeight('a session grant expiry'),
+            recentLatestHeight: () => this.recentLatestHeight('a session grant expiry'),
             maxGrantBlocks: cfg.session.maxGrantBlocks,
             ...(cfg.session.grantBlocks !== undefined ? { grantBlocks: cfg.session.grantBlocks } : {}),
             ...(cfg.session.renewBeforeBlocks !== undefined ? { renewBeforeBlocks: cfg.session.renewBeforeBlocks } : {}),
@@ -1080,7 +1150,23 @@ export class TrueOpenClient {
   private async readLatestHeight(hub: FacadeHubReader): Promise<bigint> {
     const h = await hub.getLatestHeight();
     this.registeredKeys.observeHeight(h);
+    if (this.observedHeight === undefined || h >= this.observedHeight.height) this.observedHeight = { height: h, at: Date.now() };
     return h;
+  }
+
+  /**
+   * A latest height read at most RECENT_HEIGHT_MAX_AGE_MS (about one block) ago, else a fresh
+   * one. For an expiry counted from the head, where a block of lag only shortens the window.
+   */
+  private async recentLatestHeight(what: string): Promise<bigint> {
+    const seen = this.observedHeight;
+    if (seen !== undefined && Date.now() - seen.at <= RECENT_HEIGHT_MAX_AGE_MS) return seen.height;
+    return this.latestHeight(what);
+  }
+
+  /** Drops every result config.chainReadCache holds (a no-op without it). */
+  invalidateChainReadCache(): void {
+    this.readCache?.invalidate();
   }
 
   /** The signer-chosen EIP-712 domain chainId: config.signatureChainId, else the default 1. */
@@ -1458,32 +1544,82 @@ export class TrueOpenClient {
    * source of truth for final state.
    */
   async openTask(params: OpenTaskParams): Promise<OpenTaskResult> {
-    return this.submitOpenTask(params);
+    if (this.readCache === undefined) return this.submitOpenTask(params);
+    try {
+      return await this.submitWithFreshReadsOnError(params);
+    } catch (err) {
+      // Every failure drops the cache (see submitWithFreshReadsOnError). A Builder's refusal of a
+      // BuilderSet the cache may have kept too long is sent once more, built on fresh reads; not
+      // with a caller's context, which would sign the same set again. (A cached set that does not
+      // match the context or lacks the dispatching Builder is caught before signing: see
+      // routableContext.)
+      if (params.context !== undefined || !isStaleBuilderSetRefusal(err)) throw err;
+      return this.submitWithFreshReadsOnError(params);
+    }
+  }
+
+  /** submitOpenTask, dropping config.chainReadCache when it fails, so what follows reads fresh. */
+  private async submitWithFreshReadsOnError(params: InternalOpenTaskParams, destination?: string): Promise<OpenTaskResult> {
+    try {
+      return await this.submitOpenTask(params, destination);
+    } catch (err) {
+      this.readCache?.invalidate();
+      throw err;
+    }
   }
 
   /** Recover one sequence from chain state; never submits a sequence already consumed. */
   async openTaskWithRecovery(params: OpenTaskParams, policy: DispatchRecoveryPolicy): Promise<OpenTaskResult | OpenTaskAck> {
-    const hub = this.cfg.hub;
+    const hub = this.orderHub;
     if (!hub) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'Recovery requires a Hub reader');
-    const state = await this.cfg.chain.querySession(params.sessionId);
+    // Independent, so concurrent; the context resolution also yields the BuilderSet it read.
+    const [state, first] = await Promise.all([
+      this.cfg.chain.querySession(params.sessionId),
+      params.context !== undefined ? undefined : this.resolveOrderContext(),
+    ]);
     const orderSequence = params.orderSequence ?? state.nextExpectedSequence;
-    let context = params.context ?? await resolveTaskOrderContext(hub, this.cfg.chainId);
-    const set = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
+    let context = params.context ?? first!.context;
+    let set: BuilderSetSnapshot = first?.builderSet ?? await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
+    // The Builders recovery may dispatch to must be in the snapshot; one missing from a cached set
+    // may have joined in a replacement the cache has not seen yet: read it again, once.
+    const wanted = [state.boundBuilder, state.pendingTakeover?.candidateBuilder].filter((b): b is string => !!b);
+    if (this.readCache !== undefined && wanted.some((b) => !membersOf(set).includes(b))) {
+      this.readCache.invalidate();
+      if (params.context === undefined) ({ context, builderSet: set } = await this.resolveOrderContext());
+      else set = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
+    }
+    // The session read above serves the first readSession; every later one reads the chain. The
+    // last read is handed to submitOpenTask when it is at most about a block old and the order is
+    // not refreshed, instead of reading the session once more.
+    let unread: StreamStateView | undefined = state;
+    let lastSession: { readonly view: StreamStateView; readonly at: number } | undefined;
     let result: OpenTaskResult | undefined;
     const ack = await recoverDispatch({
       taskId: deriveTaskId(params.sessionId, orderSequence),
-      orderSequence, builders: set.builders.split(',').map(x => x.trim()).filter(Boolean),
+      orderSequence, builders: membersOf(set),
       refreshBuilders: async () => {
-        context = await resolveTaskOrderContext(hub, this.cfg.chainId);
-        const current = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
-        return current.builders.split(',').map(x => x.trim()).filter(Boolean);
+        this.readCache?.invalidate();
+        ({ context, builderSet: set } = await this.resolveOrderContext());
+        return membersOf(set);
       },
-      readSession: () => this.cfg.chain.querySession(params.sessionId),
+      readSession: async () => {
+        const view = unread ?? await this.cfg.chain.querySession(params.sessionId);
+        unread = undefined;
+        lastSession = { view, at: Date.now() };
+        return view;
+      },
       readHeight: () => hub.getLatestHeight(),
       submit: async (builder, refresh) => {
         const { context: _oldContext, expiryHeight: _oldExpiry, ...rest } = params;
-        if (refresh) context = await resolveTaskOrderContext(hub, this.cfg.chainId);
-        result = await this.submitOpenTask({ ...rest, orderSequence, context, ...(policy.signal === undefined ? {} : { signal: policy.signal }) }, builder);
+        if (refresh) ({ context, builderSet: set } = await this.resolveOrderContext());
+        const session = !refresh && lastSession !== undefined && Date.now() - lastSession.at <= RECENT_HEIGHT_MAX_AGE_MS ? lastSession.view : undefined;
+        lastSession = undefined;
+        result = await this.submitWithFreshReadsOnError({
+          ...rest, orderSequence, context,
+          ...(policy.signal === undefined ? {} : { signal: policy.signal }),
+          [READ_SESSION]: session,
+          [READ_BUILDER_SET]: set,
+        }, builder);
         return result;
       },
       recorded: async (builder, hintedTaskId) => {
@@ -1499,9 +1635,13 @@ export class TrueOpenClient {
     return result ?? ack;
   }
 
-  private async submitOpenTask(params: OpenTaskParams, destination?: string): Promise<OpenTaskResult> {
-    const { hub, ingressTransportFactory } = this.cfg;
-    if (!hub || !ingressTransportFactory) {
+  private async submitOpenTask(input: InternalOpenTaskParams, destination?: string): Promise<OpenTaskResult> {
+    // The reads recovery hands over stay out of the params (and so out of retryParams).
+    const { [READ_SESSION]: readSession, [READ_BUILDER_SET]: callerSet, ...params } = input;
+    const { ingressTransportFactory } = this.cfg;
+    const rawHub = this.cfg.hub;
+    const hub = this.orderHub;
+    if (!rawHub || !hub || !ingressTransportFactory) {
       throw new TrueOpenError(
         'SDK_LOCAL',
         'SDK_LOCAL_ROUTING_UNCONFIGURED',
@@ -1523,11 +1663,21 @@ export class TrueOpenClient {
     // prechecks and the order sequence.
     // orderSigner 'wallet': as if no key were loaded (no prechecks, no key-signed envelope).
     const registered = signer === 'wallet' ? undefined : this.registeredKeys.get(params.sessionId);
-    const [feeDenom, pricing, stream, firstResolved] = await Promise.all([
+    const callerContext = params.context !== undefined;
+    // With a caller's context, the envelope expiry needs the head (unless expiryHeight is given)
+    // and routing needs the BuilderSet at the context's anchor: both are known now, so they are
+    // read alongside the rest.
+    const [feeDenom, pricing, stream, firstResolved, callerHead] = await Promise.all([
       this.resolveFeeDenom(),
       params.pricing !== undefined ? Promise.resolve(params.pricing) : this.readProfilePricing(params.order),
-      this.cfg.chain.querySession(params.sessionId),
-      params.context !== undefined ? Promise.resolve({ context: params.context }) : this.resolveOrderContext(),
+      readSession ?? this.cfg.chain.querySession(params.sessionId),
+      params.context !== undefined
+        ? (callerSet !== undefined && callerSet.setHash === params.context.builderSetHash
+            ? Promise.resolve(callerSet)
+            : hub.getBuilderSetAtHeight(params.context.sessionAnchorHeight)
+          ).then((builderSet): ResolvedTaskOrderContext => ({ context: params.context!, builderSet }))
+        : this.resolveOrderContext(),
+      callerContext && params.expiryHeight === undefined ? this.recentLatestHeight('the OpenTask expiry') : undefined,
     ]);
     if (stream.status === 'CLOSED' || stream.pendingWithdrawKind === 'CLOSE') {
       throw local('SDK_LOCAL_SESSION_CLOSING', `session ${params.sessionId} is closed or has a pending close`);
@@ -1540,18 +1690,19 @@ export class TrueOpenClient {
     if (registered !== undefined) {
       this.registeredKeys.refreshExpiry(params.sessionId, stream.sessionKey, stream.sessionKeyExpiryHeight, stream.sessionKeySetHeight);
     }
-    const callerContext = params.context !== undefined;
     const windowOffsets = params.orderWindow !== undefined ? checkOrderWindow(params.orderWindow) : undefined;
     // The context (with the key's anchor check) and the order built on it. A retry whose order
     // would come out identical to the rejected one resolves one fresh context (see below).
     const orderOn = async (
-      first: ResolvedTaskOrderContext | { context: TaskOrderChainContext },
-    ): Promise<{ resolved: ResolvedTaskOrderContext | { context: TaskOrderChainContext }; order: TaskOrderV3 }> => {
+      first: ResolvedTaskOrderContext,
+    ): Promise<{ resolved: ResolvedTaskOrderContext; order: TaskOrderV3 }> => {
       let resolved = first;
       if (registered !== undefined && !checkSessionKeyAdmission(registered, stream, resolved.context)) {
         // Only the anchor failed: it predates the key's registration (set or rotated after it).
         resolved = await this.anchorAfterSetHeight(registered, stream, resolved.context, callerContext);
       }
+      // Routing's checks, made before anything is signed.
+      resolved = await this.routableContext(resolved, dispatchingBuilder, callerContext);
       const c = resolved.context;
       // A relative window (retryParams) is rebased on this context's latest height. Otherwise
       // the order is anchored at the latest height and keeps the lifetime the caller asked for,
@@ -1617,9 +1768,10 @@ export class TrueOpenClient {
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     // The envelope is signed now, so its expiry counts from the current head. A context the caller
     // (or recovery, moving to another Builder) passes in may be many blocks old: counting from its
-    // latestHeight would send an envelope that is already expired (NEXUS_DATA_EXPIRED).
-    const head = callerContext ? await hub.getLatestHeight() : ctx.latestHeight;
-    const expiryHeight = params.expiryHeight ?? head + BigInt(this.cfg.requestTtlBlocks ?? 10);
+    // latestHeight would send an envelope that is already expired (NEXUS_DATA_EXPIRED). The head
+    // read for it may be up to about a block old (recentLatestHeight), well inside the window.
+    const head = callerContext ? callerHead : ctx.latestHeight;
+    const expiryHeight = params.expiryHeight ?? head! + BigInt(this.cfg.requestTtlBlocks ?? 10);
 
     // Routing needs only task_id and the context, not the signature, so it runs while the
     // order is being signed (a browser wallet prompt can take seconds), and the dispatching
@@ -1632,8 +1784,9 @@ export class TrueOpenClient {
       builderSetHash: ctx.builderSetHash,
       sessionAnchorHeight: ctx.sessionAnchorHeight,
       dispatchingBuilder,
-      ...('builderSet' in resolved ? { builderSet: resolved.builderSet } : {}),
-    }).then((r) => ({ ...r, endpoints: r.endpoints.filter((e) => e.address === dispatchingBuilder) }));
+      dispatchingOnly: true,
+      builderSet: resolved.builderSet,
+    });
     // Handled here so a signing failure below does not leave it unobserved; awaited after signing.
     routing.then((r) => this.prewarmTaskBuilders(r.endpoints), () => undefined);
 
@@ -1699,8 +1852,10 @@ export class TrueOpenClient {
             // stale -> re-read that Builder's descriptor; if the fingerprint changed, retry with the
             // new fingerprint, otherwise the peer certificate really is wrong, so return the original error.
             if (!isTLSPubkeyMismatch(err)) throw err;
-            const fresh = await rereadNexusEndpoint(hub, endpoint.address);
+            // Read past config.chainReadCache: the cached descriptor is what just failed.
+            const fresh = await rereadNexusEndpoint(rawHub, endpoint.address);
             if (!fresh || fresh.tlsPubkeyHash === at.tlsPubkeyHash) throw err;
+            this.readCache?.invalidate();
             at = { uri: fresh.uri, tlsPubkeyHash: fresh.tlsPubkeyHash };
             return await submit(req);
           }
@@ -1940,6 +2095,9 @@ export class TrueOpenClient {
         void _;
         retry = rest;
       }
+      // The chain alone checks the fee denom, the pricing and the bucket version: drop what
+      // config.chainReadCache holds, so the retry is built on fresh reads.
+      this.readCache?.invalidate();
       return { kind: 'rejected', taskId, diagnosis, retry };
     };
 
@@ -2030,6 +2188,28 @@ export class TrueOpenClient {
   }
 
   /**
+   * `r`, checked as routing will check it: its BuilderSet is the one the context signs, and the
+   * dispatching Builder is a member. Made before signing, so a failure costs no wallet prompt.
+   * With config.chainReadCache a failure may be a cached BuilderSet older than a replacement (a
+   * session rebound to a Builder only in the new set, or a caller's context on the new set): the
+   * cache is dropped and the set read again once (with a fresh context unless the caller passed
+   * one). A failure on fresh reads is thrown: SDK_LOCAL_BUILDER_SET_MISMATCH (a caller's context
+   * on another set) or SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT.
+   */
+  private async routableContext(r: ResolvedTaskOrderContext, builder: string, callerContext: boolean): Promise<ResolvedTaskOrderContext> {
+    const problem = routingProblem(r, builder);
+    if (problem === undefined) return r;
+    if (this.readCache === undefined) throw problem;
+    this.readCache.invalidate();
+    const fresh: ResolvedTaskOrderContext = callerContext
+      ? { context: r.context, builderSet: await this.orderHub!.getBuilderSetAtHeight(r.context.sessionAnchorHeight) }
+      : await this.resolveOrderContext();
+    const again = routingProblem(fresh, builder);
+    if (again !== undefined) throw again;
+    return fresh;
+  }
+
+  /**
    * A context whose anchor is at or after the registered key's set_height. A caller's context is
    * used as is, so an older anchor is refused (not retriable: pass a newer context). Otherwise
    * the latest height is polled, for at most sessionKeyAnchorWaitMs, until a fresh anchor
@@ -2040,7 +2220,7 @@ export class TrueOpenClient {
     s: StreamStateView,
     current: TaskOrderChainContext,
     callerContext: boolean,
-  ): Promise<ResolvedTaskOrderContext | { context: TaskOrderChainContext }> {
+  ): Promise<ResolvedTaskOrderContext> {
     const setHeight = s.sessionKeySetHeight;
     const refuse = (anchorHeight: bigint, retriable: boolean, hint: string): TrueOpenError =>
       local(
@@ -2071,14 +2251,62 @@ export class TrueOpenClient {
    * optional config override (see resolveFeeDenom).
    */
   async resolveFeeDenom(): Promise<string> {
-    const read = this.cfg.hub?.getBusinessDenom;
-    const chainDenom = read !== undefined ? await read.call(this.cfg.hub) : undefined;
+    const read = this.orderHub?.getBusinessDenom;
+    const chainDenom = read !== undefined ? await read() : undefined;
     return resolveFeeDenom(chainDenom, this.cfg.feeDenom);
   }
 
-  /** A fresh order context, anchored at the latest height, with the BuilderSet it read. */
+  /**
+   * A fresh order context, anchored at the latest height, with the BuilderSet it read. The
+   * latest height is always read; the rest may come from config.chainReadCache.
+   */
   private async resolveOrderContext(): Promise<ResolvedTaskOrderContext> {
-    return resolveTaskOrderContextWithBuilderSet(this.cfg.hub!, this.cfg.chainId);
+    return resolveTaskOrderContextWithBuilderSet(this.orderHub!, this.cfg.chainId);
+  }
+
+  /**
+   * Warms what the next order reads, for a long-lived client (a chat server, say) that wants its
+   * first order not to pay for cold reads: business_denom, the timeout bucket, the generation
+   * limits, the BuilderSet at the latest height, and, when given, the model profile (`model`) and
+   * the session's bound Builder descriptor (whose connection is then prewarmed through
+   * config.ingressPrewarm). The results stay in config.chainReadCache; without it only the
+   * connection prewarm lasts, so enable the cache to benefit. Call it again within the cache TTL
+   * (60 s by default) to keep it warm; nothing runs in the background.
+   *
+   * Never rejects for a failed read: each failure is returned in `errors` (the order itself will
+   * read again and report it). Needs config.hub (else SDK_LOCAL_ROUTING_UNCONFIGURED).
+   */
+  async prefetch(p: PrefetchParams = {}): Promise<PrefetchResult> {
+    const hub = this.orderHub;
+    if (hub === undefined) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'prefetch requires config.hub');
+    const errors: unknown[] = [];
+    const attempt = async (read: () => Promise<unknown>): Promise<void> => {
+      try {
+        await read();
+      } catch (e) {
+        errors.push(e);
+      }
+    };
+    const getProfile = hub.getProfile;
+    const { sessionId, model } = p;
+    await Promise.all([
+      attempt(() => this.resolveFeeDenom()),
+      attempt(() => this.resolveOrderContext()),
+      ...(model !== undefined && getProfile !== undefined ? [attempt(() => getProfile(model.modelId, BigInt(model.profileVersion)))] : []),
+      ...(sessionId !== undefined
+        ? [
+            attempt(async () => {
+              const { boundBuilder } = await this.cfg.chain.querySession(sessionId);
+              if (!boundBuilder) return;
+              const endpoint = nexusGrpcEndpoint(await hub.getServiceDescriptor(boundBuilder));
+              if (endpoint && endpoint.uri !== '') {
+                await this.prewarmTaskBuilders([{ serviceEndpoint: endpoint.uri, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' }]);
+              }
+            }),
+          ]
+        : []),
+    ]);
+    return { errors };
   }
 
   /**
@@ -2101,13 +2329,13 @@ export class TrueOpenClient {
     readonly endpoints: readonly TaskBuilderEndpoint[];
     readonly unresolvedBuilders: readonly { readonly address: string; readonly error: unknown }[];
   }> {
-    const hub = this.cfg.hub;
+    const hub = this.orderHub;
     if (hub === undefined) {
       throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'resolveTaskBuilders requires config.hub');
     }
     const [stream, resolved] = await Promise.all([
       this.cfg.chain.querySession(p.sessionId),
-      p.context !== undefined ? Promise.resolve({ context: p.context }) : this.resolveOrderContext(),
+      p.context !== undefined ? Promise.resolve<{ context: TaskOrderChainContext }>({ context: p.context }) : this.resolveOrderContext(),
     ]);
     if (!stream.boundBuilder) {
       throw local('SDK_LOCAL_SESSION_BINDING_MISSING', `session ${p.sessionId} has no bound Builder; refresh its chain state`);
@@ -2121,10 +2349,10 @@ export class TrueOpenClient {
       builderSetHash: ctx.builderSetHash,
       sessionAnchorHeight: ctx.sessionAnchorHeight,
       dispatchingBuilder: stream.boundBuilder,
+      dispatchingOnly: true,
       ...('builderSet' in resolved ? { builderSet: resolved.builderSet } : {}),
     });
-    const bound = endpoints.filter((e) => e.address === stream.boundBuilder);
-    return { taskId, orderSequence, context: ctx, endpoints: bound, unresolvedBuilders: errors };
+    return { taskId, orderSequence, context: ctx, endpoints, unresolvedBuilders: errors };
   }
 
   /**
@@ -2148,7 +2376,7 @@ export class TrueOpenClient {
 
   /** Profile pricing for the local order-value checks; refuses to sign when it cannot be read. */
   private async readProfilePricing(order: TaskOrderIntent): Promise<ProfilePricing> {
-    const hub = this.cfg.hub;
+    const hub = this.orderHub;
     if (hub?.getProfile === undefined) {
       throw new TrueOpenError(
         'SDK_LOCAL',
@@ -3762,6 +3990,13 @@ export const DEFAULT_MAX_RANGE_BYTES = 8 << 20;
 /** waitForOutputTrustAnchors chain poll interval: about one block. */
 export const DEFAULT_TRUST_ANCHOR_POLL_MS = 1000;
 
+/**
+ * How old a latest height may be and still count as the current head for an expiry counted from
+ * it (the OpenTask envelope with a caller's context, a session grant), and how old a session read
+ * openTaskWithRecovery hands to the submit may be: about one block.
+ */
+const RECENT_HEIGHT_MAX_AGE_MS = 1000;
+
 /** openTask's default wait for an anchor at or after a registered key's set_height: a few blocks. */
 export const DEFAULT_SESSION_KEY_ANCHOR_WAIT_MS = 15_000;
 
@@ -3914,6 +4149,46 @@ async function retryTransient<T>(
       await sleep(RANGE_RETRY_BASE_DELAY_MS * 2 ** i);
     }
   }
+}
+
+/**
+ * A Builder's refusal of the order's BuilderSet, which config.chainReadCache may have caused by
+ * keeping the set too long: openTask retries it once on fresh reads. Read through a one-Builder
+ * TASK_BUILDER_ALL_ENDPOINTS_FAILED.
+ */
+function isStaleBuilderSetRefusal(error: unknown): boolean {
+  if (error instanceof TaskBuilderAllEndpointsFailedError) {
+    return error.results.length === 1 && isStaleBuilderSetRefusal(error.results[0]!.error);
+  }
+  return error instanceof TrueOpenError && error.code === 'NEXUS_INGRESS_BUILDER_SET_STALE';
+}
+
+/** The members of a BuilderSet snapshot, in snapshot order. */
+function membersOf(s: BuilderSetSnapshot): string[] {
+  return s.builders.split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * Why routing would refuse `builder` under `r` (resolveTaskBuilderEndpoints and
+ * selectTaskBuilders make the same checks, with the same codes), or undefined.
+ */
+function routingProblem(r: ResolvedTaskOrderContext, builder: string): TrueOpenError | undefined {
+  const { builderSet: set, context: c } = r;
+  if (set.setHash !== c.builderSetHash) {
+    return new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_BUILDER_SET_MISMATCH',
+      `builder set ${set.builderSetId} at anchor height ${c.sessionAnchorHeight} has hash ${set.setHash}, but the order signs ${c.builderSetHash}`,
+    );
+  }
+  if (!membersOf(set).includes(builder)) {
+    return new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT',
+      `dispatching Builder ${builder} is not in builder set ${set.builderSetId} at anchor height ${c.sessionAnchorHeight}`,
+    );
+  }
+  return undefined;
 }
 
 async function rereadNexusEndpoint(

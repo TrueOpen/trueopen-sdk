@@ -50,6 +50,7 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `taskDataExpiryBlocks` | `number` | Task-data request (metadata/fetch) expiry window in blocks (default 10). |
 | `fetchDescriptor` | `DescriptorDocFetch` | For builder descriptor hash verification. |
 | `ingressTransportFactory` | `(endpoint, tlsPubkeyHash?) => Transport` | Per-builder transport factory used by `openTask` routing. |
+| `chainReadCache` | `boolean \| { ttlMs? }` | Opt-in, off by default. Reuses the order's slow-changing chain reads (business denom, profile pricing, timeout bucket, generation limits, BuilderSet, Builder descriptors) for at most `ttlMs` (default and maximum `MAX_CHAIN_READ_CACHE_TTL_MS`, 60000). A `ttlMs` outside `(0, 60000]` throws `SDK_LOCAL_CONFIG_INVALID`. See §1.3a. |
 
 ### 1.2 Sessions
 
@@ -94,7 +95,7 @@ async openTask(params: OpenTaskParams): Promise<OpenTaskResult>
 | `idempotencyKey` | Required. Same key + same `input_hash` → same result; same key + different `input_hash` → rejected. |
 | `orderSequence?` | Defaults to `nextOrderSequence`. Pass explicitly only for RBF. |
 | `context?` | Defaults to a fresh context anchored at the latest height (§3.2). Passed contexts are used as is. |
-| `expiryHeight?` | Block height (default `latestHeight + requestTtlBlocks`). |
+| `expiryHeight?` | Block height (default `latestHeight + requestTtlBlocks`). With a passed `context` and no `expiryHeight`, the head is a latest height read at most about a block (1 s) ago, else a fresh read. |
 | `inputMediaType?` / `chunkSizeBytes?` | OpenTask transport tuning. |
 | `pricing?` | Defaults to `hub.getProfile(...).pricing`; pass to skip the read. |
 | `orderSigner?` | `'auto'` (default): a loaded registered key signs the order, after its prechecks, else the wallet. `'wallet'`: the wallet signs even with a key loaded; no key prechecks run and the envelope is signed as without a key (grant when `session` is configured, else the wallet). Anything else is `SDK_LOCAL_ORDER_SIGNER_INVALID`. |
@@ -237,6 +238,69 @@ Waits for the chain to decide an order (acks are only local acceptance). Needs `
   new idempotency key because the re-signed order's `task_hash` differs. Builders that abandoned
   the rejected order accept the new version; see `openTask` for the one still tracking it. A task
   that reached the chain and finished refuses a new version (`NEXUS_INGRESS_TASK_TERMINAL`).
+
+### 1.3a Chain reads per order, the read cache and `prefetch`
+
+```ts
+async prefetch(p?: PrefetchParams): Promise<PrefetchResult>
+// PrefetchParams: { sessionId?, model?: { modelId, profileVersion } }
+// PrefetchResult: { errors: readonly unknown[] }
+invalidateChainReadCache(): void
+const MAX_CHAIN_READ_CACHE_TTL_MS = 60_000
+```
+
+Before it sends an order, `openTask` reads the chain. Each read below is one REST round trip;
+reads on one line run concurrently.
+
+| Step | Reads | Kind |
+|---|---|---|
+| 1 | latest height; session (sequence, binding, status, key state); business denom; profile pricing (unless `pricing` is passed) | height and session: always fresh |
+| 2 | BuilderSet at the anchor (= latest) height; timeout bucket; generation limits | static between governance changes |
+| 3 | the bound Builder's service descriptor | static between descriptor updates |
+
+Without the cache an order makes 8 reads in 3 rounds. With a passed `context`, the BuilderSet at
+its anchor is read in step 1, so it is 2 rounds, and no latest height is read when
+`expiryHeight` is given. `openTaskWithRecovery` reads the session and the context concurrently,
+reuses that session read and the context's BuilderSet for its first submit, and makes the same
+8 reads in 4 rounds. Only the dispatching Builder's descriptor is read (`unresolvedBuilders`
+lists only it).
+
+With `chainReadCache`, everything in steps 2 and 3 and the denom and pricing are served from the
+cache while younger than the TTL, so a warm order (`openTask` or `openTaskWithRecovery`) reads
+only the latest height and the session, concurrently: one round trip. The latest height and the
+session are never cached: the order is anchored at the latest height (a Builder refuses an
+`earliest_submit_height` more than one block above its head, or too far below it), and the
+session carries the sequence and the binding the chain enforces. Nothing runs in the background.
+
+The cached BuilderSet is the one read at the highest height so far; it answers any height at or
+after its effective height. The whole cache is dropped when a fresh BuilderSet or timeout bucket
+read differs from the cached value, when `openTask` / `openTaskWithRecovery` fails, when
+`waitForAdmission` returns `rejected`, when a Builder's certificate re-read finds a new
+endpoint, and on `invalidateChainReadCache()`.
+
+Before anything is signed, `openTask` checks what routing will check: the BuilderSet is the one
+the context signs and the dispatching Builder is a member (with or without the cache, a failure
+on fresh reads throws `SDK_LOCAL_BUILDER_SET_MISMATCH` or `SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT`
+without a wallet prompt). With the cache, a failure there may be a replacement the cache has not
+seen (a session rebound to a Builder only in the new set): the cache is dropped and the set read
+again once (a fresh context, or the set at the caller's anchor), then the order is signed.
+`openTaskWithRecovery` does the same for the bound Builder and a pending takeover candidate
+before it starts. A refusal only the Builder can see, `NEXUS_INGRESS_BUILDER_SET_STALE`, is
+retried once by `openTask` on fresh reads (a wallet-signed order prompts again), unless the
+caller passed `context`: the retry would sign the same set and be refused again, so pass a fresh
+context instead. Sequence and height refusals are not retried: neither value is cached.
+
+Trade-off: the business denom, the pricing and the timeout bucket version are checked only by
+the chain, after a Builder accepted the order. A governance change inside the TTL can make one
+order fail on chain; `waitForAdmission` reports it `rejected` and drops the cache, so its
+`retry` is built on fresh reads. Leave the cache off where that is not acceptable.
+
+`prefetch` warms the cache for a long-lived client (a chat server) so its first order skips the
+cold reads: the denom, the order context (latest height, BuilderSet, timeout bucket, generation
+limits), the `model` profile, and the `sessionId`'s bound Builder descriptor, whose connection
+it prewarms through `config.ingressPrewarm`. It never rejects for a failed read (each is in
+`errors`); it needs `config.hub` (`SDK_LOCAL_ROUTING_UNCONFIGURED`). Without the cache only the
+connection prewarm lasts. Call it again within the TTL to stay warm.
 
 ### 1.4 Task status and events
 
@@ -1263,8 +1327,9 @@ class TaskBuilderAllEndpointsFailedError
 set the chain checks the order against) and fails with `SDK_LOCAL_BUILDER_SET_MISMATCH` if
 the set hash doesn't match the signed value. `selectTaskBuilders` returns the complete
 immutable snapshot in cyclic order starting at `dispatchingBuilder` (no seed or rank draw;
-live status never filters it). `openTask` sends only to the Session's bound Builder, filtered
-from that list. `fanOutToEndpoints` sends to every endpoint it is given and aggregates the
+live status never filters it). `openTask` sends only to the Session's bound Builder, and
+resolves only its descriptor (`dispatchingOnly: true`: the first of that list, after the
+membership check). `fanOutToEndpoints` sends to every endpoint it is given and aggregates the
 first accepted ack plus per-builder errors.
 
 ---

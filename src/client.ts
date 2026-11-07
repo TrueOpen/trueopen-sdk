@@ -248,9 +248,11 @@ export interface TrueOpenClientConfig {
    * The cache is dropped as a whole when: a fresh BuilderSet or timeout bucket read differs from
    * the cached one (a BuilderSet replacement or a params change); openTask or
    * openTaskWithRecovery fails in any way; waitForAdmission finds an order rejected; a Builder's
-   * certificate re-read finds a new endpoint; or invalidateChainReadCache is called. openTask
-   * retries once, with fresh reads, an order refused for a BuilderSet the cache may have kept
-   * too long (NEXUS_INGRESS_BUILDER_SET_STALE, SDK_LOCAL_BUILDER_SET_MISMATCH).
+   * certificate re-read finds a new endpoint; or invalidateChainReadCache is called. Before
+   * signing, a cached BuilderSet that is not the context's or lacks the dispatching Builder (a
+   * replacement the cache has not seen) is read again once, so it costs no wallet prompt. openTask
+   * retries once, with fresh reads, an order a Builder refused with
+   * NEXUS_INGRESS_BUILDER_SET_STALE, unless the caller passed its own context.
    *
    * Trade-off: business_denom, the pricing and the bucket version are checked only by the chain,
    * after a Builder accepted the order. A governance change inside the TTL can therefore make
@@ -1544,9 +1546,12 @@ export class TrueOpenClient {
     try {
       return await this.submitWithFreshReadsOnError(params);
     } catch (err) {
-      // Every failure drops the cache (see submitWithFreshReadsOnError); an order refused for a
-      // BuilderSet the cache may have kept too long is sent once more, built on fresh reads.
-      if (!isStaleChainDataError(err)) throw err;
+      // Every failure drops the cache (see submitWithFreshReadsOnError). A Builder's refusal of a
+      // BuilderSet the cache may have kept too long is sent once more, built on fresh reads; not
+      // with a caller's context, which would sign the same set again. (A cached set that does not
+      // match the context or lacks the dispatching Builder is caught before signing: see
+      // routableContext.)
+      if (params.context !== undefined || !isStaleBuilderSetRefusal(err)) throw err;
       return this.submitWithFreshReadsOnError(params);
     }
   }
@@ -1573,7 +1578,14 @@ export class TrueOpenClient {
     const orderSequence = params.orderSequence ?? state.nextExpectedSequence;
     let context = params.context ?? first!.context;
     let set: BuilderSetSnapshot = first?.builderSet ?? await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
-    const membersOf = (s: BuilderSetSnapshot): string[] => s.builders.split(',').map(x => x.trim()).filter(Boolean);
+    // The Builders recovery may dispatch to must be in the snapshot; one missing from a cached set
+    // may have joined in a replacement the cache has not seen yet: read it again, once.
+    const wanted = [state.boundBuilder, state.pendingTakeover?.candidateBuilder].filter((b): b is string => !!b);
+    if (this.readCache !== undefined && wanted.some((b) => !membersOf(set).includes(b))) {
+      this.readCache.invalidate();
+      if (params.context === undefined) ({ context, builderSet: set } = await this.resolveOrderContext());
+      else set = await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
+    }
     // The session read above serves the first readSession; every later one reads the chain. The
     // last read is handed to submitOpenTask when it is at most about a block old and the order is
     // not refreshed, instead of reading the session once more.
@@ -1687,6 +1699,8 @@ export class TrueOpenClient {
         // Only the anchor failed: it predates the key's registration (set or rotated after it).
         resolved = await this.anchorAfterSetHeight(registered, stream, resolved.context, callerContext);
       }
+      // Routing's checks, made before anything is signed.
+      resolved = await this.routableContext(resolved, dispatchingBuilder, callerContext);
       const c = resolved.context;
       // A relative window (retryParams) is rebased on this context's latest height. Otherwise
       // the order is anchored at the latest height and keeps the lifetime the caller asked for,
@@ -2169,6 +2183,28 @@ export class TrueOpenClient {
     // Past u64 the chain refuses even an unlimited cap (AMOUNT_OVERFLOW).
     if ((cap !== 0n && total > cap) || total > U64_MAX) return 'spend-cap';
     return 'unrelated';
+  }
+
+  /**
+   * `r`, checked as routing will check it: its BuilderSet is the one the context signs, and the
+   * dispatching Builder is a member. Made before signing, so a failure costs no wallet prompt.
+   * With config.chainReadCache a failure may be a cached BuilderSet older than a replacement (a
+   * session rebound to a Builder only in the new set, or a caller's context on the new set): the
+   * cache is dropped and the set read again once (with a fresh context unless the caller passed
+   * one). A failure on fresh reads is thrown: SDK_LOCAL_BUILDER_SET_MISMATCH (a caller's context
+   * on another set) or SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT.
+   */
+  private async routableContext(r: ResolvedTaskOrderContext, builder: string, callerContext: boolean): Promise<ResolvedTaskOrderContext> {
+    const problem = routingProblem(r, builder);
+    if (problem === undefined) return r;
+    if (this.readCache === undefined) throw problem;
+    this.readCache.invalidate();
+    const fresh: ResolvedTaskOrderContext = callerContext
+      ? { context: r.context, builderSet: await this.orderHub!.getBuilderSetAtHeight(r.context.sessionAnchorHeight) }
+      : await this.resolveOrderContext();
+    const again = routingProblem(fresh, builder);
+    if (again !== undefined) throw again;
+    return fresh;
   }
 
   /**
@@ -4114,16 +4150,43 @@ async function retryTransient<T>(
 }
 
 /**
- * A refusal config.chainReadCache may have caused by keeping a BuilderSet too long: openTask
- * retries it once on fresh reads. Read through a one-Builder TASK_BUILDER_ALL_ENDPOINTS_FAILED.
+ * A Builder's refusal of the order's BuilderSet, which config.chainReadCache may have caused by
+ * keeping the set too long: openTask retries it once on fresh reads. Read through a one-Builder
+ * TASK_BUILDER_ALL_ENDPOINTS_FAILED.
  */
-const STALE_CHAIN_DATA_CODES: ReadonlySet<string> = new Set(['NEXUS_INGRESS_BUILDER_SET_STALE', 'SDK_LOCAL_BUILDER_SET_MISMATCH']);
-
-function isStaleChainDataError(error: unknown): boolean {
+function isStaleBuilderSetRefusal(error: unknown): boolean {
   if (error instanceof TaskBuilderAllEndpointsFailedError) {
-    return error.results.length === 1 && isStaleChainDataError(error.results[0]!.error);
+    return error.results.length === 1 && isStaleBuilderSetRefusal(error.results[0]!.error);
   }
-  return error instanceof TrueOpenError && STALE_CHAIN_DATA_CODES.has(error.code);
+  return error instanceof TrueOpenError && error.code === 'NEXUS_INGRESS_BUILDER_SET_STALE';
+}
+
+/** The members of a BuilderSet snapshot, in snapshot order. */
+function membersOf(s: BuilderSetSnapshot): string[] {
+  return s.builders.split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * Why routing would refuse `builder` under `r` (resolveTaskBuilderEndpoints and
+ * selectTaskBuilders make the same checks, with the same codes), or undefined.
+ */
+function routingProblem(r: ResolvedTaskOrderContext, builder: string): TrueOpenError | undefined {
+  const { builderSet: set, context: c } = r;
+  if (set.setHash !== c.builderSetHash) {
+    return new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_BUILDER_SET_MISMATCH',
+      `builder set ${set.builderSetId} at anchor height ${c.sessionAnchorHeight} has hash ${set.setHash}, but the order signs ${c.builderSetHash}`,
+    );
+  }
+  if (!membersOf(set).includes(builder)) {
+    return new TrueOpenError(
+      'SDK_LOCAL',
+      'SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT',
+      `dispatching Builder ${builder} is not in builder set ${set.builderSetId} at anchor height ${c.sessionAnchorHeight}`,
+    );
+  }
+  return undefined;
 }
 
 async function rereadNexusEndpoint(

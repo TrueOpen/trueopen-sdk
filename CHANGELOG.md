@@ -20,9 +20,14 @@
   most `MAX_CHAIN_READ_CACHE_TTL_MS` (60 s). A warm order reads only the latest height and the
   session, in one round. The cache is dropped when a fresh BuilderSet or timeout bucket read
   differs, an order fails, `waitForAdmission` returns `rejected`, or a certificate re-read finds a
-  new endpoint; `openTask` retries once on fresh reads an order refused with
-  `NEXUS_INGRESS_BUILDER_SET_STALE` or `SDK_LOCAL_BUILDER_SET_MISMATCH`. See reference §1.3a for
-  the trade-off (chain-only checks of the denom, pricing and bucket version).
+  new endpoint. Before signing, a cached BuilderSet that is not the context's or lacks the
+  dispatching Builder is read again once (no extra wallet prompt); `openTask` retries once on
+  fresh reads an order a Builder refused with `NEXUS_INGRESS_BUILDER_SET_STALE`, unless the
+  caller passed `context`. See reference §1.3a for the trade-off (chain-only checks of the
+  denom, pricing and bucket version).
+- **Changed:** `openTask` checks before signing that the BuilderSet is the context's and the
+  dispatching Builder is a member (`SDK_LOCAL_BUILDER_SET_MISMATCH`,
+  `SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT`), instead of failing in routing after the wallet signed.
 - **Added:** `TrueOpenClient.prefetch({ sessionId?, model? })` (`PrefetchParams`,
   `PrefetchResult`) warms the cache and the bound Builder's connection; it never rejects for a
   failed read. `invalidateChainReadCache()` drops the cache.

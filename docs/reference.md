@@ -276,10 +276,19 @@ The cached BuilderSet is the one read at the highest height so far; it answers a
 after its effective height. The whole cache is dropped when a fresh BuilderSet or timeout bucket
 read differs from the cached value, when `openTask` / `openTaskWithRecovery` fails, when
 `waitForAdmission` returns `rejected`, when a Builder's certificate re-read finds a new
-endpoint, and on `invalidateChainReadCache()`. `openTask` retries once, on fresh reads, an
-order refused with `NEXUS_INGRESS_BUILDER_SET_STALE` or `SDK_LOCAL_BUILDER_SET_MISMATCH` (a
-wallet-signed order prompts again); a second refusal is thrown. Sequence and height refusals
-are not retried: neither value is cached.
+endpoint, and on `invalidateChainReadCache()`.
+
+Before anything is signed, `openTask` checks what routing will check: the BuilderSet is the one
+the context signs and the dispatching Builder is a member (with or without the cache, a failure
+on fresh reads throws `SDK_LOCAL_BUILDER_SET_MISMATCH` or `SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT`
+without a wallet prompt). With the cache, a failure there may be a replacement the cache has not
+seen (a session rebound to a Builder only in the new set): the cache is dropped and the set read
+again once (a fresh context, or the set at the caller's anchor), then the order is signed.
+`openTaskWithRecovery` does the same for the bound Builder and a pending takeover candidate
+before it starts. A refusal only the Builder can see, `NEXUS_INGRESS_BUILDER_SET_STALE`, is
+retried once by `openTask` on fresh reads (a wallet-signed order prompts again), unless the
+caller passed `context`: the retry would sign the same set and be refused again, so pass a fresh
+context instead. Sequence and height refusals are not retried: neither value is cached.
 
 Trade-off: the business denom, the pricing and the timeout bucket version are checked only by
 the chain, after a Builder accepted the order. A governance change inside the TTL can make one

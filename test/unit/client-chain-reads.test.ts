@@ -57,6 +57,8 @@ interface ChainState {
   set: BuilderSetSnapshot;
   bucketVersion: bigint;
   nextSequence: bigint;
+  /** The session's bound Builder; defaults to ADDRS[0]. */
+  bound?: string;
 }
 
 class Meter {
@@ -103,7 +105,7 @@ function fakes(state: ChainState, meter: Meter) {
       })),
   };
   const session = (id: string): StreamStateView => ({
-    boundBuilder: ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: state.nextSequence, lastActiveHeight: 0n,
+    boundBuilder: state.bound ?? ADDRS[0]!, sessionId: id, owner: USER, nextExpectedSequence: state.nextSequence, lastActiveHeight: 0n,
     openPendingCount: 0n, status: 'ACTIVE', sessionKeyExpiryHeight: 0n, sessionKeySpendCap: '0', sessionKeySpent: '0', sessionKeySetHeight: 0n,
   } as StreamStateView);
   const chain: ChainClient = {
@@ -148,13 +150,15 @@ function setup(extra: Partial<TrueOpenClientConfig> = {}) {
   const meter = new Meter();
   const { hub, chain } = fakes(state, meter);
   const seen = { calls: 0, setIds: [] as string[] };
+  const signatures = { count: 0 };
   const client = new TrueOpenClient({
-    chainId: 'trueopen-localnet-1', userAddress: USER, wallet, chain, hub: hub as never,
+    chainId: 'trueopen-localnet-1', userAddress: USER, chain, hub: hub as never,
+    wallet: { signTypedData: (d) => { signatures.count += 1; return wallet.signTypedData(d); } },
     ingressTransport: builder(state, seen), ingressTransportFactory: () => builder(state, seen),
     signatureChainId: 424242n, feeDenom: 'utrueopen',
     ...extra,
   });
-  return { state, meter, client, seen };
+  return { state, meter, client, seen, signatures };
 }
 
 let key = 0;
@@ -340,3 +344,95 @@ describe('chain read cache', () => {
     expect(() => setup({ chainReadCache: { ttlMs: 0 } })).toThrow(/chainReadCache/);
   });
 });
+
+// A Builder that exists only in the BuilderSet replacing SET_A.
+const NEW_BUILDER = ethSecp256k1Address(secp256k1PublicKey(fromHex('0202030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20')), 'trueopen');
+const SET_C: BuilderSetSnapshot = { builderSetId: 'set-c', builderSetVersion: 3n, effectiveHeight: 1_001n, builders: [...ADDRS, NEW_BUILDER].join(','), setHash: hexOf(0x17) };
+
+describe('chain read cache: a BuilderSet the cache kept too long is caught before signing', () => {
+  it('a session rebound to a Builder only in the new set: one fresh resolution, one signing, accepted', async () => {
+    const { state, client, seen, signatures } = setup({ chainReadCache: true });
+    await client.openTask(params());
+    const perOrder = signatures.count;
+    // SET_C takes effect and the session is bound to its new member.
+    state.set = SET_C;
+    state.height = 1_001n;
+    state.bound = NEW_BUILDER;
+    seen.calls = 0;
+    seen.setIds.length = 0;
+    signatures.count = 0;
+    const res = await client.openTask(params());
+    expect(res.accepted).toBe(true);
+    expect(res.context.builderSetId).toBe('set-c');
+    expect(res.builders.map((b) => b.address)).toEqual([NEW_BUILDER]);
+    expect(seen.setIds).toEqual(['set-c']);
+    expect(signatures.count).toBe(perOrder);
+  });
+
+  it('the same through openTaskWithRecovery', async () => {
+    const { state, client, seen, signatures } = setup({ chainReadCache: true });
+    await client.openTaskWithRecovery(params(), policy);
+    const perOrder = signatures.count;
+    state.set = SET_C;
+    state.height = 1_001n;
+    state.bound = NEW_BUILDER;
+    seen.setIds.length = 0;
+    signatures.count = 0;
+    const res = await client.openTaskWithRecovery(params(), policy);
+    expect(res.accepted).toBe(true);
+    expect(seen.setIds).toEqual(['set-c']);
+    expect(signatures.count).toBe(perOrder);
+  });
+
+  it('without the cache a Builder outside the set is refused before anything is signed', async () => {
+    const { state, client, seen, signatures } = setup();
+    state.bound = NEW_BUILDER;
+    await expect(client.openTask(params())).rejects.toMatchObject({ code: 'SDK_LOCAL_BUILDER_NOT_IN_SNAPSHOT' });
+    expect(signatures.count).toBe(0);
+    expect(seen.calls).toBe(0);
+  });
+
+  it("a caller's fresh context is checked against a fresh read when the cached set disagrees", async () => {
+    const { state, client, seen } = setup({ chainReadCache: true });
+    const first = await client.openTask(params());
+    // The caller resolved a context on SET_C itself; the cache still holds SET_A.
+    state.set = SET_C;
+    state.height = 1_001n;
+    const context = { ...first.context, sessionAnchorHeight: 1_001n, latestHeight: 1_001n, builderSetId: 'set-c', builderSetHash: SET_C.setHash };
+    seen.setIds.length = 0;
+    const res = await client.openTask(params({ context }));
+    expect(res.accepted).toBe(true);
+    expect(seen.setIds).toEqual(['set-c']);
+  });
+
+  it("a caller's stale context, against a fresh read of the set, is refused before signing", async () => {
+    // With the cache on and holding the same old set, only the Builder can tell (next test).
+    const { state, client, seen, signatures } = setup();
+    const first = await client.openTask(params());
+    state.set = SET_C;
+    state.height = 1_001n;
+    seen.calls = 0;
+    signatures.count = 0;
+    // Anchored after SET_C took effect but still signing SET_A.
+    const stale = { ...first.context, sessionAnchorHeight: 1_001n, latestHeight: 1_001n };
+    await expect(client.openTask(params({ context: stale }))).rejects.toMatchObject({ code: 'SDK_LOCAL_BUILDER_SET_MISMATCH' });
+    expect(signatures.count).toBe(0);
+    expect(seen.calls).toBe(0);
+  });
+
+  it("a Builder's stale-set refusal of a caller's context is not retried (the same context would be refused again)", async () => {
+    const state: ChainState = { height: 1_000n, set: SET_A, bucketVersion: 1n, nextSequence: 0n };
+    const refusing: ChainState = { ...state, set: SET_B };
+    const seen = { calls: 0, setIds: [] as string[] };
+    const { hub, chain } = fakes(state, new Meter());
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet, chain, hub: hub as never,
+      ingressTransport: builder(refusing, seen), ingressTransportFactory: () => builder(refusing, seen),
+      signatureChainId: 424242n, feeDenom: 'utrueopen', chainReadCache: true,
+    });
+    const context = (await client.resolveTaskBuilders({ sessionId: SESSION })).context;
+    await expect(client.openTask(params({ context }))).rejects.toMatchObject({ code: 'TASK_BUILDER_ALL_ENDPOINTS_FAILED' });
+    expect(seen.calls).toBe(1);
+  });
+});
+

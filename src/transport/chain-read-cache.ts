@@ -29,7 +29,7 @@ export class ChainReadCache {
   private readonly now: () => number;
   private readonly entries = new Map<string, Entry>();
   private readonly inFlight = new Map<string, Promise<unknown>>();
-  private generation = 0;
+  private gen = 0;
 
   constructor(opts: ChainReadCacheOptions = {}) {
     const ttl = opts.ttlMs ?? MAX_CHAIN_READ_CACHE_TTL_MS;
@@ -48,7 +48,15 @@ export class ChainReadCache {
   invalidate(): void {
     this.entries.clear();
     this.inFlight.clear();
-    this.generation += 1;
+    this.gen += 1;
+  }
+
+  /**
+   * Counts invalidations: a read that started under one generation stores its result only if it
+   * is still the current one when the read finishes.
+   */
+  get generation(): number {
+    return this.gen;
   }
 
   /** The cached value of `key` if it is younger than the TTL. */
@@ -72,11 +80,11 @@ export class ChainReadCache {
     if (hit !== undefined) return Promise.resolve(hit);
     const pending = this.inFlight.get(key);
     if (pending !== undefined) return pending as Promise<T>;
-    const generation = this.generation;
+    const generation = this.gen;
     const previous = this.last<T>(key);
     const p = read().then(
       (value) => {
-        if (generation === this.generation) {
+        if (generation === this.gen) {
           this.inFlight.delete(key);
           onFresh?.(value, previous);
           // onFresh may have invalidated the cache; the value itself is fresh either way.
@@ -85,7 +93,7 @@ export class ChainReadCache {
         return value;
       },
       (error: unknown) => {
-        if (generation === this.generation) this.inFlight.delete(key);
+        if (generation === this.gen) this.inFlight.delete(key);
         throw error;
       },
     );
@@ -129,7 +137,9 @@ interface CachedBuilderSet {
  * order with NEXUS_INGRESS_BUILDER_SET_STALE, and openTask then invalidates and retries once).
  *
  * A fresh BuilderSet or timeout bucket read that differs from the value it replaces is a
- * BuilderSet replacement or a params change: every other cached entry is dropped as well.
+ * BuilderSet replacement or a params change: every other cached entry is dropped as well. As
+ * with every entry, a BuilderSet read still in flight when the cache is invalidated is returned
+ * but not stored.
  */
 export function hubOrderReads(hub: CacheableHubReads, cache?: ChainReadCache): CacheableHubReads {
   if (cache === undefined) {
@@ -157,7 +167,9 @@ export function hubOrderReads(hub: CacheableHubReads, cache?: ChainReadCache): C
     getBuilderSetAtHeight: async (height) => {
       const cached = cache.peek<CachedBuilderSet>(BUILDER_SET_KEY);
       if (cached !== undefined && height >= cached.snapshot.effectiveHeight) return cached.snapshot;
+      const generation = cache.generation;
       const snapshot = await hub.getBuilderSetAtHeight(height);
+      if (generation !== cache.generation) return snapshot;
       const last = cache.last<CachedBuilderSet>(BUILDER_SET_KEY);
       const later = last === undefined || height >= last.readHeight;
       if (later && last !== undefined && last.snapshot.setHash !== snapshot.setHash) cache.invalidate();

@@ -98,6 +98,21 @@ describe('hubOrderReads', () => {
     expect(calls).toEqual(['set@10', 'bucket', 'set@40', 'bucket']);
   });
 
+  it('a BuilderSet read in flight when the cache is invalidated does not repopulate it', async () => {
+    const cache = new ChainReadCache();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const { h, calls } = hub(() => set('old', 1n, 1));
+    const slow: CacheableHubReads = { ...h, getBuilderSetAtHeight: async (height) => { await gate; return h.getBuilderSetAtHeight(height); } };
+    const r = hubOrderReads(slow, cache);
+    const pending = r.getBuilderSetAtHeight(10n);
+    cache.invalidate();
+    release();
+    expect((await pending).builderSetId).toBe('old');
+    await r.getBuilderSetAtHeight(10n);
+    expect(calls).toEqual(['set@10', 'set@10']);
+  });
+
   it('passes every read through without a cache', async () => {
     const { h, calls } = hub(() => set('s', 1n, 1));
     const r = hubOrderReads(h);

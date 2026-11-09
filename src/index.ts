@@ -202,8 +202,10 @@ export {
   ORDER_EIP712_DOMAIN_VERSION,
 } from './order/signed-order';
 export type { EncodedSignedOrder, OrderEip712Context } from './order/signed-order';
-export { buildOpenTaskRequest, OPEN_TASK_ENDPOINT, HEIGHT_EXPIRY_THRESHOLD } from './order/build-open-task';
-export type { BuildOpenTaskInput, BuildOpenTaskResult } from './order/build-open-task';
+export { buildOpenTaskRequest, openTaskInputForSignedOrder, OPEN_TASK_ENDPOINT, HEIGHT_EXPIRY_THRESHOLD } from './order/build-open-task';
+export type { BuildOpenTaskInput, BuildOpenTaskResult, SignedOrderOpenTaskInput } from './order/build-open-task';
+export { memoryOpenTaskStore, checkSentOrderRecord, SENT_ORDER_RECORD_VERSION } from './order/open-task-store';
+export type { OpenTaskStore, SentOrderRecord, SentOrderContextRecord } from './order/open-task-store';
 
 export {
   domainHash,

@@ -601,7 +601,7 @@ describe('request envelope expiry', () => {
     const first = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
     const stale = { ...first.context, latestHeight: first.context.latestHeight - 400n };
     seen.frames.length = 0;
-    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1', context: stale });
+    await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-2', context: stale });
     const header = seen.frames.find((f) => f.frame.case === 'header')?.frame.value as { requestEnvelope?: { expiryHeightOrTime: bigint } };
     // hub latest is 1000; the default request TTL is 10 blocks.
     expect(header.requestEnvelope?.expiryHeightOrTime).toBe(1_010n);

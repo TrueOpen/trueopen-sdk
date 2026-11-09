@@ -6,6 +6,7 @@ import type { CreateSessionInput, DepositSessionInput, WithdrawSessionInput } fr
 import { Code, ConnectError } from '@connectrpc/connect';
 import type { Transport } from '@connectrpc/connect';
 import type { DispatchResultHeaderV1 } from './gen/nexus/v1/dispatch_pb.js';
+import { OpenTaskStatusV1 } from './gen/nexus/v1/dispatch_pb.js';
 import type { ChainClient, CancelOrderResult } from './transport/chain-client';
 import type { TypedDataSigner } from './signer/typed-data-signer';
 import { IngressClient, finalSignedError } from './transport/ingress-client';
@@ -35,7 +36,10 @@ import { isTLSPubkeyMismatch } from './transport/nexus-tls';
 import type { DescriptorDocFetch } from './hub/builder-discovery';
 import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet } from './order/task-order-input';
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader, ResolvedTaskOrderContext } from './order/task-order-input';
-import { buildOpenTaskRequest } from './order/build-open-task';
+import { buildOpenTaskRequest, openTaskInputForSignedOrder } from './order/build-open-task';
+import type { BuildOpenTaskResult } from './order/build-open-task';
+import { memoryOpenTaskStore, checkSentOrderRecord, contextToRecord, contextFromRecord, SENT_ORDER_RECORD_VERSION } from './order/open-task-store';
+import type { OpenTaskStore, SentOrderRecord } from './order/open-task-store';
 import { taskOrderHashHex } from './order/task-order';
 import type { TaskOrderV3 } from './order/task-order';
 import { deriveTaskId } from './order/order-signing';
@@ -58,7 +62,7 @@ import { classifyNexusError } from './errors/classify';
 import { TASK_DATA_OBJECT_KIND } from './transport/task-data-signbytes';
 import { randomBytes } from '@noble/hashes/utils';
 import { hash32Text, isHash32Text, strictHash32 } from './codec/hash32';
-import { bytesEqual } from './util/bytes';
+import { bytesEqual, fromHex, toHex } from './util/bytes';
 import {
   confirmAssistantMessageWithReceipt,
   deriveAssistantMessage,
@@ -260,6 +264,14 @@ export interface TrueOpenClientConfig {
    * retry it returns is built on fresh reads). Leave this off where that is not acceptable.
    */
   readonly chainReadCache?: boolean | { readonly ttlMs?: number };
+  /**
+   * Where openTask records each order it sends, by idempotency key (SentOrderRecord), before the
+   * first byte goes out, so a retry under the same key resends that exact order or returns it once
+   * the chain recorded it (see openTask). Default: memoryOpenTaskStore(), one per client, which
+   * does not outlive the process; give a persistent store to keep retries idempotent across
+   * restarts. A failed write aborts the send (nothing is sent).
+   */
+  readonly openTaskStore?: OpenTaskStore;
 }
 
 /**
@@ -399,7 +411,13 @@ export interface OpenTaskParams {
   readonly orderSequence?: bigint;
   /** User intent (including the plaintext payload); userAddress/sessionId/orderSequence are filled in by the client. */
   readonly order: TaskOrderIntent;
-  /** Required; the same key + the same input_hash returns the same result, the same key + a different input_hash is rejected. */
+  /**
+   * Required; names one order. The first send records the order under it (config.openTaskStore);
+   * a retry under the same key resends that exact order, or returns it once the chain recorded
+   * it, and never places another one (see openTask). The same key with another payload, session or
+   * sequence is refused (SDK_LOCAL_IDEMPOTENCY_KEY_REUSED). A deliberately new order, including a
+   * re-signed retry (retryParams), needs a new key.
+   */
   readonly idempotencyKey: string;
   /** Defaults to resolveTaskOrderContext(hub, chainId). Reusing the same context saves a round trip to chain. */
   readonly context?: TaskOrderChainContext;
@@ -443,6 +461,24 @@ export interface OrderWindowOffsets {
 const READ_SESSION: unique symbol = Symbol('trueopen.readSession');
 /** Internal: the BuilderSet recovery read with its context, used for routing when it is the context's set. */
 const READ_BUILDER_SET: unique symbol = Symbol('trueopen.readBuilderSet');
+
+/** The order's own fields of an OpenTaskResult: what sendOpenTask adds the Builders' outcome to. */
+type SentOrderFields = Pick<
+  OpenTaskResult,
+  | 'taskId'
+  | 'taskHash'
+  | 'context'
+  | 'feeDenom'
+  | 'orderSequence'
+  | 'orderSignedBy'
+  | 'orderSignerAddress'
+  | 'maxFee'
+  | 'earliestSubmitHeight'
+  | 'orderExpireHeight'
+  | 'sessionKeyExpiryHeight'
+  | 'keyExpiresInOrderWindow'
+  | 'retryParams'
+>;
 
 /** OpenTaskParams with the reads openTaskWithRecovery hands to submitOpenTask. */
 type InternalOpenTaskParams = OpenTaskParams & {
@@ -1046,12 +1082,13 @@ export class TrueOpenClient {
   /** The session key and its grant, when config.session is set. */
   readonly sessionGrants: SessionKeyManager | undefined;
   /**
-   * input_hash first sent under each idempotency key by this client. A Builder answers a retry
-   * under the same key with the first result only when the input is the same and refuses it
-   * otherwise; re-serializing the payload on retry changes the bytes and hits that refusal. This
-   * refuses it before anything is signed. It lives as long as this client, not across processes.
+   * The order last sent under each idempotency key (config.openTaskStore, by default in memory for
+   * this client's lifetime). A Builder answers a retry under the same key with the first result
+   * only when task_hash and the input are the same and refuses it otherwise, so a retry resends
+   * the recorded order, and a different input under a used key is refused before anything is
+   * signed.
    */
-  private readonly inputHashByIdempotencyKey = new Map<string, string>();
+  private readonly openTaskStore: OpenTaskStore;
 
   /** Registered session keys loaded on this client, by session (memory only), with their expiry. */
   private readonly registeredKeys: RegisteredSessionKeys;
@@ -1102,6 +1139,7 @@ export class TrueOpenClient {
     this.orderHub =
       rawHub === undefined ? undefined : { ...hubOrderReads(rawHub, this.readCache), getLatestHeight: () => this.readLatestHeight(rawHub) };
     this.sessionManager = new SessionManager(cfg.chain);
+    this.openTaskStore = cfg.openTaskStore ?? memoryOpenTaskStore();
     // Requests use a registered key only up to a margin before its expiry height; the height comes from the hub,
     // reused from the client's own recent reads (readLatestHeight) where one exists.
     const hub = cfg.hub;
@@ -1551,10 +1589,39 @@ export class TrueOpenClient {
    * block), at most ORDER_REPLACEMENT_RETRY_ATTEMPTS times. A wallet-signed envelope prompts the
    * wallet on each such re-send. openTask returns once every Builder settled.
    *
+   * Idempotency (issue #7): before the first byte of an order is sent, the order is recorded under
+   * `params.idempotencyKey` in config.openTaskStore (SentOrderRecord: the SignedOrderV2 bytes as
+   * sent, task_hash, sequence, input hash and size, window, fee and context). A later openTask with
+   * the same key never places a new order:
+   *  - another session, another `orderSequence` (when given), other payload bytes or another user
+   *    is refused (SDK_LOCAL_IDEMPOTENCY_KEY_REUSED, category conflict);
+   *  - when the session's next_expected_sequence is past the recorded sequence, the task is read
+   *    (config.taskReader; without it SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED): with the recorded
+   *    task_hash the recorded order's result is returned and nothing is sent (`status`
+   *    OpenTaskStatusV1.RECORDED, as openTaskWithRecovery's recorded result; `builders` empty,
+   *    `endpointsTried` 0); with another task_hash, or none (a cancel), it is refused
+   *    (SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED, category conflict);
+   *  - past the recorded order_expire_height it is refused (SDK_LOCAL_ORDER_EXPIRED): send the
+   *    first result's retryParams instead, which carry a new key;
+   *  - otherwise the recorded SignedOrderV2 bytes are resent unchanged (same task_hash) to the
+   *    session's current bound Builder under a freshly signed request envelope (new nonce, expiry
+   *    from the current head), and the result has the first attempt's taskId, taskHash,
+   *    orderSequence and retryParams. `context`, `expiryHeight`, `orderWindow` and the order's
+   *    fields other than the payload are not used again.
+   *
    * Hard rule unchanged: an ingress ack is only local acceptance; the on-chain query/event is the
    * source of truth for final state.
    */
   async openTask(params: OpenTaskParams): Promise<OpenTaskResult> {
+    const record = await this.readOpenTaskRecord(params.idempotencyKey);
+    if (record !== undefined) {
+      try {
+        return await this.retryRecordedOrder(params, record);
+      } catch (err) {
+        this.readCache?.invalidate();
+        throw err;
+      }
+    }
     if (this.readCache === undefined) return this.submitOpenTask(params);
     try {
       return await this.submitWithFreshReadsOnError(params);
@@ -1569,6 +1636,156 @@ export class TrueOpenClient {
     }
   }
 
+  /**
+   * openTask under an idempotency key that already has a recorded order: never a new order.
+   * Returns the recorded order when the chain has it, refuses when its sequence went to another
+   * order or the order can no longer be admitted, and otherwise resends its exact SignedOrderV2
+   * bytes (same task_hash) under a freshly signed request envelope.
+   */
+  private async retryRecordedOrder(params: OpenTaskParams, record: SentOrderRecord): Promise<OpenTaskResult> {
+    checkRecordedParams(params, record, this.cfg.userAddress);
+    const { ingressTransportFactory } = this.cfg;
+    const hub = this.orderHub;
+    if (!this.cfg.hub || !hub || !ingressTransportFactory) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'openTask requires config.hub and config.ingressTransportFactory');
+    }
+    if (params.ackTimeoutMs !== undefined && (!Number.isFinite(params.ackTimeoutMs) || params.ackTimeoutMs <= 0)) {
+      throw local('SDK_LOCAL_INVALID_TIMEOUT', 'ackTimeoutMs must be positive and finite');
+    }
+    // A fresh head: it decides whether the recorded order can still be admitted, and the envelope
+    // expiry counts from it.
+    const [stream, head] = await Promise.all([this.cfg.chain.querySession(params.sessionId), hub.getLatestHeight()]);
+    const orderSequence = BigInt(record.orderSequence);
+    // The response was lost after the chain recorded the order: return it, send nothing.
+    if (stream.nextExpectedSequence > orderSequence) return this.recordedOrderResult(params, record, stream);
+    const orderExpireHeight = BigInt(record.orderExpireHeight);
+    if (head > orderExpireHeight) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_ORDER_EXPIRED',
+        `the order recorded under idempotency_key ${JSON.stringify(record.idempotencyKey)} expired at height ${orderExpireHeight} ` +
+          `(latest ${head}) and the chain has not recorded it: no Builder accepts it any more`,
+        {
+          details: { orderExpireHeight, latestHeight: head, orderSequence, taskHash: record.taskHash },
+          userAction:
+            "send a re-signed order with the first result's retryParams (they carry a new idempotency key, <key>#retry<n>); " +
+            'a re-signed order has a new task_hash, so it cannot reuse this key',
+        },
+      );
+    }
+    if (stream.status === 'CLOSED' || stream.pendingWithdrawKind === 'CLOSE') {
+      throw local('SDK_LOCAL_SESSION_CLOSING', `session ${params.sessionId} is closed or has a pending close`);
+    }
+    if (!stream.boundBuilder) {
+      throw local('SDK_LOCAL_SESSION_BINDING_MISSING', `session ${params.sessionId} has no bound Builder; refresh its chain state`);
+    }
+    const signer = params.orderSigner ?? 'auto';
+    if (signer !== 'auto' && signer !== 'wallet') {
+      throw local('SDK_LOCAL_ORDER_SIGNER_INVALID', `orderSigner must be 'auto' or 'wallet', got ${JSON.stringify(signer)}`);
+    }
+    // The envelope is signed as for a first send, by the client's current signer.
+    const registered = signer === 'wallet' ? undefined : this.registeredKeys.get(params.sessionId);
+    if (registered !== undefined) {
+      this.registeredKeys.refreshExpiry(params.sessionId, stream.sessionKey, stream.sessionKeyExpiryHeight, stream.sessionKeySetHeight);
+    }
+    const context = contextFromRecord(record.context);
+    const dispatchingBuilder = stream.boundBuilder;
+    const resolved = await this.routableContext(
+      { context, builderSet: await hub.getBuilderSetAtHeight(context.sessionAnchorHeight) },
+      dispatchingBuilder,
+      true,
+    );
+    const routing = resolveTaskBuilderEndpoints(hub, {
+      chainId: this.cfg.chainId,
+      taskId: record.taskId,
+      builderSetHash: context.builderSetHash,
+      sessionAnchorHeight: context.sessionAnchorHeight,
+      dispatchingBuilder,
+      dispatchingOnly: true,
+      builderSet: resolved.builderSet,
+    });
+    routing.then((r) => this.prewarmTaskBuilders(r.endpoints), () => undefined);
+    const built = await openTaskInputForSignedOrder({
+      signedOrder: fromHex(record.signedOrderHex),
+      taskHash: record.taskHash,
+      payload: params.order.payload,
+      sessionId: params.sessionId,
+      taskId: record.taskId,
+      expiryHeight: head + BigInt(this.cfg.requestTtlBlocks ?? 10),
+      requestNonce: this.nextNonce(),
+      idempotencyKey: record.idempotencyKey,
+      inputMediaType: record.inputMediaType,
+      wallet: this.cfg.wallet,
+      ...(registered !== undefined
+        ? { registeredKey: registered }
+        : this.sessionGrants !== undefined
+          ? { session: await this.sessionGrants.current() }
+          : {}),
+      chainId: this.cfg.chainId,
+      ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),
+    });
+    return this.sendOpenTask({
+      params,
+      built,
+      routing,
+      registered,
+      order: { ...recordedOrderFields(params, record), ...sessionKeyWindowOf(registered, stream, orderExpireHeight) },
+    });
+  }
+
+  /**
+   * The chain advanced past the recorded order's sequence: the recorded order's result when the
+   * chain's task has its task_hash (status OpenTaskStatusV1.RECORDED, nothing sent, no Builder
+   * outcomes), else SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED.
+   */
+  private async recordedOrderResult(params: OpenTaskParams, record: SentOrderRecord, stream: StreamStateView): Promise<OpenTaskResult> {
+    const orderSequence = BigInt(record.orderSequence);
+    const reader = this.cfg.taskReader;
+    if (!reader) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED',
+        `the chain moved past order_sequence ${orderSequence} recorded under idempotency_key ${JSON.stringify(record.idempotencyKey)}; ` +
+          'config.taskReader is required to tell whether that sequence holds this order',
+        { details: { orderSequence, taskHash: record.taskHash } },
+      );
+    }
+    let chainTaskHash: string | undefined;
+    try {
+      const task = await reader.queryTask(record.taskId);
+      if (task.taskId !== record.taskId) throw new TrueOpenError('DATA', 'DATA_TASK_SEQUENCE_MISMATCH', 'QueryTask returned another task');
+      chainTaskHash = task.acceptedTaskHash;
+    } catch (err) {
+      // No task for a consumed sequence: a MsgCancelOrder took it.
+      if (!isTaskNotFound(err)) throw err;
+    }
+    if (chainTaskHash !== record.taskHash) {
+      throw new TrueOpenError(
+        'SDK_LOCAL',
+        'SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED',
+        `order_sequence ${orderSequence} recorded under idempotency_key ${JSON.stringify(record.idempotencyKey)} was consumed by ` +
+          (chainTaskHash === undefined ? 'a cancel (the chain has no task for it)' : `another order (task_hash ${chainTaskHash})`) +
+          `, not by the recorded order ${record.taskHash}`,
+        {
+          category: 'conflict',
+          details: { orderSequence, taskHash: chainTaskHash, recordedTaskHash: record.taskHash },
+          userAction: 'place the order again under a new idempotency key (it takes the next free sequence)',
+        },
+      );
+    }
+    return {
+      sessionId: record.sessionId,
+      accepted: true,
+      reason: '',
+      status: OpenTaskStatusV1.RECORDED,
+      ...(stream.boundBuilder ? { boundBuilder: stream.boundBuilder } : {}),
+      ...recordedOrderFields(params, record),
+      endpointsTried: 0,
+      builders: [],
+      unresolvedBuilders: [],
+    };
+  }
+
   /** submitOpenTask, dropping config.chainReadCache when it fails, so what follows reads fresh. */
   private async submitWithFreshReadsOnError(params: InternalOpenTaskParams, destination?: string): Promise<OpenTaskResult> {
     try {
@@ -1579,16 +1796,32 @@ export class TrueOpenClient {
     }
   }
 
-  /** Recover one sequence from chain state; never submits a sequence already consumed. */
+  /**
+   * Recover one sequence from chain state; never submits a sequence already consumed.
+   *
+   * Recovery re-signs on purpose (DISPATCH_NOT_READY, a stale BuilderSet, a takeover) under the
+   * same idempotency key, and each version it sends replaces the key's record (see openTask), so a
+   * later openTask retry resends the latest one. With a key that already has a record, openTask's
+   * conflict checks apply, the recorded order's result is returned when the chain recorded it
+   * (or SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED when its sequence went elsewhere), and otherwise
+   * recovery runs on the recorded sequence.
+   */
   async openTaskWithRecovery(params: OpenTaskParams, policy: DispatchRecoveryPolicy): Promise<OpenTaskResult | OpenTaskAck> {
     const hub = this.orderHub;
     if (!hub) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ROUTING_UNCONFIGURED', 'Recovery requires a Hub reader');
+    // An order already sent under this key: the same conflict checks and chain check as openTask's
+    // retry (the chain recorded it -> its result), then recovery of that order's sequence.
+    const record = await this.readOpenTaskRecord(params.idempotencyKey);
+    if (record !== undefined) checkRecordedParams(params, record, this.cfg.userAddress);
     // Independent, so concurrent; the context resolution also yields the BuilderSet it read.
     const [state, first] = await Promise.all([
       this.cfg.chain.querySession(params.sessionId),
       params.context !== undefined ? undefined : this.resolveOrderContext(),
     ]);
-    const orderSequence = params.orderSequence ?? state.nextExpectedSequence;
+    if (record !== undefined && state.nextExpectedSequence > BigInt(record.orderSequence)) {
+      return this.recordedOrderResult(params, record, state);
+    }
+    const orderSequence = params.orderSequence ?? (record !== undefined ? BigInt(record.orderSequence) : state.nextExpectedSequence);
     let context = params.context ?? first!.context;
     let set: BuilderSetSnapshot = first?.builderSet ?? await hub.getBuilderSetAtHeight(context.sessionAnchorHeight);
     // The Builders recovery may dispatch to must be in the snapshot; one missing from a cached set
@@ -1775,7 +2008,7 @@ export class TrueOpenClient {
     if (registered !== undefined) checkSessionKeySpendCap(stream, order.maxFee.atomicUnits);
     const taskId = deriveTaskId(params.sessionId, orderSequence);
     const inputHash = hash32Text(order.inputHash);
-    this.checkIdempotencyKey(params.idempotencyKey, inputHash);
+    await this.checkIdempotencyKey(params.idempotencyKey, inputHash);
     // expiry must be a block height: nexus interprets values >= 1e12 as unix milliseconds and rejects them.
     // The envelope is signed now, so its expiry counts from the current head. A context the caller
     // (or recovery, moving to another Builder) passes in may be many blocks old: counting from its
@@ -1823,6 +2056,70 @@ export class TrueOpenClient {
       ...(params.chunkSizeBytes !== undefined ? { chunkSizeBytes: params.chunkSizeBytes } : {}),
     });
 
+    const orderSignedBy = registered !== undefined ? 'session-key' : 'wallet';
+    return this.sendOpenTask({
+      params,
+      built,
+      routing,
+      registered,
+      ...(destination !== undefined ? { destination } : {}),
+      // Written before the first byte is sent: a retry under this key then resends this exact
+      // order (or finds it on chain). A recovery re-sign overwrites it with the latest version.
+      record: {
+        version: SENT_ORDER_RECORD_VERSION,
+        idempotencyKey: params.idempotencyKey,
+        sessionId: params.sessionId,
+        userAddress: this.cfg.userAddress,
+        orderSequence: orderSequence.toString(),
+        taskId,
+        taskHash: built.taskHash,
+        signedOrderHex: built.orderEnvelopeHex,
+        inputHash,
+        inputSizeBytes: order.inputSizeBytes.toString(),
+        inputMediaType: built.input.inputMediaType,
+        earliestSubmitHeight: order.earliestSubmitHeight.toString(),
+        orderExpireHeight: order.orderExpireHeight.toString(),
+        maxFee: order.maxFee.atomicUnits,
+        feeDenom,
+        orderSignedBy,
+        ...(registered !== undefined ? { orderSignerAddress: toHex(registered.address) } : {}),
+        context: contextToRecord(ctx),
+      },
+      order: {
+        taskId,
+        taskHash: built.taskHash,
+        context: ctx,
+        feeDenom,
+        orderSequence,
+        orderSignedBy,
+        ...(registered !== undefined ? { orderSignerAddress: Uint8Array.from(registered.address) } : {}),
+        maxFee: BigInt(order.maxFee.atomicUnits),
+        earliestSubmitHeight: order.earliestSubmitHeight,
+        orderExpireHeight: order.orderExpireHeight,
+        ...sessionKeyWindowOf(registered, stream, order.orderExpireHeight),
+        retryParams: retryParamsOf(params, orderSequence, order, ctx.latestHeight, built.taskHash),
+      },
+    });
+  }
+
+  /**
+   * Sends a built OpenTask to the routed Builders (the first send of an order, a recovery re-sign
+   * or an exact resend of a recorded order) and assembles the result: records the order first
+   * when `record` is given, re-signs the envelope with a fresh nonce where a Builder needs it,
+   * follows a certificate rotation, and maps the fan-out's outcome.
+   */
+  private async sendOpenTask(s: {
+    readonly params: OpenTaskParams;
+    readonly built: BuildOpenTaskResult;
+    readonly routing: ReturnType<typeof resolveTaskBuilderEndpoints>;
+    readonly registered: RegisteredSessionKey | undefined;
+    readonly destination?: string;
+    readonly record?: SentOrderRecord;
+    readonly order: SentOrderFields;
+  }): Promise<OpenTaskResult> {
+    const { params, built, routing, registered, destination, record, order } = s;
+    const ingressTransportFactory = this.cfg.ingressTransportFactory!;
+    const rawHub = this.cfg.hub!;
     const { endpoints, errors } = await routing;
     if (endpoints.length === 0) {
       throw new TrueOpenError(
@@ -1833,12 +2130,13 @@ export class TrueOpenClient {
       );
     }
 
-    // From here a Builder may hold the input under this key, so a different input is refused.
-    // A failure before this point sent nothing, and leaves the key free.
-    this.inputHashByIdempotencyKey.set(params.idempotencyKey, inputHash);
+    // From here a Builder may hold the input under this key, so the order is recorded first: a
+    // retry resends it and a different input is refused. A failure before this point sent
+    // nothing, and leaves the key free; so does a failed write.
+    if (record !== undefined) await this.writeOpenTaskRecord(record);
     // Where each Builder was actually reached: a certificate re-read can move it.
     const usedEndpoint = new Map<string, { uri: string; tlsPubkeyHash: string }>();
-    const isRetry = rejectedTaskHash !== undefined;
+    const isRetry = params[REJECTED_TASK_HASH] !== undefined;
     const replacementMs = this.cfg.orderReplacementRetryMs ?? DEFAULT_ORDER_REPLACEMENT_RETRY_MS;
     const signedWith = { ...(built.input.requestEnvelope.sessionGrant !== undefined ? { grant: built.input.requestEnvelope.sessionGrant } : {}),
       ...(registered !== undefined ? { keySession: registered.sessionId } : {}) };
@@ -1918,26 +2216,10 @@ export class TrueOpenClient {
     });
     return {
       ...ack,
-      taskId,
-      taskHash: built.taskHash,
-      context: ctx,
+      ...order,
       endpointsTried: endpoints.length,
-      feeDenom,
       builders,
       unresolvedBuilders: errors,
-      orderSequence,
-      orderSignedBy: registered !== undefined ? 'session-key' : 'wallet',
-      ...(registered !== undefined ? { orderSignerAddress: Uint8Array.from(registered.address) } : {}),
-      maxFee: BigInt(order.maxFee.atomicUnits),
-      earliestSubmitHeight: order.earliestSubmitHeight,
-      orderExpireHeight: order.orderExpireHeight,
-      ...(registered !== undefined
-        ? {
-            sessionKeyExpiryHeight: stream.sessionKeyExpiryHeight,
-            ...(order.orderExpireHeight > stream.sessionKeyExpiryHeight ? { keyExpiresInOrderWindow: true as const } : {}),
-          }
-        : {}),
-      retryParams: retryParamsOf(params, orderSequence, order, ctx.latestHeight, built.taskHash),
     };
   }
 
@@ -3997,15 +4279,37 @@ export class TrueOpenClient {
    * unflagged `globalThis.crypto`) and to `globalThis.crypto` in browsers, which covers both
    * without importing a Node built-in into the browser bundle.
    */
-  private checkIdempotencyKey(key: string, inputHash: string): void {
-    const first = this.inputHashByIdempotencyKey.get(key);
+  private async checkIdempotencyKey(key: string, inputHash: string): Promise<void> {
+    const first = (await this.readOpenTaskRecord(key))?.inputHash;
     if (first !== undefined && first !== inputHash) {
+      throw keyReused(key, `was first used with input_hash ${first}, not ${inputHash}`);
+    }
+  }
+
+  /** The order recorded under `key` (config.openTaskStore), checked. */
+  private async readOpenTaskRecord(key: string): Promise<SentOrderRecord | undefined> {
+    let value: unknown;
+    try {
+      value = await this.openTaskStore.get(key);
+    } catch (cause) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_OPEN_TASK_STORE_FAILED', `reading the openTask record for idempotency_key ${JSON.stringify(key)} failed`, {
+        cause,
+        retriable: true,
+      });
+    }
+    return value === undefined ? undefined : checkSentOrderRecord(key, value);
+  }
+
+  /** Records an order before it is sent; a failure aborts the send. */
+  private async writeOpenTaskRecord(record: SentOrderRecord): Promise<void> {
+    try {
+      await this.openTaskStore.set(record.idempotencyKey, record);
+    } catch (cause) {
       throw new TrueOpenError(
         'SDK_LOCAL',
-        'SDK_LOCAL_IDEMPOTENCY_KEY_REUSED',
-        `idempotency_key ${JSON.stringify(key)} was first used with input_hash ${first}, not ${inputHash}: ` +
-          'a retry must resend the same payload bytes, and a different input needs a new key',
-        { category: 'conflict' },
+        'SDK_LOCAL_OPEN_TASK_STORE_FAILED',
+        `recording the order under idempotency_key ${JSON.stringify(record.idempotencyKey)} failed, so it was not sent`,
+        { cause, retriable: true },
       );
     }
   }
@@ -4127,7 +4431,7 @@ export function nextRetryIdempotencyKey(key: string): string {
 function retryParamsOf(
   params: OpenTaskParams,
   orderSequence: bigint,
-  order: TaskOrderV3,
+  order: { readonly earliestSubmitHeight: bigint; readonly orderExpireHeight: bigint },
   latestHeight: bigint,
   taskHash: string,
 ): OpenTaskParams {
@@ -4143,6 +4447,67 @@ function retryParamsOf(
       orderExpireBlocks: order.orderExpireHeight - latestHeight,
     },
     [REJECTED_TASK_HASH]: taskHash,
+  };
+}
+
+/**
+ * A retry under a recorded key must be the same order: the same session, the same sequence when
+ * one is given, the same payload bytes and the same user.
+ */
+function checkRecordedParams(params: OpenTaskParams, record: SentOrderRecord, userAddress: string): void {
+  const key = params.idempotencyKey;
+  if (record.userAddress !== userAddress) throw keyReused(key, `was first used by ${record.userAddress}, not ${userAddress}`);
+  if (params.sessionId !== record.sessionId) throw keyReused(key, `was first used for session ${record.sessionId}, not ${params.sessionId}`);
+  if (params.orderSequence !== undefined && params.orderSequence !== BigInt(record.orderSequence)) {
+    throw keyReused(key, `was first used for order_sequence ${record.orderSequence}, not ${params.orderSequence}`);
+  }
+  const payload = params.order.payload;
+  const inputHash = hash32Text(sha256(payload));
+  if (inputHash !== record.inputHash || BigInt(payload.length) !== BigInt(record.inputSizeBytes)) {
+    throw keyReused(key, `was first used with input_hash ${record.inputHash} (${record.inputSizeBytes} bytes), not ${inputHash} (${payload.length} bytes)`);
+  }
+}
+
+/** The order's fields of an OpenTaskResult, from its record. retryParams is the first attempt's. */
+function recordedOrderFields(params: OpenTaskParams, record: SentOrderRecord): SentOrderFields {
+  const context = contextFromRecord(record.context);
+  const orderSequence = BigInt(record.orderSequence);
+  const heights = { earliestSubmitHeight: BigInt(record.earliestSubmitHeight), orderExpireHeight: BigInt(record.orderExpireHeight) };
+  return {
+    taskId: record.taskId,
+    taskHash: record.taskHash,
+    context,
+    feeDenom: record.feeDenom,
+    orderSequence,
+    orderSignedBy: record.orderSignedBy,
+    ...(record.orderSignerAddress !== undefined ? { orderSignerAddress: fromHex(record.orderSignerAddress) } : {}),
+    maxFee: BigInt(record.maxFee),
+    ...heights,
+    retryParams: retryParamsOf(params, orderSequence, heights, context.latestHeight, record.taskHash),
+  };
+}
+
+/** SDK_LOCAL_IDEMPOTENCY_KEY_REUSED: `key` was used for another order. */
+function keyReused(key: string, why: string): TrueOpenError {
+  return new TrueOpenError(
+    'SDK_LOCAL',
+    'SDK_LOCAL_IDEMPOTENCY_KEY_REUSED',
+    `idempotency_key ${JSON.stringify(key)} ${why}: a retry must resend the same payload bytes for the same ` +
+      'session and sequence, and a different order needs a new key',
+    { category: 'conflict' },
+  );
+}
+
+/** The registered key's expiry fields of an OpenTaskResult (orderSignedBy 'session-key' only). */
+function sessionKeyWindowOf(
+  registered: RegisteredSessionKey | undefined,
+  stream: StreamStateView,
+  orderExpireHeight: bigint,
+): { sessionKeyExpiryHeight?: bigint; keyExpiresInOrderWindow?: true } {
+  if (registered === undefined) return {};
+  return {
+    sessionKeyExpiryHeight: stream.sessionKeyExpiryHeight,
+    ...(orderExpireHeight > stream.sessionKeyExpiryHeight ? { keyExpiresInOrderWindow: true as const } : {}),
   };
 }
 
@@ -4173,6 +4538,11 @@ export const MAX_OVERFLOW_RESUBSCRIBES = 64;
 /** Carries an error out of streamOutput's per-attempt handling: it ends the stream instead of the attempt. */
 class StreamFatal {
   constructor(readonly error: unknown) {}
+}
+
+/** Whether a chain task query found no task. */
+function isTaskNotFound(err: unknown): boolean {
+  return err instanceof TrueOpenError && err.code === 'CHAIN_QUERY_NOT_FOUND';
 }
 
 /** Whether a nexus call failed with Connect NotFound (classified or not). */

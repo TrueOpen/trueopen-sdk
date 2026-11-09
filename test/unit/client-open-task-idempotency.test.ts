@@ -22,6 +22,7 @@ import { ethSecp256k1Address } from '../../src/signer/eth-secp256k1';
 import { privateKeyTypedDataSigner } from '../../src/signer/typed-data-signer';
 import { fromHex, toHex } from '../../src/util/bytes';
 import { hash32Text } from '../../src/codec/hash32';
+import { sha256 } from '../../src/codec/hash';
 import { TrueOpenError } from '../../src/errors/errors';
 
 const PRIV = fromHex('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20');
@@ -297,7 +298,7 @@ describe('openTask retries under the same idempotency key (issue #7)', () => {
     expect(rec).toMatchObject({
       version: 1, idempotencyKey: 'order-1', sessionId: SESSION, userAddress: USER, orderSequence: '0',
       taskId: res.taskId, taskHash: res.taskHash, signedOrderHex: toHex(w.headers[0]!.orderEnvelope),
-      inputHash: hash32Text(new Uint8Array(await crypto.subtle.digest('SHA-256', PAYLOAD))), inputSizeBytes: String(PAYLOAD.length),
+      inputHash: hash32Text(sha256(PAYLOAD)), inputSizeBytes: String(PAYLOAD.length),
       inputMediaType: 'application/octet-stream', earliestSubmitHeight: '1000', orderExpireHeight: '1100', maxFee: '1000',
       feeDenom: 'utrueopen', orderSignedBy: 'wallet',
       context: { sessionAnchorHeight: '1000', latestHeight: '1000', builderSetHash: SET_HASH, timeoutBucketVersion: '1' },

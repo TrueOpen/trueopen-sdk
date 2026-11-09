@@ -1,5 +1,5 @@
 {
-  "description": "Differential corpus: cases transcribed from vLLM and Dynamo parser tests, run through the SDK hermes@1 / qwen3@1 / qwen3_coder@1 parsers. NOT an authority -- wire vectors are; registry conformance stays unverified. Verdicts pin current behaviour.",
+  "description": "Differential corpus: cases transcribed from vLLM and Dynamo parser tests, run through the SDK hermes@1 / qwen3@1 / qwen3_coder@1 parsers. NOT an authority -- wire's shared vectors (testdata/v1/parser) and TOOL_CALL_PARSER_V1 / REASONING_PARSER_V1 are; the built-in parsers are vector-verified against those. Verdicts pin current behaviour; cases whose outcome changed with wire #51 say so in their reason.",
   "sources": {
     "vllm": "vllm-project/vllm @ 77154ca",
     "dynamo": "ai-dynamo/dynamo @ 3a4c497",
@@ -2450,7 +2450,7 @@
           }
         ]
       },
-      "reason": "TrueOpen never drops committed bytes (design §6: every path hands the application the original text): prose and whitespace around/between/after calls stay in content verbatim. Dynamo trims normal_text and drops inter-call whitespace. Here: trailing space before <tool_call> kept."
+      "reason": "TOOL_CALL_PARSER_V1 Content (wire #51): text before the first block is kept verbatim; only a whitespace-only segment between blocks or after the last one is layout and dropped. Dynamo trims normal_text. Here: the trailing space before <tool_call> is kept."
     },
     {
       "id": "dynamo-hermes-preserves-compact-arguments",
@@ -2564,7 +2564,7 @@
       "note": "Byte comparison; content not asserted.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -2577,7 +2577,7 @@
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; with it the SDK matches every field the reference asserts."
     },
     {
       "id": "dynamo-hermes-hermes3-llama31-8b-simple",
@@ -2632,9 +2632,9 @@
         ]
       },
       "note": "try_tool_call_parse with ToolCallConfig::hermes(). The reference asserts args[\"location\"] / args[\"unit\"] individually; the arguments hold exactly those keys, so this is compared as JSON-value equality.",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "\n\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -2647,7 +2647,7 @@
           }
         ]
       },
-      "reason": "TrueOpen never drops committed bytes (design §6: every path hands the application the original text): prose and whitespace around/between/after calls stay in content verbatim. Dynamo trims normal_text and drops inter-call whitespace. Here: the \"\\n\" between and after the two calls kept."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; the \"\\n\" between and after the two calls is dropped, which now agrees with Dynamo."
     },
     {
       "id": "dynamo-hermes-qwq-32b-multiple-with-normal-text",
@@ -2673,7 +2673,7 @@
       "note": "The reference asserts args[\"location\"] / args[\"unit\"] individually; the arguments hold exactly those keys, so this is compared as JSON-value equality.",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "Hey How are you? \n\n",
+        "content": "Hey How are you? ",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -2686,7 +2686,7 @@
           }
         ]
       },
-      "reason": "TrueOpen never drops committed bytes (design §6: every path hands the application the original text): prose and whitespace around/between/after calls stay in content verbatim. Dynamo trims normal_text and drops inter-call whitespace."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content keeps text before the first block verbatim, trailing space included, and drops the layout between and after the blocks. Dynamo trims normal_text, so content still differs by the trailing space."
     },
     {
       "id": "dynamo-hermes-qwq-32b-multiple-with-new-lines",
@@ -2710,9 +2710,9 @@
         ]
       },
       "note": "The reference asserts args[\"location\"] / args[\"unit\"] individually; the arguments hold exactly those keys, so this is compared as JSON-value equality.",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "\n\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -2725,7 +2725,7 @@
           }
         ]
       },
-      "reason": "TrueOpen never drops committed bytes (design §6: every path hands the application the original text): prose and whitespace around/between/after calls stay in content verbatim. Dynamo trims normal_text and drops inter-call whitespace."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; arguments stay the raw substring (the reference compares them as JSON values), so every asserted field agrees."
     },
     {
       "id": "dynamo-hermes-not-json",
@@ -2819,7 +2819,7 @@
           }
         ]
       },
-      "reason": "TrueOpen never drops committed bytes (design §6: every path hands the application the original text): prose and whitespace around/between/after calls stay in content verbatim. Dynamo trims normal_text and drops inter-call whitespace. Here: the stray '\"' plus newline and spaces after </tool_call> are kept as content; Dynamo returns \"\"."
+      "reason": "TOOL_CALL_PARSER_V1 Content (wire #51): a segment after the last block is dropped only when it is whitespace only; this one holds a stray '\"', so it is kept verbatim, newline and spaces included. Dynamo returns \"\"."
     },
     {
       "id": "dynamo-hermes-tools-aggregate-single",
@@ -2876,7 +2876,7 @@
       "note": "The stream-string variant (stream_indexes_parallel_calls_sequentially, a single full-text string) asserts a subset of this and is not duplicated.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -2889,7 +2889,7 @@
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; with it the SDK matches every field the reference asserts."
     },
     {
       "id": "dynamo-hermes-tools-aggregate-finalize-single",
@@ -3232,7 +3232,7 @@
       "note": "JailedStream::builder().tool_call_parser(\"hermes\"); text_chunk deltas; the jail ends the stream. Asserts >= 2 calls with both names present.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -3245,7 +3245,7 @@
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; with it the SDK matches every field the reference asserts."
     },
     {
       "id": "dynamo-hermes-crate-jail-multi-call-multiple-chunks",
@@ -3273,7 +3273,7 @@
       "note": "JailedStream::builder().tool_call_parser(\"hermes\"); text_chunk deltas; the jail ends the stream. Asserts >= 2 calls with both names present.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -3286,7 +3286,7 @@
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; with it the SDK matches every field the reference asserts."
     },
     {
       "id": "dynamo-hermes-crate-jail-trailing-text",
@@ -6290,9 +6290,9 @@
       },
       "args_compare": "json",
       "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, the call count, each name, JSON-value arguments and content are asserted. vLLM re-serialises arguments (json.dumps) and the test compares by JSON value (json.loads), so arguments are compared by JSON value. Reference None content normalised to \"\".",
-      "verdict": "divergent-by-spec",
+      "verdict": "agree",
       "sdk_actual": {
-        "content": "\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -6305,7 +6305,7 @@
           }
         ]
       },
-      "reason": "spec §8: text outside blocks. vLLM returns content None for output that holds only calls and the whitespace between them; the SDK keeps the \"\\n\" between the blocks as content."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; content is now \"\", as vLLM returns it; arguments agree as JSON values."
     },
     {
       "id": "vllm-qwen3coder-complete-tool-with-typed-params",
@@ -6716,18 +6716,18 @@
       ],
       "args_compare": "json",
       "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. The request carries no tools. tools_called, exactly one call, its name and args[\"city\"] / [\"state\"] / [\"unit\"] are asserted; the arguments hold exactly those keys, so this is compared as JSON-value equality. The reference asserts content contains the prose, recorded as a content_assertion.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
         "content": "Let me check the weather for you:\n",
         "reasoning_content": "",
         "tool_calls": [
           {
             "name": "get_current_weather",
-            "arguments": "{\"city\":\"Dallas\",\"state\":\"TX\",\"unit\":\"fahrenheit\"}"
+            "arguments": "{\"city\":\"Dallas\\n<parameter=state>\\nTX\",\"unit\":\"fahrenheit\"}"
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): qwen3_coder@1 payload: an omitted </parameter> followed by a later one makes VALUE run on to that later one, taking the next <parameter=...> with it as plain bytes, so city is \"Dallas\\n<parameter=state>\\nTX\". vLLM ends the value at the next <parameter= (a leniency the spec lists as a reference-engine divergence). Agreed before wire #51."
     },
     {
       "id": "vllm-qwen3coder-complete-malformed-xml-no-gt-delimiter",
@@ -6877,7 +6877,7 @@
       "note": "Parser fixture built with sample_tools (get_current_weather, calculate_area), parametrised over chat_completion / responses_api tool shapes with the same schemas; transcribed once as ChatTool. Regression test (PR #36774): tools_called, exactly one call named get_current_weather among the calls, and its args[\"city\"] / [\"state\"] are asserted (the arguments hold exactly those keys). The reference filters calls by name; the SDK returns that call alone, so it is compared as the first call with its arguments. Content is not asserted.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "<tool_call>\n<function=bad_func_no_gt\n</function>\n</tool_call>\n",
+        "content": "<tool_call>\n<function=bad_func_no_gt\n</function>\n</tool_call>",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -6886,7 +6886,7 @@
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts. (The first block, whose function tag has no '>', is content by spec §4; vLLM drops it, but content is not asserted.)"
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): the first block (its function tag has no \">\") is malformed, so its raw bytes are content; the \"\\n\" after it lies between two blocks and is layout, dropped. The SDK matches every field the reference asserts (vLLM drops the bad block; content is not asserted)."
     },
     {
       "id": "vllm-qwen3coder-complete-anyof-parameter-not-double-encoded",
@@ -7146,18 +7146,13 @@
       "tool_calls_match": "first",
       "args_compare": "bytes",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts calls[0].function.arguments as an exact string, so bytes are compared and only the first call. Name, count and content not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call><function=get_weather><parameter=city>Dallas</parameter><parameter=state>TX</parameter><parameter=unit>fahrenheit</parameter><parameter=state>CA</parameter></function></tool_call>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "get_weather",
-            "arguments": "{\"city\":\"Dallas\",\"state\":\"CA\",\"unit\":\"fahrenheit\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): qwen3_coder@1 payload: a KEY repeated within one function makes the block malformed, so it is content with no call. Dynamo keeps the first position with the last value. Agreed before wire #51."
     },
     {
       "id": "dynamo-qwen3coder-with-normal-text",
@@ -7214,7 +7209,7 @@
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"city\"] per call; the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "\n",
+        "content": "",
         "reasoning_content": "",
         "tool_calls": [
           {
@@ -7227,7 +7222,7 @@
           }
         ]
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): Content drops whitespace-only text between blocks and after the last block as layout, so the SDK no longer keeps that whitespace as content; with it the SDK matches every field the reference asserts."
     },
     {
       "id": "dynamo-qwen3coder-json-parameter-value",
@@ -7310,16 +7305,11 @@
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). Only result.is_ok() is asserted (\"might parse or return empty\"); no content or call is asserted.",
       "verdict": "agree",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call>\n<function=incomplete>\n<parameter=test>\nvalue\n</tool_call>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "incomplete",
-            "arguments": "{\"test\":\"value\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "The reference asserts only result.is_ok(); the SDK never throws. (It returns the call incomplete {\"test\":\"value\"}: spec §4 tolerates the missing </parameter> and </function>.)"
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): the reference asserts only result.is_ok(); the SDK never throws. The block (no </parameter> left for the open parameter, no </function>) is malformed by qwen3_coder@1 payload, so it is content with no call."
     },
     {
       "id": "dynamo-qwen3coder-missing-parameter-closing-tag",
@@ -7339,18 +7329,13 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"command\"] only; the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call>\n<function=execute_bash>\n<parameter=command>\nls -la\n</function>\n</tool_call>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "execute_bash",
-            "arguments": "{\"command\":\"ls -la\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): qwen3_coder@1 payload: no </parameter> left in the block for an open parameter is malformed, so the block is content with no call. Dynamo ends the value at </function>. Agreed before wire #51."
     },
     {
       "id": "dynamo-qwen3coder-missing-function-closing-tag",
@@ -7370,18 +7355,13 @@
       },
       "args_compare": "json",
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"city\"] only; the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
-      "verdict": "agree",
+      "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call>\n<function=get_weather>\n<parameter=city>\nBoston\n</parameter>\n</tool_call>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "get_weather",
-            "arguments": "{\"city\":\"Boston\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "The SDK output matches every field the reference asserts."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): qwen3_coder@1 payload: a missing </function> before </tool_call> is malformed, so the block is content with no call. Dynamo accepts it. Agreed before wire #51."
     },
     {
       "id": "dynamo-qwen3coder-missing-both-closing-tags",
@@ -7403,16 +7383,11 @@
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"sql\"] only (\"matches the original SGLang python implementation\"); the arguments hold exactly that key, so this is compared as JSON-value equality. Content not asserted.",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call>\n<function=run_query>\n<parameter=sql>\nSELECT * FROM users\n</tool_call>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "run_query",
-            "arguments": "{\"sql\":\"SELECT * FROM users\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "spec §8: a value missing its closing tag. Dynamo (SGLang-style) runs the value on past </tool_call>; the SDK ends the value at the end of the function."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): qwen3_coder@1 payload: no </parameter> and no </function> is malformed, so the block is content with no call. Dynamo (SGLang-style) runs the value on past </tool_call>."
     },
     {
       "id": "dynamo-qwen3coder-multiple-parameters-missing-closing-tags",
@@ -7434,16 +7409,11 @@
       "note": "try_tool_call_parse_xml(input, &XmlParserConfig::default() (qwen3_coder), None). The reference asserts args[\"query\"] only (\"matches the original SGLang python implementation\"), in which the second parameter is swallowed, so Dynamo's arguments hold only that key; recorded as the whole arguments object and compared as JSON-value equality. Content not asserted.",
       "verdict": "divergent-by-spec",
       "sdk_actual": {
-        "content": "",
+        "content": "<tool_call>\n<function=search>\n<parameter=query>\nrust programming\n<parameter=limit>\n10\n</function>\n</tool_call>",
         "reasoning_content": "",
-        "tool_calls": [
-          {
-            "name": "search",
-            "arguments": "{\"query\":\"rust programming\",\"limit\":\"10\"}"
-          }
-        ]
+        "tool_calls": []
       },
-      "reason": "spec §8: a value missing its closing tag. Dynamo (SGLang-style) runs the value on past <parameter=, so query swallows the next parameter; vLLM and the SDK end it at the next <parameter=."
+      "reason": "Updated for wire #51 (TOOL_CALL_PARSER_V1): qwen3_coder@1 payload: no </parameter> left in the block for an open parameter is malformed, so the block is content with no call. Dynamo (SGLang-style) lets query swallow the next parameter; vLLM ends it at the next <parameter=."
     },
     {
       "id": "dynamo-qwen3coder-no-outer-close-recovers",

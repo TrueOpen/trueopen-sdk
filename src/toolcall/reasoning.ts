@@ -30,12 +30,23 @@ import type { ParserRef } from './types';
  *      provisional like everything else before the receipt.
  */
 export interface ReasoningSplit {
-  /** The reasoning text, markers excluded. Empty when there is no reasoning. */
+  /** The reasoning text, markers excluded. Empty when there is no reasoning, or the span is empty. */
   readonly reasoningContent: string;
+  /**
+   * Whether there is a reasoning span at all, which `reasoningContent === ''` cannot tell: qwen3@1's
+   * `<think>\n\n</think>` is a span that is present and empty (REASONING_PARSER_V1). Optional for
+   * parsers written before it existed; absent, a span counts as present when it is non-empty.
+   */
+  readonly hasReasoning?: boolean;
   /** Everything after the reasoning span: the input to the tool-call parser. */
   readonly remainder: string;
 }
 
+/**
+ * A `reasoning` event may carry empty text: it is emitted once, when the span ends, for a span
+ * that is present but empty, so a stream tells "empty reasoning" from "no reasoning" exactly as
+ * `split` does with `hasReasoning`.
+ */
 export type ReasoningStreamEvent =
   | { readonly kind: 'reasoning'; readonly text: string }
   | { readonly kind: 'remainder'; readonly text: string };
@@ -115,11 +126,15 @@ export function createMarkerReasoningParser(ref: ParserRef, markers: ReasoningMa
       let from: number;
       if (text.startsWith(startMarker, lead)) from = lead + startMarker.length;
       else if (implicit) from = 0; // the start marker is deemed at offset 0
-      else return { reasoningContent: '', remainder: text };
+      else return { reasoningContent: '', hasReasoning: false, remainder: text };
       const end = text.indexOf(endMarker, from);
-      // Rule 8: unclosed, so everything from the start marker (implicit: offset 0) on is reasoning.
-      if (end < 0) return { reasoningContent: body(text.slice(from)), remainder: '' };
-      return { reasoningContent: body(text.slice(from, end)), remainder: tail(text.slice(end + endMarker.length)) };
+      // Unclosed: everything from the span start (implicit: offset 0) on is reasoning.
+      if (end < 0) return { reasoningContent: body(text.slice(from)), hasReasoning: true, remainder: '' };
+      return {
+        reasoningContent: body(text.slice(from, end)),
+        hasReasoning: true,
+        remainder: tail(text.slice(end + endMarker.length)),
+      };
     },
     createStreamState(): ReasoningStreamState {
       // 'head': deciding whether the output opens with the start marker.
@@ -130,11 +145,16 @@ export function createMarkerReasoningParser(ref: ParserRef, markers: ReasoningMa
       // the edge (before the end marker) and never be emitted, or content and be emitted later.
       let reasoningStarted = false;
       let pendingNewlines = '';
+      /** Some reasoning text was emitted; if none was when the span ends, an empty event marks it. */
+      let reasoningEmitted = false;
       let remainderStarted = false;
 
       const emitReasoning = (s: string, out: ReasoningStreamEvent[]) => {
         if (!trim) {
-          if (s !== '') out.push({ kind: 'reasoning', text: s });
+          if (s !== '') {
+            out.push({ kind: 'reasoning', text: s });
+            reasoningEmitted = true;
+          }
           return;
         }
         let t = s;
@@ -148,7 +168,15 @@ export function createMarkerReasoningParser(ref: ParserRef, markers: ReasoningMa
         const joined = pendingNewlines + t;
         const core = trimTrailingNewlines(joined);
         pendingNewlines = joined.slice(core.length);
-        if (core !== '') out.push({ kind: 'reasoning', text: core });
+        if (core !== '') {
+          out.push({ kind: 'reasoning', text: core });
+          reasoningEmitted = true;
+        }
+      };
+      /** The span ended: a present but empty span is still reported, as one empty event. */
+      const endReasoning = (out: ReasoningStreamEvent[]) => {
+        if (!reasoningEmitted) out.push({ kind: 'reasoning', text: '' });
+        reasoningEmitted = true;
       };
       const emitRemainder = (s: string, out: ReasoningStreamEvent[]) => {
         let t = s;
@@ -185,6 +213,7 @@ export function createMarkerReasoningParser(ref: ParserRef, markers: ReasoningMa
           const end = buf.indexOf(endMarker);
           if (end >= 0) {
             emitReasoning(buf.slice(0, end), out);
+            endReasoning(out);
             const after = buf.slice(end + endMarker.length);
             phase = 'done';
             buf = '';
@@ -194,6 +223,7 @@ export function createMarkerReasoningParser(ref: ParserRef, markers: ReasoningMa
           const hold = final ? 0 : partialMarkerSuffix(buf, [endMarker]);
           emitReasoning(buf.slice(0, buf.length - hold), out);
           buf = buf.slice(buf.length - hold);
+          if (final) endReasoning(out);
           return out;
         }
         if (buf !== '') {
@@ -223,10 +253,11 @@ export function createMarkerReasoningParser(ref: ParserRef, markers: ReasoningMa
  * at the head is absorbed. Reasoning ends at the first `</think>`; without one the whole output
  * is reasoning and no tool call is parsed (rule 8). A profile whose template does not think
  * pins no reasoning parser. The template renders a turn as `<think>\n` + reasoning +
- * `\n</think>\n\n` + content, so those newlines are layout and are dropped (wire has not fixed
- * the exact trimming yet).
+ * `\n</think>\n\n` + content, so every LF at the start and end of the reasoning, and at the start
+ * of the remainder, is layout and is dropped; CR, SP and HT are kept (REASONING_PARSER_V1, qwen3@1
+ * `span` step 3). An empty `<think>\n\n</think>` gives reasoning that is present and empty.
  *
- * Unverified: wire has not published the reasoning parser vectors (S7.3 rule 11).
+ * Vector-verified: it passes wire's `testdata/v1/parser/reasoning_qwen3_v1.json`.
  */
 export const qwen3ReasoningParser: ReasoningParser = createMarkerReasoningParser(
   { name: 'qwen3', version: 1 },
@@ -278,9 +309,10 @@ export function createReasoningRegistry(entries: readonly ReasoningRegistryEntry
 }
 
 /**
- * The reasoning parsers this build ships, all unverified until wire publishes their vectors. An
- * unverified parser is used only when the caller passes `allowUnverified`.
+ * The reasoning parsers this build ships: qwen3@1, `'vector-verified'` against wire's shared
+ * vectors (REASONING_PARSER_V1), so it is used without `allowUnverified`. A custom unverified
+ * parser is still used only when the caller passes `allowUnverified`.
  */
 export const BUILTIN_REASONING_PARSERS: ReasoningRegistry = createReasoningRegistry([
-  { parser: qwen3ReasoningParser, conformance: 'unverified' },
+  { parser: qwen3ReasoningParser, conformance: 'vector-verified' },
 ]);

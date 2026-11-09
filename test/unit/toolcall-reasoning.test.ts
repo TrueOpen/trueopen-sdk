@@ -17,11 +17,15 @@ function streamSplit(p: ReasoningParser, frames: readonly string[]): ReasoningSp
   const s = p.createStreamState();
   let reasoningContent = '';
   let remainder = '';
+  // A reasoning event, even an empty one, means a span is present (REASONING_PARSER_V1).
+  let hasReasoning = false;
   for (const e of [...frames.flatMap((f) => s.push(f)), ...s.finish()]) {
-    if (e.kind === 'reasoning') reasoningContent += e.text;
-    else remainder += e.text;
+    if (e.kind === 'reasoning') {
+      reasoningContent += e.text;
+      hasReasoning = true;
+    } else remainder += e.text;
   }
-  return { reasoningContent, remainder };
+  return { reasoningContent, hasReasoning, remainder };
 }
 
 /** Every two-way split, so a marker or a layout newline straddling a frame is exercised. */
@@ -36,13 +40,14 @@ const TOOL = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "London
 describe('qwen3 reasoning split (Manifest S7.3)', () => {
   it('separates the leading <think> span, dropping the template layout around the markers (rule 6)', () => {
     expect(q.split('<think>\nLet me check.\n</think>\n\nIt is sunny.')).toEqual({
+      hasReasoning: true,
       reasoningContent: 'Let me check.',
       remainder: 'It is sunny.',
     });
   });
 
   it('keeps newlines inside the reasoning and the remainder', () => {
-    expect(q.split('<think>\na\n\nb\n</think>\n\nx\n\ny\n')).toEqual({ reasoningContent: 'a\n\nb', remainder: 'x\n\ny\n' });
+    expect(q.split('<think>\na\n\nb\n</think>\n\nx\n\ny\n')).toEqual({ hasReasoning: true, reasoningContent: 'a\n\nb', remainder: 'x\n\ny\n' });
   });
 
   it('declares an implicit start marker (rule 6)', () => {
@@ -50,34 +55,35 @@ describe('qwen3 reasoning split (Manifest S7.3)', () => {
   });
 
   it('absorbs one explicit <think> after leading whitespace (rule 6, implicit)', () => {
-    expect(q.split('  \n<think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
+    expect(q.split('  \n<think>r</think>c')).toEqual({ hasReasoning: true, reasoningContent: 'r', remainder: 'c' });
     // Only one is absorbed: a second <think> is reasoning text.
-    expect(q.split('<think><think>r</think>c')).toEqual({ reasoningContent: '<think>r', remainder: 'c' });
+    expect(q.split('<think><think>r</think>c')).toEqual({ hasReasoning: true, reasoningContent: '<think>r', remainder: 'c' });
   });
 
   it('without <think> the output still opens in reasoning, up to the first </think> (rule 6, implicit)', () => {
-    expect(q.split('Let me check.\n</think>\n\nIt is sunny.')).toEqual({ reasoningContent: 'Let me check.', remainder: 'It is sunny.' });
+    expect(q.split('Let me check.\n</think>\n\nIt is sunny.')).toEqual({ hasReasoning: true, reasoningContent: 'Let me check.', remainder: 'It is sunny.' });
     // Text before a mid-output <think> is reasoning too; the <think> is not a marker there.
-    expect(q.split('Sure. <think>r</think>c')).toEqual({ reasoningContent: 'Sure. <think>r', remainder: 'c' });
-    expect(q.split('a</think>b</think>c')).toEqual({ reasoningContent: 'a', remainder: 'b</think>c' });
-    expect(q.split('</think>answer')).toEqual({ reasoningContent: '', remainder: 'answer' });
+    expect(q.split('Sure. <think>r</think>c')).toEqual({ hasReasoning: true, reasoningContent: 'Sure. <think>r', remainder: 'c' });
+    expect(q.split('a</think>b</think>c')).toEqual({ hasReasoning: true, reasoningContent: 'a', remainder: 'b</think>c' });
+    expect(q.split('</think>answer')).toEqual({ hasReasoning: true, reasoningContent: '', remainder: 'answer' });
   });
 
   it('takes only the leading span: a later <think> is content', () => {
     expect(q.split('<think>r</think>c <think>not reasoning</think>')).toEqual({
+      hasReasoning: true,
       reasoningContent: 'r',
       remainder: 'c <think>not reasoning</think>',
     });
   });
 
   it('an unclosed span is all reasoning, with no remainder (rule 8)', () => {
-    expect(q.split('<think>\ncut off by max tokens')).toEqual({ reasoningContent: 'cut off by max tokens', remainder: '' });
+    expect(q.split('<think>\ncut off by max tokens')).toEqual({ hasReasoning: true, reasoningContent: 'cut off by max tokens', remainder: '' });
   });
 
   it('no closing marker, no marker at all included, makes the whole output reasoning (rule 8, implicit)', () => {
-    expect(q.split('Just an answer.')).toEqual({ reasoningContent: 'Just an answer.', remainder: '' });
-    expect(q.split('  <thin')).toEqual({ reasoningContent: '  <thin', remainder: '' });
-    expect(q.split('')).toEqual({ reasoningContent: '', remainder: '' });
+    expect(q.split('Just an answer.')).toEqual({ hasReasoning: true, reasoningContent: 'Just an answer.', remainder: '' });
+    expect(q.split('  <thin')).toEqual({ hasReasoning: true, reasoningContent: '  <thin', remainder: '' });
+    expect(q.split('')).toEqual({ hasReasoning: true, reasoningContent: '', remainder: '' });
   });
 
   // REASONING_PARSER_V1 qwen3@1 worked examples (wire #46 @ 5760ab7); each row is a shared vector.
@@ -99,15 +105,15 @@ describe('qwen3 reasoning split (Manifest S7.3)', () => {
 
   it('matches the wire worked examples, whole and streamed', () => {
     for (const [text, reasoningContent, remainder] of WORKED_EXAMPLES) {
-      expect(q.split(text)).toEqual({ reasoningContent, remainder });
-      for (const frames of everySplit(text)) expect(streamSplit(q, frames)).toEqual({ reasoningContent, remainder });
+      expect(q.split(text)).toEqual({ hasReasoning: true, reasoningContent, remainder });
+      for (const frames of everySplit(text)) expect(streamSplit(q, frames)).toEqual({ hasReasoning: true, reasoningContent, remainder });
     }
   });
 
   it('leading whitespace is ASCII SP, HT, LF and CR only', () => {
-    expect(q.split('\t\r <think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
+    expect(q.split('\t\r <think>r</think>c')).toEqual({ hasReasoning: true, reasoningContent: 'r', remainder: 'c' });
     for (const space of ['\uFEFF', '\u00A0', '\u2028', '\u3000']) {
-      expect(q.split(`${space}<think>r</think>c`)).toEqual({ reasoningContent: `${space}<think>r`, remainder: 'c' });
+      expect(q.split(`${space}<think>r</think>c`)).toEqual({ hasReasoning: true, reasoningContent: `${space}<think>r`, remainder: 'c' });
     }
   });
 
@@ -143,15 +149,15 @@ describe('an explicit start marker parser (Manifest S7.3 rules 6 and 8)', () => 
 
   it('allows whitespace before the start marker, and nothing else', () => {
     expect(e.startMarkerClass).toBe('explicit');
-    expect(e.split('  \n<think>r</think>c')).toEqual({ reasoningContent: 'r', remainder: 'c' });
-    expect(e.split('Sure. <think>r</think>c')).toEqual({ reasoningContent: '', remainder: 'Sure. <think>r</think>c' });
-    expect(e.split('\uFEFF<think>r</think>c')).toEqual({ reasoningContent: '', remainder: '\uFEFF<think>r</think>c' });
+    expect(e.split('  \n<think>r</think>c')).toEqual({ hasReasoning: true, reasoningContent: 'r', remainder: 'c' });
+    expect(e.split('Sure. <think>r</think>c')).toEqual({ hasReasoning: false, reasoningContent: '', remainder: 'Sure. <think>r</think>c' });
+    expect(e.split('\uFEFF<think>r</think>c')).toEqual({ hasReasoning: false, reasoningContent: '', remainder: '\uFEFF<think>r</think>c' });
   });
 
   it('no marker leaves the output whole; unclosed is all reasoning', () => {
-    expect(e.split('Just an answer.')).toEqual({ reasoningContent: '', remainder: 'Just an answer.' });
-    expect(e.split('a</think>b')).toEqual({ reasoningContent: '', remainder: 'a</think>b' });
-    expect(e.split('<think>\ncut off')).toEqual({ reasoningContent: 'cut off', remainder: '' });
+    expect(e.split('Just an answer.')).toEqual({ hasReasoning: false, reasoningContent: '', remainder: 'Just an answer.' });
+    expect(e.split('a</think>b')).toEqual({ hasReasoning: false, reasoningContent: '', remainder: 'a</think>b' });
+    expect(e.split('<think>\ncut off')).toEqual({ hasReasoning: true, reasoningContent: 'cut off', remainder: '' });
   });
 
   it('streaming agrees with split()', () => {
@@ -162,9 +168,16 @@ describe('an explicit start marker parser (Manifest S7.3 rules 6 and 8)', () => 
 });
 
 describe('the reasoning registry', () => {
-  it('offers qwen3@1 only with allowUnverified, since no vectors exist yet', () => {
-    expect(BUILTIN_REASONING_PARSERS.lookup({ name: 'qwen3', version: 1 })).toEqual({ supported: false, reason: 'parser-unverified' });
+  it('offers qwen3@1 without allowUnverified: it is vector-verified', () => {
+    expect(BUILTIN_REASONING_PARSERS.lookup({ name: 'qwen3', version: 1 })).toEqual({ supported: true, parser: q });
     expect(BUILTIN_REASONING_PARSERS.lookup({ name: 'qwen3', version: 1 }, { allowUnverified: true })).toMatchObject({ supported: true });
+  });
+
+  it('still offers an unverified parser only with allowUnverified', () => {
+    const custom = createMarkerReasoningParser({ name: 'custom', version: 1 }, { startMarker: '<r>', endMarker: '</r>', startMarkerClass: 'explicit' });
+    const registry = createReasoningRegistry([{ parser: custom, conformance: 'unverified' }]);
+    expect(registry.lookup({ name: 'custom', version: 1 })).toEqual({ supported: false, reason: 'parser-unverified' });
+    expect(registry.lookup({ name: 'custom', version: 1 }, { allowUnverified: true })).toEqual({ supported: true, parser: custom });
   });
 
   it('distinguishes no parser pinned from one this build lacks', () => {
@@ -212,10 +225,29 @@ describe('reasoning before tool calls (S7.3 rules 5 and 7)', () => {
     expect(m.content).toBe('');
   });
 
-  it('an empty reasoning span: the message carries no reasoningContent and parses the remainder', () => {
-    const m = deriveAssistantMessage(`</think>\n\n${TOOL}`, opts);
-    expect('reasoningContent' in m).toBe(false);
-    expect(m.toolCalls).toHaveLength(1);
+  it('an empty reasoning span: reasoningContent is present and empty, and the remainder is parsed', () => {
+    // REASONING_PARSER_V1 qwen3@1: an empty span is reasoning_content "", not absent.
+    for (const text of [`</think>\n\n${TOOL}`, `<think>\n\n</think>\n\n${TOOL}`]) {
+      const m = deriveAssistantMessage(text, opts);
+      expect(m.reasoningContent).toBe('');
+      expect(m.toolCalls).toHaveLength(1);
+    }
+  });
+
+  it('an empty reasoning span is one empty reasoning event in the stream', async () => {
+    async function* src() {
+      yield { kind: 'chunk' as const, text: '<think>\n\n</think>\n\nok' };
+      yield { kind: 'fin' as const };
+    }
+    const events: AssistantStreamEvent[] = [];
+    for await (const e of deriveAssistantStream(src(), opts)) events.push(e);
+    expect(events).toEqual([{ kind: 'reasoning', text: '' }, { kind: 'content', text: 'ok' }]);
+  });
+
+  it('a parser without hasReasoning in its split still works: a non-empty span counts as present', () => {
+    const legacy: ReasoningParser = { ...q, split: (text) => ({ reasoningContent: q.split(text).reasoningContent, remainder: q.split(text).remainder }) };
+    expect(deriveAssistantMessage(`<think>r</think>${TOOL}`, { parser: hermesParser, reasoning: legacy }).reasoningContent).toBe('r');
+    expect('reasoningContent' in deriveAssistantMessage(`</think>${TOOL}`, { parser: hermesParser, reasoning: legacy })).toBe(false);
   });
 
   it('streaming emits reasoning first and agrees with the full parse, whatever the frame split', async () => {

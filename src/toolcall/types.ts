@@ -11,7 +11,8 @@ export interface DerivedAssistantMessage {
   readonly toolCalls: readonly DerivedToolCall[];
   /**
    * The leading reasoning span (Manifest S7.3), set only when a reasoning parser ran and found
-   * one. Tool-call markers inside it are reasoning text: they never appear in `toolCalls`.
+   * one -- `""` when the span is present but empty (qwen3@1's `<think>\n\n</think>`), absent when
+   * there is none. Tool-call markers inside it are reasoning text: they never appear in `toolCalls`.
    */
   readonly reasoningContent?: string;
 }
@@ -117,9 +118,10 @@ export interface ConfirmedAssistantMessage extends DerivedAssistantMessage {
  * Why this SDK is not entitled to parse. All are known before any frame arrives, which is why
  * they are resolved up front rather than delivered as a stream event (design S5.1).
  *
- * `parser-unverified` extends the two in design S6: ADR-0022 decision four's shared vectors do
- * not exist yet (monorepo#11), so a registry that reported an implemented-but-unchecked parser
- * as supported would claim precisely what cannot be claimed.
+ * `parser-unverified` extends the two in design S6: a parser registered as `'unverified'` has not
+ * passed wire's shared vectors (ADR-0022 decision four), so a registry that reported it as
+ * supported would claim precisely what cannot be claimed. The built-in parsers are
+ * vector-verified; this reason applies to custom ones registered unverified.
  *
  * The parser is read from the profile's on-chain `tool_call_parser` projection, which is
  * authoritative, so there is no manifest fetch/hash/validate step that could fail: the three

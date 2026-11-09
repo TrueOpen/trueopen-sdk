@@ -23,20 +23,10 @@ function skipWhitespace(text: string, i: number): number {
   return i;
 }
 
-/** First index at or after `from` of any of `markers`, or `text.length` when none occurs. */
-function indexOfFirst(text: string, markers: readonly string[], from: number): number {
-  let best = text.length;
-  for (const marker of markers) {
-    const at = text.indexOf(marker, from);
-    if (at >= 0 && at < best) best = at;
-  }
-  return best;
-}
-
 /**
- * The `NAME` of `<function=NAME>` / `KEY` of `<parameter=KEY>`, starting just past the `=`.
- * Undefined when there is no `>`, or the span is empty or holds `<` or a newline -- a tag the
- * model never finished, whose `>` belongs to some later tag.
+ * The `NAME` of `<function=NAME>` / `KEY` of `<parameter=KEY>`, starting just past the `=`: the
+ * bytes up to the next `>`, raw (not trimmed). Undefined when there is no `>`, or the span is
+ * empty or holds `<` or LF -- such a name can only come from a tag the model never finished.
  */
 function readTagValue(text: string, start: number): { value: string; end: number } | undefined {
   const close = text.indexOf('>', start);
@@ -46,7 +36,7 @@ function readTagValue(text: string, start: number): { value: string; end: number
   return { value, end: close + 1 };
 }
 
-/** Strip one leading and one trailing newline: the line breaks Qwen3's chat template puts around a value. */
+/** Strip exactly one leading and one trailing LF, if present: the layout the chat template puts around a value. */
 function trimWrappingNewlines(value: string): string {
   let out = value;
   if (out.startsWith('\n')) out = out.slice(1);
@@ -55,55 +45,83 @@ function trimWrappingNewlines(value: string): string {
 }
 
 /**
- * The arguments JSON of one function body: each `<parameter=KEY>VALUE</parameter>` in order of
- * appearance. A missing `</parameter>` ends the value at the next `<parameter=` or at the end of
- * the body. A repeated key keeps its first position and its last value. Anything but whitespace
- * between parameters means the body is not a call.
- *
- * Every value is a JSON string: the raw text, less one wrapping newline each side, verbatim. No
- * value is coerced to a number, boolean, object or array, and no tool schema is consulted, so
- * the result depends on the committed output alone (wire #46).
+ * A JSON string written exactly as TOOL_CALL_PARSER_V1 qwen3_coder@1 `encoding` says, so Go / Rust /
+ * TS agree byte for byte: `"` and `\` backslash-escaped, BS FF LF CR HT as `\b \f \n \r \t`, any
+ * other byte 0x00-0x1F as `\u00` + two lowercase hex digits, and everything else -- `<`, `>`, `&`,
+ * `/`, 0x7F, U+2028, U+2029, all non-ASCII -- copied as is.
  */
-function parseParameters(body: string): string | undefined {
-  const entries = new Map<string, string>();
-  let i = 0;
-  for (;;) {
-    i = skipWhitespace(body, i);
-    if (i === body.length) break;
-    if (!body.startsWith(PARAMETER_OPEN, i)) return undefined;
-    const key = readTagValue(body, i + PARAMETER_OPEN.length);
-    if (key === undefined) return undefined;
-    const valueEnd = indexOfFirst(body, [PARAMETER_CLOSE, PARAMETER_OPEN], key.end);
-    entries.set(key.value, JSON.stringify(trimWrappingNewlines(body.slice(key.end, valueEnd))));
-    i = body.startsWith(PARAMETER_CLOSE, valueEnd) ? valueEnd + PARAMETER_CLOSE.length : valueEnd;
+function encodeJsonString(value: string): string {
+  let out = '"';
+  for (const ch of value) {
+    const code = ch.codePointAt(0)!;
+    if (ch === '"') out += '\\"';
+    else if (ch === '\\') out += '\\\\';
+    else if (ch === '\b') out += '\\b';
+    else if (ch === '\f') out += '\\f';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\t') out += '\\t';
+    else if (code < 0x20) out += `\\u00${code.toString(16).padStart(2, '0')}`;
+    // A lone surrogate has no UTF-8 form and cannot come from decoded committed output; escaped
+    // (as JSON.stringify does) rather than written as an ill-formed string, should one ever arrive.
+    else if (code >= 0xd800 && code <= 0xdfff) out += `\\u${code.toString(16)}`;
+    else out += ch;
   }
-  return `{${[...entries].map(([k, v]) => `${JSON.stringify(k)}:${v}`).join(',')}}`;
+  return `${out}"`;
 }
 
 /**
- * Parse the text between `<tool_call>` and `</tool_call>` into its calls.
+ * Parse the bytes between `<tool_call>` and `</tool_call>` into its calls, by the grammar of
+ * TOOL_CALL_PARSER_V1 qwen3_coder@1 `payload`, matched exactly:
  *
- * The block holds one or more `<function=NAME>...</function>`, separated by whitespace only. A
- * missing `</function>` ends the function at the next `<function=` or at the end of the block.
- * Returns `undefined` when the block is not a call after all -- no function, an unfinished tag,
- * or stray text -- and the raw block then flows on as content (design S6 row one).
+ * ```text
+ * payload   = ws* function ( ws* function )* ws*
+ * function  = "<function=" NAME ">" ws* ( parameter ws* )* "</function>"
+ * parameter = "<parameter=" KEY ">" VALUE "</parameter>"
+ * ```
+ *
+ * VALUE runs to the first `</parameter>` in the block, so `<`, `>`, `<parameter=` and
+ * `</function>` inside it are plain bytes, and an omitted `</parameter>` makes the value run on to
+ * a later one. Then one wrapping LF each side is removed; nothing is unescaped.
+ *
+ * Each function is one call: arguments is a JSON object with one member per parameter, in order
+ * of appearance, every value a JSON string -- no type coercion and no tool-schema lookup, so the
+ * result depends on the committed output alone.
+ *
+ * Returns `undefined` when the block is malformed -- no function, text other than whitespace
+ * between elements, no `</parameter>` left for an open parameter, a missing `</function>`, a tag
+ * with a space in it, or a KEY repeated within one function. The block's raw bytes are then
+ * content (Common contract, Failure).
  */
 function parseQwen3CoderBlock(inner: string): DerivedToolCall[] | undefined {
   const calls: DerivedToolCall[] = [];
-  let i = 0;
-  for (;;) {
-    i = skipWhitespace(inner, i);
-    if (i === inner.length) break;
+  let i = skipWhitespace(inner, 0);
+  do {
     if (!inner.startsWith(FUNCTION_OPEN, i)) return undefined;
     const name = readTagValue(inner, i + FUNCTION_OPEN.length);
     if (name === undefined) return undefined;
-    const bodyEnd = indexOfFirst(inner, [FUNCTION_CLOSE, FUNCTION_OPEN], name.end);
-    const args = parseParameters(inner.slice(name.end, bodyEnd));
-    if (args === undefined) return undefined;
-    calls.push({ name: name.value, arguments: args });
-    i = inner.startsWith(FUNCTION_CLOSE, bodyEnd) ? bodyEnd + FUNCTION_CLOSE.length : bodyEnd;
-  }
-  return calls.length === 0 ? undefined : calls;
+    i = name.end;
+    const keys = new Set<string>();
+    const members: string[] = [];
+    for (;;) {
+      i = skipWhitespace(inner, i);
+      if (inner.startsWith(FUNCTION_CLOSE, i)) {
+        i += FUNCTION_CLOSE.length;
+        break;
+      }
+      if (!inner.startsWith(PARAMETER_OPEN, i)) return undefined;
+      const key = readTagValue(inner, i + PARAMETER_OPEN.length);
+      if (key === undefined || keys.has(key.value)) return undefined;
+      keys.add(key.value);
+      const valueEnd = inner.indexOf(PARAMETER_CLOSE, key.end);
+      if (valueEnd < 0) return undefined;
+      members.push(`${encodeJsonString(key.value)}:${encodeJsonString(trimWrappingNewlines(inner.slice(key.end, valueEnd)))}`);
+      i = valueEnd + PARAMETER_CLOSE.length;
+    }
+    calls.push({ name: name.value, arguments: `{${members.join(',')}}` });
+    i = skipWhitespace(inner, i);
+  } while (i < inner.length);
+  return calls;
 }
 
 function createQwen3CoderStreamState(): ToolCallStreamState {
@@ -111,8 +129,6 @@ function createQwen3CoderStreamState(): ToolCallStreamState {
     startMarker: START_MARKER,
     endMarker: END_MARKER,
     parseCall: parseQwen3CoderBlock,
-    // Values are free text, not JSON: a lone quote in one must not hide `</tool_call>`.
-    quoteAware: false,
     // No `recoverUnclosed`: qwen3_coder@1 defines no recovery (Manifest S7.2 rule 6), so an
     // unclosed final block is always content, whatever the finish reason.
   });
@@ -132,13 +148,15 @@ function createQwen3CoderStreamState(): ToolCallStreamState {
  * ```
  *
  * Unlike hermes@1 the model writes no JSON: each value is plain text, and the arguments object
- * is assembled here with every value a JSON string, verbatim (wire #46). vLLM's `qwen3_xml` /
- * `qwen3_coder` and Dynamo coerce values by the request's tool schema; qwen3_coder@1 does not,
- * so its result depends on the committed output alone, like hermes@1.
+ * is assembled here with every value a JSON string, verbatim (TOOL_CALL_PARSER_V1 qwen3_coder@1).
+ * vLLM's `qwen3_xml` / `qwen3_coder` and Dynamo coerce values by the request's tool schema and
+ * tolerate malformed markup; qwen3_coder@1 does neither, so its result depends on the committed
+ * output alone, like hermes@1.
  *
  * It defines no unclosed-call recovery: a final block without `</tool_call>` is content.
  *
- * Conformance is `'unverified'`: no shared vectors exist (monorepo#11).
+ * Conformance is `'vector-verified'`: it passes wire's shared vectors
+ * (`testdata/v1/parser/tool_call_qwen3_coder_v1.json`).
  */
 export const qwen3CoderParser: ToolCallParser = {
   name: 'qwen3_coder',

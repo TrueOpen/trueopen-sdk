@@ -1,10 +1,11 @@
 /**
  * Differential corpus against vLLM's and Dynamo's own hermes / qwen3 / qwen3_coder parser tests.
  *
- * This is NOT conformance: wire's shared vectors are the authority, and hermes@1 / qwen3@1 /
- * qwen3_coder@1 stay `unverified`. Each case pins (a) what the SDK produces today and (b) the
- * verdict of comparing it with what the reference test asserts, so any behaviour change --
- * towards or away from a reference -- fails here and has to be re-judged in the fixture.
+ * This is NOT conformance: wire's shared vectors are the authority (test/unit/parser-vectors.test.ts),
+ * and the spec wins wherever this corpus disagrees with it. Each case pins (a) what the SDK
+ * produces today and (b) the verdict of comparing it with what the reference test asserts, so any
+ * behaviour change -- towards or away from a reference -- fails here and has to be re-judged in the
+ * fixture. Cases whose outcome changed when the parsers followed wire #51 say so in their reason.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

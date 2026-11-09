@@ -58,9 +58,11 @@ function parseWithReasoning(
 ): DerivedAssistantMessage {
   const parseOpts = unclosedCallRecovery(finishReason);
   if (opts.reasoning === undefined) return opts.parser.parseComplete(text, parseOpts);
-  const { reasoningContent, remainder } = opts.reasoning.split(text);
+  const { reasoningContent, remainder, hasReasoning } = opts.reasoning.split(text);
   const message = opts.parser.parseComplete(remainder, parseOpts);
-  return reasoningContent === '' ? message : { ...message, reasoningContent };
+  // A span that is present but empty (qwen3@1's `<think>\n\n</think>`) gives reasoningContent "",
+  // not an absent field (REASONING_PARSER_V1).
+  return (hasReasoning ?? reasoningContent !== '') ? { ...message, reasoningContent } : message;
 }
 
 /**

@@ -69,9 +69,9 @@ export function skipJsonString(text: string, i: number): number {
 /**
  * First index of `marker` that is not inside a JSON string, or -1.
  *
- * A marker written as prose inside quotes ("here is `<tool_call>`") or as a string value in a
- * tool's argument JSON is visible content, not parser control syntax (design §5.3). Only an
- * unquoted marker is a real start/end marker, so this scan skips quoted spans.
+ * Only for a custom parser that opts into `quoteAware` (`createMarkerStreamState`). The v1
+ * parsers do not use it: TOOL_CALL_PARSER_V1 (Common contract, Blocks) matches markers on bytes,
+ * so a marker inside a JSON string or a parameter value is still a marker.
  */
 export function indexOfOutsideQuotes(text: string, marker: string, fromIndex = 0): number {
   let i = fromIndex;
@@ -89,7 +89,7 @@ export function indexOfOutsideQuotes(text: string, marker: string, fromIndex = 0
 
 /**
  * Length of the trailing span that begins with an as-yet-unclosed double quote, or 0 when the
- * quotes are balanced.
+ * quotes are balanced. Used only with `quoteAware` (see `indexOfOutsideQuotes`).
  *
  * In the Text state, a frame that ends inside a quoted span must not be emitted yet: the closing
  * quote may arrive in the next frame, and emitting now would make that closing quote look like

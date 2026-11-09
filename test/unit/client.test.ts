@@ -25,6 +25,7 @@ import { hash32Text } from '../../src/codec/hash32';
 import { TrueOpenError } from '../../src/errors/errors';
 import { createMarkerStreamState } from '../../src/toolcall/stream-state';
 import { createToolCallRegistry } from '../../src/toolcall/registry';
+import { createReasoningRegistry, qwen3ReasoningParser } from '../../src/toolcall/reasoning';
 import type { AssistantStreamEvent, ParserRef, ToolCallParser } from '../../src/toolcall/types';
 
 // deriveTaskId requires Hash32 text, 0x + 64 lowercase hex (raw Hash32 goes into the preimage).
@@ -673,7 +674,6 @@ describe('TrueOpenClient tool-call views', () => {
       toolCallParser: { name: 'hermes', version: 1 },
       registry: createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]),
       reasoningParser: { name: 'qwen3', version: 1 },
-      allowUnverified: true,
     })) {
       events.push(e);
     }
@@ -705,14 +705,19 @@ describe('TrueOpenClient tool-call views', () => {
     const registry = createToolCallRegistry([{ parser: markerParser('hermes'), conformance: 'vector-verified' }]);
 
     it('with the profile parsers, a call drafted inside the reasoning is not executable', () => {
-      const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true });
+      const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 } });
       expect(m.toolCalls.map((c) => c.name)).toEqual(['get_weather']);
       expect(m.reasoningContent).toBe('maybe <tc>rm|{}</tc>');
       expect(m.confirmation.type).toBe('confirmed');
     });
 
     it('a pinned reasoning parser that does not resolve takes the tool parser with it (TOOL_CALL_PARSER_V1, Support)', () => {
-      for (const extra of [{ reasoningParser: { name: 'unknown', version: 1 }, allowUnverified: true }, { reasoningParser: { name: 'qwen3', version: 1 } }]) {
+      // Unknown to this build, or registered unverified without the caller's opt-in.
+      const unverifiedQwen3 = createReasoningRegistry([{ parser: qwen3ReasoningParser, conformance: 'unverified' }]);
+      for (const extra of [
+        { reasoningParser: { name: 'unknown', version: 1 }, allowUnverified: true },
+        { reasoningParser: { name: 'qwen3', version: 1 }, reasoningRegistry: unverifiedQwen3 },
+      ]) {
         const m = confirm({ toolCallParser: { name: 'hermes', version: 1 }, registry, ...extra });
         expect(m.toolCalls).toEqual([]);
         expect(m.content).toBe(OUTPUT);
@@ -726,13 +731,13 @@ describe('TrueOpenClient tool-call views', () => {
     });
 
     it('a tool parser that does not resolve yields no executable calls', () => {
-      const m = confirm({ toolCallParser: { name: 'unknown', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true });
+      const m = confirm({ toolCallParser: { name: 'unknown', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 } });
       expect(m.toolCalls).toEqual([]);
       expect(m.reasoningContent).toBe('maybe <tc>rm|{}</tc>');
     });
 
     it('agrees with what streamAssistantMessage yielded for the same output', async () => {
-      const opts = { toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 }, allowUnverified: true };
+      const opts = { toolCallParser: { name: 'hermes', version: 1 }, registry, reasoningParser: { name: 'qwen3', version: 1 } };
       const transport = scriptedStreamTransport(async function* () {
         const built = signedFrames('trueopen-devnet-1', chunks);
         for (const f of built) yield { frame: { case: 'chunk' as const, value: f } };
@@ -764,7 +769,6 @@ describe('TrueOpenClient tool-call views', () => {
           outputSizeBytes: BigInt(new TextEncoder().encode(CODER).length), outputLeafCount: BigInt(frames.length),
         },
         toolCallParser: { name: 'qwen3_coder', version: 1 },
-        allowUnverified: true,
       });
       expect(m.toolCalls).toEqual([{ name: 'f', arguments: '{"n":"5"}' }]);
     });
@@ -782,7 +786,7 @@ describe('TrueOpenClient tool-call views', () => {
       const out: string[] = [];
       for await (const e of makeClientWithTransport(transport).streamAssistantMessage({ dispatchTicketHash: ticketText,
         sessionId: SESSION, taskId: TASK, taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB,
-        toolCallParser: { name: 'qwen3_coder', version: 1 }, allowUnverified: true,
+        toolCallParser: { name: 'qwen3_coder', version: 1 },
       })) {
         if (e.kind === 'tool-call-provisional') out.push(e.call.arguments);
       }

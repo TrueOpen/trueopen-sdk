@@ -14,10 +14,9 @@ export interface MarkerStreamOptions {
    */
   readonly parseCall: (inner: string) => DerivedToolCall | readonly DerivedToolCall[] | undefined;
   /**
-   * Whether a marker inside a double-quoted span is content (design S5.3); default true. Right
-   * for a format whose payload is JSON (hermes@1). A format whose payload is plain text
-   * (qwen3_coder@1, where a parameter value is free text and may hold one lone `"`) sets false:
-   * there a quote means nothing, and honouring it would let a stray quote hide the end marker.
+   * Whether a marker inside a double-quoted span is skipped; default false. TOOL_CALL_PARSER_V1
+   * (Common contract, Blocks) matches markers on bytes, inside a JSON string or a parameter value
+   * alike, so no v1 parser sets this. It remains for a custom parser whose own spec asks for it.
    */
   readonly quoteAware?: boolean;
   /**
@@ -30,20 +29,30 @@ export interface MarkerStreamOptions {
   readonly recoverUnclosed?: (body: string) => DerivedToolCall | readonly DerivedToolCall[] | undefined;
 }
 
+/** The four whitespace bytes of TOOL_CALL_PARSER_V1 (SP, HT, LF, CR); no Unicode space counts. */
+const LAYOUT = /^[ \t\n\r]*$/;
+
 /**
- * The incremental state machine of design S7.
+ * The incremental state machine of design S7, with TOOL_CALL_PARSER_V1's Common contract.
  *
  * ```text
  *         +--------------------------------------+
  *         v                                      |
- *    +--------+  start marker   +-----------+    | closing marker
- *    |  Text  |---------------->| Buffering |----+ -> emit its tool call(s)
- *    +--------+                 +-----------+
+ *    +--------+  start marker   +-----------+    | first end marker
+ *    |  Text  |---------------->| Buffering |----+ -> emit its tool call(s), or its raw bytes
+ *    +--------+                 +-----------+       as content when it yields none
  *         | ordinary bytes            | end of stream, still unclosed
- *         v emit as content           v flush buffer as plain text, or recover the call
- *                                       when the model stopped by itself and the
- *                                       parser defines recovery
+ *         v emit as content           v raw bytes as content, or the parser's recovery when
+ *                                       the model stopped by itself
  * ```
+ *
+ * Blocks: a block opens at a start marker and closes at the first end marker after it, matched on
+ * bytes. A start marker inside an open block is payload; an end marker outside any block is text.
+ *
+ * Content: text outside blocks is content verbatim, except that a whitespace-only segment between
+ * two blocks, or after the last one, is layout and is dropped. Text before the first block is
+ * always kept. An unclosed block is still a block, so the layout before it is dropped too. In the
+ * stream, whitespace after a block is held until it is known to be layout or text.
  *
  * The edge back to `Text` is load-bearing: the chat path has no stop conditions (design S13.3),
  * so generation continues past a closing marker. Content can follow a completed call, and one
@@ -59,7 +68,7 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
     );
   }
 
-  const quoteAware = opts.quoteAware !== false;
+  const quoteAware = opts.quoteAware === true;
   const find = (text: string, marker: string): number =>
     quoteAware ? indexOfOutsideQuotes(text, marker) : text.indexOf(marker);
   /** Pushes the call(s) `parse` finds, or returns false when there are none. */
@@ -76,6 +85,13 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
 
   let buffer = '';
   let buffering = false;
+  /** A block has been seen, so the outside segment being read may be layout. */
+  let afterBlock = false;
+  /** The current outside segment already held non-whitespace, so it is text, not layout. */
+  let segmentIsText = false;
+
+  /** Whether an outside segment that ended (at a start marker or end of input) is dropped as layout. */
+  const isLayout = (segment: string): boolean => afterBlock && !segmentIsText && LAYOUT.test(segment);
 
   /** Consumes as much of `buffer` as is unambiguous. `atEnd` releases every holdback. */
   function drain(atEnd: boolean, recover = false): ToolCallStreamEvent[] {
@@ -84,36 +100,43 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
       if (!buffering) {
         const at = find(buffer, startMarker);
         if (at < 0) {
-          // Everything except a suffix that could still grow into the start marker, or that is
-          // an as-yet-unclosed quote span (its closing quote may arrive next frame).
-          const held = atEnd
-            ? 0
-            : Math.max(partialMarkerSuffix(buffer, [startMarker]), quoteAware ? unterminatedQuoteSuffix(buffer) : 0);
+          if (atEnd) {
+            if (buffer !== '' && !isLayout(buffer)) events.push({ kind: 'content', text: buffer });
+            buffer = '';
+            return events;
+          }
+          // Everything except a suffix that could still grow into the start marker (or, for a
+          // quote-aware custom parser, an as-yet-unclosed quote span).
+          const held = Math.max(partialMarkerSuffix(buffer, [startMarker]), quoteAware ? unterminatedQuoteSuffix(buffer) : 0);
           const text = buffer.slice(0, buffer.length - held);
+          // Whitespace after a block waits until it is known whether it is layout.
+          if (afterBlock && !segmentIsText && LAYOUT.test(text)) return events;
+          if (afterBlock) segmentIsText = true;
           buffer = held === 0 ? '' : buffer.slice(buffer.length - held);
           if (text !== '') events.push({ kind: 'content', text });
           return events;
         }
-        if (at > 0) events.push({ kind: 'content', text: buffer.slice(0, at) });
+        const before = buffer.slice(0, at);
+        if (before !== '' && !isLayout(before)) events.push({ kind: 'content', text: before });
         buffer = buffer.slice(at + startMarker.length);
         buffering = true;
+        afterBlock = true;
+        segmentIsText = false;
         continue;
       }
 
       const at = find(buffer, endMarker);
       if (at < 0) {
-        // Unbounded buffering: while the segment remains open, the entire content is
-        // retained — a start marker that never closes grows the buffer for the stream's
-        // life. This is unavoidable: text inside an open segment cannot be classified as
-        // call-versus-content until the segment resolves, so nothing in it can be emitted
-        // early. No bound is imposed because capping overflow requires choosing what
-        // happens on excess (drop output? error?), a policy decision design S7 leaves open.
+        // Unbounded buffering: while the block remains open, the entire content is retained -- a
+        // start marker that never closes grows the buffer for the stream's life. Text inside an
+        // open block cannot be classified as call-versus-content until it resolves, so nothing in
+        // it can be emitted early. No bound is imposed because capping overflow requires choosing
+        // what happens on excess (drop output? error?), a policy decision design S7 leaves open.
         if (!atEnd) return events;
-        // Manifest S7.2 rule 6. When the model stopped by itself and the parser defines
-        // recovery, the parser may read the unclosed body as a complete call whose closing marker
-        // was never written. Otherwise -- truncated, no recovery defined, or nothing recovered --
-        // the unclosed segment flushes as plain text, start marker included: neither dropped nor
-        // an error.
+        // TOOL_CALL_PARSER_V1 Recovery: when the model stopped by itself and the parser defines
+        // recovery, it may read the unclosed block as a call whose end marker was never written.
+        // Otherwise -- truncated, no recovery defined, or nothing recovered -- the unclosed block's
+        // raw bytes are content, start marker included: neither dropped nor an error.
         if (recover && opts.recoverUnclosed !== undefined && emitCalls(events, buffer, opts.recoverUnclosed)) {
           buffer = '';
           buffering = false;
@@ -128,7 +151,9 @@ export function createMarkerStreamState(opts: MarkerStreamOptions): ToolCallStre
       const inner = buffer.slice(0, at);
       buffer = buffer.slice(at + endMarker.length);
       buffering = false;
+      segmentIsText = false;
       if (!emitCalls(events, inner)) {
+        // Failure: a malformed block yields no call; its raw bytes, markers included, are content.
         events.push({ kind: 'content', text: startMarker + inner + endMarker });
       }
     }

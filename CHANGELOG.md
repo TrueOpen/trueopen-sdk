@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Changed: parsers follow wire's settled spec and shared vectors (wire #51)
+
+`hermes@1`, `qwen3_coder@1` and `qwen3@1` now follow `docs/TOOL_CALL_PARSER_V1.md` and
+`docs/REASONING_PARSER_V1.md` as settled in wire #51 (pinned at `a75f54a`), and pass every
+vector in wire's `testdata/v1/parser/` (`test/unit/parser-vectors.test.ts` reads them in place,
+complete and streamed, with parsers resolved as the client resolves them).
+
+- **Changed:** the built-in parsers are `vector-verified`. `BUILTIN_TOOL_CALL_PARSERS`
+  (`hermes@1`, `qwen3_coder@1`) and `BUILTIN_REASONING_PARSERS` (`qwen3@1`) resolve without
+  `allowUnverified`, so `assistantTurn`, `streamAssistantMessage`, `confirmAssistantMessage` and
+  `fetchAssistantMessage` parse a profile's pinned parsers by default. `allowUnverified` still
+  gates a custom parser registered `unverified`.
+- **Breaking:** whitespace-only text between two tool-call blocks, or after the last one, is
+  layout and is dropped from `content` (TOOL_CALL_PARSER_V1, Content); before, it was kept.
+  Text before the first block, and any segment holding non-whitespace, is still kept verbatim.
+  An unclosed or malformed block counts as a block. In the stream, whitespace after a block is
+  held until it is known to be layout.
+- **Breaking:** markers are matched on bytes, inside a JSON string or a parameter value alike
+  (TOOL_CALL_PARSER_V1, Blocks). A `</tool_call>` inside a `hermes@1` argument string closes the
+  block there (which is then malformed, so its bytes are content); a `<tool_call>` written in
+  quoted prose opens a block. `MarkerStreamOptions.quoteAware` now defaults to `false`; a custom
+  parser may still opt in.
+- **Breaking:** `hermes@1` payloads are strict JSON (hermes@1, payload / strict JSON).
+  `arguments`, when present, must be an object (`null`, a string, a number or an array is
+  malformed; before, any value was passed through); `name` or `arguments` twice at the top level
+  is malformed, keys compared after decoding (`"n\u0061me"` is `name`), and an escaped
+  `"argu\u006dents"` key is matched; nesting deeper than 64, a `\u` escape for an unpaired
+  surrogate, or bytes after the object are malformed. A malformed block is content.
+- **Breaking:** `qwen3_coder@1` matches the payload grammar exactly (qwen3_coder@1, payload). A
+  missing `</function>` is malformed (before, the function ended at the next `<function=` or the
+  block end); an open parameter with no `</parameter>` left in the block is malformed; an omitted
+  `</parameter>` followed by a later one makes the value run on to it, the next
+  `<parameter=...>` included as plain bytes (before, a value ended at the next `<parameter=`); a
+  KEY repeated within one function is malformed (before, first position, last value). `<`, `>`,
+  `<parameter=` and `</function>` inside a value are plain bytes. Values are encoded by the
+  spec's fixed JSON string rule.
+- **Changed:** `qwen3@1` gives `reasoningContent: ""` (present, empty) for an empty span such as
+  `<think>\n\n</think>\n\nok` or `</think>ok`; before, the field was absent. `ReasoningSplit`
+  gains optional `hasReasoning` (a parser that leaves it out counts a non-empty span as present),
+  and the reasoning stream emits one `{ kind: 'reasoning', text: '' }` for a span that is present
+  but empty, before any content.
+- **Fixed:** a leading U+FEFF in committed output is kept. `streamOutput`, `fetchTaskOutput`'s
+  `text`, `OutputStreamVerifier.text()` and `confirmAssistantMessageWithReceipt` decoded with a
+  default `TextDecoder`, which drops it; REASONING_PARSER_V1 reads it as text (not whitespace).
+- **Fixed:** `streamOutput` decodes the frames of one attempt as one UTF-8 stream, so a
+  multi-byte character split by a frame boundary arrives whole instead of as U+FFFD in the chunk
+  text and in the reasoning, content and provisional calls derived from it (the confirmed message
+  was not affected).
+
 ### Added: fewer chain round trips before an order
 
 - **Changed:** `openTask` resolves only the dispatching Builder's service descriptor instead of

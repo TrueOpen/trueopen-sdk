@@ -80,8 +80,8 @@ root, size and leaf count against the receipt.
 Offers the model one tool, `list_files`, and runs the conversation one CHAT order per turn: the
 input is the whole conversation, encoded with `chatInferInputBytes`. `assistantTurn` streams each
 turn, verifies every frame, waits for the receipt and yields the confirmed message, with tool calls
-parsed by the parsers the model profile pins on chain (the built-in parsers are unverified, so the
-example passes `allowUnverified`). Only confirmed calls are run, locally, on paths inside
+parsed by the parsers the model profile pins on chain (the built-in parsers are vector-verified,
+so no opt-in is needed). Only confirmed calls are run, locally, on paths inside
 `TRUEOPEN_TOOL_DIR`; the next turn replays them as an assistant message with `tool_calls` plus one
 `tool` message per result. It stops when the model answers in text, or after `TRUEOPEN_MAX_TURNS`.
 Each turn is an order with its own sequence and `max_fee` (default 4000 for 512 output tokens).

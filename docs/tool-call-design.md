@@ -13,7 +13,10 @@
 > Manifest S7.2 rule 6 and S7.3 rules 6-8 (monorepo #64): unclosed-call recovery is gated on
 > EOS_TOKEN / STOP_SEQUENCE / STOP_TOKEN and defined per parser (S7 item 6), reasoning parsers
 > declare an explicit or implicit start marker and `qwen3@1` is implicit (S10.2), and no parser
-> takes the request's `tools` (`qwen3_coder@1` values are strings, wire #46).
+> takes the request's `tools` (`qwen3_coder@1` values are strings, wire #46). v0.8 follows wire
+> #51: the parsers implement TOOL_CALL_PARSER_V1 / REASONING_PARSER_V1 as settled there, pass
+> wire's shared vectors and are `vector-verified` (S7 item 4, S9, S10.2); markers match on bytes and
+> whitespace-only layout between blocks is dropped.
 > Scope: **How the TypeScript SDK turns committed output text into an OpenAI-compatible
 > `content` + `tool_calls` view** -- module layout, public API, the execution gate,
 > failure semantics, and what is blocked upstream.
@@ -39,7 +42,7 @@
 | What cannot be built yet | **S9 What P2 leaves open** |
 | Order of work, and what is delivered | S10 Phasing |
 | Why we are waiting, and what changes when each blocker clears | **S10.1 Deliberately waiting** |
-| How reasoning separation works, and what is still unverified | **S10.2 reasoning_parsing** |
+| How reasoning separation works, and how it is verified | **S10.2 reasoning_parsing** |
 | How this gets tested | S11 Testing |
 | Where `tools[]` goes, who renders the chat template | **S12 The Input Side** |
 | What the producer emits right now, and where it diverges | **S13 What Actually Arrives Today** |
@@ -363,10 +366,14 @@ buffer for the next chunk.
    split a surrogate pair and leave a lone surrogate -- the parser layer's half of the hazard
    `35290c8` fixed on the transport layer.
 
-4. **A marker inside a quoted span is content, not control syntax.** Start/end-marker matching
-   skips occurrences inside a JSON string: a marker written as prose (`"here is <tool_call>"`)
-   or as a string value in an argument JSON is visible content, and only an unquoted marker is
-   a real one. The holdback rule applies only outside quotes too.
+4. **Markers match on bytes; quotes mean nothing** (TOOL_CALL_PARSER_V1, Blocks; changed with
+   wire #51). A block closes at the first end marker after its start marker, even inside a JSON
+   string or a parameter value; a start marker inside an open block is payload, and an end marker
+   outside any block is text. Skipping quoted spans, as earlier versions did, would let one stray
+   quote hide every later marker, and the Go and Rust parsers would not do it. Whitespace-only
+   text between two blocks, or after the last one, is layout and is dropped (Content); in the
+   stream, whitespace after a block is held until it is known to be layout or text.
+   `MarkerStreamOptions.quoteAware` remains as an opt-in for a custom parser.
 
 5. **An orphan closing marker is emitted verbatim.** A `</tool_call>` with no matching opening
    marker stays in `Text` and flows through as content -- a decided and covered case, not a
@@ -515,7 +522,9 @@ belong to wire under ADR-0022 decision four and are unpublished (`monorepo#11`),
 written today would be written twice: the marker syntax is stable, but the edges the vectors
 pin -- streaming splits, malformed input -- are exactly what would change. The registry
 models this state directly: an entry declares `conformance: 'unverified'` and `lookup`
-refuses to report it as supported unless the caller passes `allowUnverified` explicitly.
+refuses to report it as supported unless the caller passes `allowUnverified` explicitly. Since
+wire #51 published the vectors, the built-in parsers pass them and are registered
+`'vector-verified'`; `'unverified'` remains for custom parsers.
 
 ### 10.1 Deliberately waiting, and what changes when each blocker clears
 
@@ -531,7 +540,7 @@ This posture is already what the code does; it costs nothing to hold.
 |---|---|---|
 | **payload canonical encoding** (`monorepo#30`) | **Cleared (2026-10-14): the SDK's encoder is the rule.** `chatInferInputBytes` encodes `ChatInferInput` once with canonical_json_v1 (snake_case keys) and the bytes are reused on every retry. No other component re-encodes the payload, so no `chat_infer_input_canonical_v1` vector is awaited. | -- |
 | **`cortex.v1` released** (ADR-0022 owes `chat_input` an `output_decoding` block, a `tool_calling` block, and `manifest_version` 3) | The package is present in wire but withheld, so `buf.gen.yaml` excludes it from the codegen closure and says why. No types are generated from it. | Add `cortex.v1` to the closure and generate. Only then can the SDK construct a typed `ChatInferInput` rather than accepting opaque bytes. |
-| **parser vectors** (`monorepo#11`, `monorepo#61`) | `hermes@1`, `qwen3_coder@1` and `qwen3@1` ship in the built-in registries as `'unverified'`, so callers pass `allowUnverified`. wire has no parser vectors (main `41af15b`); a 160-case corpus from vLLM and Dynamo tests, 39 of them for qwen3_coder (`test/fixtures/reference/`), pins today's behaviour as a reference, not an authority. Every parser's result is a function of the committed output, `(name, version)` and the verified finish reason only; `qwen3_coder@1` reads no tool schema, its values are JSON strings (wire #46, spec `docs/qwen3-coder-parser-v1.md` §2, §5). | Run the parsers against the vectors, and only then flip an entry to `conformance: 'vector-verified'`. |
+| **parser vectors** (`monorepo#11`, `monorepo#61`) | **Cleared (wire #51):** wire publishes `testdata/v1/parser/{reasoning_qwen3_v1,tool_call_hermes_v1,tool_call_qwen3_coder_v1}.json`; `test/unit/parser-vectors.test.ts` runs every vector in place, complete and streamed (byte frames decoded as `streamOutput` decodes them), and `hermes@1`, `qwen3_coder@1` and `qwen3@1` are registered `'vector-verified'`, so no `allowUnverified` is needed. The 160-case corpus from vLLM and Dynamo tests (`test/fixtures/reference/`) stays as a cross-check, not an authority; cases the spec changed say so. Every parser's result is a function of the committed output, `(name, version)` and the verified finish reason only; `qwen3_coder@1` reads no tool schema, its values are JSON strings. | -- |
 
 The **V4 manifest vectors** row has cleared rather than been updated: wire shipped the V4
 manifest vector in v0.3.0-rc.1, the SDK vendored it as `test/fixtures/wire/model_manifest_v4.json`
@@ -580,22 +589,24 @@ What is implemented:
     no closing marker (no marker at all included) the whole output is reasoning, with no
     remainder and no tool parsing.
 
-  An unknown parser, or an unverified one without the caller's opt-in, means no reasoning.
+  An unknown parser, or one registered unverified without the caller's opt-in, means no reasoning.
   Reasoning and tool state machines are chained, not parallel, and streaming agrees with the
   full parse under every frame split.
 - `qwen3@1`: implicit, `<think>` / `</think>`. Leading whitespace before an absorbed `<think>` goes
   with it; without one it stays. Only LF is trimmed as layout: at both ends of the reasoning and
-  at the head of the remainder (CR, SP and HT are kept). A Qwen3 thinking template may inject `<think>` into the prompt (forced
+  at the head of the remainder (CR, SP and HT are kept). An empty span (`<think>\n\n</think>`)
+  gives `reasoningContent: ""`, present but empty (`ReasoningSplit.hasReasoning`; one empty
+  `reasoning` event in the stream). A Qwen3 thinking template may inject `<think>` into the prompt (forced
   thinking), so the output may or may not open with it; either way it opens in reasoning. A
   `<tool_call>` inside the reasoning never ends it (rule 7), unlike vLLM's qwen3 parser. A profile
   whose template does not think pins `reasoning_parsing {}`.
 - Resolution mirrors tool calling: `ProfileInfo.reasoningParser` is read from the chain, and a
   registry (`BUILTIN_REASONING_PARSERS`) maps it to an implementation.
 
-**Unverified.** Rule 11 requires shared cross-language vectors, published by wire. wire #46
-(5760ab7) now fixes the `qwen3@1` rules and lists worked examples, which the unit tests run; the
-vector files are not published yet, so `qwen3@1` stays registered `unverified` and is used only
-with `allowUnverified`.
+**Vector-verified.** Rule 11 requires shared cross-language vectors, published by wire. wire #51
+publishes `testdata/v1/parser/reasoning_qwen3_v1.json`; `qwen3@1` passes every vector, complete
+and streamed (`test/unit/parser-vectors.test.ts`), and is registered `vector-verified`, used
+without `allowUnverified`.
 
 ### 10.3 P3 prerequisites found while building P1
 

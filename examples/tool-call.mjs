@@ -8,8 +8,7 @@
 // `tool_calls`, followed by one `tool` message per result.
 //
 // The example offers one tool, `list_files`, which lists TRUEOPEN_TOOL_DIR (default: the current
-// directory); paths that leave that directory are refused. The built-in parsers are unverified
-// until wire publishes their vectors, so the example opts in with allowUnverified.
+// directory); paths that leave that directory are refused.
 //
 // Run:
 //   TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..." \
@@ -116,7 +115,7 @@ try {
     await builderClient.waitForOutputTrustAnchors(res.taskId, { sessionId, timeoutMs: 120_000 });
 
     let message;
-    for await (const event of builderClient.assistantTurn({ sessionId, taskId: res.taskId, allowUnverified: true, idleTimeoutMs: 120_000 })) {
+    for await (const event of builderClient.assistantTurn({ sessionId, taskId: res.taskId, idleTimeoutMs: 120_000 })) {
       // reasoning / content arrive as frames verify (provisional); `reset` drops a voided attempt.
       if (event.kind === 'reset') console.log('(the dispatch attempt was replaced; starting over)');
       if (event.kind === 'confirmed') message = event.message;

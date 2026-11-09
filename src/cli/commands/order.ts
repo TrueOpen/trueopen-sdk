@@ -1,4 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileOpenTaskStore } from '../open-task-file-store';
+import { sha256 } from '../../codec/hash';
+import { hash32Text } from '../../codec/hash32';
 import { buildContext } from '../context';
 import type { CliConfig } from '../config';
 import type { TaskOrderIntent } from '../../order/task-order-input';
@@ -133,6 +137,19 @@ export function parseOrderFile(path: string, payload: Uint8Array): TaskOrderInte
   };
 }
 
+/** Where `order submit` records the orders it sends: `<stateDir>/opentask`. */
+export function openTaskStateDir(cfg: CliConfig): string {
+  return join(cfg.stateDir, 'opentask');
+}
+
+/**
+ * `order submit`. Each order sent is recorded first, under its idempotency key, in a file-backed
+ * OpenTaskStore (openTaskStateDir), so running the same command again after a lost response or a
+ * crash resends that exact order, or prints it once the chain recorded it, and never places a
+ * second order at the next sequence. The default key is `<session>:<seq>` with --seq, otherwise
+ * `<session>:<sha256(payload)>`: a deliberate second order with the same payload needs its own
+ * --idempotency-key.
+ */
 export async function cmdOrderSubmit(
   cfg: CliConfig,
   mnemonic: string,
@@ -140,18 +157,24 @@ export async function cmdOrderSubmit(
 ): Promise<unknown> {
   const payload = new Uint8Array(readFileSync(a.payloadFile));
   const order = parseOrderFile(a.orderFile, payload);
+  const seq = a.seq === undefined ? undefined : BigInt(a.seq);
+  // Without --seq the sequence is read from chain by openTask (the sole source of truth), or taken
+  // from the recorded order on a retry; the key must not depend on it, or a retry after the first
+  // attempt was admitted would get a new key and a second order.
+  const idempotencyKey = a.idempotencyKey ?? `${a.session}:${seq !== undefined ? seq.toString() : hash32Text(sha256(payload))}`;
   // OpenTask needs on-chain context and Task Builder routing, so we always build the context via deterministic routing.
-  const ctx = await buildContext(cfg, mnemonic, { nexus: true, key: true, deterministic: true });
+  const ctx = await buildContext(cfg, mnemonic, {
+    nexus: true,
+    key: true,
+    deterministic: true,
+    openTaskStore: fileOpenTaskStore(openTaskStateDir(cfg)),
+  });
   try {
-    // The default sequence is read from chain (the sole source of truth). We resolve it here rather than
-    // leaving it to openTask internally because the idempotency key must carry the real sequence number --
-    // retries of the same order must produce the same key.
-    const seq = a.seq === undefined ? await ctx.client.nextOrderSequence(a.session) : BigInt(a.seq);
     return await ctx.client.openTask({
       sessionId: a.session,
-      orderSequence: seq,
+      ...(seq !== undefined ? { orderSequence: seq } : {}),
       order,
-      idempotencyKey: a.idempotencyKey ?? `${a.session}:${seq}`,
+      idempotencyKey,
     });
   } finally {
     await ctx.dispose();

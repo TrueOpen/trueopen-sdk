@@ -22,6 +22,7 @@ export { TRUEOPEN_HD_PATH };
 import { TrueOpenError } from '../errors/errors';
 import type { CliConfig } from './config';
 import { resolveGasPrice } from './config';
+import type { OpenTaskStore } from '../order/open-task-store';
 
 export interface Identity {
   readonly privkey: Uint8Array;
@@ -153,6 +154,8 @@ export interface BuildNeeds {
   key?: boolean;
   /** Deterministic Stage-1 routing: assembles hub/fetchDescriptor/transportFactory, without pre-resolving a single nexus. */
   deterministic?: boolean;
+  /** Where openTask records sent orders (TrueOpenClientConfig.openTaskStore). */
+  openTaskStore?: OpenTaskStore;
 }
 
 export interface Ctx {
@@ -275,6 +278,7 @@ export async function buildContext(cfg: CliConfig, mnemonic: string | undefined,
       // Only an override: the facade reads business_denom from the hub and refuses a mismatch.
       ...(cfg.feeDenom !== undefined ? { feeDenom: cfg.feeDenom } : {}),
       taskReader,
+      ...(needs.openTaskStore !== undefined ? { openTaskStore: needs.openTaskStore } : {}),
       ...(hubReader ? { hub: hubReader } : {}),
       ...(needs.deterministic && hubReader
         ? {

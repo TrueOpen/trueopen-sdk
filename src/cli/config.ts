@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { TrueOpenError } from '../errors/errors';
 
 /** Global options collected by commander (camelCase). */
@@ -15,6 +17,7 @@ export interface CliOptions {
   gasPrice?: string;
   gas?: string;
   keyFile?: string;
+  stateDir?: string;
   json?: boolean;
   verbose?: boolean;
 }
@@ -46,6 +49,12 @@ export interface CliConfig {
   readonly gasPrice?: string;
   /** The gas limit per tx. Cannot be 'auto' -- see the explanation in context.ts. */
   readonly gas: string;
+  /**
+   * Where the CLI keeps local state: `--state-dir` / TRUEOPEN_STATE_DIR, default `~/.trueopen`.
+   * `order submit` records each order it sends under `<stateDir>/opentask` (one JSON file per
+   * idempotency key), so a retried command resends that order instead of placing another.
+   */
+  readonly stateDir: string;
   readonly json: boolean;
   readonly verbose: boolean;
   requireRest(): string;
@@ -95,6 +104,7 @@ export function resolveConfig(o: CliOptions, env: NodeJS.ProcessEnv): CliConfig 
   const prefix = pick(o.prefix, env['TRUEOPEN_ADDR_PREFIX']) ?? 'trueopen';
   const gasPrice = pick(o.gasPrice, env['TRUEOPEN_GAS_PRICE']);
   const gas = pick(o.gas, env['TRUEOPEN_GAS']) ?? '300000';
+  const stateDir = pick(o.stateDir, env['TRUEOPEN_STATE_DIR']) ?? join(homedir(), '.trueopen');
   return {
     ...(restUrl !== undefined ? { restUrl } : {}),
     ...(rpcUrl !== undefined ? { rpcUrl } : {}),
@@ -107,6 +117,7 @@ export function resolveConfig(o: CliOptions, env: NodeJS.ProcessEnv): CliConfig 
     prefix,
     ...(gasPrice !== undefined ? { gasPrice } : {}),
     gas,
+    stateDir,
     json: o.json === true,
     verbose: o.verbose === true,
     requireRest() {

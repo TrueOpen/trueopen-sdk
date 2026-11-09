@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Fixed: openTask retries are idempotent (issue #7)
+
+A retry of `openTask` after a lost response no longer re-signs the order (whose new `task_hash`
+Builders refuse under the same idempotency key) and no longer places a second paid order at the
+next sequence when `orderSequence` was omitted.
+
+- **Fixed:** before the first byte of an order is sent, the client records it under the
+  idempotency key (`SentOrderRecord`: the SignedOrderV2 bytes as sent, `task_hash`, sequence,
+  input hash and size, window, fee, signer and context). A later `openTask` with that key returns
+  the recorded order without sending anything once the chain has it (`status`
+  `OpenTaskStatusV1.RECORDED`, empty `builders`; needs `config.taskReader`), and otherwise
+  resends the exact recorded bytes (same `task_hash`) under a freshly signed request envelope to
+  the Session's current bound Builder. The result keeps the first attempt's `taskId`, `taskHash`,
+  `orderSequence` and `retryParams`.
+- **Added:** `SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED` (conflict) when the recorded sequence went
+  to another order or a cancel; `SDK_LOCAL_ORDER_EXPIRED` (pointing at `retryParams`) when the
+  recorded order can no longer be admitted; `SDK_LOCAL_IDEMPOTENCY_KEY_REUSED` now also covers
+  another session or `orderSequence` under the key; `SDK_LOCAL_OPEN_TASK_STORE_FAILED` and
+  `SDK_LOCAL_OPEN_TASK_RECORD_INVALID` for the store.
+- **Added:** `TrueOpenClientConfig.openTaskStore` (`OpenTaskStore`, `get` / `set`, sync or
+  async), default `memoryOpenTaskStore()` per client; a failed write aborts the send. Exported
+  `SentOrderRecord`, `SentOrderContextRecord`, `memoryOpenTaskStore`, `checkSentOrderRecord`,
+  `SENT_ORDER_RECORD_VERSION`, and `openTaskInputForSignedOrder` (the request envelope for
+  already-signed order bytes, shared by `buildOpenTaskRequest`).
+- **Changed:** `openTaskWithRecovery` still re-signs on purpose, and each version it sends
+  replaces the key's record; with a recorded key it returns the recorded order once the chain
+  has it, and otherwise recovers the recorded sequence.
+- **Changed (CLI):** `trueopen order submit` records sent orders in one JSON file per key under
+  `--state-dir` / `TRUEOPEN_STATE_DIR` (default `~/.trueopen`) `/opentask`. Without `--seq` it no
+  longer reads the sequence itself, and the default key is `<session>:<sha256(payload)>`
+  (`<session>:<seq>` with `--seq`), so re-running a command resends or reports the same order.
+  A deliberate second order with the same payload needs `--idempotency-key`.
+
 ### Fixed: assistantTurn can start right after openTask
 
 - **Fixed:** `assistantTurn` read the trust anchors and the profile parsers from chain before

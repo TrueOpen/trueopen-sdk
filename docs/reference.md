@@ -50,6 +50,7 @@ new TrueOpenClient(cfg: TrueOpenClientConfig)
 | `taskDataExpiryBlocks` | `number` | Task-data request (metadata/fetch) expiry window in blocks (default 10). |
 | `fetchDescriptor` | `DescriptorDocFetch` | For builder descriptor hash verification. |
 | `ingressTransportFactory` | `(endpoint, tlsPubkeyHash?) => Transport` | Per-builder transport factory used by `openTask` routing. |
+| `openTaskStore` | `OpenTaskStore` | Where `openTask` records each order it sends, by idempotency key, before the first byte goes out (§1.3, *Retries and idempotency*). Default `memoryOpenTaskStore()`, one per client (process lifetime). A failed write aborts the send (`SDK_LOCAL_OPEN_TASK_STORE_FAILED`, nothing sent). |
 | `chainReadCache` | `boolean \| { ttlMs? }` | Opt-in, off by default. Reuses the order's slow-changing chain reads (business denom, profile pricing, timeout bucket, generation limits, BuilderSet, Builder descriptors) for at most `ttlMs` (default and maximum `MAX_CHAIN_READ_CACHE_TTL_MS`, 60000). A `ttlMs` outside `(0, 60000]` throws `SDK_LOCAL_CONFIG_INVALID`. See §1.3a. |
 
 ### 1.2 Sessions
@@ -92,8 +93,8 @@ async openTask(params: OpenTaskParams): Promise<OpenTaskResult>
 |---|---|
 | `sessionId` | Required. |
 | `order` | `TaskOrderIntent` (user intent including `payload`). `userAddress`/`sessionId`/`orderSequence` are filled in by the client. |
-| `idempotencyKey` | Required. Same key + same `input_hash` → same result; same key + different `input_hash` → rejected. |
-| `orderSequence?` | Defaults to `nextOrderSequence`. Pass explicitly only for RBF. |
+| `idempotencyKey` | Required; names one order. The first send records the order under it (`config.openTaskStore`); a retry under the same key resends that exact order or returns it once the chain recorded it, and never places another one (see *Retries and idempotency* below). Another payload, session or `orderSequence` under a used key → `SDK_LOCAL_IDEMPOTENCY_KEY_REUSED`. A deliberately new order, including `retryParams`, needs a new key. |
+| `orderSequence?` | Defaults to `nextOrderSequence` (on a retry under a recorded key, the recorded sequence). Pass explicitly only for RBF. |
 | `context?` | Defaults to a fresh context anchored at the latest height (§3.2). Passed contexts are used as is. |
 | `expiryHeight?` | Block height (default `latestHeight + requestTtlBlocks`). With a passed `context` and no `expiryHeight`, the head is a latest height read at most about a block (1 s) ago, else a fresh read. |
 | `inputMediaType?` / `chunkSizeBytes?` | OpenTask transport tuning. |
@@ -145,6 +146,64 @@ retry height. `openTaskWithRecovery` routes `NO_CAPACITY` to the next Builder as
 not try a Builder again before the height it named; when no other Builder is left it waits for
 the earliest named height (within `maxPolls`, stopping when the sequence is recorded, the Session
 closes or the signal aborts) and re-signs for that Builder.
+
+#### Retries and idempotency
+
+Before the first byte of an order is sent, `openTask` records it under `idempotencyKey` in
+`config.openTaskStore` as a `SentOrderRecord`; a write failure aborts the send. A later
+`openTask` with the same key never places a new order:
+
+1. Another session, another `orderSequence` (when given), other payload bytes (sha256 or size)
+   or another `userAddress` → `SDK_LOCAL_IDEMPOTENCY_KEY_REUSED` (category `conflict`), nothing
+   sent.
+2. The session is read. If `next_expected_sequence` is past the recorded sequence, the task is
+   read through `config.taskReader`: with the recorded `task_hash`, the recorded order's result is
+   returned **without sending anything** -- `accepted: true`, `status:
+   OpenTaskStatusV1.RECORDED` (4, what `openTaskWithRecovery` returns for a recorded sequence),
+   `boundBuilder` = the Session's bound Builder, `builders` / `unresolvedBuilders` empty,
+   `endpointsTried: 0`, and the order fields (`taskId`, `taskHash`, `context`, `orderSequence`,
+   heights, `maxFee`, `feeDenom`, `orderSignedBy`, `retryParams`) from the record. Another
+   `task_hash`, or no task (a `MsgCancelOrder`) → `SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED`
+   (`conflict`, `details.{orderSequence, taskHash}` with `taskHash` the chain's). Without a
+   `taskReader` → `SDK_LOCAL_TRUST_ANCHORS_UNCONFIGURED`.
+3. Latest height past the recorded `order_expire_height` → `SDK_LOCAL_ORDER_EXPIRED`
+   (`details.{orderExpireHeight, latestHeight, orderSequence, taskHash}`, `userAction`: send the
+   first result's `retryParams`; a re-signed order has a new `task_hash`, so it needs a new key).
+4. Otherwise the recorded SignedOrderV2 bytes are **resent unchanged** (same `task_hash`) with a
+   freshly signed request envelope (new nonce, expiry = current head + `requestTtlBlocks`, signed
+   by the client's current signer as for a first send) to the Session's current bound Builder,
+   through the same routing, re-send and error handling as a first send. The result has the
+   first attempt's `taskId`, `taskHash`, `orderSequence` and `retryParams`. `context`,
+   `expiryHeight`, `orderWindow` and the order fields other than the payload are not used again.
+
+`openTaskWithRecovery` re-signs on purpose (DISPATCH_NOT_READY, a stale BuilderSet, a takeover)
+under the same key; each version it sends replaces the record, so a later exact retry resends the
+latest. With a recorded key it applies rule 1, then rule 2's chain check (recorded → that result),
+and otherwise recovers the recorded sequence. The re-send `openTask` makes itself after a
+`NEXUS_INGRESS_BUILDER_SET_STALE` refusal with `chainReadCache` also re-signs and replaces the
+record.
+
+```ts
+interface OpenTaskStore {
+  get(key: string): SentOrderRecord | undefined | Promise<SentOrderRecord | undefined>;
+  set(key: string, record: SentOrderRecord): void | Promise<void>;
+}
+function memoryOpenTaskStore(): OpenTaskStore
+function checkSentOrderRecord(key: string, value: unknown): SentOrderRecord
+const SENT_ORDER_RECORD_VERSION = 1
+```
+
+`SentOrderRecord` is plain JSON (bigints as decimal strings, bytes as hex): `version` (1),
+`idempotencyKey`, `sessionId`, `userAddress`, `orderSequence`, `taskId`, `taskHash`,
+`signedOrderHex` (the SignedOrderV2 bytes exactly as sent), `inputHash`, `inputSizeBytes`,
+`inputMediaType`, `earliestSubmitHeight`, `orderExpireHeight`, `maxFee`, `feeDenom`,
+`orderSignedBy`, `orderSignerAddress?` (session-key orders), and `context` (the
+`TaskOrderChainContext`, `SentOrderContextRecord`). A record read back is checked
+(`checkSentOrderRecord`): a malformed one, another version or one stored under another key is
+`SDK_LOCAL_OPEN_TASK_RECORD_INVALID`; a failing `get` or `set` is `SDK_LOCAL_OPEN_TASK_STORE_FAILED`
+(retriable). The CLI's `order submit` uses a file-backed store, one JSON file per key under
+`<--state-dir | TRUEOPEN_STATE_DIR | ~/.trueopen>/opentask`, with the default key
+`<session>:<seq>` with `--seq`, else `<session>:<sha256(payload)>` (see docs/cli.md).
 
 ```ts
 async resolveTaskBuilders({ sessionId, orderSequence?, context? }): Promise<{ taskId, orderSequence, context, endpoints, unresolvedBuilders }>
@@ -415,7 +474,15 @@ signAndEncodeOrder(order, ctx, signer): Promise<EncodedSignedOrder>
 encodeSignedOrder(order, userSignature): Uint8Array
 decodeSignedOrder(bytes): SignedOrderV2
 buildOpenTaskRequest(input): Promise<BuildOpenTaskResult>
+openTaskInputForSignedOrder(input: SignedOrderOpenTaskInput): Promise<BuildOpenTaskResult>
 ```
+
+`openTaskInputForSignedOrder` signs only the request envelope for SignedOrderV2 bytes that are
+already signed (`signedOrder`, with the order's `taskHash`), and sends them unchanged: the same
+`task_hash`. It takes `BuildOpenTaskInput` without `order` / `orderEip712`, reads the bound
+order fields from the bytes, and makes the same local checks (undecodable bytes:
+`SDK_LOCAL_SIGNED_ORDER_INVALID`). `buildOpenTaskRequest` signs the order and then calls it; the
+client uses it for an exact resend (§1.3).
 
 The order is authorized by the **inner** EIP-712 signature (`SignedOrderV2.user_signature`,
 65-byte R‖S‖V recovering to the order user). There is no outer order signature;

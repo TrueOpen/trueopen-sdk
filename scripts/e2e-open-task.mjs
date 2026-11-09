@@ -72,8 +72,8 @@
  *                         --chat. The chat body is encoded by the SDK (chatInferInputBytes).
  *   --assistant           after the receipt confirms the streamed output, derive the assistant
  *                         view with confirmAssistantMessage, using the profile's on-chain
- *                         tool_call_parser and reasoning_parser. The parsers are unverified
- *                         (no shared vectors yet), so this opts in with allowUnverified.
+ *                         tool_call_parser and reasoning_parser (the built-ins are
+ *                         vector-verified, so no opt-in is needed).
  *   --task-type <t>       the order's task_type: TEXT_GENERATION or CHAT (default CHAT with
  *                         --chat / --messages-json, TEXT_GENERATION otherwise). It is signed
  *                         into task_hash, and the profile's task_types must list it.
@@ -981,9 +981,6 @@ if (streamInfo?.frame_count > 0 && streamCheckpoint !== null) {
             taskId, taskHash: built.taskHash, checkpoint: streamCheckpoint, receipt,
             toolCallParser: profile.toolCallParser,
             reasoningParser: profile.reasoningParser,
-            // The built-in registries (hermes@1 / qwen3_coder@1, qwen3@1) are unverified until wire
-            // publishes their vectors, so this opts in.
-            allowUnverified: true,
           });
           streamConfirmation.assistant = {
             tool_call_parser: profile.toolCallParser,

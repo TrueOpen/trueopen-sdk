@@ -1,151 +1,252 @@
-import { skipJsonString } from '../marker-scan';
 import { createMarkerStreamState } from '../stream-state';
 import type { DerivedAssistantMessage, DerivedToolCall, ToolCallParseOptions, ToolCallParser, ToolCallStreamState } from '../types';
 
 const START_MARKER = '<tool_call>';
 const END_MARKER = '</tool_call>';
 
-/**
- * Parse the text between `<tool_call>` and `</tool_call>` into a derived call.
- *
- * The model writes `{"name": "...", "arguments": {...}}` (key order may vary, and there may be
- * surrounding whitespace or newlines). `name` is a plain string whose decoded value is exactly
- * what the model wrote; `arguments`, being a nested JSON value, must be preserved
- * byte-for-byte -- re-serializing through `JSON.parse`/`stringify` would reorder keys and change
- * the bytes the cross-language vectors pin (design S3).
- *
- * Returns `undefined` when the segment is not a call after all: invalid JSON, a non-object, or
- * no string `name`. That is not an error path (design S6 row one); the raw segment flows on as
- * content, exactly as it would when calling an inference engine directly.
- *
- * A name-only call `{"name": "get_weather"}` recovers with `arguments: "{}"`, mirroring
- * Dynamo's `allow_name_only_call` (empty-arg recovery). The `"{}"` is synthesized -- the model
- * wrote no arguments -- so there are no model bytes to preserve.
- *
- * A marker inside a quoted span is content, not control syntax (design §5.3): the state machine
- * that frames this parser skips quoted spans when locating markers, so an argument string that
- * happens to contain the literal `</tool_call>` does not close the call early.
- */
-function parseHermesCall(inner: string): DerivedToolCall | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(inner);
-  } catch {
-    return undefined;
-  }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const name = (value as { name?: unknown }).name;
-  if (typeof name !== 'string') return undefined;
+/** TOOL_CALL_PARSER_V1 hermes@1, strict JSON: objects / arrays nested deeper than this are malformed. */
+const MAX_DEPTH = 64;
 
-  const args = extractRawArguments(inner);
+/** Thrown inside the strict scan only; caught by `parseHermesPayload`, never escapes it. */
+class Malformed extends Error {}
+
+function isWhitespace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+/** Leading and trailing whitespace (the four bytes of the spec, nothing else) removed. */
+function trimWhitespace(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isWhitespace(text[start])) start += 1;
+  while (end > start && isWhitespace(text[end - 1])) end -= 1;
+  return text.slice(start, end);
+}
+
+const HEX = /^[0-9a-fA-F]{4}$/;
+/** RFC 8259 number, matched at a position (sticky). */
+const NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+
+/**
+ * A strict RFC 8259 scanner with the extra hermes@1 rules: JSON whitespace is exactly SP / HT / LF /
+ * CR, a `\u` escape for an unpaired surrogate is malformed, and nesting deeper than 64 is
+ * malformed. Number magnitude and precision are not checked, and duplicate keys below the top level
+ * are allowed: those bytes are passed through, never decoded.
+ */
+class StrictJson {
+  i = 0;
+  constructor(readonly text: string) {}
+
+  ws(): void {
+    while (this.i < this.text.length && isWhitespace(this.text[this.i])) this.i += 1;
+  }
+
+  /** A string at `i`; returns its decoded value. */
+  string(): string {
+    const t = this.text;
+    if (t[this.i] !== '"') throw new Malformed();
+    this.i += 1;
+    let out = '';
+    for (;;) {
+      if (this.i >= t.length) throw new Malformed();
+      const ch = t[this.i]!;
+      if (ch === '"') {
+        this.i += 1;
+        return out;
+      }
+      if (ch.charCodeAt(0) < 0x20) throw new Malformed();
+      if (ch !== '\\') {
+        out += ch;
+        this.i += 1;
+        continue;
+      }
+      const esc = t[this.i + 1];
+      this.i += 2;
+      switch (esc) {
+        case '"': out += '"'; break;
+        case '\\': out += '\\'; break;
+        case '/': out += '/'; break;
+        case 'b': out += '\b'; break;
+        case 'f': out += '\f'; break;
+        case 'n': out += '\n'; break;
+        case 'r': out += '\r'; break;
+        case 't': out += '\t'; break;
+        case 'u': {
+          const unit = this.hex4();
+          if (unit >= 0xdc00 && unit <= 0xdfff) throw new Malformed(); // a low half on its own
+          if (unit >= 0xd800 && unit <= 0xdbff) {
+            // A high half must be followed at once by an escaped low half.
+            if (t[this.i] !== '\\' || t[this.i + 1] !== 'u') throw new Malformed();
+            this.i += 2;
+            const low = this.hex4();
+            if (low < 0xdc00 || low > 0xdfff) throw new Malformed();
+            out += String.fromCharCode(unit, low);
+          } else {
+            out += String.fromCharCode(unit);
+          }
+          break;
+        }
+        default:
+          throw new Malformed();
+      }
+    }
+  }
+
+  hex4(): number {
+    const digits = this.text.slice(this.i, this.i + 4);
+    if (!HEX.test(digits)) throw new Malformed();
+    this.i += 4;
+    return parseInt(digits, 16);
+  }
+
+  number(): void {
+    NUMBER.lastIndex = this.i;
+    const m = NUMBER.exec(this.text);
+    if (m === null) throw new Malformed();
+    this.i += m[0].length;
+  }
+
+  literal(word: string): void {
+    if (!this.text.startsWith(word, this.i)) throw new Malformed();
+    this.i += word.length;
+  }
+
+  /** Any value at `i`, the container it opens (if any) being at `depth`. */
+  value(depth: number): void {
+    const ch = this.text[this.i];
+    if (ch === '{') this.object(depth, undefined);
+    else if (ch === '[') this.array(depth);
+    else if (ch === '"') this.string();
+    else if (ch === 't') this.literal('true');
+    else if (ch === 'f') this.literal('false');
+    else if (ch === 'n') this.literal('null');
+    else this.number();
+  }
+
+  array(depth: number): void {
+    if (depth > MAX_DEPTH) throw new Malformed();
+    this.i += 1; // [
+    this.ws();
+    if (this.text[this.i] === ']') {
+      this.i += 1;
+      return;
+    }
+    for (;;) {
+      this.ws();
+      this.value(depth + 1);
+      this.ws();
+      const ch = this.text[this.i];
+      this.i += 1;
+      if (ch === ']') return;
+      if (ch !== ',') throw new Malformed();
+    }
+  }
+
+  /** An object; `member` sees each member (decoded key, raw value span) when given. */
+  object(depth: number, member: ((key: string, start: number, end: number) => void) | undefined): void {
+    if (depth > MAX_DEPTH) throw new Malformed();
+    this.i += 1; // {
+    this.ws();
+    if (this.text[this.i] === '}') {
+      this.i += 1;
+      return;
+    }
+    for (;;) {
+      this.ws();
+      const key = this.string();
+      this.ws();
+      if (this.text[this.i] !== ':') throw new Malformed();
+      this.i += 1;
+      this.ws();
+      const start = this.i;
+      this.value(depth + 1);
+      member?.(key, start, this.i);
+      this.ws();
+      const ch = this.text[this.i];
+      this.i += 1;
+      if (ch === '}') return;
+      if (ch !== ',') throw new Malformed();
+    }
+  }
+}
+
+/**
+ * hermes@1's payload rule (TOOL_CALL_PARSER_V1, hermes@1 `payload` / `strict JSON`): the bytes
+ * between the markers, trimmed of leading and trailing whitespace, must be exactly one strict JSON
+ * object and nothing else.
+ *
+ * - `name` is required and must be a JSON string; the call's name is its decoded value.
+ * - `arguments` is optional. When present it must be a JSON object, and the call's arguments are
+ *   its exact bytes in the input, from `{` to the matching `}` -- never re-serialized, since
+ *   `JSON.parse` / `stringify` would reorder keys and change the bytes the shared vectors pin. When
+ *   absent, arguments is `"{}"`.
+ * - Top-level keys are matched on their decoded value (`"arguments"` is `arguments`); `name`
+ *   or `arguments` twice is malformed. Any other key is ignored; `parameters` is not an alias.
+ *
+ * Returns `undefined` for a malformed payload. That is not an error path: the block's raw bytes
+ * are content (Common contract, Failure).
+ */
+function parseHermesPayload(raw: string): DerivedToolCall | undefined {
+  const payload = trimWhitespace(raw);
+  if (payload[0] !== '{') return undefined;
+  const scan = new StrictJson(payload);
+  let name: string | undefined;
+  let nameCount = 0;
+  let args: string | undefined;
+  let argsCount = 0;
+  try {
+    scan.object(1, (key, start, end) => {
+      if (key === 'name') {
+        nameCount += 1;
+        if (payload[start] !== '"') throw new Malformed();
+        name = new StrictJson(payload.slice(start, end)).string();
+      } else if (key === 'arguments') {
+        argsCount += 1;
+        if (payload[start] !== '{') throw new Malformed(); // null, a string, an array, ...
+        args = payload.slice(start, end);
+      }
+    });
+  } catch (err) {
+    if (err instanceof Malformed) return undefined;
+    throw err;
+  }
+  if (scan.i !== payload.length) return undefined; // trailing bytes after the object
+  if (nameCount !== 1 || argsCount > 1 || name === undefined) return undefined;
   return { name, arguments: args ?? '{}' };
 }
 
 /**
- * hermes@1's recovery of an unclosed final call (Manifest S7.2 rule 6, TOOL_CALL_PARSER_V1
- * `recover`), used only when the model stopped by itself: the body must be a complete call by the
- * rules of `parseHermesCall` -- a valid JSON object with a string `name`. One call at most. A
- * trailing partial end marker (`</tool_`) is not stripped: it leaves the JSON invalid, so the
- * block stays content.
+ * hermes@1's recovery of an unclosed block (TOOL_CALL_PARSER_V1 hermes@1 `recover`), used only
+ * through the Common-contract gate (the model stopped by itself). The payload is everything after
+ * the opening `<tool_call>` -- a later `<tool_call>` included, as payload bytes -- trimmed, and it
+ * recovers as exactly one call iff it meets the closed-block payload rules. A trailing partial end
+ * marker (`</tool_`) is not stripped, and neither is a stop string: either leaves the JSON invalid,
+ * so the block stays content.
  */
 function recoverHermesCall(body: string): DerivedToolCall | undefined {
-  return parseHermesCall(body);
-}
-
-function isJsonWhitespace(ch: string | undefined): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
-}
-
-function skipWhitespace(text: string, i: number): number {
-  while (i < text.length && isJsonWhitespace(text[i])) i += 1;
-  return i;
-}
-
-/** Skip a balanced JSON container starting at `text[i]` (`{` or `[`); returns the index past it. */
-function skipBalanced(text: string, i: number, open: string, close: string): number {
-  let depth = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === '"') {
-      i = skipJsonString(text, i);
-      continue;
-    }
-    if (ch === open) depth += 1;
-    else if (ch === close) {
-      depth -= 1;
-      if (depth === 0) return i + 1;
-    }
-    i += 1;
-  }
-  return i;
-}
-
-/** Skip one JSON value starting at `text[i]`; returns the index just past it. */
-function skipJsonValue(text: string, i: number): number {
-  const ch = text[i];
-  if (ch === '"') return skipJsonString(text, i);
-  if (ch === '{') return skipBalanced(text, i, '{', '}');
-  if (ch === '[') return skipBalanced(text, i, '[', ']');
-  // Scalar: number, true, false, null. Scan to the next delimiter (`,` or `}` at top level).
-  let j = i;
-  while (j < text.length && !isJsonWhitespace(text[j]) && text[j] !== ',' && text[j] !== '}') {
-    j += 1;
-  }
-  return j;
-}
-
-/**
- * Extract the raw bytes of the top-level `"arguments"` member's value, or `undefined` when the
- * object has no such member. The object is already known to be valid JSON (JSON.parse succeeded
- * above), so this is a structural scan, not a second validation.
- */
-function extractRawArguments(inner: string): string | undefined {
-  let i = skipWhitespace(inner, 0);
-  if (inner[i] !== '{') return undefined;
-  i += 1;
-  for (;;) {
-    i = skipWhitespace(inner, i);
-    if (inner[i] === '}') return undefined; // reached the end; no "arguments"
-    if (inner[i] !== '"') return undefined;
-    const keyStart = i;
-    i = skipJsonString(inner, i);
-    // Keys are plain ASCII identifiers ("name", "arguments"), so slicing the quotes off is
-    // exact; the surrounding JSON.parse already validated the object.
-    const key = inner.slice(keyStart + 1, i - 1);
-    i = skipWhitespace(inner, i);
-    if (inner[i] !== ':') return undefined;
-    i = skipWhitespace(inner, i + 1);
-    const valueStart = i;
-    i = skipJsonValue(inner, i);
-    if (key === 'arguments') return inner.slice(valueStart, i);
-    i = skipWhitespace(inner, i);
-    if (inner[i] === ',') {
-      i += 1;
-      continue;
-    }
-    if (inner[i] === '}') return undefined;
-    return undefined;
-  }
+  return parseHermesPayload(body);
 }
 
 function createHermesStreamState(): ToolCallStreamState {
   return createMarkerStreamState({
     startMarker: START_MARKER,
     endMarker: END_MARKER,
-    parseCall: parseHermesCall,
+    parseCall: parseHermesPayload,
     recoverUnclosed: recoverHermesCall,
   });
 }
 
 /**
- * The Hermes tool-call parser: `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`.
+ * The Hermes tool-call parser, `hermes@1` (TOOL_CALL_PARSER_V1):
+ * `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`.
  *
- * Covers NousResearch's Hermes series and the Qwen 2.5 line that adopted the same format, and
- * is the shape `tool-call-design.md` S2 sketches as `parsers/hermes.ts`.
+ * Covers NousResearch's Hermes series and the Qwen line that adopted the same format. Blocks close
+ * at the first `</tool_call>`, matched on bytes even inside a JSON string; whitespace-only text
+ * between blocks or after the last one is layout and dropped; a malformed block is content and
+ * leaves the others alone.
  *
- * Conformance is `'unverified'`: ADR-0022 decision four's shared vectors do not exist yet
- * (monorepo#11), so this parser is not registered in the built-in registry by default. A caller
- * registers it through `createToolCallRegistry` and opts in with `allowUnverified`.
+ * Conformance is `'vector-verified'`: it passes wire's shared vectors
+ * (`testdata/v1/parser/tool_call_hermes_v1.json`).
  */
 export const hermesParser: ToolCallParser = {
   name: 'hermes',

@@ -252,6 +252,16 @@ describe('confirmAssistantMessageWithReceipt', () => {
     expect(message.confirmation.type).toBe('confirmed');
   });
 
+  it('keeps a leading U+FEFF of the committed output (REASONING_PARSER_V1: it is not whitespace)', () => {
+    const bytes = utf8('\uFEFFhi');
+    const bom = [bytes.slice(0, 2), bytes.slice(2)];
+    const message = confirmAssistantMessageWithReceipt(
+      { dispatchTicketHash: TICKET_HEX, chainId: CHAIN_ID, taskId: TASK_ID, taskHash: TASK_HASH, checkpoint: checkpointOver(bom), receipt: receiptFor(bom) },
+      { parser },
+    );
+    expect(message.content).toBe('\uFEFFhi');
+  });
+
   it('throws on a receipt whose output_hash disagrees, yielding nothing executable', () => {
     expect(() =>
       confirmAssistantMessageWithReceipt(

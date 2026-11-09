@@ -452,7 +452,9 @@ has neither, tool parameter schemas included), unknown top-level fields, the sam
 `frequency_penalty`, `stop`: they belong to the order's `generationParams`, which the order signs)
 and the fields the model profile fixes (`logprobs`, `top_logprobs`, `logit_bias`, `n`). For the next turn
 of a conversation, replay the assistant message with its `tool_calls` (ids from `newToolCallId`,
-8.8) and one `role: "tool"` message per call with its `tool_call_id`.
+8.8) and one `role: "tool"` message per call with its `tool_call_id`. Replay `content` as the
+confirmed message gives it: the tool-call parsers drop the whitespace-only layout between and
+after calls (TOOL_CALL_PARSER_V1), which the chat template renders again.
 
 ## 4. SDK request envelope & body
 
@@ -1038,19 +1040,38 @@ The SDK parses the committed output with the parsers the task's profile pins on 
 `ConfirmedAssistantMessage` is `{ role, content, toolCalls: [{ name, arguments }],
 reasoningContent?, confirmation, finishReason? }`: only its calls may be executed, and
 `finishReason` is the protocol reason from the Worker-signed Fin (undefined when unavailable). The
-built-in parsers (`hermes@1`, `qwen3_coder@1`, `qwen3@1`) are unverified until their vectors exist, so pass
-`allowUnverified: true` to use them.
+built-in parsers (`hermes@1`, `qwen3_coder@1`, `qwen3@1`) follow wire's `docs/TOOL_CALL_PARSER_V1.md`
+and `docs/REASONING_PARSER_V1.md` (wire #51) and pass its shared vectors (`testdata/v1/parser/`), so
+they are `vector-verified` and used with no opt-in; `allowUnverified` is only for a custom parser
+registered `unverified`.
 
 A parser's result depends only on the committed output, the parser `(name, version)` and the
-verified finish reason; the request's `tools` are not an input. `qwen3_coder@1` keeps every
-argument value as a JSON string, verbatim, and reads no tool schema (spec:
-`docs/qwen3-coder-parser-v1.md`); convert values against your own schema if you need numbers or
-objects.
+verified finish reason; the request's `tools` are not an input. Common to both tool-call parsers:
+a block runs from `<tool_call>` to the first `</tool_call>`, matched on bytes (even inside a JSON
+string or a parameter value); a block whose payload breaks the parser's rules is malformed and
+its raw bytes stay in `content`, without affecting the other blocks; whitespace-only text between
+blocks or after the last one is layout and is dropped, while text before the first block and any
+other outside text is kept verbatim.
+
+- `hermes@1`: the payload, trimmed, must be exactly one strict JSON object with a string `name`
+  and, optionally, an object `arguments` (passed through as its exact bytes; `"{}"` when absent).
+  `arguments` that is not an object, `name` or `arguments` twice, nesting deeper than 64, an
+  unpaired `\u` surrogate escape or trailing bytes make the block malformed. `parameters` is not
+  an alias.
+- `qwen3_coder@1`: the payload must match `<function=NAME>` ... `</function>` with
+  `<parameter=KEY>VALUE</parameter>` elements and only whitespace between them; a missing
+  `</function>`, an open parameter with no `</parameter>` left, a repeated KEY or a space inside a
+  tag is malformed. VALUE runs to the first `</parameter>`, loses one wrapping LF each side and
+  is kept as a JSON string, verbatim; no tool schema is read, so convert values against your own
+  schema if you need numbers or objects.
 
 `qwen3@1` (reasoning) has an implicit start marker: the output opens in reasoning whether or not it
 starts with `<think>`, and reasoning runs to the first `</think>`. With no `</think>` the whole
-output is `reasoningContent`, `content` is empty and no tool call is parsed. A profile whose chat
-template does not think pins no reasoning parser.
+output is `reasoningContent`, `content` is empty and no tool call is parsed. Every LF at the edges
+of the reasoning, and at the start of what follows `</think>`, is layout and is dropped (CR, SP and
+HT are kept). An empty span (`<think>\n\n</think>`) gives `reasoningContent: ""`, present but
+empty; in the stream it is one `reasoning` event with empty text. A profile whose chat template
+does not think pins no reasoning parser.
 
 A final call whose closing marker never came is a call only if the Fin says the model stopped by
 itself (`EOS_TOKEN` / `STOP_SEQUENCE` / `STOP_TOKEN`) and the parser defines recovery: `hermes@1`
@@ -1079,7 +1100,7 @@ same chunk shape as 8.6 (role chunk first, `logprobs: null`, `system_fingerprint
 ```ts
 const callIdFormat = await client.toolCallIdFormat(modelId, profileVersion); // once per profile
 const sse = toOpenAIAssistantSSE(
-  client.assistantTurn({ sessionId, taskId, allowUnverified: true }),
+  client.assistantTurn({ sessionId, taskId }),
   { id: `chatcmpl-${taskId}`, taskId, taskHash, model, created: Math.floor(Date.now() / 1000) },
   { toolCallIdFormat: callIdFormat ?? 'OPENAI_CALL_PREFIX' },
 );
@@ -1089,7 +1110,7 @@ To keep the reasoning (for example in `delta.reasoning_content`), build the chun
 
 ```ts
 const callIdFormat = await client.toolCallIdFormat(modelId, profileVersion); // once per profile
-for await (const e of client.assistantTurn({ sessionId, taskId, allowUnverified: true })) {
+for await (const e of client.assistantTurn({ sessionId, taskId })) {
   if (e.kind === 'reasoning') send({ delta: { reasoning_content: e.text } });
   if (e.kind === 'content') send({ delta: { content: e.text } });
   if (e.kind === 'reset') { /* voided attempt: discard what was sent; the replacement is parsed from scratch */ }
@@ -1116,7 +1137,7 @@ with the receipt read for you. Call them yourself to control the receipt read or
 checkpoint across processes:
 
 ```ts
-const parsers = { ...(await client.profileParsers(taskId)), allowUnverified: true };
+const parsers = await client.profileParsers(taskId);
 let checkpoint;
 for await (const e of client.streamAssistantMessage({
   sessionId, taskId, ...parsers, onCheckpoint: (c) => { checkpoint = c; },
@@ -1137,7 +1158,8 @@ take an already-resolved `{ parser, reasoning? }` instead of the refs.
 **Resolution.** `toolCallParser` / `reasoningParser` are looked up in `registry`
 (default `BUILTIN_TOOL_CALL_PARSERS`: `hermes@1`, `qwen3_coder@1`) and `reasoningRegistry`
 (default `BUILTIN_REASONING_PARSERS`: `qwen3@1`). A parser that is not pinned, unknown to the
-registry, or unverified without `allowUnverified` is not used, and the output is still delivered
+registry, or registered `unverified` without `allowUnverified` (the built-ins are
+`vector-verified`) is not used, and the output is still delivered
 without that view. A pinned reasoning parser that does not resolve disables the tool-call parser
 too (the whole output is content), so a call written while reasoning is never parsed.
 

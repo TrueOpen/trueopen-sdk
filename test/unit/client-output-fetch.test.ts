@@ -685,7 +685,7 @@ describe('assistantTurn (sdk_详细设计 §5.2, §5.5)', () => {
   }
 
   it('streams reasoning and content, then yields the confirmed calls and finish reason', async () => {
-    const events = await run(makeClient(streamTransport(1), readerWithReceipt(2), profileHub()), { allowUnverified: true });
+    const events = await run(makeClient(streamTransport(1), readerWithReceipt(2), profileHub()));
     expect(events.filter((e) => e.kind === 'reasoning').map((e) => e.text).join('')).toBe('need the weather');
     expect(events.some((e) => e.kind === 'content' && e.text!.includes('tool_call'))).toBe(false);
     // No call from unconfirmed frames is handed out: only reasoning, content, then confirmed.
@@ -699,18 +699,22 @@ describe('assistantTurn (sdk_详细设计 §5.2, §5.5)', () => {
   });
 
   it('keeps the closed calls of a truncated turn; the finish reason says it was cut off', async () => {
-    const events = await run(makeClient(streamTransport(3), readerWithReceipt(0), profileHub()), { allowUnverified: true });
+    const events = await run(makeClient(streamTransport(3), readerWithReceipt(0), profileHub()));
     expect(events.at(-1)!.message).toMatchObject({ finishReason: 3, toolCalls: [{ name: 'get_weather' }] });
   });
 
   it('uses no unverified parser unless allowed: the output is content with no calls', async () => {
-    const events = await run(makeClient(streamTransport(1), readerWithReceipt(0), profileHub()));
+    // The built-ins are vector-verified; a registry that holds an unverified parser exercises the rule.
+    const registry = createToolCallRegistry([{ parser: hermesParser, conformance: 'unverified' }]);
+    const events = await run(makeClient(streamTransport(1), readerWithReceipt(0), profileHub()), { registry });
     expect(events.at(-1)!.message).toMatchObject({ toolCalls: [] });
     expect(events.at(-1)!.message!.content).toContain('<tool_call>');
+    const allowed = await run(makeClient(streamTransport(1), readerWithReceipt(0), profileHub()), { registry, allowUnverified: true });
+    expect(allowed.at(-1)!.message).toMatchObject({ toolCalls: [{ name: 'get_weather' }] });
   });
 
   it('times out waiting for the receipt with a retriable error', async () => {
-    await expect(run(makeClient(streamTransport(1), readerWithReceipt(1_000_000), profileHub()), { allowUnverified: true, receiptTimeoutMs: 20 }))
+    await expect(run(makeClient(streamTransport(1), readerWithReceipt(1_000_000), profileHub()), { receiptTimeoutMs: 20 }))
       .rejects.toMatchObject({ code: 'OUTPUT_RECEIPT_TIMEOUT', retriable: true });
   });
 });

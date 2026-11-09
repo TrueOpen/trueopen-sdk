@@ -58,9 +58,11 @@ function parseWithReasoning(
 ): DerivedAssistantMessage {
   const parseOpts = unclosedCallRecovery(finishReason);
   if (opts.reasoning === undefined) return opts.parser.parseComplete(text, parseOpts);
-  const { reasoningContent, remainder } = opts.reasoning.split(text);
+  const { reasoningContent, remainder, hasReasoning } = opts.reasoning.split(text);
   const message = opts.parser.parseComplete(remainder, parseOpts);
-  return reasoningContent === '' ? message : { ...message, reasoningContent };
+  // A span that is present but empty (qwen3@1's `<think>\n\n</think>`) gives reasoningContent "",
+  // not an absent field (REASONING_PARSER_V1).
+  return (hasReasoning ?? reasoningContent !== '') ? { ...message, reasoningContent } : message;
 }
 
 /**
@@ -145,8 +147,9 @@ export function confirmAssistantMessageWithReceipt(
 ): ConfirmedAssistantMessage {
   const confirmation = confirmOutputWithReceipt(input);
   // Decode the concatenation, never chunk by chunk: a chunk boundary is the Worker's choice and
-  // can fall inside a multi-byte UTF-8 sequence.
-  const text = new TextDecoder().decode(
+  // can fall inside a multi-byte UTF-8 sequence. ignoreBOM keeps a leading U+FEFF, which is
+  // committed output (REASONING_PARSER_V1 treats it as text), where the default would drop it.
+  const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(
     concatBytes(...input.checkpoint.chunks.map((chunk) => Uint8Array.from(chunk))),
   );
   const message = parseWithReasoning(text, opts, confirmation.finishReason);

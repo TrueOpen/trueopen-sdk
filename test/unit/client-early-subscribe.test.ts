@@ -49,8 +49,8 @@ function deferred<T>() {
 const anchors = { taskHash: TASK_HASH, workerServicePubKey: WORKER_PUB, dispatchTicketHash: TICKET };
 
 /** Frames for `n` chunks of attempt `ticket`, each signed by `signer` over the prefix root, plus a signed Fin. */
-function frames(n: number, signer = WORKER_PRIV, ticket = TICKET): SubscribeOutputResponse[] {
-  const chunks = Array.from({ length: n }, (_, i) => new TextEncoder().encode(`t${i} `));
+function frames(n: number, signer = WORKER_PRIV, ticket = TICKET, given?: readonly Uint8Array[]): SubscribeOutputResponse[] {
+  const chunks = given ?? Array.from({ length: n }, (_, i) => new TextEncoder().encode(`t${i} `));
   const th = fromHex(TASK_HASH.slice(2));
   const dispatchTicketHash = fromHex(ticket.slice(2));
   const out = chunks.map((text, i) => {
@@ -408,6 +408,37 @@ describe('streamOutput early subscribe', () => {
     const events = await collect(stream(makeClient(reader), { sources: [source], ...anchors, waitForAnchors: true }));
     expect(events.map((e) => e.kind)).toEqual(['chunk', 'fin']);
     expect(reader.reads).toBe(0);
+  });
+
+  it('decodes frames as one UTF-8 stream: a character split across frames arrives whole', async () => {
+    // "São café" with both two-byte characters cut by a frame boundary.
+    const bytes = new TextEncoder().encode('São café');
+    const chunks = [bytes.slice(0, 2), bytes.slice(2, 8), bytes.slice(8)];
+    const { source } = scriptedSource(() => ({ frames: frames(3, WORKER_PRIV, TICKET, chunks), then: 'end' }));
+    const events = await collect(stream(makeClient(), { sources: [source], ...anchors }));
+    const texts = events.flatMap((e) => (e.kind === 'chunk' ? [e.text] : []));
+    expect(texts).toEqual(['S', 'ão caf', 'é']);
+    expect(texts.join('')).not.toContain('\uFFFD');
+  });
+
+  it('a stream resumed from a checkpoint inside a split character completes it', async () => {
+    const bytes = new TextEncoder().encode('é!');
+    const chunks = [bytes.slice(0, 1), bytes.slice(1)];
+    let checkpoint: OutputStreamVerifierCheckpoint | undefined;
+    const first = scriptedSource(() => ({ frames: frames(2, WORKER_PRIV, TICKET, chunks).slice(0, 1), then: 'end' }));
+    await expect(collect(stream(makeClient(), { sources: [first.source], ...anchors, maxAttempts: 1, onCheckpoint: (c) => { checkpoint = c; } })))
+      .rejects.toMatchObject({ code: 'DATA_OUTPUT_STREAM_RETRIES_EXHAUSTED' });
+    const { source } = scriptedSource(() => ({ frames: frames(2, WORKER_PRIV, TICKET, chunks), then: 'end' }));
+    const events = await collect(stream(makeClient(), { sources: [source], ...anchors, checkpoint: checkpoint!, resumeAfterSeq: 0n }));
+    expect(events.flatMap((e) => (e.kind === 'chunk' ? [e.text] : []))).toEqual(['é!']);
+  });
+
+  it('keeps a leading U+FEFF: it is committed output, not a byte-order mark to drop', async () => {
+    const bytes = new TextEncoder().encode('\uFEFF<think>a</think>b');
+    const chunks = [bytes.slice(0, 2), bytes.slice(2)];
+    const { source } = scriptedSource(() => ({ frames: frames(2, WORKER_PRIV, TICKET, chunks), then: 'end' }));
+    const events = await collect(stream(makeClient(), { sources: [source], ...anchors }));
+    expect(events.flatMap((e) => (e.kind === 'chunk' ? [e.text] : [])).join('')).toBe('\uFEFF<think>a</think>b');
   });
 
   it('rejects a bad maxPendingFrames', async () => {

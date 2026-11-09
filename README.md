@@ -269,7 +269,7 @@ for display), then, once the accepted receipt matches, the confirmed message. To
 only there, so nothing the agent executes comes from unconfirmed frames.
 
 ```ts
-for await (const e of client.assistantTurn({ sessionId, taskId: res.taskId, allowUnverified: true })) {
+for await (const e of client.assistantTurn({ sessionId, taskId: res.taskId })) {
   if (e.kind === 'reasoning') showThinking(e.text);
   if (e.kind === 'content') showText(e.text);
   if (e.kind === 'confirmed') {
@@ -280,9 +280,9 @@ for await (const e of client.assistantTurn({ sessionId, taskId: res.taskId, allo
 ```
 
 The parsers come from the task's profile on chain (`tool_call_parser`, `reasoning_parser`); the
-built-in ones are `hermes@1`, `qwen3_coder@1` and `qwen3@1` (reasoning). They are `unverified`
-until wire publishes their shared vectors, so they take effect only with `allowUnverified: true`;
-without it the turn is plain content with no calls. For an OpenAI-compatible stream, pass the turn
+built-in ones are `hermes@1`, `qwen3_coder@1` and `qwen3@1` (reasoning), vector-verified against
+wire's shared parser vectors, so they take effect with no opt-in. A profile that pins no parser,
+or one this SDK does not support, gives plain content with no calls. For an OpenAI-compatible stream, pass the turn
 to `toOpenAIAssistantSSE`; for a finished task, `fetchAssistantMessage` returns the same confirmed
 message without streaming. Details, the two-stage API and custom parsers: reference 8.8.
 `examples/tool-call.mjs` runs a whole multi-turn exchange: it executes the confirmed calls and
@@ -366,12 +366,13 @@ This section states plainly **which capabilities are already aligned with the re
 - **CosmJS chain writes** -- `MsgCreateSession` / `MsgCancelOrder` (including the task registry).
 - **Not supported yet** -- `MsgOpenChallengeRound`, the only challenge Msg in wire. `prepareChallenge` (nexus) still prepares material.
 - **Tool calls and reasoning (derived from the committed output)** -- `hermes@1` and
-  `qwen3_coder@1` (tool calls) and `qwen3@1` (reasoning, implicit start marker) follow wire #46
-  (`docs/REASONING_PARSER_V1.md`, `docs/TOOL_CALL_PARSER_V1.md` @ `5760ab7`) and its worked
-  examples, and are cross-checked against a corpus from the vLLM and Dynamo parser tests. wire #46
-  is still a draft and has published no vector files, so all three are `unverified`: they run
-  only with `allowUnverified: true`. The result is a derived view: it never enters `output_hash`,
-  the receipt or the chain.
+  `qwen3_coder@1` (tool calls) and `qwen3@1` (reasoning, implicit start marker) follow
+  `docs/TOOL_CALL_PARSER_V1.md` and `docs/REASONING_PARSER_V1.md` as settled in wire #51, and pass
+  every shared vector in `testdata/v1/parser/` (`reasoning_qwen3_v1.json`,
+  `tool_call_hermes_v1.json`, `tool_call_qwen3_coder_v1.json`), complete and streamed; see
+  `test/unit/parser-vectors.test.ts`. All three are `vector-verified` and need no
+  `allowUnverified`. A corpus from the vLLM and Dynamo parser tests is kept as a cross-check, not an
+  authority. The result is a derived view: it never enters `output_hash`, the receipt or the chain.
 - **IngressAPI methods** -- `openTask` (client-streaming) / `getTaskStatus` / `prepareChallenge` / `getTaskEvents` / `subscribeOutput` / `ackOutput` / `getTaskDataMetadata` / `fetchTaskData`. The deprecated `SubmitOrder` / `FetchOutputRef` / `RefreshCredential` RPCs are not wrapped.
 
 ### ✅ Output delivery: two paths
@@ -1110,7 +1111,7 @@ Exit codes: 0 on success, 1 on error (with `--json`, errors are printed to stder
 
 ### Phase 1 migration (wire PR #49)
 
-This checkout pins wire PR #49 commit `b30fba8`. It targets a fresh Phase 1 chain; old sessions,
+This checkout pins wire PR #49 commit `a75f54a` (Phase 1 with wire main merged in). It targets a fresh Phase 1 chain; old sessions,
 output checkpoints and signatures are incompatible. See [the migration guide](docs/phase1-migration.md)
 for funding, recovery and output trust requirements. A Builder acknowledgement or signed Fin
 is provisional; only chain admission and settlement establish the corresponding final facts.

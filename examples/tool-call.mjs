@@ -8,8 +8,7 @@
 // `tool_calls`, followed by one `tool` message per result.
 //
 // The example offers one tool, `list_files`, which lists TRUEOPEN_TOOL_DIR (default: the current
-// directory); paths that leave that directory are refused. The built-in parsers are unverified
-// until wire publishes their vectors, so the example opts in with allowUnverified.
+// directory); paths that leave that directory are refused.
 //
 // Run:
 //   TRUEOPEN_REST_URL=... TRUEOPEN_CHAIN_ID=trueopen-localnet-1 TRUEOPEN_MNEMONIC="..." \
@@ -23,6 +22,8 @@ import { chatInferInputBytes, defaultGenerationParams, nexusGrpcEndpoint, TASK_T
 import { setup, env, show } from './_shared.mjs';
 
 const MAX_TURNS = Number(env('TRUEOPEN_MAX_TURNS', '3'));
+// A thinking model can spend the whole budget reasoning; the answer then has no content.
+const MAX_OUTPUT_TOKENS = BigInt(env('TRUEOPEN_MAX_OUTPUT_TOKENS', '512'));
 const TOOL_DIR = resolve(env('TRUEOPEN_TOOL_DIR', process.cwd()));
 
 /** @type {import('../dist/index.js').ChatTool[]} */
@@ -92,8 +93,9 @@ try {
         payload,
         inputBucket: 1,
         outputBudgetBucket: 1,
-        generationParams: defaultGenerationParams(512n, 60_000n),
-        // order_value = floor(512 x price_bid / 1e6) plus the verifier share; max_fee covers it.
+        generationParams: defaultGenerationParams(MAX_OUTPUT_TOKENS, 60_000n),
+        // order_value = floor(max_output_tokens x price_bid / 1e6) plus the verifier share; max_fee
+        // covers it (raise TRUEOPEN_MAX_FEE with TRUEOPEN_MAX_OUTPUT_TOKENS).
         amounts: {
           priceBid: { atomicUnits: env('TRUEOPEN_PRICE_BID', '4000000') },
           maxFee: { atomicUnits: env('TRUEOPEN_MAX_FEE', '4000') },
@@ -116,7 +118,7 @@ try {
     await builderClient.waitForOutputTrustAnchors(res.taskId, { sessionId, timeoutMs: 120_000 });
 
     let message;
-    for await (const event of builderClient.assistantTurn({ sessionId, taskId: res.taskId, allowUnverified: true, idleTimeoutMs: 120_000 })) {
+    for await (const event of builderClient.assistantTurn({ sessionId, taskId: res.taskId, idleTimeoutMs: 120_000 })) {
       // reasoning / content arrive as frames verify (provisional); `reset` drops a voided attempt.
       if (event.kind === 'reset') console.log('(the dispatch attempt was replaced; starting over)');
       if (event.kind === 'confirmed') message = event.message;

@@ -902,9 +902,9 @@ function dispatchHeaderTicket(header: DispatchResultHeaderV1, chainId: string, s
 export interface ToolCallParams {
   /** The profile's on-chain tool-call parser (ProfileInfo.toolCallParser); zero value = "no tool calling". */
   readonly toolCallParser: ParserRef;
-  /** Defaults to the built-in registry (hermes@1, qwen3_coder@1; unverified); injectable for tests/custom parsers. */
+  /** Defaults to the built-in registry (hermes@1, qwen3_coder@1; vector-verified); injectable for tests/custom parsers. */
   readonly registry?: ToolCallRegistry;
-  /** Whether an unverified parser may be used (design S6 `parser-unverified`). */
+  /** Whether an unverified (custom) parser may be used (design S6 `parser-unverified`); not needed for the built-ins. */
   readonly allowUnverified?: boolean;
   /**
    * The profile's on-chain reasoning parser (ProfileInfo.reasoningParser). When it resolves, the
@@ -912,7 +912,7 @@ export interface ToolCallParams {
    * (Manifest S7.3 rule 5). Zero value or absent = no reasoning separation.
    */
   readonly reasoningParser?: ParserRef;
-  /** Defaults to the built-in reasoning registry (qwen3@1, unverified). */
+  /** Defaults to the built-in reasoning registry (qwen3@1, vector-verified). */
   readonly reasoningRegistry?: ReasoningRegistry;
 }
 
@@ -936,7 +936,7 @@ export interface AssistantTurnParams extends Omit<StreamOutputParams, 'taskHash'
   readonly reasoningParser?: ParserRef;
   readonly registry?: ToolCallRegistry;
   readonly reasoningRegistry?: ReasoningRegistry;
-  /** Whether unverified parsers may be used (the built-in parsers are unverified until their vectors exist). */
+  /** Whether unverified (custom) parsers may be used; the built-in parsers are vector-verified and need no opt-in. */
   readonly allowUnverified?: boolean;
   /** How long to wait for the accepted InferReceipt after the stream ends; default 120 s. */
   readonly receiptTimeoutMs?: number;
@@ -980,8 +980,13 @@ const NO_TOOL_CALLS: ToolCallParser = {
  * A pinned reasoning parser that does not resolve takes the tool-call parser with it
  * (TOOL_CALL_PARSER_V1, Support): without the reasoning split, a call the model wrote while
  * reasoning would be parsed, so the whole output is content with no calls.
+ *
+ * Exported for the shared-vector test, which resolves parsers exactly as the client does; it is
+ * not part of the package's public API (not re-exported from the index).
+ *
+ * @internal
  */
-function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser } {
+export function resolveParsers(p: ToolCallParams): { parser: ToolCallParser; reasoning?: ReasoningParser } {
   const allow = p.allowUnverified === true ? { allowUnverified: true } : undefined;
   const tool = resolveToolCalling({
     toolCallParser: p.toolCallParser,
@@ -2830,9 +2835,10 @@ export class TrueOpenClient {
 
     return {
       // bytes is the committed object; text is its decoding. Cortex strips the trailing EOS
-      // before committing (output_decoding.strip_trailing_eos), so nothing is stripped here.
+      // before committing (output_decoding.strip_trailing_eos), so nothing is stripped here --
+      // not even a leading U+FEFF, which is committed output like any other character.
       bytes,
-      text: new TextDecoder().decode(bytes),
+      text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes),
       outputHash: got,
       taskHash,
       chunks,
@@ -3006,6 +3012,8 @@ export class TrueOpenClient {
     }
 
     let verifier: OutputStreamVerifier | undefined;
+    // One UTF-8 stream per verified attempt: a frame boundary may fall inside a character.
+    let frameText: FrameTextDecoder | undefined;
     let taskHash: Uint8Array = new Uint8Array();
     let workerServicePubKey: Uint8Array = new Uint8Array();
     let dispatchTicketHash: Uint8Array | undefined = givenTicket === undefined ? undefined : strictHash32('dispatch_ticket_hash', givenTicket);
@@ -3450,8 +3458,12 @@ export class TrueOpenClient {
               yield {
                 kind: 'chunk',
                 seq: c.seq,
-                // mmrRoot covers the committed bytes, so it is what verification ran against.
-                text: new TextDecoder().decode(c.text),
+                // mmrRoot covers the committed bytes, so it is what verification ran against. The
+                // text is decoded across frames: a character split by a frame boundary arrives with
+                // the frame that completes it.
+                text: (frameText !== undefined && frameText.verifier === v
+                  ? frameText
+                  : (frameText = new FrameTextDecoder(v))).next(c.text),
                 mmrRoot: Uint8Array.from(c.mmrRoot),
                 ...(recorded !== undefined ? { recorded } : {}),
               };
@@ -3674,10 +3686,10 @@ export class TrueOpenClient {
    * execute, and the protocol finishReason from the Worker-signed Fin. The stream checkpoint is
    * kept internally (and still handed to `onCheckpoint`).
    *
-   * Parsers default to the ones the task's profile pins on chain. Both built-in parsers are
-   * unverified until wire publishes their vectors, so they take effect only with
-   * `allowUnverified`; otherwise the output is content with no calls. Needs config.taskReader and
-   * config.hub.
+   * Parsers default to the ones the task's profile pins on chain. The built-in parsers are
+   * vector-verified and take effect without opt-in; a parser this build does not support (or a
+   * custom unverified one without `allowUnverified`) leaves the output as content with no calls.
+   * Needs config.taskReader and config.hub.
    */
   async *assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent> {
     const reader = this.cfg.taskReader;
@@ -4201,6 +4213,28 @@ async function rereadNexusEndpoint(
     return { uri: endpoint.uri, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Decodes the frames of one verified attempt as a single UTF-8 stream, so a multi-byte character
+ * split across frames is not replaced by U+FFFD. Bound to its verifier: a new attempt (reset) or
+ * a restored checkpoint gets a new decoder, primed with the chunks the verifier already holds
+ * before the current one. Bytes of an incomplete character at the very end of the output are
+ * never shown in the stream; the full-text decode of the confirmed output shows them as U+FFFD.
+ */
+class FrameTextDecoder {
+  // ignoreBOM keeps a leading U+FEFF: it is committed output, and the parsers read it as text
+  // (REASONING_PARSER_V1: the BOM is not whitespace). The default decoder would drop it.
+  private readonly decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+  constructor(readonly verifier: OutputStreamVerifier) {
+    const held = verifier.checkpoint().chunks;
+    for (const chunk of held.slice(0, -1)) this.decoder.decode(chunk, { stream: true });
+  }
+
+  next(bytes: Uint8Array): string {
+    return this.decoder.decode(bytes, { stream: true });
   }
 }
 

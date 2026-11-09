@@ -85,41 +85,6 @@ describe('createMarkerStreamState', () => {
     ]);
   });
 
-  it('does not treat a marker quoted in prose as a call', () => {
-    // Design §5.3: a quoted marker is content, not control syntax.
-    expect(run(['say "<tc>a|1</tc>" done'])).toEqual([
-      { kind: 'content', text: 'say "<tc>a|1</tc>" done' },
-    ]);
-  });
-
-  it('does not close early on an end marker inside a quoted argument', () => {
-    // The `</tc>` inside `"b</tc>c"` is a string literal; only the final `</tc>` closes.
-    expect(run(['<tc>a|"b</tc>c"</tc>'])).toEqual([
-      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '"b</tc>c"' } },
-    ]);
-  });
-
-  it('mixes quoted text and calls', () => {
-    expect(run(['<tc>a|1</tc> "not a call" <tc>b|2</tc>'])).toEqual([
-      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
-      { kind: 'content', text: ' "not a call" ' },
-      { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
-    ]);
-  });
-
-  it('does not emit a frame that ends inside an unclosed quote', () => {
-    // The closing quote arrives next frame; emitting `"abc` now would make `def"`'s quote look
-    // like an opening quote and swallow the marker.
-    expect(run(['"abc', 'def" <tc>a|1</tc>'])).toEqual([
-      { kind: 'content', text: '"abcdef" ' },
-      { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
-    ]);
-  });
-
-  it('releases an unclosed quote as text on finish', () => {
-    expect(run(['"abc'])).toEqual([{ kind: 'content', text: '"abc' }]);
-  });
-
   it('flushes an unclosed segment as plain text at end of stream, marker included', () => {
     // What a generation truncated by max_output_tokens produces. A normal outcome, not an
     // error, and no character may be dropped.
@@ -166,9 +131,90 @@ describe('createMarkerStreamState', () => {
     expect(() => createMarkerStreamState({ startMarker: '<tc>', endMarker: '', parseCall })).toThrow(TrueOpenError);
   });
 
-  describe('quoteAware: false (a plain-text payload)', () => {
-    const blind = () =>
-      createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, quoteAware: false });
+  describe('layout whitespace (TOOL_CALL_PARSER_V1 Content)', () => {
+    const text = (events: readonly AssistantStreamEvent[]): string =>
+      events.map((e) => (e.kind === 'content' ? e.text : '')).join('');
+
+    it('drops whitespace-only text between blocks and after the last one', () => {
+      const events = run(['<tc>a|1</tc>\n \t\r<tc>b|2</tc>\n\n']);
+      expect(events).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+      ]);
+    });
+
+    it('keeps whitespace before the first block, and any segment with non-whitespace in it', () => {
+      expect(text(run(['\n<tc>a|1</tc>\n x \n<tc>b|2</tc> y\n']))).toBe('\n\n x \n y\n');
+    });
+
+    it('holds whitespace after a block until it is known to be layout or text, whatever the frames', () => {
+      const state = make();
+      expect(state.push('<tc>a|1</tc>\n')).toEqual([{ kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } }]);
+      expect(state.push('\n')).toEqual([]);
+      expect(state.push('ok')).toEqual([{ kind: 'content', text: '\n\nok' }]);
+      expect(state.finish()).toEqual([]);
+    });
+
+    it('treats a malformed block and an unclosed block as blocks', () => {
+      expect(text(run(['<tc>a|1</tc>\n<tc>bad</tc>\n']))).toBe('<tc>bad</tc>');
+      expect(text(run(['<tc>a|1</tc>\n<tc>b|2']))).toBe('<tc>b|2');
+    });
+
+    it('does not count a Unicode space as whitespace', () => {
+      expect(text(run(['<tc>a|1</tc>\u00a0']))).toBe('\u00a0');
+    });
+
+    it('keeps a partial start marker after a block as text at the end', () => {
+      expect(text(run(['<tc>a|1</tc>\n<t']))).toBe('\n<t');
+    });
+  });
+
+  describe('quoteAware: true (opt-in for a custom parser; not TOOL_CALL_PARSER_V1)', () => {
+    const runQuoted = (frames: readonly string[]): AssistantStreamEvent[] => {
+      const state = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, quoteAware: true });
+      const events: AssistantStreamEvent[] = [];
+      for (const frame of frames) events.push(...state.push(frame));
+      events.push(...state.finish());
+      return events;
+    };
+
+    it('does not treat a marker quoted in prose as a call', () => {
+      expect(runQuoted(['say "<tc>a|1</tc>" done'])).toEqual([
+        { kind: 'content', text: 'say "<tc>a|1</tc>" done' },
+      ]);
+    });
+
+    it('does not close early on an end marker inside a quoted argument', () => {
+      // The `</tc>` inside `"b</tc>c"` is a string literal; only the final `</tc>` closes.
+      expect(runQuoted(['<tc>a|"b</tc>c"</tc>'])).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '"b</tc>c"' } },
+      ]);
+    });
+
+    it('mixes quoted text and calls', () => {
+      expect(runQuoted(['<tc>a|1</tc> "not a call" <tc>b|2</tc>'])).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'content', text: ' "not a call" ' },
+        { kind: 'tool-call-provisional', call: { name: 'b', arguments: '2' } },
+      ]);
+    });
+
+    it('does not emit a frame that ends inside an unclosed quote', () => {
+      // The closing quote arrives next frame; emitting `"abc` now would make `def"`'s quote look
+      // like an opening quote and swallow the marker.
+      expect(runQuoted(['"abc', 'def" <tc>a|1</tc>'])).toEqual([
+        { kind: 'content', text: '"abcdef" ' },
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+      ]);
+    });
+
+    it('releases an unclosed quote as text on finish', () => {
+      expect(runQuoted(['"abc'])).toEqual([{ kind: 'content', text: '"abc' }]);
+    });
+  });
+
+  describe('the default: markers matched on bytes, quotes mean nothing (TOOL_CALL_PARSER_V1 Blocks)', () => {
+    const blind = make;
     const runBlind = (frames: readonly string[], recover = false): AssistantStreamEvent[] => {
       const state = blind();
       const events: AssistantStreamEvent[] = [];
@@ -176,6 +222,26 @@ describe('createMarkerStreamState', () => {
       events.push(...state.finish({ recoverUnclosedAtEnd: recover }));
       return events;
     };
+
+    it('treats a marker quoted in prose as a marker', () => {
+      expect(runBlind(['say "<tc>a|1</tc>" done'])).toEqual([
+        { kind: 'content', text: 'say "' },
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '1' } },
+        { kind: 'content', text: '" done' },
+      ]);
+    });
+
+    it('closes at an end marker inside a quoted argument', () => {
+      expect(runBlind(['<tc>a|"b</tc>c"</tc>'])).toEqual([
+        { kind: 'tool-call-provisional', call: { name: 'a', arguments: '"b' } },
+        { kind: 'content', text: 'c"</tc>' },
+      ]);
+    });
+
+    it('is what quoteAware: false asks for', () => {
+      const explicit = createMarkerStreamState({ startMarker: '<tc>', endMarker: '</tc>', parseCall, quoteAware: false });
+      expect([...explicit.push('<tc>a|"b</tc>c"</tc>'), ...explicit.finish()]).toEqual(runBlind(['<tc>a|"b</tc>c"</tc>']));
+    });
 
     it('lets a lone quote inside a segment not hide the end marker', () => {
       expect(runBlind(['<tc>f|say "hi</tc> after'])).toEqual([

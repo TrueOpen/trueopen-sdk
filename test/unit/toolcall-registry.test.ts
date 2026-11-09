@@ -82,11 +82,9 @@ describe('createToolCallRegistry', () => {
     ).toThrow(TrueOpenError);
   });
 
-  it('ships hermes@1 as unverified: usable only when the caller allows unverified parsers', () => {
-    expect(BUILTIN_TOOL_CALL_PARSERS.lookup({ name: 'hermes', version: 1 })).toEqual({
-      supported: false,
-      reason: 'parser-unverified',
-    });
+  it('ships hermes@1 as vector-verified: usable without allowUnverified', () => {
+    expect(BUILTIN_TOOL_CALL_PARSERS.lookup({ name: 'hermes', version: 1 }))
+      .toMatchObject({ supported: true, parser: { name: 'hermes', version: 1 } });
     expect(BUILTIN_TOOL_CALL_PARSERS.lookup({ name: 'hermes', version: 1 }, { allowUnverified: true }))
       .toMatchObject({ supported: true, parser: { name: 'hermes', version: 1 } });
     expect(BUILTIN_TOOL_CALL_PARSERS.lookup({ name: 'hermes', version: 2 }, { allowUnverified: true }))

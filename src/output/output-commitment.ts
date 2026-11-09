@@ -424,7 +424,8 @@ export class OutputStreamVerifier {
 
   /** Concatenates the received chunk list into text. Becomes the official text once Fin arrives and matches the receipt. */
   text(): string {
-    return new TextDecoder().decode(concatBytes(...this.chunks));
+    // ignoreBOM: a leading U+FEFF is committed output, not a byte-order mark to drop.
+    return new TextDecoder('utf-8', { ignoreBOM: true }).decode(concatBytes(...this.chunks));
   }
 
   /** Compares against the on-chain receipt's output_hash; only a match may be converted to confirmed. */

@@ -129,6 +129,14 @@ describe('OutputStreamVerifier', () => {
     expect(v.text()).toBe('áéí');
   });
 
+  it('text() keeps a leading U+FEFF', async () => {
+    const bytes = utf8('\uFEFFok');
+    const chunks = [bytes.slice(0, 1), bytes.slice(1)];
+    const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });
+    for (let i = 0; i < chunks.length; i++) v.accept(await frameFor(chunks, i));
+    expect(v.text()).toBe('\uFEFFok');
+  });
+
   it('a skipped seq number is rejected (the first frame must be seq 0)', async () => {
     const chunks = [utf8('á'), utf8('é')];
     const v = new OutputStreamVerifier({ dispatchTicketHash, chainId, taskHash, workerServicePubKey: pub });

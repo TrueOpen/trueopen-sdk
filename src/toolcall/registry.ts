@@ -8,8 +8,10 @@ import { qwen3CoderParser } from './parsers/qwen3-coder';
  * `(name, version)`.
  *
  * ADR-0022 decision four requires a language-independent behaviour spec plus shared vectors
- * published with wire's testdata for every `(name, version)`. Those vectors do not exist
- * (monorepo#11), so every parser written today is `'unverified'`.
+ * published with wire's testdata for every `(name, version)`. Wire publishes them in
+ * `testdata/v1/parser/` (TOOL_CALL_PARSER_V1, REASONING_PARSER_V1); the built-in parsers pass
+ * them in this SDK's CI and are `'vector-verified'`. A parser without such vectors -- a custom one,
+ * say -- is `'unverified'`.
  *
  * This is not test hygiene. Two SDKs that disagree about the same committed text hand their
  * agents different tool calls, and the agent executes them. So an unverified parser is not
@@ -73,14 +75,14 @@ export function createToolCallRegistry(entries: readonly RegistryEntry[]): ToolC
 }
 
 /**
- * The tool-call parsers this SDK build ships, all unverified until wire publishes their vectors
- * (monorepo#11), like the built-in reasoning parsers: lookup reports them as supported only when
- * the caller passes `allowUnverified`. Shipping them lets a caller resolve the parser a profile
+ * The tool-call parsers this SDK build ships: hermes@1 and qwen3_coder@1, both
+ * `'vector-verified'` against wire's shared vectors (TOOL_CALL_PARSER_V1), so lookup reports them
+ * as supported without `allowUnverified`. Shipping them lets a caller resolve the parser a profile
  * pins on chain without registering it; callers can still inject their own registry.
  */
 export const BUILTIN_TOOL_CALL_PARSERS: ToolCallRegistry = createToolCallRegistry([
-  { parser: hermesParser, conformance: 'unverified' },
-  { parser: qwen3CoderParser, conformance: 'unverified' },
+  { parser: hermesParser, conformance: 'vector-verified' },
+  { parser: qwen3CoderParser, conformance: 'vector-verified' },
 ]);
 
 /**

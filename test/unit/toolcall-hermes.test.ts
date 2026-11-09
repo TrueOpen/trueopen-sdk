@@ -67,17 +67,16 @@ describe('hermesParser.parseComplete', () => {
     ]);
   });
 
-  it('extracts array arguments verbatim', () => {
-    expect(
-      hermesParser.parseComplete('<tool_call>{"name":"f","arguments":[1,2,3]}</tool_call>').toolCalls,
-    ).toEqual([{ name: 'f', arguments: '[1,2,3]' }]);
+  it('treats array arguments as malformed: arguments must be an object (TOOL_CALL_PARSER_V1 hermes@1)', () => {
+    const text = '<tool_call>{"name":"f","arguments":[1,2,3]}</tool_call>';
+    expect(hermesParser.parseComplete(text)).toEqual({ role: 'assistant', content: text, toolCalls: [] });
   });
 
-  it('extracts scalar arguments (number, string, boolean, null) verbatim', () => {
-    expect(hermesParser.parseComplete('<tool_call>{"name":"f","arguments":42}</tool_call>').toolCalls[0]!.arguments).toBe('42');
-    expect(hermesParser.parseComplete('<tool_call>{"name":"f","arguments":"hi"}</tool_call>').toolCalls[0]!.arguments).toBe('"hi"');
-    expect(hermesParser.parseComplete('<tool_call>{"name":"f","arguments":true}</tool_call>').toolCalls[0]!.arguments).toBe('true');
-    expect(hermesParser.parseComplete('<tool_call>{"name":"f","arguments":null}</tool_call>').toolCalls[0]!.arguments).toBe('null');
+  it('treats scalar arguments (number, string, boolean, null) as malformed: the block is content', () => {
+    for (const args of ['42', '"hi"', 'true', 'null']) {
+      const text = `<tool_call>{"name":"f","arguments":${args}}</tool_call>`;
+      expect(hermesParser.parseComplete(text)).toEqual({ role: 'assistant', content: text, toolCalls: [] });
+    }
   });
 
   it('extracts deeply nested arguments verbatim', () => {
@@ -93,17 +92,14 @@ describe('hermesParser.parseComplete', () => {
     ).toEqual([{ name: 'f', arguments: '{"x":1}' }]);
   });
 
-  it('does not close early on a literal end marker inside an argument string', () => {
-    // Design §5.3: a marker inside a quoted span is content, not control syntax.
+  it('closes at the first end marker, even inside an argument string (TOOL_CALL_PARSER_V1 Blocks)', () => {
+    // The end marker is matched on bytes: the block closes inside the string and is malformed, and
+    // the rest -- an orphan end marker included -- is outside text, kept verbatim.
     const text = '<tool_call>{"name":"run_code","arguments":{"code":"print(\\"</tool_call>\\")"}}</tool_call>';
-    expect(hermesParser.parseComplete(text)).toEqual({
-      role: 'assistant',
-      content: '',
-      toolCalls: [{ name: 'run_code', arguments: '{"code":"print(\\"</tool_call>\\")"}' }],
-    });
+    expect(hermesParser.parseComplete(text)).toEqual({ role: 'assistant', content: text, toolCalls: [] });
   });
 
-  it('does not treat a start marker quoted in prose as a call', () => {
+  it('leaves a start marker in prose with no end marker as text (an unclosed block)', () => {
     const text = 'He wrote "<tool_call>" in his explanation.';
     expect(hermesParser.parseComplete(text)).toEqual({
       role: 'assistant',
@@ -257,17 +253,14 @@ describe('hermesParser.createStreamState', () => {
     ]);
   });
 
-  it('streams a call whose argument contains a literal end marker, split across frames', () => {
-    // The split lands inside the escaped-quote region, so the end marker arrives while the
-    // argument string is still open. The scan must not treat it as the real end marker.
+  it('closes at an end marker inside an argument string in the stream too, split across frames', () => {
+    // The split lands inside the open argument string; the end marker that follows still closes
+    // the block (matched on bytes), which is malformed, so everything is content.
     const part1 = '<tool_call>{"name":"run_code","arguments":{"code":"print(\\"';
     const part2 = '</tool_call>\\")"}}</tool_call>';
-    expect(run([part1, part2])).toEqual([
-      {
-        kind: 'tool-call-provisional',
-        call: { name: 'run_code', arguments: '{"code":"print(\\"</tool_call>\\")"}' },
-      },
-    ]);
+    const events = run([part1, part2]);
+    expect(events.every((e) => e.kind === 'content')).toBe(true);
+    expect(events.map((e) => (e.kind === 'content' ? e.text : '')).join('')).toBe(part1 + part2);
   });
 
   it('agrees with parseComplete on the same text, whatever the frame split', () => {

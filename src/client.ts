@@ -3006,6 +3006,8 @@ export class TrueOpenClient {
     }
 
     let verifier: OutputStreamVerifier | undefined;
+    // One UTF-8 stream per verified attempt: a frame boundary may fall inside a character.
+    let frameText: FrameTextDecoder | undefined;
     let taskHash: Uint8Array = new Uint8Array();
     let workerServicePubKey: Uint8Array = new Uint8Array();
     let dispatchTicketHash: Uint8Array | undefined = givenTicket === undefined ? undefined : strictHash32('dispatch_ticket_hash', givenTicket);
@@ -3450,8 +3452,12 @@ export class TrueOpenClient {
               yield {
                 kind: 'chunk',
                 seq: c.seq,
-                // mmrRoot covers the committed bytes, so it is what verification ran against.
-                text: new TextDecoder().decode(c.text),
+                // mmrRoot covers the committed bytes, so it is what verification ran against. The
+                // text is decoded across frames: a character split by a frame boundary arrives with
+                // the frame that completes it.
+                text: (frameText !== undefined && frameText.verifier === v
+                  ? frameText
+                  : (frameText = new FrameTextDecoder(v))).next(c.text),
                 mmrRoot: Uint8Array.from(c.mmrRoot),
                 ...(recorded !== undefined ? { recorded } : {}),
               };
@@ -4201,6 +4207,26 @@ async function rereadNexusEndpoint(
     return { uri: endpoint.uri, tlsPubkeyHash: endpoint.tlsPubkeyHash ?? '' };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Decodes the frames of one verified attempt as a single UTF-8 stream, so a multi-byte character
+ * split across frames is not replaced by U+FFFD. Bound to its verifier: a new attempt (reset) or
+ * a restored checkpoint gets a new decoder, primed with the chunks the verifier already holds
+ * before the current one. Bytes of an incomplete character at the very end of the output are
+ * never shown in the stream; the full-text decode of the confirmed output shows them as U+FFFD.
+ */
+class FrameTextDecoder {
+  private readonly decoder = new TextDecoder();
+
+  constructor(readonly verifier: OutputStreamVerifier) {
+    const held = verifier.checkpoint().chunks;
+    for (const chunk of held.slice(0, -1)) this.decoder.decode(chunk, { stream: true });
+  }
+
+  next(bytes: Uint8Array): string {
+    return this.decoder.decode(bytes, { stream: true });
   }
 }
 

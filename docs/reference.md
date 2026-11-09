@@ -1132,6 +1132,15 @@ For a non-streamed reply, `fetchAssistantMessage({ sessionId, taskId, ... })` re
 `ConfirmedAssistantMessage`; without `builderAddress` it asks the task's Task Builders
 concurrently and takes the first one that stored the signed Fin. In the message, `content` is `null` on a turn that only made calls.
 
+**Starting a turn right after openTask.** `assistantTurn` does not need the task on chain yet.
+The anchors (task_hash, winner key, dispatch ticket) are waited for by `streamOutput`, with the
+`waitForAnchors` / `pendingAnchors` / `admissionWait` / `beforeRecord` you pass, or by default
+`waitForAnchors: { sessionId }`. The parsers come from the model profile: pass `model:
+{ modelId, profileVersion }` (an OpenTaskResult passed as `beforeRecord` provides it) to read them
+at once; otherwise they are read from the task once the chain has it, polled with the same
+`pollIntervalMs` / `timeoutMs` (`OUTPUT_TRUST_ANCHOR_TIMEOUT` when it never arrives). The
+confirmation reads the task_hash and ticket from chain after the receipt.
+
 **Two stages.** `assistantTurn` is `streamAssistantMessage` followed by `confirmAssistantMessage`
 with the receipt read for you. Call them yourself to control the receipt read or to keep the
 checkpoint across processes:

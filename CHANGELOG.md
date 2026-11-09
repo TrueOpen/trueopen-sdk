@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed: assistantTurn can start right after openTask
+
+- **Fixed:** `assistantTurn` read the trust anchors and the profile parsers from chain before
+  streaming, so a turn started right after `openTask` failed with `OUTPUT_TRUST_ANCHOR_PENDING`.
+  The anchors are now waited for by `streamOutput` with the caller's `waitForAnchors` /
+  `pendingAnchors` / `admissionWait` / `beforeRecord`, or by default
+  `waitForAnchors: { sessionId }`; the confirmation reads the task_hash and ticket after the
+  receipt.
+- **Added:** `AssistantTurnParams.model` (`{ modelId, profileVersion }`) reads the profile
+  parsers without waiting for the task; an OpenTaskResult passed as `beforeRecord` provides it.
+  Without either, the parsers are read from the task once the chain has it
+  (`OUTPUT_TRUST_ANCHOR_TIMEOUT` if it never does).
+- `examples/tool-call.mjs` drops its separate `waitForOutputTrustAnchors` call.
+
 ### Changed: parsers follow wire's settled spec and shared vectors (wire #51)
 
 `hermes@1`, `qwen3_coder@1` and `qwen3@1` now follow `docs/TOOL_CALL_PARSER_V1.md` and

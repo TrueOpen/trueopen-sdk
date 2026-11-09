@@ -713,6 +713,52 @@ describe('assistantTurn (sdk_详细设计 §5.2, §5.5)', () => {
     expect(allowed.at(-1)!.message).toMatchObject({ toolCalls: [{ name: 'get_weather' }] });
   });
 
+  /** A reader whose task (and so its winner and ticket) is not on chain for the first `pendingReads` reads. */
+  function readerNotYetOnChain(pendingReads: number) {
+    const base = readerWithReceipt(0);
+    let reads = 0;
+    return {
+      ...base,
+      taskReads: () => reads,
+      queryTask: async (id: string) => {
+        if (reads++ < pendingReads) throw new TrueOpenError('CHAIN_REJECT', 'CHAIN_QUERY_NOT_FOUND', 'chain query -> HTTP 404');
+        return base.queryTask(id);
+      },
+    };
+  }
+
+  it('starts before the task is on chain: waits for the anchors and the profile, then streams and confirms', async () => {
+    const reader = readerNotYetOnChain(3);
+    const events = await run(makeClient(streamTransport(1), reader, profileHub()), {
+      allowUnverified: true, waitForAnchors: { sessionId: SESSION, pollIntervalMs: 1 },
+    });
+    expect(reader.taskReads()).toBeGreaterThan(3);
+    expect(events.at(-1)!.message).toMatchObject({ toolCalls: [{ name: 'get_weather' }], finishReason: 1 });
+  });
+
+  it('waits for the chain by default, without any wait option', async () => {
+    const reader = readerNotYetOnChain(1);
+    const events = await run(makeClient(streamTransport(1), reader, profileHub()), { allowUnverified: true });
+    expect(events.at(-1)!.kind).toBe('confirmed');
+  });
+
+  it('reads the parsers of `model` without reading the task first', async () => {
+    const asked: Array<[string, bigint]> = [];
+    const h = { ...profileHub(), getProfile: async (id: string, v: bigint) => { asked.push([id, v]); return profileHub().getProfile(); } };
+    const MODEL = `0x${'d'.repeat(64)}`;
+    const events = await run(makeClient(streamTransport(1), readerWithReceipt(0), h), {
+      allowUnverified: true, model: { modelId: MODEL, profileVersion: 7 },
+    });
+    expect(asked).toEqual([[MODEL, 7n]]);
+    expect(events.at(-1)!.message).toMatchObject({ toolCalls: [{ name: 'get_weather' }] });
+  });
+
+  it('gives up waiting for a task that never reaches the chain', async () => {
+    await expect(run(makeClient(streamTransport(1), readerNotYetOnChain(1_000_000), profileHub()), {
+      allowUnverified: true, waitForAnchors: { sessionId: SESSION, pollIntervalMs: 1, timeoutMs: 30 },
+    })).rejects.toMatchObject({ code: 'OUTPUT_TRUST_ANCHOR_TIMEOUT', retriable: true });
+  });
+
   it('times out waiting for the receipt with a retriable error', async () => {
     await expect(run(makeClient(streamTransport(1), readerWithReceipt(1_000_000), profileHub()), { receiptTimeoutMs: 20 }))
       .rejects.toMatchObject({ code: 'OUTPUT_RECEIPT_TIMEOUT', retriable: true });

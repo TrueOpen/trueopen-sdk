@@ -1110,7 +1110,7 @@ Exit codes: 0 on success, 1 on error (with `--json`, errors are printed to stder
 
 ### Phase 1 migration (wire PR #49)
 
-This checkout pins wire PR #49 commit `b30fba8`. It targets a fresh Phase 1 chain; old sessions,
+This checkout pins wire PR #49 commit `a75f54a` (Phase 1 with wire main merged in). It targets a fresh Phase 1 chain; old sessions,
 output checkpoints and signatures are incompatible. See [the migration guide](docs/phase1-migration.md)
 for funding, recovery and output trust requirements. A Builder acknowledgement or signed Fin
 is provisional; only chain admission and settlement establish the corresponding final facts.

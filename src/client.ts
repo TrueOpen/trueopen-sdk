@@ -2830,9 +2830,10 @@ export class TrueOpenClient {
 
     return {
       // bytes is the committed object; text is its decoding. Cortex strips the trailing EOS
-      // before committing (output_decoding.strip_trailing_eos), so nothing is stripped here.
+      // before committing (output_decoding.strip_trailing_eos), so nothing is stripped here --
+      // not even a leading U+FEFF, which is committed output like any other character.
       bytes,
-      text: new TextDecoder().decode(bytes),
+      text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes),
       outputHash: got,
       taskHash,
       chunks,
@@ -4218,7 +4219,9 @@ async function rereadNexusEndpoint(
  * never shown in the stream; the full-text decode of the confirmed output shows them as U+FFFD.
  */
 class FrameTextDecoder {
-  private readonly decoder = new TextDecoder();
+  // ignoreBOM keeps a leading U+FEFF: it is committed output, and the parsers read it as text
+  // (REASONING_PARSER_V1: the BOM is not whitespace). The default decoder would drop it.
+  private readonly decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
   constructor(readonly verifier: OutputStreamVerifier) {
     const held = verifier.checkpoint().chunks;

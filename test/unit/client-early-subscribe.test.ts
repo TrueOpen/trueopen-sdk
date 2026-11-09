@@ -433,6 +433,14 @@ describe('streamOutput early subscribe', () => {
     expect(events.flatMap((e) => (e.kind === 'chunk' ? [e.text] : []))).toEqual(['é!']);
   });
 
+  it('keeps a leading U+FEFF: it is committed output, not a byte-order mark to drop', async () => {
+    const bytes = new TextEncoder().encode('\uFEFF<think>a</think>b');
+    const chunks = [bytes.slice(0, 2), bytes.slice(2)];
+    const { source } = scriptedSource(() => ({ frames: frames(2, WORKER_PRIV, TICKET, chunks), then: 'end' }));
+    const events = await collect(stream(makeClient(), { sources: [source], ...anchors }));
+    expect(events.flatMap((e) => (e.kind === 'chunk' ? [e.text] : [])).join('')).toBe('\uFEFF<think>a</think>b');
+  });
+
   it('rejects a bad maxPendingFrames', async () => {
     await expect(collect(stream(makeClient(), { pendingAnchors: Promise.resolve(anchors), maxPendingFrames: 0 })))
       .rejects.toMatchObject({ code: 'OUTPUT_STREAM_PENDING_FRAMES_INVALID' });

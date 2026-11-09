@@ -930,6 +930,12 @@ export interface ProfileParsers {
  * the receipt.
  */
 export interface AssistantTurnParams extends Omit<StreamOutputParams, 'taskHash' | 'workerServicePubKey'> {
+  /**
+   * The order's model profile, so the parsers it pins are read without waiting for the task to
+   * reach the chain (an OpenTaskResult passed as `beforeRecord` provides it too). Without it, and
+   * without `toolCallParser`, the parsers are read from the task once the chain has it.
+   */
+  readonly model?: { readonly modelId: string; readonly profileVersion: number | bigint };
   /** Defaults to the task profile's on-chain parser (profileParsers). */
   readonly toolCallParser?: ParserRef;
   /** Defaults to the task profile's on-chain reasoning parser. Ignored when toolCallParser is given without it. */
@@ -3672,7 +3678,16 @@ export class TrueOpenClient {
       throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_PROFILE_UNREADABLE', 'resolving the profile parsers needs config.taskReader and config.hub with getProfile');
     }
     const task = await reader.queryTask(taskId);
-    const profile = await getProfile(task.modelId, task.profileVersion);
+    return this.profileParsersOf(task.modelId, task.profileVersion);
+  }
+
+  /** The parsers a model profile pins (ProfileState.tool_call_parser / reasoning_parser). */
+  private async profileParsersOf(modelId: string, profileVersion: bigint): Promise<ProfileParsers> {
+    const getProfile = this.cfg.hub?.getProfile?.bind(this.cfg.hub);
+    if (getProfile === undefined) {
+      throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_PROFILE_UNREADABLE', 'resolving the profile parsers needs config.hub with getProfile');
+    }
+    const profile = await getProfile(modelId, profileVersion);
     const none = { name: '', version: 0 };
     return { toolCallParser: profile.toolCallParser ?? none, reasoningParser: profile.reasoningParser ?? none };
   }
@@ -3686,60 +3701,114 @@ export class TrueOpenClient {
    * execute, and the protocol finishReason from the Worker-signed Fin. The stream checkpoint is
    * kept internally (and still handed to `onCheckpoint`).
    *
-   * Parsers default to the ones the task's profile pins on chain. The built-in parsers are
-   * vector-verified and take effect without opt-in; a parser this build does not support (or a
-   * custom unverified one without `allowUnverified`) leaves the output as content with no calls.
-   * Needs config.taskReader and config.hub.
+   * It can start right after openTask: the trust anchors are waited for by streamOutput, with the
+   * caller's `waitForAnchors` / `pendingAnchors` / `admissionWait` / `beforeRecord`, or by default
+   * `waitForAnchors: { sessionId }` (the subscription opens at once and frames are held until the
+   * anchors verify them).
+   *
+   * Parsers default to the ones the model profile pins on chain. The profile comes from `model`,
+   * from an OpenTaskResult passed as `beforeRecord`, or else from the task once the chain has it.
+   * The built-in parsers are vector-verified and take effect without opt-in; a parser this build
+   * does not support (or a custom unverified one without `allowUnverified`) leaves the output as
+   * content with no calls. Needs config.taskReader and config.hub.
    */
   async *assistantTurn(p: AssistantTurnParams): AsyncIterable<AssistantTurnEvent> {
     const reader = this.cfg.taskReader;
     if (reader === undefined) {
       throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_TASK_READER_REQUIRED', 'assistantTurn waits for the receipt and needs config.taskReader');
     }
-    const anchors = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
-    const refs = p.toolCallParser !== undefined
-      ? { toolCallParser: p.toolCallParser, ...(p.reasoningParser !== undefined ? { reasoningParser: p.reasoningParser } : {}) }
-      : await this.profileParsers(p.taskId);
-    const opts = {
-      ...resolveParsers({
-        ...refs,
-        ...(p.registry !== undefined ? { registry: p.registry } : {}),
-        ...(p.reasoningRegistry !== undefined ? { reasoningRegistry: p.reasoningRegistry } : {}),
-        ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
-      }),
-    };
-
+    // The trust anchors are streamOutput's to wait for, so a turn can start right after openTask:
+    // the caller's waitForAnchors / pendingAnchors / admissionWait / beforeRecord apply, and
+    // without any of them the stream waits for the chain (waitForAnchors with this session).
+    const waits = p.waitForAnchors !== undefined || p.pendingAnchors !== undefined || p.admissionWait !== undefined || p.beforeRecord !== undefined;
     let checkpoint: OutputStreamVerifierCheckpoint | undefined;
     const source = this.streamOutput({
       ...p,
-      taskHash: anchors.taskHash,
-      workerServicePubKey: anchors.workerServicePubKey,
-      ...(anchors.dispatchTicketHash !== undefined ? { dispatchTicketHash: anchors.dispatchTicketHash } : {}),
+      ...(waits ? {} : { waitForAnchors: { sessionId: p.sessionId, ...(p.signal !== undefined ? { signal: p.signal } : {}) } }),
       onCheckpoint: async (c) => {
         checkpoint = c;
         await p.onCheckpoint?.(c);
       },
-    });
-    for await (const e of deriveAssistantStream(source, opts)) {
+    })[Symbol.asyncIterator]();
+    // The subscription opens while the parsers are resolved; nothing is read from it until then.
+    const first = source.next();
+    first.catch(() => undefined);
+    let opts: DerivedViewOptions;
+    try {
+      opts = resolveParsers({
+        ...(await this.turnParserRefs(p, reader)),
+        ...(p.registry !== undefined ? { registry: p.registry } : {}),
+        ...(p.reasoningRegistry !== undefined ? { reasoningRegistry: p.reasoningRegistry } : {}),
+        ...(p.allowUnverified !== undefined ? { allowUnverified: p.allowUnverified } : {}),
+      });
+    } catch (e) {
+      await source.return?.(undefined);
+      throw e;
+    }
+    async function* events(): AsyncIterable<OutputStreamEvent> {
+      for (let step = await first; step.done !== true; step = await source.next()) yield step.value;
+    }
+    for await (const e of deriveAssistantStream(events(), opts)) {
       // A provisional call is not executable and is not handed out; the confirmed list follows.
       if (e.kind === 'reasoning' || e.kind === 'content' || e.kind === 'reset') yield e;
     }
     if (checkpoint === undefined) throw dataError('DATA_OUTPUT_STREAM_EMPTY', `output stream for task ${p.taskId} verified no frame`);
 
     const receipt = await this.waitForReceipt(reader, p);
-    // The receipt names the attempt that counts; read the chain's ticket now, not the one the
-    // stream started with (a voided attempt may have been replaced meanwhile).
-    const { dispatchTicketHash } = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
+    // The receipt names the attempt that counts; read the chain's task_hash and ticket now, not
+    // the ones the stream started with (a voided attempt may have been replaced meanwhile).
+    const { taskHash, dispatchTicketHash } = await this.resolveOutputTrustAnchors(p.taskId, { withReceipt: false });
     if (dispatchTicketHash === undefined) {
       throw new TrueOpenError('CHAIN_REJECT', 'OUTPUT_TRUST_ANCHOR_PENDING', `task ${p.taskId}: no dispatch ticket on chain`, { retriable: true });
     }
     yield {
       kind: 'confirmed',
       message: confirmAssistantMessageWithReceipt(
-        { chainId: this.cfg.chainId, taskId: p.taskId, taskHash: anchors.taskHash, dispatchTicketHash, checkpoint, receipt },
+        { chainId: this.cfg.chainId, taskId: p.taskId, taskHash, dispatchTicketHash, checkpoint, receipt },
         opts,
       ),
     };
+  }
+
+  /**
+   * The parser refs of a turn: the caller's, else the ones the model profile pins. The profile
+   * comes from `model`, from an OpenTaskResult passed as `beforeRecord`, or from the task once the
+   * chain has it (polled like the anchors).
+   */
+  private async turnParserRefs(p: AssistantTurnParams, reader: OutputTaskReader): Promise<ProfileParsers | Omit<ToolCallParams, 'registry' | 'reasoningRegistry' | 'allowUnverified'>> {
+    if (p.toolCallParser !== undefined) {
+      return { toolCallParser: p.toolCallParser, ...(p.reasoningParser !== undefined ? { reasoningParser: p.reasoningParser } : {}) };
+    }
+    const fromOrder = p.beforeRecord !== undefined && 'retryParams' in p.beforeRecord
+      ? (p.beforeRecord as unknown as OpenTaskResult).retryParams.order
+      : undefined;
+    const model = p.model ?? (fromOrder !== undefined ? { modelId: fromOrder.modelId, profileVersion: fromOrder.profileVersion } : undefined);
+    if (model !== undefined) return this.profileParsersOf(model.modelId, BigInt(model.profileVersion));
+    const task = await this.waitForChainTask(reader, p);
+    return this.profileParsersOf(task.modelId, task.profileVersion);
+  }
+
+  /** The task once the chain has it: polled while QueryTask answers not found. */
+  private async waitForChainTask(reader: OutputTaskReader, p: AssistantTurnParams): Promise<ChainTaskSnapshot> {
+    const wait = typeof p.waitForAnchors === 'object' ? p.waitForAnchors : p.admissionWait;
+    const pollMs = wait?.pollIntervalMs ?? DEFAULT_TRUST_ANCHOR_POLL_MS;
+    const timeoutMs = wait?.timeoutMs ?? DEFAULT_TRUST_ANCHOR_WAIT_MS;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (p.signal?.aborted === true) throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_ABORTED', 'assistantTurn aborted while waiting for the task');
+      try {
+        return await reader.queryTask(p.taskId);
+      } catch (e) {
+        if (!(e instanceof TrueOpenError && e.code === 'CHAIN_QUERY_NOT_FOUND')) throw e;
+      }
+      if (Date.now() + pollMs > deadline) {
+        throw new TrueOpenError('CHAIN_REJECT', 'OUTPUT_TRUST_ANCHOR_TIMEOUT', `task ${p.taskId} did not reach the chain within ${timeoutMs}ms`, { retriable: true });
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, pollMs);
+        p.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    }
   }
 
   /** Polls for the accepted InferReceipt until it appears, the timeout passes, or the signal aborts. */

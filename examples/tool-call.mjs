@@ -114,8 +114,6 @@ try {
     const bound = (await client.getSession(sessionId)).boundBuilder;
     const ep = nexusGrpcEndpoint(await hub.getServiceDescriptor(bound));
     const builderClient = clientFor(ep.uri, ep.tlsPubkeyHash ?? '');
-    // Wait until the chain names the Worker and the dispatch ticket the output is verified against.
-    await builderClient.waitForOutputTrustAnchors(res.taskId, { sessionId, timeoutMs: 120_000 });
 
     let message;
     for await (const event of builderClient.assistantTurn({ sessionId, taskId: res.taskId, idleTimeoutMs: 120_000 })) {

@@ -24,6 +24,7 @@ program
   .option('--fee-denom <denom>', 'optional check on the order fee denom; the chain business_denom is used, and a different value is refused')
   .option('--gas-price <p>', 'gas price amount (e.g. 0.025); the denom defaults to the chain business_denom, and any other denom is refused')
   .option('--key-file <path>', 'path to the mnemonic file')
+  .option('--state-dir <dir>', 'local state directory (order submit records sent orders under <dir>/opentask); default ~/.trueopen, env TRUEOPEN_STATE_DIR')
   .option('--json', 'JSON output')
   .option('--verbose', 'print stack trace');
 
@@ -61,9 +62,9 @@ order
   .command('submit')
   .requiredOption('--order-file <f>', 'TaskOrder JSON file (the intent portion of the frozen TaskOrderV3)')
   .requiredOption('--session <id>')
-  .option('--seq <n>', 'order_sequence; defaults to reading StreamState.next_expected_sequence on chain, an explicit value is only for RBF resubmission with the same sequence')
+  .option('--seq <n>', 'order_sequence; defaults to StreamState.next_expected_sequence on chain (or the recorded order\'s, on a retry); an explicit value is only for RBF resubmission with the same sequence')
   .requiredOption('--payload-file <f>', 'plaintext input body file (the V1 data plane transmits plaintext); the SDK derives input_hash / input_size_bytes / payload_ref from it')
-  .option('--idempotency-key <k>', 'the idempotency key; defaults to <session>:<seq>, must stay the same across retries')
+  .option('--idempotency-key <k>', 'the idempotency key; defaults to <session>:<seq> with --seq, else <session>:<sha256(payload)>; a retry under the same key resends the recorded order, so a deliberate second order with the same payload needs a new key')
   .description('submit an order (OpenTask: three-layer signing -> Task Builders selected by task_builder_seed)')
   .action((a: { orderFile: string; session: string; seq?: string; payloadFile: string; idempotencyKey?: string }) =>
     run((cfg, m) => cmdOrderSubmit(cfg, m, a)),

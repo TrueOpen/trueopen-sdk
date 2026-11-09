@@ -149,7 +149,7 @@ const height = await hub.getLatestHeight();
 const res = await client.openTask({
   sessionId,
   orderSequence,
-  idempotencyKey: `${sessionId}:${orderSequence}`, // keep it across retries
+  idempotencyKey: `${sessionId}:${orderSequence}`, // names this order: keep it across retries
   order: {
     modelId: '0x<64hex>', // Hash32 model ID: 0x + 64 lowercase hex
     profileVersion: 1,
@@ -189,6 +189,20 @@ for (const b of res.builders.filter((x) => x.ack?.accepted)) {
 }
 signingClient.disconnect();
 ```
+
+**Retrying `openTask`.** A retry with the same `idempotencyKey` never places a second order
+(issue #7). Before the first byte is sent the client records the order under the key
+(`config.openTaskStore`, by default in memory for the client's lifetime; pass a persistent store,
+such as one file per key, to cover restarts). A retry after a lost response or a crash then:
+returns the recorded order without sending anything once the chain has it (`status`
+`OpenTaskStatusV1.RECORDED`, empty `builders`; needs `config.taskReader`); resends the exact same
+signed order bytes (same `task_hash`) under a fresh request envelope while the chain has not
+recorded it; and refuses with `SDK_LOCAL_ORDER_EXPIRED` once it can no longer be admitted (send
+`res.retryParams`, which carries a new key), with `SDK_LOCAL_IDEMPOTENCY_SEQUENCE_CONSUMED` when
+its sequence went to another order, and with `SDK_LOCAL_IDEMPOTENCY_KEY_REUSED` for another
+payload, session or sequence under the key. This holds without `orderSequence` too: the retry
+uses the recorded sequence instead of reading the next one. A deliberately new order needs a new
+key.
 
 ### Streaming output
 
@@ -314,7 +328,7 @@ preimages. `payload_ref` stays `"nexus://sha256/" + bare lowercase hex`. `hash32
 | `updateSessionKey(sessionId, { renew } \| { rotate } \| { clear: true })` / `useSessionKey(sessionId, privateKey)` | renew, rotate or clear the registered session key / load a persisted one (see section 4); restrictive changes are delayed and return `effectiveHeight` |
 | `openTaskWithRecovery(params, { maxAttempts, maxPolls, pollIntervalMs, signal? })` | bounded sequential recovery; checks chain sequence/binding, waits for takeover, and refreshes stale orders; with no other Builder left it waits for a `NO_CAPACITY` retry height (`dispatchRetryHeight(error)`, also exported) and re-signs |
 | `nextOrderSequence(sessionId)` | reads the on-chain `StreamState.next_expected_sequence` (the sole authority for the next order sequence) |
-| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> uses the current immutable BuilderSet and submits to the bound Builder -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` records the contacted Builder's address, endpoint and ack or error |
+| `openTask({ sessionId, orderSequence, order, idempotencyKey, pricing? })` | reads on-chain context, the fee denom and the profile pricing -> builds the frozen `TaskOrderV3` and refuses an order the chain would reject -> signs the order and the request envelope with the wallet -> records the order under `idempotencyKey` (`config.openTaskStore`) -> uses the current immutable BuilderSet and submits to the bound Builder -> streams the OpenTask submission; returns `{ taskId, taskHash, context, feeDenom, builders, unresolvedBuilders, endpointsTried, ...firstAck }`, where `builders` records the contacted Builder's address, endpoint and ack or error. A retry under a recorded key resends that exact order (same `task_hash`, fresh envelope), or returns it with `status` `RECORDED` and nothing sent once the chain has it; it never places a second order |
 | `resolveOutputTrustAnchors(taskId, { withReceipt? })` | reads the accepted `task_hash`, the winner Worker's current service key and the accepted `InferReceipt` from chain |
 | `waitForOutputTrustAnchors(taskId, { sessionId?, pollIntervalMs?, timeoutMs?, signal? })` | waits until the chain names the winner and returns the streaming anchors: polls the chain (default every 1000 ms, at most 60 s) and, with `sessionId`, reads once more straight away on the Builder's `DISPATCH_RECORDED` event (without waiting for a read already in flight); a task that failed or settled without a winner ends the wait with `OUTPUT_TRUST_ANCHOR_NO_WINNER` |
 | `resolveTaskBuilders({ sessionId, orderSequence?, context? })` | the Task Builder an order will go to (the Session's bound Builder), before anything is signed; pass the returned `context` to `openTask` |
@@ -1027,7 +1041,7 @@ Besides the library, `trueopen-sdk` ships the `trueopen` CLI -- a thin wrapper a
 | `trueopen address` | mnemonic -> address | none |
 | `trueopen builders` | discovers the nexus endpoint on-chain | none |
 | `trueopen session create [label] --builder <trueopen1...> [--deposit <amount>]` / `session get <id>` | createSession / getSession | gas / none |
-| `trueopen order submit --order-file <f> --session <id> --payload-file <f> [--seq <n>] [--idempotency-key <k>]` | openTask | freezes max_fee |
+| `trueopen order submit --order-file <f> --session <id> --payload-file <f> [--seq <n>] [--idempotency-key <k>]` | openTask; records each sent order under `--state-dir`/`TRUEOPEN_STATE_DIR` (default `~/.trueopen`)`/opentask`, so re-running the command resends it instead of placing another; the key defaults to `<session>:<seq>` with `--seq`, else `<session>:<sha256(payload)>` (a deliberate second order with the same payload needs `--idempotency-key`) | freezes max_fee |
 | `trueopen order cancel --session <id> --seq <n>` | cancelOrder | gas |
 | `trueopen task status <session> <task>` / `task watch <session> <task>` | taskStatus / watchTask (streaming) | none |
 | `trueopen output get <session> <task> [task-hash] [output-hash]` | fetchTaskOutput, anchors read from chain (requires `--auto`) | none |

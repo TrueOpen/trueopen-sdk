@@ -42,6 +42,7 @@ All global options go **before the subcommand**. Priority: `flag` > environment 
 | `--gas-price <p>` | `TRUEOPEN_GAS_PRICE` | `0.025` + chain denom | gas price amount (only used for on-chain writes). The denom is the chain's `business_denom`, the only fee denom it accepts; a different denom is refused |
 | `--fee-denom <denom>` | `TRUEOPEN_FEE_DENOM` | - | optional check on the order fee denom. The chain's `business_denom` is always used; a different value is refused before signing |
 | `--key-file <path>` | - | - | path to the mnemonic file |
+| `--state-dir <dir>` | `TRUEOPEN_STATE_DIR` | `~/.trueopen` | local state; `order submit` records each order it sends under `<dir>/opentask` (one JSON file per idempotency key) |
 | `--json` | - | off | **only affects error output format** (see below) |
 | `--verbose` | - | off | also prints the stack trace on error |
 
@@ -215,9 +216,9 @@ the submission to every selected endpoint, succeeding as soon as one accepts.
 |---|:--:|---|
 | `--order-file <f>` | v | TaskOrder JSON, see the [next section](#order-file-format) |
 | `--session <id>` | v | session id (canonical lowercase 64-hex) |
-| `--seq <n>` | | `order_sequence`. Defaults to reading `StreamState.next_expected_sequence` on-chain -- that is the only authority, and a new session's first order is `0`. Pass it explicitly only to resend under the same sequence (RBF) |
+| `--seq <n>` | | `order_sequence`. Defaults to reading `StreamState.next_expected_sequence` on-chain -- that is the only authority, and a new session's first order is `0` -- or, on a retry, to the recorded order's. Pass it explicitly only to resend under the same sequence (RBF) |
 | `--payload-file <f>` | v | the plaintext input body; `input_hash` / `input_size_bytes` / `payload_ref` are derived from it |
-| `--idempotency-key <k>` | | the idempotency key, defaults to `<session>:<seq>` |
+| `--idempotency-key <k>` | | the idempotency key; defaults to `<session>:<seq>` with `--seq`, else `<session>:<sha256(payload)>` (`0x` + 64 hex) |
 
 ```bash
 trueopen order submit \
@@ -259,9 +260,15 @@ Returns:
   has actually entered the on-chain lifecycle is determined by whether `task status` has moved
   out of `PENDING`.
 
-> **Idempotency key**: the same key with the same `input_hash` returns the same result; the same
-> key with a different `input_hash` is rejected. It must stay unchanged when retrying the same
-> order.
+> **Idempotency key**: the key names one order. Before the order is sent it is recorded under
+> the key in `<state-dir>/opentask`, so running the same command again (after a lost response, a
+> timeout or a crash) never places a second order: it resends the exact same signed order while
+> the chain has not recorded it, and prints the recorded order (`"status": 4`, RECORDED, nothing
+> sent) once it has. Without `--seq` the default key is derived from the payload, so a
+> **deliberate second order with the same payload needs its own `--idempotency-key`**. The same
+> key with another payload, session or `--seq` is refused (`SDK_LOCAL_IDEMPOTENCY_KEY_REUSED`);
+> an order that expired unrecorded is refused (`SDK_LOCAL_ORDER_EXPIRED`): submit it again under
+> a new key.
 
 ### `trueopen order cancel`
 

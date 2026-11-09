@@ -938,7 +938,7 @@ describe('openTask: the order window', () => {
     const res = await s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: -5_000n, orderExpireBlocks: 100n } });
     expect(res.earliestSubmitHeight).toBe(1n);
     expect(res.orderExpireHeight).toBe(1_100n);
-    await expect(s.client.openTask({ ...BASE, orderWindow: { earliestSubmitBlocks: 0, orderExpireBlocks: 1n } as never }))
+    await expect(s.client.openTask({ ...BASE, idempotencyKey: 'k2', orderWindow: { earliestSubmitBlocks: 0, orderExpireBlocks: 1n } as never }))
       .rejects.toMatchObject({ code: 'SDK_LOCAL_ORDER_WINDOW_INVALID' });
   });
 });
@@ -1115,9 +1115,9 @@ describe('openTask: the order window against the registered key\'s expiry', () =
     const res = await s.client.openTask(BASE); // order_expire_height 8000 > 1100
     expect(res.keyExpiresInOrderWindow).toBe(true);
     expect(res.sessionKeyExpiryHeight).toBe(1_100n);
-    const inside = await s.client.openTask({ ...BASE, order: { ...intent, orderExpireHeight: 1_100n } });
+    const inside = await s.client.openTask({ ...BASE, idempotencyKey: 'k2', order: { ...intent, orderExpireHeight: 1_100n } });
     expect(inside.keyExpiresInOrderWindow).toBeUndefined();
-    const wallet = await s.client.openTask({ ...BASE, orderSigner: 'wallet', orderSequence: 7n });
+    const wallet = await s.client.openTask({ ...BASE, idempotencyKey: 'k3', orderSigner: 'wallet', orderSequence: 7n });
     expect(wallet.keyExpiresInOrderWindow).toBeUndefined();
     expect(wallet.sessionKeyExpiryHeight).toBeUndefined();
   });

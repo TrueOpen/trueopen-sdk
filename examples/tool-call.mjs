@@ -22,6 +22,8 @@ import { chatInferInputBytes, defaultGenerationParams, nexusGrpcEndpoint, TASK_T
 import { setup, env, show } from './_shared.mjs';
 
 const MAX_TURNS = Number(env('TRUEOPEN_MAX_TURNS', '3'));
+// A thinking model can spend the whole budget reasoning; the answer then has no content.
+const MAX_OUTPUT_TOKENS = BigInt(env('TRUEOPEN_MAX_OUTPUT_TOKENS', '512'));
 const TOOL_DIR = resolve(env('TRUEOPEN_TOOL_DIR', process.cwd()));
 
 /** @type {import('../dist/index.js').ChatTool[]} */
@@ -91,8 +93,9 @@ try {
         payload,
         inputBucket: 1,
         outputBudgetBucket: 1,
-        generationParams: defaultGenerationParams(512n, 60_000n),
-        // order_value = floor(512 x price_bid / 1e6) plus the verifier share; max_fee covers it.
+        generationParams: defaultGenerationParams(MAX_OUTPUT_TOKENS, 60_000n),
+        // order_value = floor(max_output_tokens x price_bid / 1e6) plus the verifier share; max_fee
+        // covers it (raise TRUEOPEN_MAX_FEE with TRUEOPEN_MAX_OUTPUT_TOKENS).
         amounts: {
           priceBid: { atomicUnits: env('TRUEOPEN_PRICE_BID', '4000000') },
           maxFee: { atomicUnits: env('TRUEOPEN_MAX_FEE', '4000') },

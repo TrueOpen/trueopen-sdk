@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added: WORKER_ANCHOR_OPENING evidence kind (ADR-0040)
+
+- **Added:** `EVIDENCE_KIND.WORKER_ANCHOR_OPENING` (5), the Worker's C-level anchor bundle. The
+  task-data object ref frame accepts it for Worker evidence objects and still refuses it for
+  Verifier and non-evidence objects, so a request for an anchor object signs the body digest
+  Cortex and Nexus compute.
+
 ### Fixed: openTask retries are idempotent (issue #7)
 
 A retry of `openTask` after a lost response no longer re-signs the order (whose new `task_hash`

@@ -595,6 +595,11 @@ canonical frame gained `evidence_kind` (V2); `producer_operator` enters the prei
 address bytes. `canonicalObjectRefFrame` **throws** on an illegal object_kind /
 evidence_kind combination before computing any digest (fail-closed).
 
+`EVIDENCE_KIND.WORKER_ANCHOR_OPENING` (5) is valid only for Worker evidence objects
+(`evidenceProducerKind` WORKER); a Verifier or non-evidence reference carrying it throws. Only
+Profiles that list kind 5 in `required_infer_evidence` make a Worker produce such an object, so
+tasks of other Profiles have none to fetch.
+
 `TaskDataRequestAuthFields` = `{ schemaVersion, chainId, builderOperatorAddress, rpcMethod,
 bodyDigest, requesterKind, requesterAddress, serviceAuthorizationNonce, requestNonce,
 expiryHeight }`.

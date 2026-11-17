@@ -83,7 +83,10 @@ export const EVIDENCE_KIND = {
   VERIFIER_VALUE_OPENING: 2,
   SETTLEMENT_ROOT_OPENING: 3,
   WORKER_TOKEN_OPENING: 4,
-  /** The Worker's C-level anchor bundle (ADR-0040). */
+  /**
+   * The Worker's anchor bundle. Valid only for Worker evidence objects, and produced only under
+   * Profiles that list this kind in `required_infer_evidence`.
+   */
   WORKER_ANCHOR_OPENING: 5,
 } as const;
 

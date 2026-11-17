@@ -16,6 +16,7 @@ import type { TaskDataObjectRef } from '../../src/transport/task-data-signbytes'
 import { bech32 } from '@scure/base';
 import { canonicalFrameBytes } from '../../src/codec/domain-hash';
 import { toHex, fromHex, concatBytes } from '../../src/util/bytes';
+import { EvidenceKind } from '../../src/gen/shared/v1/evidence_pb';
 
 /** Anchor: wire's testdata/v1/task/task_data_auth_v1.json, read directly from the submodule. */
 const auth = JSON.parse(readFileSync('third_party/wire/testdata/v1/task/task_data_auth_v1.json', 'utf8'));
@@ -103,12 +104,27 @@ describe('body digest (H_FIELDS_V1)', () => {
     const rows = (auth.vectors as { name: string; mutations?: { expect: string; field_path: string }[] }[])
       .flatMap((v) => (v.mutations ?? []).map((m) => ({ vector: v.name, ...m })))
       .filter((m) => m.expect === 'reject_before_hash');
-    expect(rows.map((r) => r.vector).sort()).toEqual([
-      'task_data_fetch_body_v2',
-      'task_data_finalize_result_body_v2',
-      'task_data_metadata_body_v2',
-      'task_data_upload_body_v2',
-    ]);
+    // The three kind 5 vectors arrive with a later wire revision, all together; each carries one
+    // reject row (a Verifier producer with kind 5), refused in the WORKER_ANCHOR_OPENING test below.
+    const anchorVectors = [
+      'task_data_fetch_body_v2_worker_anchor_opening',
+      'task_data_fetch_body_v2_worker_anchor_opening_range',
+      'task_data_metadata_body_v2_worker_anchor_opening',
+    ];
+    const present = anchorVectors.filter((name) => vector(name) !== undefined);
+    expect([0, anchorVectors.length]).toContain(present.length);
+    expect(rows.map((r) => r.vector).sort()).toEqual(
+      [
+        'task_data_fetch_body_v2',
+        'task_data_finalize_result_body_v2',
+        'task_data_metadata_body_v2',
+        'task_data_upload_body_v2',
+        ...present,
+      ].sort(),
+    );
+    for (const row of rows.filter((r) => present.includes(r.vector))) {
+      expect(row.field_path).toBe('object_ref.evidence_producer_kind');
+    }
     // metadata / fetch: evidence_kind 0 -> 1 on an OUTPUT object.
     const onOutput = { ...REF, evidenceKind: EVIDENCE_KIND.WORKER_VALUE_OPENING };
     expect(() => taskDataMetadataBodyDigest(onOutput)).toThrow(/non-evidence/);
@@ -139,7 +155,7 @@ describe('body digest (H_FIELDS_V1)', () => {
     expect(() => canonicalObjectRefFrame({ ...worker, evidenceProducerKind: 0 })).toThrow();
   });
 
-  // ADR-0040: the Worker's anchor bundle (kind 5) is a Worker data-plane object. The
+  // The Worker's anchor bundle (kind 5) is a Worker data-plane object. The
   // digests are the ones Cortex (internal/builderclient) and Nexus (internal/taskdata)
   // compute for the same ref, so a User reading an anchor object signs exactly what the
   // Builder verifies.
@@ -165,9 +181,45 @@ describe('body digest (H_FIELDS_V1)', () => {
     expect(toHex(taskDataFetchBodyDigest(anchorRef, { offset: 0n, length: 64n }))).toBe(
       '3c3a86a16e135f66fb2444aaf420bcd55ee6b66e1c5bf29613b44d9cdb38a281',
     );
+    // Once the wire submodule carries the kind 5 vectors, the pinned digests must be wire's.
+    const wireDigest = (name: string): string | undefined =>
+      (vector(name) as { digest_hex?: string } | undefined)?.digest_hex;
+    for (const [name, got] of [
+      ['task_data_metadata_body_v2_worker_anchor_opening', taskDataMetadataBodyDigest(anchorRef)],
+      ['task_data_fetch_body_v2_worker_anchor_opening', taskDataFetchBodyDigest(anchorRef)],
+      [
+        'task_data_fetch_body_v2_worker_anchor_opening_range',
+        taskDataFetchBodyDigest(anchorRef, { offset: 0n, length: 64n }),
+      ],
+    ] as const) {
+      const want = wireDigest(name);
+      if (want !== undefined) expect(toHex(got)).toBe(want);
+    }
     // Still a Worker-only kind: a Verifier object or a non-evidence object cannot carry it.
     expect(() => canonicalObjectRefFrame({ ...anchorRef, evidenceProducerKind: 2, verifyRound: 2 })).toThrow(/data-plane/);
     expect(() => taskDataMetadataBodyDigest({ ...REF, evidenceKind: EVIDENCE_KIND.WORKER_ANCHOR_OPENING })).toThrow(/non-evidence/);
+  });
+
+  // EVIDENCE_KIND is hand-written; shared.v1.EvidenceKind is generated from the wire submodule.
+  // Every generated entry must be in EVIDENCE_KIND with the same number, and every EVIDENCE_KIND
+  // entry must be generated - except entries newer than the pinned submodule, listed here. When
+  // the submodule gains such an entry it is compared like the rest.
+  it('EVIDENCE_KIND matches the generated shared.v1.EvidenceKind entry by entry', () => {
+    const aheadOfSubmodule: Readonly<Record<string, number>> = { WORKER_ANCHOR_OPENING: 5 };
+    const generated = Object.entries(EvidenceKind).filter(
+      (entry): entry is [string, number] => typeof entry[1] === 'number',
+    );
+    expect(generated.length).toBeGreaterThanOrEqual(5);
+    const handWritten: Readonly<Record<string, number>> = EVIDENCE_KIND;
+    for (const [name, value] of generated) {
+      expect(handWritten[name], `EVIDENCE_KIND.${name}`).toBe(value);
+    }
+    const generatedNames = new Set(generated.map(([name]) => name));
+    for (const [name, value] of Object.entries(handWritten)) {
+      if (generatedNames.has(name)) continue;
+      expect(aheadOfSubmodule[name], `EVIDENCE_KIND.${name} is not in the generated enum`).toBe(value);
+    }
+    expect(new Set(Object.values(handWritten)).size).toBe(Object.keys(handWritten).length);
   });
 
   // "no producer kind" and "wrong kind for this producer" are different mistakes; folding

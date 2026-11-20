@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed: pin wire v0.6.1
+
+- Pinned to the wire `v0.6.1` release (`b1f470f`), replacing wire PR #49 @ `a75f54a`. It carries
+  Phase 1 (wire #49), the TaskFrozenParams query (wire #52), display-only input token counts
+  (wire #54) and the ADR-0040 anchor audit (wire #50). The regenerated bindings add
+  `EvidenceKind.WORKER_ANCHOR_OPENING` (5) and `VerificationParamsV1` fields 7-13; the SDK does
+  not compute `TRUEOPEN_TASK_PARAMS_V1`, whose framing changed, so no SDK encoding changes.
+
 ### Added: WORKER_ANCHOR_OPENING evidence kind
 
 - **Added:** `EVIDENCE_KIND.WORKER_ANCHOR_OPENING` (5), the Worker's anchor bundle. It is valid
@@ -9,10 +17,8 @@
   `required_infer_evidence` produce it. The task-data object ref frame accepts it for Worker
   evidence objects and still refuses it for Verifier and non-evidence objects, so a request for
   an anchor object signs the body digest Cortex and Nexus compute.
-- **Tests:** `EVIDENCE_KIND` is checked entry by entry against the generated
-  `shared.v1.EvidenceKind` enum; until the wire submodule carries kind 5, that one entry is the
-  only one allowed to be absent from the generated enum. The kind 5 body digests are also checked
-  against wire's `task_data_auth_v1.json` vectors once the submodule carries them.
+- **Tests:** `EVIDENCE_KIND` must equal the generated `shared.v1.EvidenceKind` enum entry by
+  entry, and the kind 5 body digests are checked against wire's `task_data_auth_v1.json` vectors.
 
 ### Fixed: openTask retries are idempotent (issue #7)
 

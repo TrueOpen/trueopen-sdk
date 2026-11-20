@@ -6,7 +6,7 @@ plugins:
       - target=ts
       - import_extension=js
 inputs:
-  # wire PR #49 @ a75f54a (Phase 1, with wire main merged in; see README). Only the transitive closure the SDK needs is generated,
+  # wire v0.6.1 @ b1f470f (Phase 1 and the ADR-0040 anchor audit; see README). Only the transitive closure the SDK needs is generated,
   # which deliberately excludes cortex.v1: wire withholds that package, so its fields are not frozen
   # and generating types from it now would bake in a shape wire has already said it will break.
   # not all of wire's files. The first 13 are the import closure computed from two roots (ingress /

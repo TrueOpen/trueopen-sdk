@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added: WORKER_ANCHOR_OPENING evidence kind
+
+- **Added:** `EVIDENCE_KIND.WORKER_ANCHOR_OPENING` (5), the Worker's anchor bundle. It is valid
+  only for Worker evidence objects, and only Profiles that list kind 5 in
+  `required_infer_evidence` produce it. The task-data object ref frame accepts it for Worker
+  evidence objects and still refuses it for Verifier and non-evidence objects, so a request for
+  an anchor object signs the body digest Cortex and Nexus compute.
+- **Tests:** `EVIDENCE_KIND` is checked entry by entry against the generated
+  `shared.v1.EvidenceKind` enum; until the wire submodule carries kind 5, that one entry is the
+  only one allowed to be absent from the generated enum. The kind 5 body digests are also checked
+  against wire's `task_data_auth_v1.json` vectors once the submodule carries them.
+
 ### Fixed: openTask retries are idempotent (issue #7)
 
 A retry of `openTask` after a lost response no longer re-signs the order (whose new `task_hash`

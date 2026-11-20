@@ -83,6 +83,11 @@ export const EVIDENCE_KIND = {
   VERIFIER_VALUE_OPENING: 2,
   SETTLEMENT_ROOT_OPENING: 3,
   WORKER_TOKEN_OPENING: 4,
+  /**
+   * The Worker's anchor bundle. Valid only for Worker evidence objects, and produced only under
+   * Profiles that list this kind in `required_infer_evidence`.
+   */
+  WORKER_ANCHOR_OPENING: 5,
 } as const;
 
 /** nexus.v1.TaskDataRequesterKindV1. */
@@ -128,15 +133,19 @@ const EVIDENCE_OBJECT_KINDS: readonly number[] = [
 
 /** Data-plane evidence kinds each producer may carry. The settlement root opening is never a data-plane object. */
 const EVIDENCE_KINDS_BY_PRODUCER: Readonly<Record<number, readonly number[]>> = {
-  [EVIDENCE_PRODUCER_KIND.WORKER]: [EVIDENCE_KIND.WORKER_VALUE_OPENING, EVIDENCE_KIND.WORKER_TOKEN_OPENING],
+  [EVIDENCE_PRODUCER_KIND.WORKER]: [
+    EVIDENCE_KIND.WORKER_VALUE_OPENING,
+    EVIDENCE_KIND.WORKER_TOKEN_OPENING,
+    EVIDENCE_KIND.WORKER_ANCHOR_OPENING,
+  ],
   [EVIDENCE_PRODUCER_KIND.VERIFIER]: [EVIDENCE_KIND.VERIFIER_VALUE_OPENING],
 };
 
 /**
  * Refuses an object_kind / evidence_kind combination the contract makes illegal, before
  * any digest is computed: INPUT and OUTPUT carry EVIDENCE_KIND_UNSPECIFIED, and an
- * evidence object carries a kind its producer can produce (Worker: value or token
- * opening; Verifier: value opening).
+ * evidence object carries a kind its producer can produce (Worker: value, token or
+ * anchor opening; Verifier: value opening).
  */
 function validateEvidenceKind(ref: TaskDataObjectRef): void {
   const kind = ref.evidenceKind ?? EVIDENCE_KIND.UNSPECIFIED;

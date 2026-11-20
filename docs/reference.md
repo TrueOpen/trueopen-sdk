@@ -579,7 +579,7 @@ const TASK_DATA_RPC_METHOD = { GetTaskDataMetadata, FetchTaskData, ... }
 const TASK_DATA_OBJECT_KIND = { UNSPECIFIED, INPUT, OUTPUT, EVIDENCE_MANIFEST, EVIDENCE_ARTIFACT, ... }
 const TASK_DATA_REQUESTER_KIND = { UNSPECIFIED, USER, CORTEX_SERVICE }
 const EVIDENCE_PRODUCER_KIND = { UNSPECIFIED, WORKER, VERIFIER }
-const EVIDENCE_KIND = { UNSPECIFIED, WORKER_VALUE_OPENING, VERIFIER_VALUE_OPENING, SETTLEMENT_ROOT_OPENING, WORKER_TOKEN_OPENING }
+const EVIDENCE_KIND = { UNSPECIFIED, WORKER_VALUE_OPENING, VERIFIER_VALUE_OPENING, SETTLEMENT_ROOT_OPENING, WORKER_TOKEN_OPENING, WORKER_ANCHOR_OPENING }
 
 function canonicalObjectRefFrame(ref: TaskDataObjectRef): Uint8Array
 function taskDataMetadataBodyDigest(ref: TaskDataObjectRef): Uint8Array
@@ -594,6 +594,11 @@ evidenceProducerKind?, verifyRound?, producerOperator?, evidenceKind? }`. The ni
 canonical frame gained `evidence_kind` (V2); `producer_operator` enters the preimage as
 address bytes. `canonicalObjectRefFrame` **throws** on an illegal object_kind /
 evidence_kind combination before computing any digest (fail-closed).
+
+`EVIDENCE_KIND.WORKER_ANCHOR_OPENING` (5) is valid only for Worker evidence objects
+(`evidenceProducerKind` WORKER); a Verifier or non-evidence reference carrying it throws. Only
+Profiles that list kind 5 in `required_infer_evidence` make a Worker produce such an object, so
+tasks of other Profiles have none to fetch.
 
 `TaskDataRequestAuthFields` = `{ schemaVersion, chainId, builderOperatorAddress, rpcMethod,
 bodyDigest, requesterKind, requesterAddress, serviceAuthorizationNonce, requestNonce,

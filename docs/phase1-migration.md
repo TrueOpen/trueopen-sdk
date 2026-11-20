@@ -1,7 +1,7 @@
 # Phase 1 SDK migration
 
-The wire submodule is pinned to PR #49 commit `a75f54a`. This is a breaking,
-fresh-genesis contract. Recreate Sessions and checkpoints; do not reuse Phase 0
+The wire submodule is pinned to the `v0.6.1` release (`b1f470f`), which carries Phase 1 (wire
+#49). This is a breaking, fresh-genesis contract. Recreate Sessions and checkpoints; do not reuse Phase 0
 signed orders or output signatures.
 
 ## Order lifetime (wire #49 @ `b30fba8`)

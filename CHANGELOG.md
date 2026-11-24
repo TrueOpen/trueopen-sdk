@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed: TASK_BUILDER_ALL_ENDPOINTS_FAILED names each Builder's reason
+
+- **Changed:** the message of `TaskBuilderAllEndpointsFailedError` now ends with each Builder and
+  its reason (`<builder>: <code>: <message>; ...`, each reason cut at 300 characters), so a refusal
+  such as `NEXUS_INGRESS_NO_CAPACITY` is visible without reading `cause` or `results`.
+  `details.rejections` carries the same as `BuilderRejection { endpoint, code?, reason }` (new
+  exported type) with the reasons whole. The code, `results` and `cause` are unchanged; a caller
+  that matched the old message exactly has to match its prefix instead.
+
 ### Changed: pin wire v0.6.1
 
 - Pinned to the wire `v0.6.1` release (`b1f470f`), replacing wire PR #49 @ `a75f54a`. It carries

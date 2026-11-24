@@ -1435,6 +1435,15 @@ resolves only its descriptor (`dispatchingOnly: true`: the first of that list, a
 membership check). `fanOutToEndpoints` sends to every endpoint it is given and aggregates the
 first accepted ack plus per-builder errors.
 
+When no Builder accepts, `TaskBuilderAllEndpointsFailedError` (`TASK_BUILDER_ALL_ENDPOINTS_FAILED`)
+names each Builder and its reason in the message, for example
+`... (1 tried): trueopen1s7x...: NEXUS_INGRESS_NO_CAPACITY: no admitted handraise for model ...`
+(each reason cut at 300 characters there). `details.rejections` lists the same as
+`BuilderRejection { endpoint, code?, reason }` with the reasons whole: `endpoint` is the Builder's
+address when the endpoint carries one, else its `serviceEndpoint`; `code` is set when the Builder
+or the transport threw a `TrueOpenError`; a rejection ack reads `not accepted: <reason>`.
+`results` keeps every ack and error verbatim, and `cause` is the first error in endpoint order.
+
 ---
 
 ## 12. Model manifest & URI

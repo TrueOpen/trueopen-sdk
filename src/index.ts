@@ -43,6 +43,7 @@ export type { TaskBuilderSelectionInput, BuilderSetMember, SelectedBuilder } fro
 export { resolveTaskBuilderEndpoints } from './hub/stage1-routing';
 export type { TaskBuilderReader, ResolveTaskBuilderInput, TaskBuilderEndpoint, ResolveTaskBuilderResult } from './hub/stage1-routing';
 export { fanOutToEndpoints, TaskBuilderAllEndpointsFailedError } from './transport/fan-out-submit';
+export type { BuilderRejection } from './transport/fan-out-submit';
 export { nexusIngressTransport, nexusTransportOptions, PinnedHttpsAgent, sharedPinnedHttpsAgent, prewarmNexusConnections, DEFAULT_PREWARM_CONNECTIONS, MAX_PREWARM_CONNECTIONS, tlsPubkeyHashOfCertificate, isTLSPubkeyMismatch, tlsPubkeyHashRequiredByEnv, insecureHttpAllowedByEnv, NEXUS_TLS_PUBKEY_MISMATCH } from './transport/nexus-tls';
 export type { NexusTransportPolicy, PrewarmNexusOptions } from './transport/nexus-tls';
 export type { NexusTransportOptions } from './transport/nexus-tls';

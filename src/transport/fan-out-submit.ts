@@ -24,14 +24,49 @@ export interface FanOutResult<E extends EndpointLike, A extends AcceptedLike> {
   readonly results: FanOutResultItem<E, A>[];
 }
 
+/** One Builder's refusal, as TaskBuilderAllEndpointsFailedError reports it in details.rejections. */
+export interface BuilderRejection {
+  /** The Builder's address when the endpoint carries one, else its serviceEndpoint. */
+  readonly endpoint: string;
+  /** The TrueOpenError code when the Builder (or the transport) threw one. */
+  readonly code?: string;
+  /** The error message, or the rejection ack's reason. */
+  readonly reason: string;
+}
+
+/** A reason longer than this is cut in the aggregate message; details.rejections keeps it whole. */
+const MAX_REASON_IN_MESSAGE = 300;
+
+function endpointLabel(endpoint: EndpointLike): string {
+  const address = (endpoint as { readonly address?: unknown }).address;
+  return typeof address === 'string' && address !== '' ? address : endpoint.serviceEndpoint;
+}
+
+function rejectionOf<E extends EndpointLike, A extends AcceptedLike>(r: FanOutResultItem<E, A>): BuilderRejection {
+  const endpoint = endpointLabel(r.endpoint);
+  if (r.error !== undefined) {
+    if (r.error instanceof TrueOpenError) {
+      const reason = r.error.message.startsWith(r.error.code) ? r.error.message : `${r.error.code}: ${r.error.message}`;
+      return { endpoint, code: r.error.code, reason };
+    }
+    return { endpoint, reason: r.error instanceof Error ? r.error.message : String(r.error) };
+  }
+  const ackReason = (r.ack as { readonly reason?: unknown } | undefined)?.reason;
+  return { endpoint, reason: typeof ackReason === 'string' && ackReason !== '' ? `not accepted: ${ackReason}` : 'not accepted' };
+}
+
+function clip(reason: string): string {
+  return reason.length > MAX_REASON_IN_MESSAGE ? `${reason.slice(0, MAX_REASON_IN_MESSAGE)}...` : reason;
+}
+
 /**
  * Thrown when no selected Task Builder accepted the order.
  *
- * Carries the per-endpoint outcome, because the aggregate message cannot say
- * which Builder rejected and why. Three Builders all answering
- * NEXUS_DATA_EXPIRED is a different problem from three of them being
- * unreachable, and a caller should not have to parse a message to tell them
- * apart.
+ * Carries the per-endpoint outcome, because a bare aggregate cannot say which Builder rejected
+ * and why. Three Builders all answering NEXUS_DATA_EXPIRED is a different problem from three of
+ * them being unreachable, and a caller should not have to dig through `cause` to tell them apart:
+ * the message names each Builder's reason, `details.rejections` lists them structured, and
+ * `results` keeps every ack and error verbatim.
  */
 export class TaskBuilderAllEndpointsFailedError<
   E extends EndpointLike,
@@ -41,15 +76,17 @@ export class TaskBuilderAllEndpointsFailedError<
   readonly results: readonly FanOutResultItem<E, A>[];
 
   constructor(results: readonly FanOutResultItem<E, A>[]) {
+    const rejections = results.map(rejectionOf);
+    const reasons = rejections.map((r) => `${r.endpoint}: ${clip(r.reason)}`).join('; ');
     super(
       'NEXUS_INGRESS',
       'TASK_BUILDER_ALL_ENDPOINTS_FAILED',
-      `TASK_BUILDER_ALL_ENDPOINTS_FAILED: no selected Task Builder accepted the order (${results.length} tried)`,
+      `TASK_BUILDER_ALL_ENDPOINTS_FAILED: no selected Task Builder accepted the order (${results.length} tried)${reasons === '' ? '' : `: ${reasons}`}`,
       // The cause is the first endpoint that threw in **endpoint order** --
       // results mirrors the endpoint list, not completion order -- so the
       // standard Error chain keeps working; every endpoint's outcome is on
       // results.
-      { retriable: true, cause: results.find((r) => r.error !== undefined)?.error },
+      { retriable: true, cause: results.find((r) => r.error !== undefined)?.error, details: { rejections } },
     );
     this.results = results;
     // TrueOpenError's constructor sets name to its own; without this the

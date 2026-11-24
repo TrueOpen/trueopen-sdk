@@ -67,4 +67,35 @@ describe('fanOutToEndpoints', () => {
     // And the standard Error chain still reaches one of them.
     expect((failure.cause as Error).message).toBe('unreachable http://a:8080');
   });
+
+  it('names every Builder and its reason in the message and in details.rejections', async () => {
+    const noCapacity = new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_NO_CAPACITY', 'NEXUS_INGRESS_NO_CAPACITY: no admitted handraise for model m profile 2');
+    const bareCode = new TrueOpenError('NEXUS_INGRESS', 'NEXUS_INGRESS_TAKEOVER_PENDING', 'takeover pending');
+    const submit = async (endpoint: { address: string }): Promise<OpenTaskAck> => {
+      if (endpoint.address === 'A') throw noCapacity;
+      if (endpoint.address === 'B') return { taskId: 't', accepted: false, reason: 'NEXUS_DATA_EXPIRED: request height', sessionId: 's' };
+      throw bareCode;
+    };
+    const err = (await fanOutToEndpoints(REQ, endpoints, submit).catch((e: unknown) => e)) as TaskBuilderAllEndpointsFailedError<(typeof endpoints)[number], OpenTaskAck>;
+    expect(err.message).toBe(
+      'TASK_BUILDER_ALL_ENDPOINTS_FAILED: no selected Task Builder accepted the order (3 tried): ' +
+        'A: NEXUS_INGRESS_NO_CAPACITY: no admitted handraise for model m profile 2; ' +
+        'B: not accepted: NEXUS_DATA_EXPIRED: request height; ' +
+        'C: NEXUS_INGRESS_TAKEOVER_PENDING: takeover pending',
+    );
+    expect(err.details?.rejections).toEqual([
+      { endpoint: 'A', code: 'NEXUS_INGRESS_NO_CAPACITY', reason: 'NEXUS_INGRESS_NO_CAPACITY: no admitted handraise for model m profile 2' },
+      { endpoint: 'B', reason: 'not accepted: NEXUS_DATA_EXPIRED: request height' },
+      { endpoint: 'C', code: 'NEXUS_INGRESS_TAKEOVER_PENDING', reason: 'NEXUS_INGRESS_TAKEOVER_PENDING: takeover pending' },
+    ]);
+  });
+
+  it('labels an endpoint without an address by its serviceEndpoint and clips long reasons in the message only', async () => {
+    const long = 'x'.repeat(400);
+    const err = (await fanOutToEndpoints(REQ, [{ serviceEndpoint: 'http://z:8080' }], async () => {
+      throw new Error(long);
+    }).catch((e: unknown) => e)) as TaskBuilderAllEndpointsFailedError<{ serviceEndpoint: string }, OpenTaskAck>;
+    expect(err.message).toBe(`TASK_BUILDER_ALL_ENDPOINTS_FAILED: no selected Task Builder accepted the order (1 tried): http://z:8080: ${'x'.repeat(300)}...`);
+    expect(err.details?.rejections).toEqual([{ endpoint: 'http://z:8080', reason: long }]);
+  });
 });

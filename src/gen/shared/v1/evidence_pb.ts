@@ -5,13 +5,14 @@
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import { file_gogoproto_gogo } from "../../gogoproto/gogo_pb.js";
+import { file_shared_v1_rest_encoding } from "./rest_encoding_pb.js";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file shared/v1/evidence.proto.
  */
 export const file_shared_v1_evidence: GenFile = /*@__PURE__*/
-  fileDesc("ChhzaGFyZWQvdjEvZXZpZGVuY2UucHJvdG8SCXNoYXJlZC52MSKVAQoaSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjESLgoNZXZpZGVuY2Vfa2luZBgBIAEoDjIXLnNoYXJlZC52MS5FdmlkZW5jZUtpbmQSIQoZY29tbWl0bWVudF9zY2hlbWFfdmVyc2lvbhgCIAEoDRIeChZtYXhfZW5jb2RlZF9zaXplX2J5dGVzGAMgASgEOgTooB8BIn4KEEV2aWRlbmNlU2NoZW1hVjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0STAoXcmVxdWlyZWRfaW5mZXJfZXZpZGVuY2UYAiADKAsyJS5zaGFyZWQudjEuSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjFCBMjeHwA6BOigHwEq+wEKDEV2aWRlbmNlS2luZBIdChlFVklERU5DRV9LSU5EX1VOU1BFQ0lGSUVEEAASJgoiRVZJREVOQ0VfS0lORF9XT1JLRVJfVkFMVUVfT1BFTklORxABEigKJEVWSURFTkNFX0tJTkRfVkVSSUZJRVJfVkFMVUVfT1BFTklORxACEikKJUVWSURFTkNFX0tJTkRfU0VUVExFTUVOVF9ST09UX09QRU5JTkcQAxImCiJFVklERU5DRV9LSU5EX1dPUktFUl9UT0tFTl9PUEVOSU5HEAQSJwojRVZJREVOQ0VfS0lORF9XT1JLRVJfQU5DSE9SX09QRU5JTkcQBUIpWidnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC9zaGFyZWQvdHlwZXNiBnByb3RvMw", [file_gogoproto_gogo]);
+  fileDesc("ChhzaGFyZWQvdjEvZXZpZGVuY2UucHJvdG8SCXNoYXJlZC52MSK2AQoaSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjESLgoNZXZpZGVuY2Vfa2luZBgBIAEoDjIXLnNoYXJlZC52MS5FdmlkZW5jZUtpbmQSIQoZY29tbWl0bWVudF9zY2hlbWFfdmVyc2lvbhgCIAEoDRIeChZtYXhfZW5jb2RlZF9zaXplX2J5dGVzGAMgASgEEh8KEXJlZ2lzdHJhdGlvbl9oYXNoGAQgASgMQgTI8xgCOgTooB8BIn4KEEV2aWRlbmNlU2NoZW1hVjESFgoOc2NoZW1hX3ZlcnNpb24YASABKA0STAoXcmVxdWlyZWRfaW5mZXJfZXZpZGVuY2UYAiADKAsyJS5zaGFyZWQudjEuSW5mZXJFdmlkZW5jZVJlcXVpcmVtZW50VjFCBMjeHwA6BOigHwEq+wEKDEV2aWRlbmNlS2luZBIdChlFVklERU5DRV9LSU5EX1VOU1BFQ0lGSUVEEAASJgoiRVZJREVOQ0VfS0lORF9XT1JLRVJfVkFMVUVfT1BFTklORxABEigKJEVWSURFTkNFX0tJTkRfVkVSSUZJRVJfVkFMVUVfT1BFTklORxACEikKJUVWSURFTkNFX0tJTkRfU0VUVExFTUVOVF9ST09UX09QRU5JTkcQAxImCiJFVklERU5DRV9LSU5EX1dPUktFUl9UT0tFTl9PUEVOSU5HEAQSJwojRVZJREVOQ0VfS0lORF9XT1JLRVJfQU5DSE9SX09QRU5JTkcQBUIpWidnaXRodWIuY29tL1RydWVPcGVuL25vZGUveC9zaGFyZWQvdHlwZXNiBnByb3RvMw", [file_gogoproto_gogo, file_shared_v1_rest_encoding]);
 
 /**
  * InferEvidenceRequirementV1 freezes one evidence kind required from the
@@ -35,6 +36,17 @@ export type InferEvidenceRequirementV1 = Message<"shared.v1.InferEvidenceRequire
    * @generated from field: uint64 max_encoded_size_bytes = 3;
    */
   maxEncodedSizeBytes: bigint;
+
+  /**
+   * WORKER_ANCHOR_OPENING only, optional: sha256 of the canonical
+   * registration.json of the verification registration (which binds the
+   * weight commitments and thresholds) this Profile version is audited
+   * against. An entry that leaves it empty is encoded and hashed exactly as
+   * before; an entry that sets it includes it in evidence_schema_hash.
+   *
+   * @generated from field: bytes registration_hash = 4;
+   */
+  registrationHash: Uint8Array;
 };
 
 /**

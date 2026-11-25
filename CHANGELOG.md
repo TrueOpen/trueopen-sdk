@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added: signed input token count beside the order
+
+- **New, off by default:** `TrueOpenConfig.inputTokenCounter`. When set, the SDK asks it for the
+  order's input token count (the application supplies the Profile's tokenizer and chat template;
+  the SDK ships none), has the order's signer sign `OrderInputTokensAttestationV1` (domain
+  `TRUEOPEN_ORDER_INPUT_TOKENS_V1`, bound to the order's task hash) and sends it in
+  `OpenTaskHeader.input_tokens_attestation`. This is one more signature per order: one more wallet
+  prompt for a wallet-signed order, none with a registered session key. The signed order, its task
+  hash and the request envelope are unchanged, and without a counter nothing is sent.
+- `buildOpenTaskRequest` takes `inputTokenCount`; the result and the stored `SentOrderRecord` carry
+  `inputTokensAttestationHex` (optional), so a retry under the same idempotency key resends the
+  same statement without signing again.
+- New exports: `orderInputTokensDigest`, `orderInputTokensTypedData`, `signOrderInputTokens`,
+  `encodeOrderInputTokens`, `committedInputTokenCount`, `checkInputTokenCount` (compares the
+  attested count with the count the accepted receipt commits to, per wire
+  `docs/TOKEN_USAGE_V1.md`, and reports `match` / `mismatch` / `unavailable`).
+- The wire submodule moves to the Verifier-panel audit contract (`541085f`, wire PR #60, not yet
+  tagged upstream). The regenerated bindings only add fields; no existing encoding changes.
+
 ### Changed: TASK_BUILDER_ALL_ENDPOINTS_FAILED names each Builder's reason
 
 - **Changed:** the message of `TaskBuilderAllEndpointsFailedError` now ends with each Builder and

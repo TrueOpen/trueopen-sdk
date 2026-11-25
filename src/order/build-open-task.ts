@@ -5,6 +5,10 @@ import { TrueOpenError } from '../errors/errors';
 import { signAndEncodeOrder, decodeSignedOrder } from './signed-order';
 import type { OrderEip712Context } from './signed-order';
 import { deriveTaskId } from './order-signing';
+import { fromBinary } from '@bufbuild/protobuf';
+import { OrderInputTokensAttestationV1Schema } from '../gen/task/v1/msg_assignment_pb';
+import type { OrderInputTokensAttestationV1 } from '../gen/task/v1/msg_assignment_pb';
+import { ORDER_INPUT_TOKENS_SCHEMA_VERSION, encodeOrderInputTokens, signOrderInputTokens } from './input-tokens';
 import { canonicalAccountAddressBytes } from '../codec/address';
 import { signSdkRequestEnvelope, ingressEndpoint, HEIGHT_EXPIRY_THRESHOLD } from '../transport/sdk-request-envelope';
 import { signatureChainIdBigInt } from '../signature-chain-id';
@@ -68,6 +72,13 @@ export interface BuildOpenTaskInput {
    * refused locally with SDK_LOCAL_CHAIN_ID_MISMATCH.
    */
   readonly chainId?: string;
+  /**
+   * The order's input token count, as counted with the Profile's tokenizer and chat template.
+   * When given, the order's signer also signs an OrderInputTokensAttestationV1 for it (one more
+   * signature; with a wallet, one more prompt) and it is sent beside the order. Omitted: no
+   * attestation, and the request is exactly what it was before this field existed.
+   */
+  readonly inputTokenCount?: bigint;
 }
 
 export interface BuildOpenTaskResult {
@@ -76,6 +87,8 @@ export interface BuildOpenTaskResult {
   readonly taskHash: string;
   /** Hex of the SignedOrderV2 bytes sent as order_envelope. */
   readonly orderEnvelopeHex: string;
+  /** Hex of the OrderInputTokensAttestationV1 bytes sent beside the order, when there is one. */
+  readonly inputTokensAttestationHex?: string;
   /**
    * The same OpenTask input with the request envelope signed again under `requestNonce`, by the
    * same signer; the signed order is unchanged. A Builder consumes an OpenTask nonce before it
@@ -129,14 +142,40 @@ export async function buildOpenTaskRequest(input: BuildOpenTaskInput): Promise<B
       : await signAndEncodeOrder(input.order, input.orderEip712, rk.signer, { expectedSigner: rk.address });
 
   // (2) The request envelope, over the bytes just signed.
-  const { order: _order, orderEip712: _eip712, ...envelope } = input;
+  const { order: _order, orderEip712: _eip712, inputTokenCount, ...envelope } = input;
   void _order;
   void _eip712;
-  return openTaskInputForSignedOrder({ ...envelope, signedOrder: signed.bytes, taskHash: hash32Text(signed.taskHash) });
+
+  // (1b) The input token count, bound to the order just signed and signed by the same signer.
+  let attestation: Uint8Array | undefined;
+  if (inputTokenCount !== undefined) {
+    attestation = encodeOrderInputTokens(
+      await signOrderInputTokens({
+        chainId: input.order.chainId,
+        orderDigest: signed.taskHash,
+        inputTokenCount,
+        signatureChainId: input.orderEip712.signatureChainId,
+        signer: rk === undefined ? input.wallet : rk.signer,
+        expectedSigner: rk === undefined ? canonicalAccountAddressBytes('user_address', input.order.userAddress) : rk.address,
+      }),
+    );
+  }
+  return openTaskInputForSignedOrder({
+    ...envelope,
+    signedOrder: signed.bytes,
+    taskHash: hash32Text(signed.taskHash),
+    ...(attestation !== undefined ? { inputTokensAttestation: attestation } : {}),
+  });
 }
 
 /** What openTaskInputForSignedOrder needs: an already-signed order plus everything about the request envelope. */
-export interface SignedOrderOpenTaskInput extends Omit<BuildOpenTaskInput, 'order' | 'orderEip712'> {
+export interface SignedOrderOpenTaskInput extends Omit<BuildOpenTaskInput, 'order' | 'orderEip712' | 'inputTokenCount'> {
+  /**
+   * OrderInputTokensAttestationV1 bytes exactly as signed with the order
+   * (BuildOpenTaskResult.inputTokensAttestationHex, decoded). Sent unchanged; it must be for this
+   * order (same chain, order_digest = taskHash, same signature chain ID).
+   */
+  readonly inputTokensAttestation?: Uint8Array;
   /**
    * SignedOrderV2 bytes exactly as signed (BuildOpenTaskResult.orderEnvelopeHex, decoded). They
    * are sent unchanged; the order fields the envelope binds (chain, user, session, sequence,
@@ -177,6 +216,10 @@ export async function openTaskInputForSignedOrder(input: SignedOrderOpenTaskInpu
     inputSizeBytes: o.inputSizeBytes,
   };
   checkOpenTaskFacts(facts, input);
+  const attestation =
+    input.inputTokensAttestation === undefined
+      ? undefined
+      : decodeAttestationFor(input.inputTokensAttestation, facts.chainId, input.taskHash, decoded.signatureChainId);
   const rk = input.registeredKey;
   const payloadRef = openTaskPayloadRef(facts.inputHash);
   const inputMediaType = input.inputMediaType ?? DEFAULT_MEDIA_TYPE;
@@ -226,6 +269,7 @@ export async function openTaskInputForSignedOrder(input: SignedOrderOpenTaskInpu
       idempotencyKey: input.idempotencyKey,
       payload: input.payload,
       ...(input.chunkSizeBytes !== undefined ? { chunkSizeBytes: input.chunkSizeBytes } : {}),
+      ...(attestation !== undefined ? { inputTokensAttestation: attestation } : {}),
     };
   };
 
@@ -233,8 +277,35 @@ export async function openTaskInputForSignedOrder(input: SignedOrderOpenTaskInpu
     input: await withEnvelope(input.requestNonce),
     taskHash: input.taskHash,
     orderEnvelopeHex: toHex(input.signedOrder),
+    ...(input.inputTokensAttestation !== undefined ? { inputTokensAttestationHex: toHex(input.inputTokensAttestation) } : {}),
     resign: withEnvelope,
   };
+}
+
+/** Decodes a stored attestation and refuses one that is not for this order. */
+function decodeAttestationFor(
+  bytes: Uint8Array,
+  chainId: string,
+  taskHash: string,
+  signatureChainId: bigint,
+): OrderInputTokensAttestationV1 {
+  let att: OrderInputTokensAttestationV1;
+  try {
+    att = fromBinary(OrderInputTokensAttestationV1Schema, bytes);
+  } catch (cause) {
+    throw new TrueOpenError('SDK_LOCAL', 'SDK_LOCAL_INPUT_TOKENS_INVALID', 'inputTokensAttestation is not OrderInputTokensAttestationV1 bytes', { cause });
+  }
+  if (
+    att.schemaVersion !== ORDER_INPUT_TOKENS_SCHEMA_VERSION ||
+    att.chainId !== chainId ||
+    hash32Text(att.orderDigest) !== taskHash ||
+    att.signatureChainId !== signatureChainId ||
+    att.inputTokenCount < 1n ||
+    att.userSignature.length !== 65
+  ) {
+    throw local('SDK_LOCAL_INPUT_TOKENS_INVALID', 'inputTokensAttestation is not a statement for this order');
+  }
+  return att;
 }
 
 /** The order fields the OpenTask request binds, in text form. */

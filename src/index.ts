@@ -203,6 +203,26 @@ export {
   ORDER_EIP712_DOMAIN_VERSION,
 } from './order/signed-order';
 export type { EncodedSignedOrder, OrderEip712Context } from './order/signed-order';
+export {
+  ORDER_INPUT_TOKENS_DOMAIN,
+  ORDER_INPUT_TOKENS_SCHEMA_VERSION,
+  ORDER_INPUT_TOKENS_EIP712_DOMAIN_NAME,
+  ORDER_INPUT_TOKENS_EIP712_DOMAIN_VERSION,
+  ORDER_INPUT_TOKENS_EIP712_TYPES,
+  orderInputTokensDigest,
+  orderInputTokensTypedData,
+  signOrderInputTokens,
+  encodeOrderInputTokens,
+  committedInputTokenCount,
+  checkInputTokenCount,
+} from './order/input-tokens';
+export type {
+  OrderInputTokensFields,
+  SignOrderInputTokensInput,
+  InputTokenCounter,
+  InputTokenCountRequest,
+  InputTokenCountCheck,
+} from './order/input-tokens';
 export { buildOpenTaskRequest, openTaskInputForSignedOrder, OPEN_TASK_ENDPOINT, HEIGHT_EXPIRY_THRESHOLD } from './order/build-open-task';
 export type { BuildOpenTaskInput, BuildOpenTaskResult, SignedOrderOpenTaskInput } from './order/build-open-task';
 export { memoryOpenTaskStore, checkSentOrderRecord, SENT_ORDER_RECORD_VERSION } from './order/open-task-store';

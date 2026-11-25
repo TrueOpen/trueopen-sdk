@@ -143,6 +143,41 @@ describe('TrueOpenClient.openTask', () => {
     expect(res.context.sessionAnchorHeight).toBe(1000n);
   });
 
+  it('sends no input token statement unless a counter is configured', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    await makeClient(seen).openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    const header = seen.frames.find((f) => f.frame.case === 'header')!.frame.value as { inputTokensAttestation?: unknown };
+    expect(header.inputTokensAttestation).toBeUndefined();
+  });
+
+  it('signs the configured counter\'s count beside the order, bound to its task hash', async () => {
+    const seen = { calls: 0, frames: [] as OpenTaskRequest[] };
+    const asked: { modelId: string; profileVersion: number; bytes: number }[] = [];
+    const client = new TrueOpenClient({
+      chainId: 'trueopen-localnet-1', userAddress: USER, wallet,
+      chain: fakeChain(), ingressTransport: acceptTransport({ calls: 0, frames: [] }),
+      hub, ingressTransportFactory: () => acceptTransport(seen),
+      nonce: () => new Uint8Array(32).fill(1),
+      signatureChainId: 424242n,
+      feeDenom: 'utrueopen',
+      inputTokenCounter: (r) => {
+        asked.push({ modelId: r.modelId, profileVersion: r.profileVersion, bytes: r.payload.length });
+        return 9;
+      },
+    });
+    const res = await client.openTask({ sessionId: SESSION, orderSequence: 3n, order, idempotencyKey: 'idem-1' });
+    expect(asked).toEqual([{ modelId: order.modelId, profileVersion: order.profileVersion, bytes: PAYLOAD.length }]);
+    const header = seen.frames.find((f) => f.frame.case === 'header')!.frame.value as {
+      inputTokensAttestation?: { inputTokenCount: bigint; orderDigest: Uint8Array; chainId: string; signatureChainId: bigint; userSignature: Uint8Array };
+    };
+    const att = header.inputTokensAttestation!;
+    expect(att.inputTokenCount).toBe(9n);
+    expect(hash32Text(att.orderDigest)).toBe(res.taskHash);
+    expect(att.chainId).toBe('trueopen-localnet-1');
+    expect(att.signatureChainId).toBe(424242n);
+    expect(att.userSignature.length).toBe(65);
+  });
+
   it('a newly effective BuilderSet is used for signing and routing', async () => {
     // A new set with a single member takes effect at 999, by the latest height (1000), which is the anchor.
     const rotated: BuilderSetSnapshot = {

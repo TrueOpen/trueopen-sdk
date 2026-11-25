@@ -37,6 +37,8 @@ import type { DescriptorDocFetch } from './hub/builder-discovery';
 import { buildTaskOrder, resolveTaskOrderContextWithBuilderSet } from './order/task-order-input';
 import type { TaskOrderIntent, TaskOrderChainContext, TaskOrderContextReader, ResolvedTaskOrderContext } from './order/task-order-input';
 import { buildOpenTaskRequest, openTaskInputForSignedOrder } from './order/build-open-task';
+import { inputTokenCountValue } from './order/input-tokens';
+import type { InputTokenCounter } from './order/input-tokens';
 import type { BuildOpenTaskResult } from './order/build-open-task';
 import { memoryOpenTaskStore, checkSentOrderRecord, contextToRecord, contextFromRecord, SENT_ORDER_RECORD_VERSION } from './order/open-task-store';
 import type { OpenTaskStore, SentOrderRecord } from './order/open-task-store';
@@ -115,6 +117,15 @@ export interface TrueOpenClientConfig {
    * to leave block-production margin.
    */
   readonly requestTtlBlocks?: number;
+  /**
+   * Counts an order's input tokens with the Profile's tokenizer and chat template (the SDK ships
+   * no tokenizer). When set, every new order carries the user's signed count
+   * (OrderInputTokensAttestationV1), which costs one more signature by the order's signer: with a
+   * wallet-signed order, one more wallet prompt; none with a registered session key. Unset (the
+   * default): no attestation, and requests are exactly what they were. A counter that returns
+   * undefined skips the statement for that order.
+   */
+  readonly inputTokenCounter?: InputTokenCounter;
   /**
    * The Task data request (GetTaskDataMetadata / FetchTaskData) expiry window, in **blocks**
    * (default 10). The Builder accepts current_height <= expiry_height <= current_height +
@@ -1707,6 +1718,9 @@ export class TrueOpenClient {
     routing.then((r) => this.prewarmTaskBuilders(r.endpoints), () => undefined);
     const built = await openTaskInputForSignedOrder({
       signedOrder: fromHex(record.signedOrderHex),
+      ...(record.inputTokensAttestationHex !== undefined
+        ? { inputTokensAttestation: fromHex(record.inputTokensAttestationHex) }
+        : {}),
       taskHash: record.taskHash,
       payload: params.order.payload,
       sessionId: params.sessionId,
@@ -2034,8 +2048,21 @@ export class TrueOpenClient {
     // Handled here so a signing failure below does not leave it unobserved; awaited after signing.
     routing.then((r) => this.prewarmTaskBuilders(r.endpoints), () => undefined);
 
+    // The application's tokenizer, when configured: its count is signed beside the order.
+    const inputTokenCount =
+      this.cfg.inputTokenCounter === undefined
+        ? undefined
+        : inputTokenCountValue(
+            await this.cfg.inputTokenCounter({
+              payload: params.order.payload,
+              modelId: hash32Text(order.modelId),
+              profileVersion: order.profileVersion,
+            }),
+          );
+
     const built = await buildOpenTaskRequest({
       order,
+      ...(inputTokenCount !== undefined ? { inputTokenCount } : {}),
       payload: params.order.payload,
       sessionId: params.sessionId,
       taskId,
@@ -2074,6 +2101,9 @@ export class TrueOpenClient {
         taskId,
         taskHash: built.taskHash,
         signedOrderHex: built.orderEnvelopeHex,
+        ...(built.inputTokensAttestationHex !== undefined
+          ? { inputTokensAttestationHex: built.inputTokensAttestationHex }
+          : {}),
         inputHash,
         inputSizeBytes: order.inputSizeBytes.toString(),
         inputMediaType: built.input.inputMediaType,

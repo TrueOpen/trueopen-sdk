@@ -569,6 +569,38 @@ unchanged to subscribers.
 > `subscribeOutput` signs `resume_after_seq` by presence (unset is absent, a set 0 is present 0)
 > and `ackOutput` signs `last_seq`; the deprecated `output_id` is not in the body.
 
+### Input token count beside the order (optional)
+
+`TaskOrderV3` is a closed signed field list, so the number of input tokens is not an order field.
+A user who wants the chain to hold the Worker to a count signs a second, small statement and the
+SDK sends it beside the order:
+
+```ts
+const client = new TrueOpenClient({
+  // ...
+  inputTokenCounter: async ({ payload, modelId, profileVersion }) => myTokenizer.count(payload),
+});
+```
+
+- The counter must apply the Profile's tokenizer and chat template; the SDK ships no tokenizer.
+  Returning `undefined` skips the statement for that order.
+- The statement is `OrderInputTokensAttestationV1`: digest
+  `H_FIELDS_V1("TRUEOPEN_ORDER_INPUT_TOKENS_V1", schema_version, chain_id, order_digest, input_token_count)`
+  with `order_digest` = the order's task hash, signed as EIP-712 typed data (domain
+  `TrueOpen Order Input Tokens` version `1`, the order's signature chain ID) by the order's signer.
+  It costs one more signature: one more wallet prompt for a wallet-signed order, none with a
+  registered session key.
+- Off by default. Without a counter the request is exactly what it was, and a chain whose
+  `input_token_tolerance` is zero ignores the statement.
+- After the receipt is accepted, `checkInputTokenCount({ attested, tokenOpeningEncodedSizeBytes, generatedTokenCount })`
+  compares the attested count with the one the receipt commits to and returns `match`,
+  `mismatch` (with the difference) or `unavailable`. It only reports; the SDK sends nothing to the
+  chain about a mismatch.
+
+Delivered output is already checked against the chain: `confirmOutput` / the assistant view
+recompute the output commitment (MMR root, leaf count, byte size) from the delivered chunks and
+fail closed when it differs from the accepted receipt (`src/output/output-confirmation.ts`).
+
 ### Wallets and session grants
 
 `TrueOpenClientConfig.wallet` is a `TypedDataSigner`. Three ship with the SDK:
@@ -1125,7 +1157,7 @@ Exit codes: 0 on success, 1 on error (with `--json`, errors are printed to stder
 
 ### Phase 1 migration (wire PR #49)
 
-This checkout pins wire `v0.6.1` (`b1f470f`: Phase 1 and the ADR-0040 anchor audit). It targets a fresh Phase 1 chain; old sessions,
+This checkout pins wire at `541085f` (wire PR #60 on top of `v0.6.1`: Phase 1, the ADR-0040 anchor audit and the Verifier-panel audit contract; not yet a tagged release). It targets a fresh Phase 1 chain; old sessions,
 output checkpoints and signatures are incompatible. See [the migration guide](docs/phase1-migration.md)
 for funding, recovery and output trust requirements. A Builder acknowledgement or signed Fin
 is provisional; only chain admission and settlement establish the corresponding final facts.

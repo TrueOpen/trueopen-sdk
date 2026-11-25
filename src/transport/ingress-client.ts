@@ -84,6 +84,11 @@ export interface OpenTaskInput {
   /** Plaintext input body; this method sends it chunked according to chunkSizeBytes. */
   readonly payload: Uint8Array;
   readonly chunkSizeBytes?: number;
+  /**
+   * The user's signed input token count for this order (OpenTaskHeader.input_tokens_attestation).
+   * Not part of the order or of the request envelope; omitted means no statement.
+   */
+  readonly inputTokensAttestation?: import('../gen/task/v1/msg_assignment_pb.js').OrderInputTokensAttestationV1;
 }
 
 /** OpenTask accept response. */
@@ -245,6 +250,7 @@ export class IngressClient {
       inputHash: req.inputHash,
       inputMediaType: req.inputMediaType,
       idempotencyKey: req.idempotencyKey,
+      ...(req.inputTokensAttestation !== undefined ? { inputTokensAttestation: req.inputTokensAttestation } : {}),
     });
 
     const payload = req.payload;

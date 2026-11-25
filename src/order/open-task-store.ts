@@ -41,6 +41,11 @@ export interface SentOrderRecord {
   readonly taskHash: string;
   /** The SignedOrderV2 bytes exactly as sent (order_envelope), lowercase hex without `0x`. */
   readonly signedOrderHex: string;
+  /**
+   * The OrderInputTokensAttestationV1 bytes sent beside the order, lowercase hex without `0x`.
+   * Absent when the order carried no input token statement.
+   */
+  readonly inputTokensAttestationHex?: string;
   /** sha256(payload), `0x` + 64 lowercase hex. */
   readonly inputHash: string;
   /** Decimal. */
@@ -158,6 +163,9 @@ export function checkSentOrderRecord(key: string, value: unknown): SentOrderReco
     throw bad('field taskId is not TRUEOPEN_TASK_ID_V1(sessionId, orderSequence)');
   }
   if (typeof r['signedOrderHex'] !== 'string' || !HEX.test(r['signedOrderHex'])) throw bad('field signedOrderHex is not lowercase hex');
+  if (r['inputTokensAttestationHex'] !== undefined && (typeof r['inputTokensAttestationHex'] !== 'string' || !HEX.test(r['inputTokensAttestationHex']))) {
+    throw bad('field inputTokensAttestationHex is not lowercase hex');
+  }
   if (r['orderSignedBy'] !== 'wallet' && r['orderSignedBy'] !== 'session-key') throw bad('field orderSignedBy is not wallet or session-key');
   if (r['orderSignerAddress'] !== undefined && (typeof r['orderSignerAddress'] !== 'string' || !HEX.test(r['orderSignerAddress']))) {
     throw bad('field orderSignerAddress is not lowercase hex');

@@ -1,0 +1,55 @@
+{
+  "schema": "trueopen.task.order_input_tokens_eip712.v1",
+  "notes": [
+    "EIP-712 form of OrderInputTokensAttestationV1.user_signature (signature_scheme \"eip712\").",
+    "attestationDigest is the H_FIELDS_V1 digest of wire testdata/v1/task/order_input_tokens_v1.json; the same vector supplies chain_id, order_digest and input_token_count.",
+    "signing_digest = keccak256(0x1901 || domain_separator || hash_struct). The signature is 65 bytes R||S||V, V in {27,28}, low S, RFC 6979; the verifier recovers the signer address and compares it with the order signer (the user, or the session key that signed the order).",
+    "domain.chain_id is the attestation signature_chain_id, which must equal the order SignedOrderV2.signature_chain_id."
+  ],
+  "domain": {
+    "name": "TrueOpen Order Input Tokens",
+    "version": "1",
+    "chain_id": "424242",
+    "encode_type": "EIP712Domain(string name,string version,uint256 chainId)",
+    "type_hash": "c2f8787176b8ac6bf7215b4adcc1e069bf4ab82d9ab1df05a57a91d425935b6e",
+    "domain_separator": "a3039bc1d61bff157bcf172d1880ce3d29ac38a8495d7e43c45d2aca6e80a42f"
+  },
+  "primary_type": "OrderInputTokens",
+  "encode_type": "OrderInputTokens(string chainId,bytes32 orderDigest,uint64 inputTokenCount,bytes32 attestationDigest)",
+  "type_hash": "06e133ddd0c113a63409abaaa849facacd9dd28ddd1f711d78edffed0ab48b85",
+  "message": {
+    "chainId": "trueopen-localnet-1",
+    "orderDigest": "057fee505c662a2480239af6ff4925b4ccce4b2f0caac392c6d91a6132a0ba6e",
+    "inputTokenCount": "2",
+    "attestationDigest": "d05f13e5b7ec9888eeff687c6a6554180e6c45e3d66a5c0c523456fb234344b0"
+  },
+  "hash_struct": "365e77c338eed81d0fa349886bb18c2059c04d552b0861df625cf6d6ac50984d",
+  "signing_digest": "8b14e90c5c21b5bc70ea386857be70c3cdcee8e7403c9d4cca72e2305ff45fc1",
+  "signer": {
+    "test_private_key": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "eth_address": "6370ef2f4db3611d657b90667de398a2cc2a370c",
+    "bech32_address": "trueopen1vdcw7t6dkds36etmjpn8mcuc5txz5dcvur72qd"
+  },
+  "signature": "bfa3fa9ee0526c1ec24376584663657c7e377b6193eec3528277efd33698fb1d2415eab5b34df62b21229eff57ef1d9ab1330817655cfca622d8587c30677e721b",
+  "attestation": {
+    "schema_version": 1,
+    "chain_id": "trueopen-localnet-1",
+    "order_digest": "057fee505c662a2480239af6ff4925b4ccce4b2f0caac392c6d91a6132a0ba6e",
+    "input_token_count": "2",
+    "signature_scheme": "eip712",
+    "user_signature": "bfa3fa9ee0526c1ec24376584663657c7e377b6193eec3528277efd33698fb1d2415eab5b34df62b21229eff57ef1d9ab1330817655cfca622d8587c30677e721b",
+    "signature_chain_id": "424242"
+  },
+  "negative_cases": [
+    {
+      "name": "other_signature_chain_id",
+      "signature_chain_id": "1",
+      "signing_digest": "271bd142b08ce9092e4f4843f577986a9b894da5688e54f0c3c7ea663ebf4661"
+    },
+    {
+      "name": "count_plus_one",
+      "input_token_count": "3",
+      "signing_digest": "931c920967d88f563e5fc627157b193d0577cbdd4a71b59443f43d0856dad69b"
+    }
+  ]
+}
